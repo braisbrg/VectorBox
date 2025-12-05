@@ -1,0 +1,98 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: cinematch-postgres
+    environment:
+      POSTGRES_DB: cinematch
+      POSTGRES_USER: cinematch_user
+      POSTGRES_PASSWORD: cinematch_pass
+    # Security: Ports removed for production (internal access only)
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cinematch_user -d cinematch"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: cinematch-qdrant
+    # Security: Ports removed for production (internal access only)
+    # ports:
+    #   - "6333:6333"
+    #   - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: cinematch-redis
+    # Security: Ports removed for production (internal access only)
+    # ports:
+    #   - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cinematch-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://cinematch_user:cinematch_pass@cinematch-postgres:5432/cinematch
+      - REDIS_URL=redis://redis:6379
+      - QDRANT_URL=http://qdrant:6333
+      - TMDB_API_KEY=${TMDB_API_KEY}
+      - TMDB_READ_TOKEN=${TMDB_READ_TOKEN}
+      - DEFAULT_COUNTRY=ES
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OMDB_API_KEY=${OMDB_API_KEY}
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: cinematch-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - backend
+    command: pnpm dev
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  redis_data:
