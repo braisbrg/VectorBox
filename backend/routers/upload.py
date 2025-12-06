@@ -61,6 +61,7 @@ async def enrich_movies_background(
     
     try:
         for i, movie_data in enumerate(movies_data):
+            existing_movie = None
             try:
                 # Update progress every 5 movies
                 if i % 5 == 0:
@@ -99,9 +100,23 @@ async def enrich_movies_background(
                                 letterboxd_uri=movie_data.get("letterboxd_uri")
                             )
                             
+                            
                             if new_movie:
                                 existing_movie = new_movie
                                 enriched_count += 1
+                        
+                        # Self-Heal: Ensure existing movie has keywords/vector (Phase 13)
+                        if existing_movie:
+                             from services.movie_service import MovieService
+                             # Note: instantiating service inside loop might be heavy if not reused, 
+                             # but here we need it occasionally. Better to init outside if frequent.
+                             # But existing_movie logic is nested.
+                             # Re-using previous import if available.
+                             if 'movie_service' not in locals():
+                                 from services.movie_service import MovieService
+                                 movie_service = MovieService(db)
+                                 
+                             await movie_service.enrich_movie(existing_movie)
                 
                 # Create or Update UserRating record
                 if existing_movie:

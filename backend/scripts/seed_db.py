@@ -118,7 +118,11 @@ class DatabaseSeeder:
             
             # Phase 12: Calculate VectorBox Score
             imdb_id = details.get("imdb_id")
-            keywords = await self.tmdb.get_movie_keywords(tmdb_id)
+            # Optimized: Keywords already fetched in get_movie_details via append_to_response
+            keywords = details.get("keywords_flat", [])
+            if not keywords:
+                 # Fallback if tmdb client didn't extract them (redundancy)
+                 keywords = await self.tmdb.get_movie_keywords(tmdb_id)
             
             # Fetch Spanish metadata
             title_es = details.get("title_es")

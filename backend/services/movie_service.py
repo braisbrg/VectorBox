@@ -86,7 +86,8 @@ class MovieService:
                 vectorbox_score=vb_score_data["score"],
                 title_es=details.get("title_es"),
                 overview_es=details.get("overview_es"),
-                collection_id=details.get("belongs_to_collection", {}).get("id") if details.get("belongs_to_collection") else None
+                collection_id=details.get("belongs_to_collection", {}).get("id") if details.get("belongs_to_collection") else None,
+                keywords=details.get("keywords_flat", [])
             )
 
             self.db.add(movie)
@@ -95,7 +96,9 @@ class MovieService:
             logger.info(f"Created movie: {movie.title} (VB Score: {movie.vectorbox_score})")
 
             # D. Upsert to Qdrant
-            keywords = await self.tmdb.get_movie_keywords(tmdb_id)
+            # Use the keywords we just fetched
+            keywords = movie.keywords or []
+            
             vector = self.embedding_service.generate_embedding({
                 "title": movie.title,
                 "overview": movie.overview,
@@ -129,9 +132,104 @@ class MovieService:
             return movie
 
         except Exception as e:
-            logger.error(f"Failed to ingest movie {tmdb_id}: {e}")
             await self.db.rollback()
             return None
+
+    async def ensure_vector_exists(self, movie: Movie) -> bool:
+        """
+        idempotently ensures a vector exists for the movie in Qdrant.
+        """
+        try:
+            # Check if vector exists
+            exists = await self.qdrant.get_vector(movie.tmdb_id)
+            if exists:
+                return True
+                
+            logger.warning(f"Vector missing for {movie.title} ({movie.tmdb_id}). Regenerating...")
+            
+            # Generate Metadata
+            keywords = await self.tmdb.get_movie_keywords(movie.tmdb_id)
+            vector = self.embedding_service.generate_embedding({
+                "title": movie.title,
+                "overview": movie.overview,
+                "genres": movie.genres,
+                "keywords": keywords
+            })
+
+            await self.qdrant.upsert_movie_vector(
+                movie_id=movie.tmdb_id,
+                vector=vector.tolist(),
+                metadata={
+                    "title": movie.title,
+                    "year": movie.year,
+                    "genres": movie.genres,
+                    "rating": movie.vote_average,
+                    "vote_count": movie.vote_count,
+                    "runtime": movie.runtime,
+                    "poster_path": movie.poster_path,
+                    "vectorbox_score": movie.vectorbox_score,
+                    "imdb_rating": movie.imdb_rating,
+                    "metacritic_rating": movie.metacritic_rating,
+                    "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
+                    "title_es": movie.title_es,
+                    "overview_es": movie.overview_es
+                }
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to repair vector for {movie.title}: {e}")
+            return False
+
+    async def enrich_movie(self, movie: Movie) -> bool:
+        """
+        Ensures movie has keywords and a valid vector.
+        Self-heals missing data.
+        """
+        try:
+            # 1. Check/Fetch Keywords
+            if not movie.keywords:
+                logger.info(f"Enriching keywords for {movie.title} ({movie.tmdb_id})...")
+                keywords = await self.tmdb.get_movie_keywords(movie.tmdb_id)
+                if keywords:
+                    movie.keywords = keywords
+                    await self.db.commit()
+                    
+                    # Force vector regeneration since keywords changed
+                    vector = self.embedding_service.generate_embedding({
+                        "title": movie.title,
+                        "overview": movie.overview,
+                        "genres": movie.genres,
+                        "keywords": movie.keywords
+                    })
+                    
+                    await self.qdrant.upsert_movie_vector(
+                        movie_id=movie.tmdb_id,
+                        vector=vector.tolist(),
+                        metadata={
+                            "title": movie.title,
+                            "year": movie.year,
+                            "genres": movie.genres,
+                            "rating": movie.vote_average,
+                            "vote_count": movie.vote_count,
+                            "runtime": movie.runtime,
+                            "poster_path": movie.poster_path,
+                            "vectorbox_score": movie.vectorbox_score,
+                            "imdb_rating": movie.imdb_rating,
+                            "metacritic_rating": movie.metacritic_rating,
+                            "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
+                            "title_es": movie.title_es,
+                            "overview_es": movie.overview_es,
+                            "keywords": movie.keywords
+                        }
+                    )
+                    return True
+            
+            # 2. Even if keywords existed, ensure vector exists
+            return await self.ensure_vector_exists(movie)
+            
+        except Exception as e:
+            logger.error(f"Failed to enrich movie {movie.title}: {e}")
+            return False
 
     async def close(self):
         await self.tmdb.close()

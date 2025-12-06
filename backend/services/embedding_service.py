@@ -24,34 +24,30 @@ class EmbeddingService:
         Generate embedding from movie metadata
         Combines: title, overview, genres, keywords
         """
-        # Build rich text representation
-        text_parts = []
+        # Build rich text representation (New Format)
+        # Format: f"{title}. {overview}. Genres: {genres}. Themes: {keywords_string}"
         
-        # Title (weighted more)
+        parts: List[str] = []
+        
         if include_title and movie_data.get("title"):
-            text_parts.append(movie_data["title"])
-            text_parts.append(movie_data["title"])  # Duplicate for emphasis
-        
-        # Overview/synopsis
+             parts.append(movie_data["title"])
+             
         if movie_data.get("overview"):
-            text_parts.append(movie_data["overview"])
-        
-        # Genres (important for clustering)
+            parts.append(movie_data["overview"])
+            
         if movie_data.get("genres"):
             genres = movie_data["genres"]
-            if isinstance(genres, list):
-                genre_text = " ".join(genres)
-                text_parts.append(genre_text)
-                text_parts.append(genre_text)  # Duplicate for emphasis
-        
-        # Keywords
+            if isinstance(genres, list) and genres:
+                parts.append(f"Genres: {', '.join(genres)}")
+                
         if movie_data.get("keywords"):
             keywords = movie_data["keywords"]
-            if isinstance(keywords, list):
-                text_parts.append(" ".join(keywords))
+            if isinstance(keywords, list) and keywords:
+                # Limit to top 15 keywords to prevent noise
+                kw_str = ", ".join(keywords[:15])
+                parts.append(f"Themes: {kw_str}")
         
-        # Combine all parts
-        combined_text = ". ".join(filter(None, text_parts))
+        combined_text = ". ".join(parts)
         
         if not combined_text:
             raise ValueError("No text available for embedding generation")
@@ -66,28 +62,26 @@ class EmbeddingService:
         texts = []
         
         for movie in movies_data:
-            text_parts = []
+            parts = []
             
             if movie.get("title"):
-                text_parts.append(movie["title"])
-                text_parts.append(movie["title"])
+                parts.append(movie["title"])
             
             if movie.get("overview"):
-                text_parts.append(movie["overview"])
+                parts.append(movie["overview"])
             
             if movie.get("genres"):
                 genres = movie["genres"]
-                if isinstance(genres, list):
-                    genre_text = " ".join(genres)
-                    text_parts.append(genre_text)
-                    text_parts.append(genre_text)
+                if isinstance(genres, list) and genres:
+                    parts.append(f"Genres: {', '.join(genres)}")
             
             if movie.get("keywords"):
                 keywords = movie["keywords"]
-                if isinstance(keywords, list):
-                    text_parts.append(" ".join(keywords))
+                if isinstance(keywords, list) and keywords:
+                    kw_str = ", ".join(keywords[:15])
+                    parts.append(f"Themes: {kw_str}")
             
-            combined_text = ". ".join(filter(None, text_parts))
+            combined_text = ". ".join(parts)
             texts.append(combined_text if combined_text else movie.get("title", "Unknown"))
         
         # Batch encoding (much faster)

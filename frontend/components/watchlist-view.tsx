@@ -20,6 +20,8 @@ import { getUserActivity } from "@/lib/api";
 
 export function WatchlistView({ userId, username, countryCode = "ES", streamingProviders = [] }: WatchlistViewProps) {
     const [showFilters, setShowFilters] = useState(false);
+    const [page, setPage] = useState(1);
+    const LIMIT = 20;
     const [filters, setFilters] = useState({
         runtimeMax: undefined as number | undefined,
         runtimeMin: undefined as number | undefined,
@@ -49,12 +51,14 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
     }, [filters]);
 
     const { data, isLoading, error } = useQuery({
-        queryKey: ["watchlist", userId, debouncedFilters, countryCode],
+        queryKey: ["watchlist", userId, debouncedFilters, countryCode, page],
         queryFn: async () => {
             const params = new URLSearchParams({
                 user_id: userId.toString(),
                 country_code: countryCode,
                 sort_by: debouncedFilters.sortBy,
+                page: page.toString(),
+                limit: LIMIT.toString(),
             });
 
             if (debouncedFilters.runtimeMax) params.set("runtime_max", debouncedFilters.runtimeMax.toString());
@@ -266,34 +270,59 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                         <p className="text-muted-foreground">No watchlist items found. Try adjusting your filters.</p>
                     </div>
                 ) : (
-                    <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-                        {data.items.map((item, index) => (
-                            <motion.div
-                                key={item.id}
-                                initial={{ opacity: 0, y: 20 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                transition={{ delay: index * 0.05 }}
-                            >
-                                <MovieCard
-                                    id={item.id}
-                                    title={item.title}
-                                    posterPath={item.poster_url}
-                                    year={item.year}
-                                    runtime={item.runtime}
-                                    rating={item.rating}
-                                    matchScore={item.match_score}
-                                    providers={item.streaming_providers}
-                                    href={item.letterboxd_uri}
-                                    variant="grid"
-                                    badgeType="rating"
-                                    overview={item.overview}
-                                    vectorbox_score={item.vectorbox_score}
-                                    imdb_rating={item.imdb_rating}
-                                    metacritic_rating={item.metacritic_rating}
-                                    rotten_tomatoes_rating={item.rotten_tomatoes_rating}
-                                />
-                            </motion.div>
-                        ))}
+                    <div className="space-y-8">
+                        <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
+                            {data.items.map((item, index) => (
+                                <motion.div
+                                    key={item.id}
+                                    initial={{ opacity: 0, y: 20 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: index * 0.05 }}
+                                >
+                                    <MovieCard
+                                        id={item.id}
+                                        title={item.title}
+                                        posterPath={item.poster_url}
+                                        year={item.year}
+                                        runtime={item.runtime}
+                                        rating={item.rating}
+                                        matchScore={item.match_score}
+                                        providers={item.streaming_providers}
+                                        href={item.letterboxd_uri}
+                                        variant="grid"
+                                        badgeType="rating"
+                                        overview={item.overview}
+                                        vectorbox_score={item.vectorbox_score}
+                                        imdb_rating={item.imdb_rating}
+                                        metacritic_rating={item.metacritic_rating}
+                                        rotten_tomatoes_rating={item.rotten_tomatoes_rating}
+                                    />
+                                </motion.div>
+                            ))}
+                        </div>
+
+                        {/* Pagination Controls */}
+                        {data.total > LIMIT && (
+                            <div className="flex justify-center items-center gap-4 pt-4 border-t">
+                                <button
+                                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                                    disabled={page === 1}
+                                    className="px-4 py-2 rounded-lg border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Previous
+                                </button>
+                                <span className="text-sm text-muted-foreground">
+                                    Page {page} of {Math.ceil(data.total / LIMIT)}
+                                </span>
+                                <button
+                                    onClick={() => setPage(p => p + 1)}
+                                    disabled={page >= Math.ceil(data.total / LIMIT)}
+                                    className="px-4 py-2 rounded-lg border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Next
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )
             }

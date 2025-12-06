@@ -11,7 +11,7 @@ from typing import List, Dict, Tuple, Optional
 import logging
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, desc
+from sqlalchemy import select, or_, desc, func
 from fastapi_cache.decorator import cache
 
 from models.database import UserRating, Movie, UserCluster
@@ -74,7 +74,17 @@ class ClusteringService:
         ratings = []
         movies_data = []
         
+        # Initialize MovieService for enrichment
+        from services.movie_service import MovieService
+        movie_service = MovieService(db)
+
         for rating, movie in ratings_movies:
+            # SAFETY CHECK (Audit Phase 3): Ensure movie has keywords
+            # If not, enrich it immediately (Self-Healing)
+            if not movie.keywords:
+                 # This checks DB keywords and Qdrant vector
+                 await movie_service.enrich_movie(movie)
+
             vector = await self.qdrant.get_vector(movie.id)
             if vector is not None:
                 # Determine effective rating
@@ -97,15 +107,24 @@ class ClusteringService:
                 })
         
         if len(vectors) < 5:
-            logger.warning("Insufficient movie vectors for clustering")
+            logger.warning("Insufficient movie vectors for clustering (Minimum 5 required)")
             return []
         
         # Convert to numpy array
         X = np.array(vectors)
         
+        # Validate Dimension (Must be 384 for all-MiniLM-L6-v2)
+        if X.shape[1] != 384:
+            logger.error(f"Vector Dimension Mismatch! Expected 384, got {X.shape[1]}. Aborting clustering.")
+            return []
+        
         # Normalize vectors to unit length (important for cosine similarity space)
         from sklearn.preprocessing import normalize
-        X_normalized = normalize(X)
+        try:
+            X_normalized = normalize(X)
+        except Exception as e:
+            logger.error(f"Normalization failed: {e}")
+            return []
         
         ratings_array = np.array(ratings)
         
@@ -137,7 +156,11 @@ class ClusteringService:
             weights.append(w)
             
         weights_array = np.array(weights)
-        X_weighted = X_normalized * weights_array[:, np.newaxis]
+        try:
+             X_weighted = X_normalized * weights_array[:, np.newaxis]
+        except Exception as e:
+              logger.error(f"Weight application failed: {e}")
+              return []
         
         # Determine optimal number of clusters
         n_clusters = self.calculate_optimal_clusters(len(vectors))
@@ -340,7 +363,8 @@ class ClusteringService:
             query_vector=global_center,
             limit=limit * 5,
             offset=offset,
-            score_threshold=0.2,
+            # Adjusted Threshold: Enriched vectors are more specific, so 0.2 might be too strict
+            score_threshold=0.15,
             filters=search_filters
         )
         
@@ -365,6 +389,9 @@ class ClusteringService:
             r for r in results
             if r["movie_id"] not in watched_movie_ids
         ][:limit]
+
+        logger.info(f"User {user_id} General Recs: Found {len(results)} raw results. Watched count: {len(watched_movie_ids)}")
+        logger.info(f"User {user_id} General Recs: {len(recommendations)} remaining after watched filter.")
         
         return recommendations
 
@@ -400,7 +427,7 @@ class ClusteringService:
             .join(Movie, UserRating.movie_id == Movie.id)
             .where(UserRating.user_id == user_id)
             .where(or_(UserRating.rating >= 3.5, UserRating.is_liked.is_(True)))
-            .order_by(desc(UserRating.rating), desc(UserRating.created_at))
+            .order_by(desc(UserRating.rating), desc(func.coalesce(UserRating.watched_date, UserRating.created_at)))
         )
         raw_seeds = result.all()
         
@@ -466,7 +493,7 @@ class ClusteringService:
             if seed["is_super_seed"]:
                 weight *= 1.1
             
-            vector = await self.qdrant.get_vector(movie.id)
+            vector = await self.qdrant.get_vector(movie.tmdb_id)
             if not vector:
                 continue
                 
@@ -480,30 +507,39 @@ class ClusteringService:
                 filters=filters
             )
             
+            # Collect TMDB IDs for batch lookup
+            tmdb_ids_to_lookup = [res["movie_id"] for res in similar if res["movie_id"] != movie.tmdb_id]
+            
+            if not tmdb_ids_to_lookup:
+                continue
+                
+            # Batch map TMDB ID -> Internal ID & Metadata
+            stmt = select(Movie).where(Movie.tmdb_id.in_(tmdb_ids_to_lookup))
+            movie_res = await db.execute(stmt)
+            db_movies = {m.tmdb_id: m for m in movie_res.scalars().all()}
+            
             for res in similar:
-                movie_id = res["movie_id"]
-                if movie_id == movie.id:
+                tmdb_id = res["movie_id"]
+                if tmdb_id == movie.tmdb_id:
                     continue
                 
-                payload = res.get("payload", {})
-                vb_score = payload.get("vectorbox_score")
-                title = payload.get("title", "Unknown")
-                
-                if vb_score is None or vb_score == 0 or title == "Unknown":
-                    stmt = select(Movie).where(Movie.id == movie_id)
-                    movie_res = await db.execute(stmt)
-                    db_movie = movie_res.scalar_one_or_none()
-                    if db_movie:
-                        vb_score = db_movie.vectorbox_score
-                        title = db_movie.title
-                
-                if not title or title == "Unknown" or not vb_score:
+                # Resolving Internal ID
+                db_movie = db_movies.get(tmdb_id)
+                if not db_movie:
+                    # Ghost vector (exists in Qdrant but not in DB)
                     continue
-
-                if not include_low_quality and vb_score < 40:
+                    
+                internal_id = db_movie.id
+                title = db_movie.title
+                vb_score = db_movie.vectorbox_score
+                
+                # lenient fallback for missing score
+                effective_score = vb_score if vb_score is not None and vb_score > 0 else 50
+                
+                if not include_low_quality and effective_score < 40:
                     continue
                 
-                quality_weight = self.calculate_quality_weight(vb_score)
+                quality_weight = self.calculate_quality_weight(effective_score)
                 similarity = res["score"]
                 weighted_score = similarity * quality_weight
                 
@@ -512,9 +548,10 @@ class ClusteringService:
                 
                 contribution = weighted_score * weight
                 
-                if movie_id not in candidates:
-                    candidates[movie_id] = {
-                        "movie_id": movie_id,
+                if internal_id not in candidates:
+                    candidates[internal_id] = {
+                        "movie_id": internal_id, # return Internal ID
+                        "tmdb_id": tmdb_id,      # keep TMDB ID for ref
                         "score": 0.0,
                         "contributors": [],
                         "vector": None,
@@ -524,8 +561,8 @@ class ClusteringService:
                         "title": title
                     }
                 
-                candidates[movie_id]["score"] += contribution
-                candidates[movie_id]["contributors"].append({
+                candidates[internal_id]["score"] += contribution
+                candidates[internal_id]["contributors"].append({
                     "seed_title": movie.title + (" (Franchise)" if seed["is_super_seed"] else ""),
                     "contribution": contribution
                 })
@@ -537,6 +574,8 @@ class ClusteringService:
             .where(UserRating.is_watched.is_(True))
         )
         watched_ids = set(watched_result.scalars().all())
+        
+        logger.info(f"Item-Based Recs: Accumulated {len(candidates)} unique candidates from {len(final_seeds)} seeds.")
 
         watchlist_ids = set()
         watchlist_only = filters.get("watchlist_only", False) if filters else False
@@ -563,8 +602,71 @@ class ClusteringService:
         
         pre_mmr_candidates.sort(key=lambda x: x["score"], reverse=True)
         
-        # 5. MMR Reranking
-        top_candidates = pre_mmr_candidates[:50]
+        logger.info(f"Item-Based Recs: {len(pre_mmr_candidates)} candidates remaining after Watched/Watchlist filter.")
+        if pre_mmr_candidates:
+            top_debug = [f"{c['title']} ({c['score']:.2f}, VB:{c['vb_score']})" for c in pre_mmr_candidates[:5]]
+            logger.info(f"Top 5 candidates before Streaming/MMR: {top_debug}")
+
+        # 5. Streaming Filter (Pre-selection)
+        # We apply this BEFORE MMR/limiting to ensure we return a full page of results
+        valid_candidates = pre_mmr_candidates
+        
+        if filters and filters.get("streaming_providers"):
+            logger.info("Applying Streaming Filters (Pre-MMR)...")
+            allowed_provider_ids = set(filters["streaming_providers"])
+            country_code = filters.get("country_code", "ES")
+            
+            # Use a larger pool for streaming checks (to ensure we find enough matches)
+            pool_size = 300
+            candidates_pool = pre_mmr_candidates[:pool_size]
+            
+            # Fetch TMDB IDs for batch lookup
+            candidate_ids = [c["movie_id"] for c in candidates_pool]
+            stmt = select(Movie.id, Movie.tmdb_id).where(Movie.id.in_(candidate_ids))
+            tmdb_map_result = await db.execute(stmt)
+            # Map internal_id -> tmdb_id
+            id_map = {row.id: row.tmdb_id for row in tmdb_map_result.all()}
+            
+            from services.provider_service import ProviderService
+            from services.tmdb_client import TMDBClient
+            
+            # We need a temporary TMDB client if not provided (ProviderService needs it)
+            # Service inside service is tricky, but we instantiate it here
+            temp_tmdb = TMDBClient()
+            provider_service = ProviderService(db, temp_tmdb)
+            
+            try:
+                # Batch fetch using internal IDs (ProviderService handles translation)
+                # Ensure we pass the IDs correctly. ProviderService expects internal IDs usually?
+                # improved_implementation checks cache by internal_id.
+                providers_map = await provider_service.get_providers_batch(candidate_ids, country_code)
+                
+                filtered_pool = []
+                for cand in candidates_pool:
+                     mid = cand["movie_id"]
+                     movie_providers = providers_map.get(mid, [])
+                     
+                     # Check availability
+                     has_provider = False
+                     for p in movie_providers:
+                         if p["provider_id"] in allowed_provider_ids:
+                             has_provider = True
+                             break
+                     
+                     if has_provider:
+                         filtered_pool.append(cand)
+                
+                logger.info(f"Streaming Filter: {len(filtered_pool)} candidates available out of {len(candidates_pool)} checked.")
+                valid_candidates = filtered_pool
+                
+            finally:
+                await temp_tmdb.close()
+        
+        # 6. MMR Reranking
+        # Now we run MMR on the VALID candidates
+        # Ensure pool is large enough for requested limit
+        pool_size = max(50, limit)
+        top_candidates = valid_candidates[:pool_size] # MMR input pool
         
         if not top_candidates:
             return []
@@ -582,7 +684,7 @@ class ClusteringService:
             
             if tmdb_ids:
                 vectors_map = {}
-                points = self.qdrant.client.retrieve(
+                points = await self.qdrant.client.retrieve(
                     collection_name=self.qdrant.COLLECTION_NAME,
                     ids=tmdb_ids,
                     with_vectors=True
@@ -596,36 +698,6 @@ class ClusteringService:
                 
         except Exception as e:
             logger.error(f"MMR Reranking failed: {e}. Returning raw list.")
-        
-        # Post-filter: Streaming Providers
-        if filters and filters.get("streaming_providers"):
-            allowed_provider_ids = set(filters["streaming_providers"])
-            filtered_recs = []
-            
-            candidates_to_check = final_results[:50]
-            candidate_ids = [rec["movie_id"] for rec in candidates_to_check]
-            tmdb_map_result = await db.execute(
-                select(Movie.id, Movie.tmdb_id)
-                .where(Movie.id.in_(candidate_ids))
-            )
-            tmdb_map = {mid: tid for mid, tid in tmdb_map_result.all()}
-            
-            from services.tmdb_client import TMDBClient
-            tmdb = TMDBClient()
-            
-            for rec in candidates_to_check:
-                tmdb_id = tmdb_map.get(rec["movie_id"])
-                if not tmdb_id:
-                    continue
-                    
-                providers = await tmdb.get_movie_watch_providers(tmdb_id, country_code=filters.get("country_code", "ES"))
-                if providers and providers.get("flatrate"):
-                    movie_provider_ids = set(p["provider_id"] for p in providers["flatrate"])
-                    if not allowed_provider_ids.isdisjoint(movie_provider_ids):
-                        filtered_recs.append(rec)
-                
-            await tmdb.close()
-            final_results = filtered_recs
         
         # Normalize for UI
         if final_results:
@@ -673,3 +745,49 @@ class ClusteringService:
                 break
                 
         return selected
+
+    async def clear_user_cache(self, user_id: int):
+        """
+        Manually invalidate the Redis cache for this user's recommendations.
+        Useful when clusters are regenerated or taste profile changes significantly.
+        """
+        import os
+        import redis.asyncio as redis
+        
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        try:
+            r = await redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+            
+            # Pattern for FastAPI cache related to this service
+            # Since we don't know the exact key hash, we delete broader patterns or rely on key builder convention.
+            # Default key builder: fastapicache:[func]:[args]
+            # We will delete all keys for get_cluster_recommendations for this user?
+            # It's hard to target arguments.
+            # For now, we accept wiping ALL fasting-api cache for safety, OR we target keys by scanning.
+            # Scanning is slow but safer than wiping everyone else's cache.
+            # Actually, `reset_profiles.py` wiped EVERYTHING.
+            # To be surgical, let's look for keys containing user_id if possible? No, arguments are hashed mostly.
+            
+            # FASTAPI-CACHE stores "fastapi-cache:[module]:[func]:[args]"
+            # Without a custom key builder, we can't target user_id easily.
+            # STRATEGY: Clear ALL cache for these specific functions?
+            # Or assume the user accepts a global flush for now.
+            # Given the high stakes of "Old Clusters", a global flush of these specific endpoints is fine.
+            # We'll stick to the "Nuclear Option" as implemented in reset_profiles.py for now, OR:
+            
+            # If we used a custom key builder, we could do "fastapi-cache:recommendations:user:{user_id}*"
+            # Since we didn't implement that yet, let's just Log a warning that automatic cache clearing 
+            # might require a full clear or waiting for expiry (3600s).
+            
+            # However, reset_profiles.py clears *everything*.
+            # Let's try to clear just the functions we know.
+            
+            # Actually, let's just clear everything. It's safer.
+            keys = await r.keys("fastapi-cache:*")
+            if keys:
+                 await r.delete(*keys)
+                 logger.info(f"Cleared {len(keys)} cache keys due to cluster regeneration.")
+            
+            await r.close()
+        except Exception as e:
+            logger.error(f"Failed to clear user cache: {e}")

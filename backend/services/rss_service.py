@@ -117,6 +117,9 @@ class RSSService:
                         if not movie.letterboxd_uri:
                             movie.letterboxd_uri = item['uri']
                             await self.db.commit()
+                            
+                    if movie:
+                        await self.movie_service.enrich_movie(movie)        
                 
                 # 2. Fallback: Try matching by Letterboxd URI
                 if not movie:
@@ -126,6 +129,7 @@ class RSSService:
                     
                     if movie:
                          logger.info(f"Found movie by URI: {movie.title}")
+                         await self.movie_service.enrich_movie(movie)
 
                 # 3. Fallback: Try Title + Year (Only if no TMDB ID was provided)
                 if not movie and item['year'] and not item.get('tmdb_id'):
@@ -141,6 +145,7 @@ class RSSService:
                         if not movie.letterboxd_uri:
                             movie.letterboxd_uri = item['uri']
                             await self.db.commit()
+                        await self.movie_service.enrich_movie(movie)
                 
                 # 4. If movie doesn't exist, fetch from TMDB and create it
                 if not movie:
@@ -414,7 +419,7 @@ class RSSService:
         # qdrant.retrieve is good.
         
         try:
-            points = self.qdrant.client.retrieve(
+            points = await self.qdrant.client.retrieve(
                 collection_name=self.qdrant.COLLECTION_NAME,
                 ids=final_candidates,
                 with_payload=False,
@@ -493,7 +498,7 @@ class RSSService:
         """Helper to fetch vectors from Qdrant"""
         vectors = []
         try:
-            points = self.qdrant.client.retrieve(
+            points = await self.qdrant.client.retrieve(
                 collection_name=self.qdrant.COLLECTION_NAME,
                 ids=tmdb_ids,
                 with_payload=False,
