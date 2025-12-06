@@ -45,4 +45,20 @@ htmlcov/
 
 # Misc
 *.bak
-.cache/
+
+# Local Verification & Data
+*.csv
+*.html
+debug_*.py
+python_procs.txt
+test_upload.py
+verify_ingestion_refactor.py
+*.ps1
+!update_project.ps1
+!audit_backend.ps1
+!run_backfill.ps1
+!trigger_update.ps1
+
+# Debug & Audit scripts
+check_*.py
+run_*.py

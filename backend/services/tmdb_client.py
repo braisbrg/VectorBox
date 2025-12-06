@@ -124,9 +124,17 @@ class TMDBClient:
                 logger.debug(f"Cache hit for movie {tmdb_id}")
                 return json.loads(cached)
         
-        data = await self._make_request(f"/movie/{tmdb_id}")
+        # Phase 13: Data Enrichment - Fetch keywords in single call
+        params = {"append_to_response": "keywords"}
+        data = await self._make_request(f"/movie/{tmdb_id}", params=params)
         
         if data:
+            # Process keywords into flat list
+            if "keywords" in data and "keywords" in data["keywords"]:
+                data["keywords_flat"] = [k["name"] for k in data["keywords"]["keywords"]]
+            else:
+                data["keywords_flat"] = []
+
             # Phase 12: Fetch Spanish metadata
             try:
                 es_data = await self._make_request(f"/movie/{tmdb_id}", params={"language": "es-ES"})

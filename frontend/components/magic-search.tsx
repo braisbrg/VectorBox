@@ -37,7 +37,10 @@ export function MagicSearch({ userId }: MagicSearchProps) {
     const [query, setQuery] = useState("");
     const [results, setResults] = useState<SearchResult[]>([]);
     const [intent, setIntent] = useState<any>(null);
+
     const [showResults, setShowResults] = useState(false);
+    const [page, setPage] = useState(0);
+    const MESSAGES_PER_PAGE = 6;
 
     const searchMutation = useMutation({
         mutationFn: async (text: string) => {
@@ -50,9 +53,12 @@ export function MagicSearch({ userId }: MagicSearchProps) {
             return res.json();
         },
         onSuccess: (data) => {
-            setResults(data.results || []);
+            // Deduplicate results by movie_id to prevent "duplicate key" React error
+            const uniqueResults = data.results ? Array.from(new Map(data.results.map((item: any) => [item.movie_id, item])).values()) : [];
+            setResults(uniqueResults as SearchResult[]);
             setIntent(data.intent);
             setShowResults(true);
+            setPage(0);
         },
     });
 
@@ -146,7 +152,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                            {results.slice(0, 6).map((movie, index) => (
+                            {results.slice(page * MESSAGES_PER_PAGE, (page + 1) * MESSAGES_PER_PAGE).map((movie, index) => (
                                 <motion.div
                                     key={movie.movie_id}
                                     initial={{ opacity: 0, scale: 0.9 }}
@@ -178,11 +184,25 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                             ))}
                         </div>
 
-                        {results.length > 6 && (
-                            <div className="mt-6 text-center">
-                                <p className="text-sm text-muted-foreground">
-                                    Showing top 6 of {results.length} results
-                                </p>
+                        {results.length > MESSAGES_PER_PAGE && (
+                            <div className="flex justify-center items-center gap-4 pt-4 border-t mt-4">
+                                <button
+                                    onClick={() => setPage(p => Math.max(0, p - 1))}
+                                    disabled={page === 0}
+                                    className="px-4 py-2 rounded-lg border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Previous
+                                </button>
+                                <span className="text-sm text-muted-foreground">
+                                    Page {page + 1} of {Math.ceil(results.length / MESSAGES_PER_PAGE)}
+                                </span>
+                                <button
+                                    onClick={() => setPage(p => p + 1)}
+                                    disabled={page >= Math.ceil(results.length / MESSAGES_PER_PAGE) - 1}
+                                    className="px-4 py-2 rounded-lg border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    Next
+                                </button>
                             </div>
                         )}
                     </motion.div>

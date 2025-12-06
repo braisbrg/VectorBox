@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { MovieCarousel } from "./movie-carousel";
-import { Loader2 } from "lucide-react";
+import { Skeleton } from "@/components/ui/skeleton";
 import { InfoTooltip } from "./info-tooltip";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
@@ -61,12 +61,25 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
         staleTime: 5 * 60 * 1000, // 5 minutes
     });
 
+
+
     const { t } = useLanguage();
 
     if (isLoading) {
         return (
-            <div className="flex items-center justify-center py-20">
-                <Loader2 className="w-12 h-12 animate-spin text-primary" />
+            <div className="space-y-12">
+                {[1, 2, 3, 4].map((i) => (
+                    <div key={i} className="space-y-4">
+                        <div className="flex items-center gap-2 px-1">
+                            <Skeleton className="h-6 w-48 bg-muted/60" />
+                        </div>
+                        <div className="flex gap-4 overflow-hidden px-1">
+                            {[1, 2, 3, 4, 5, 6].map((j) => (
+                                <Skeleton key={j} className="h-[280px] w-[200px] rounded-lg flex-shrink-0 bg-muted/40" />
+                            ))}
+                        </div>
+                    </div>
+                ))}
             </div>
         );
     }

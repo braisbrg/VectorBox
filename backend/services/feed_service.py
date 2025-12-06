@@ -2,7 +2,7 @@ import logging
 import random
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, or_
+from sqlalchemy import select, desc, or_, func
 from models.database import UserRating, Movie, UserCluster
 from models.schemas import FeedSection, FeedItem, FeedResponse
 from services.tmdb_client import TMDBClient
@@ -148,7 +148,7 @@ class FeedService:
                 UserRating.rating >= 4.0
             )
             .order_by(
-                desc(UserRating.created_at)
+                desc(func.coalesce(UserRating.watched_date, UserRating.created_at))
             )
             .limit(5)
         )
@@ -162,24 +162,79 @@ class FeedService:
         for row in candidates:
             user_rating, anchor_movie = row
             
-            # Get the vector for the anchor movie
-            anchor_vector = await qdrant.get_vector(anchor_movie.id)
+            # Generate FRESH Content-Only Vector (ignores title to avoid name-matching)
+            # This aligns with "More Like This" logic
+            from services.embedding_service import EmbeddingService
+            embedding_service = EmbeddingService()
+            
+            # Fetch keywords to ensure high-quality vector (matches "More Like This" logic)
+            keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
+            # logger.info(f"Generated vector for {anchor_movie.title} using keywords: {keywords}")
+            
+            anchor_vector = embedding_service.generate_embedding({
+                "title": anchor_movie.title, # Included in input but ignored by flag below
+                "overview": anchor_movie.overview or "",
+                "genres": anchor_movie.genres or [],
+                "keywords": keywords
+            }, include_title=False).tolist()
+            
+            # Fallback to stored vector if generation fails (unlikely)
             if not anchor_vector:
-                continue
+                 anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
+            
+            if not anchor_vector:
+                 # For non-first candidates, or if repair failed, just skip
+                 logger.warning(f"Could not retrieve vector for {anchor_movie.title} (TMDB ID: {anchor_movie.tmdb_id}), skipping.")
+                 continue
             
             # Search for similar movies using the vector
             similar_results = await qdrant.search_similar(
                 query_vector=anchor_vector,
-                limit=500  # Maximum pool for best variety after deduplication
+                limit=500,  # Maximum pool for best variety after deduplication
+                score_threshold=0.1  # Low threshold to ensure we get results even for obscure movies
             )
             
             items = []
+            
+            # 1. Identify IDs found in Qdrant
+            found_tmdb_ids = []
+            for res in similar_results:
+                movie_id = res["movie_id"] 
+                # movie_id here is TMDB ID (Qdrant point ID)
+                found_tmdb_ids.append(movie_id)
+                
+            # 2. Check which ones exist in DB
+            existing_movies_result = await db.execute(
+                select(Movie.tmdb_id).where(Movie.tmdb_id.in_(found_tmdb_ids))
+            )
+            existing_tmdb_ids = set(existing_movies_result.scalars().all())
+            
+            # 3. Identify Missing & Auto-Ingest (The "Explorer" Logic)
+            missing_ids = [mid for mid in found_tmdb_ids if mid not in existing_tmdb_ids]
+            
+            if missing_ids:
+                # Limit ingestion to top 5 to avoid timeouts during feed generation
+                # We prioritize the highest scoring matches
+                ids_to_ingest = missing_ids[:5]
+                # logger.info(f"Auto-ingesting {len(ids_to_ingest)} missing movies for feed: {ids_to_ingest}")
+                
+                from services.movie_service import MovieService
+                movie_service = MovieService(db)
+                
+                for mid in ids_to_ingest:
+                    try:
+                        await movie_service.get_or_create_movie(mid)
+                    except Exception as e:
+                        logger.error(f"Failed to auto-ingest movie {mid} for feed: {e}")
+            
+            # 4. Fetch All (Now that they are ingested) & Build Items
+            # We iterate similar_results to preserve ranking order
             for res in similar_results:
                 movie_id = res["movie_id"]
-                if movie_id in seen_ids or movie_id == anchor_movie.id:
+                if movie_id in seen_ids or movie_id == anchor_movie.tmdb_id:
                     continue
                 
-                movie_result = await db.execute(select(Movie).where(Movie.id == movie_id))
+                movie_result = await db.execute(select(Movie).where(Movie.tmdb_id == movie_id))
                 movie = movie_result.scalar_one_or_none()
                 
                 if movie:
@@ -273,7 +328,11 @@ class FeedService:
         results = await self.clustering.get_user_centric_recommendations(
             user_id=user_id,
             db=db,
-            filters={"min_vote_count": 50, "min_rating": 5.0},
+            filters={
+                "min_vote_count": 1000,
+                "max_vote_count": 25000, 
+                "min_rating": 7.0
+            },
             limit=500  # Maximum pool for best variety in hidden gems
         )
         
@@ -405,7 +464,7 @@ class FeedService:
         results = await self.clustering.get_item_based_recommendations(
             user_id=user_id,
             db=db,
-            limit=20,
+            limit=60, # Request more to handle 'seen_ids' deduplication overlap
             include_low_quality=include_low_quality
         )
         
@@ -463,16 +522,17 @@ class FeedService:
                     excluded_genres.update(c.dominant_genres)
             
             if not excluded_genres:
-                # If no clusters/genres, fallback to random high rated
-                return await self.get_random_recommendations_section(user_id, db, tmdb, seen_ids, country, provider_service)
+                # If no clusters/genres, return None (don't spam random)
+                return None
 
             # 2. Get high rated movies from DB
             # We fetch a larger pool to filter
             result = await db.execute(
                 select(Movie)
+                .where(Movie.vectorbox_score.isnot(None))
                 .where(Movie.vote_average > 7.0)
                 .where(Movie.vote_count > 100)
-                .order_by(desc(Movie.vote_average))
+                .order_by(desc(Movie.vectorbox_score))
                 .limit(1000)
             )
             candidates = result.scalars().all()

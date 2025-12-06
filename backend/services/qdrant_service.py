@@ -1,7 +1,7 @@
 """
 Qdrant vector database service for semantic search
 """
-from qdrant_client import QdrantClient
+from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 from typing import List, Dict, Optional
 import os
@@ -21,17 +21,17 @@ class QdrantService:
     
     def __init__(self):
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-        self.client = QdrantClient(url=qdrant_url)
+        self.client = AsyncQdrantClient(url=qdrant_url)
     
     async def init_collection(self):
         """Initialize Qdrant collection if it doesn't exist"""
         try:
-            collections = self.client.get_collections().collections
+            collections = (await self.client.get_collections()).collections
             collection_names = [c.name for c in collections]
             
             if self.COLLECTION_NAME not in collection_names:
                 logger.info(f"Creating Qdrant collection: {self.COLLECTION_NAME}")
-                self.client.create_collection(
+                await self.client.create_collection(
                     collection_name=self.COLLECTION_NAME,
                     vectors_config=VectorParams(
                         size=self.VECTOR_SIZE,
@@ -65,7 +65,7 @@ class QdrantService:
                 payload=metadata
             )
             
-            self.client.upsert(
+            await self.client.upsert(
                 collection_name=self.COLLECTION_NAME,
                 points=[point]
             )
@@ -252,9 +252,11 @@ class QdrantService:
             if qdrant_filter:
                 effective_threshold = 0.0 
             
-            results = self.client.search(
+            from qdrant_client.http import models
+
+            results = await self.client.query_points(
                 collection_name=self.COLLECTION_NAME,
-                query_vector=query_vector,
+                query=query_vector,
                 limit=limit,
                 offset=offset,
                 score_threshold=effective_threshold,
@@ -268,7 +270,7 @@ class QdrantService:
                     "score": hit.score,
                     "metadata": hit.payload
                 }
-                for hit in results
+                for hit in results.points
             ]
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
@@ -296,7 +298,7 @@ class QdrantService:
     async def get_vector(self, movie_id: int) -> Optional[List[float]]:
         """Retrieve vector for a specific movie"""
         try:
-            points = self.client.retrieve(
+            points = await self.client.retrieve(
                 collection_name=self.COLLECTION_NAME,
                 ids=[movie_id],
                 with_vectors=True
@@ -312,7 +314,7 @@ class QdrantService:
     async def delete_movie(self, movie_id: int):
         """Delete movie vector"""
         try:
-            self.client.delete(
+            await self.client.delete(
                 collection_name=self.COLLECTION_NAME,
                 points_selector=[movie_id]
             )

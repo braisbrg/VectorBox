@@ -6,7 +6,7 @@ import random
 import logging
 import asyncio
 
-from database import get_db
+from config import get_db, AsyncSessionLocal
 from models.database import UserRating, Movie, UserCluster
 from models.schemas import (
     RecommendationRequest, 
@@ -66,33 +66,41 @@ async def _enrich_recommendations(
     
     for result in results:
         movie = movies_map.get(result["movie_id"])
+        # Drop Debugging
         if not movie:
+            logger.warning(f"Enrichment: Movie {result['movie_id']} not found in DB map.")
             continue
             
         # Check streaming availability
         streaming_available = False
-        streaming_providers = []
-        
+        # ... (keep existing streaming logic) ... 
         if movie.id in providers_map:
-            providers = providers_map[movie.id]
-            streaming_providers = [p["provider_name"] for p in providers]
-            
-            if allowed_providers:
-                # Check if any of the available providers are in the allowed list
-                # We need provider IDs for strict matching
+             # ...
+             # (reconstruct existing logic roughly)
+             providers = providers_map[movie.id]
+             streaming_providers = [p["provider_name"] for p in providers]
+             
+             if allowed_providers:
                 available_ids = {p["provider_id"] for p in providers}
                 if not allowed_providers.isdisjoint(available_ids):
                     streaming_available = True
-            else:
+             else:
                 streaming_available = bool(providers)
-        
+
         # Filter by streaming if requested
         if request.streaming_providers and not streaming_available:
+            logger.info(f"Dropped {movie.title}: Streaming unmatched (Required: {request.streaming_providers})")
             continue
 
         # Filter by VectorBox Score if min_rating is requested
-        if request.min_rating and (movie.vectorbox_score is None or movie.vectorbox_score < request.min_rating):
-            continue
+        # We treat None as 50 (neutral) to avoid dropping movies just because OMDb data is missing
+        stats_score = movie.vectorbox_score if movie.vectorbox_score is not None else 50
+        
+        # DEBUG: Log the comparison
+        if request.min_rating:
+             if stats_score < request.min_rating:
+                 logger.info(f"Dropped {movie.title}: Score {stats_score} < Min {request.min_rating}")
+                 continue
         
         # Normalize score
         min_sim = 0.2
@@ -426,15 +434,52 @@ async def get_feed(
 
             qdrant = QdrantService()
             
-            # Parallel Execution
+            # Parallel Execution Helper Wrappers
+            # We must use separate DB sessions for concurrent tasks to avoid "IllegalStateChangeError"
+            
+            async def task_popular():
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await feed_service.get_popular_on_letterboxd_section(user_id, session, tmdb, country_code, local_provider)
+
+            async def task_watched():
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await feed_service.get_because_you_watched_section(user_id, session, tmdb, qdrant, set(), country_code, local_provider)
+
+            async def task_taste():
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await feed_service.get_your_taste_section(user_id, session, tmdb, set(), country_code, local_provider)
+
+            async def task_wildcard():
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await feed_service.get_wildcard_section(user_id, session, tmdb, set(), country_code, local_provider)
+
+            async def task_random():
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await feed_service.get_random_recommendations_section(user_id, session, tmdb, set(), country_code, local_provider)
+
+            async def task_hidden():
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await feed_service.get_hidden_gems_section(user_id, session, tmdb, set(), country_code, local_provider)
+
+            async def task_available():
+                async with AsyncSessionLocal() as session:
+                    # this method creates its own ProviderService internally using the passed db
+                    return await feed_service.get_available_now_section(user_id, session, tmdb, set(), country_code, provider_ids)
+
             tasks = [
-                feed_service.get_popular_on_letterboxd_section(user_id, db, tmdb, country_code, provider_service),
-                feed_service.get_because_you_watched_section(user_id, db, tmdb, qdrant, set(), country_code, provider_service),
-                feed_service.get_your_taste_section(user_id, db, tmdb, set(), country_code, provider_service),
-                feed_service.get_wildcard_section(user_id, db, tmdb, set(), country_code, provider_service),
-                feed_service.get_random_recommendations_section(user_id, db, tmdb, set(), country_code, provider_service),
-                feed_service.get_hidden_gems_section(user_id, db, tmdb, set(), country_code, provider_service),
-                feed_service.get_available_now_section(user_id, db, tmdb, set(), country_code, provider_ids)
+                task_popular(),
+                task_watched(),
+                task_taste(),
+                task_wildcard(),
+                task_random(),
+                task_hidden(),
+                task_available()
             ]
             
             results = await asyncio.gather(*tasks)
@@ -563,12 +608,15 @@ async def get_watchlist(
                         has_provider = True
                         break
                 if has_provider:
-                    available_movies.append((movie, [p["provider_name"] for p in movie_providers]))
+                    flat_providers = [p["provider_name"] for p in movie_providers]
+                    available_movies.append((movie, flat_providers))
             
             # Sort
             if sort_by == "date_added": available_movies.sort(key=lambda x: x[0].id, reverse=True)
             elif sort_by == "title": available_movies.sort(key=lambda x: x[0].title)
             elif sort_by == "rating": available_movies.sort(key=lambda x: x[0].vectorbox_score or 0, reverse=True)
+            
+            total_items = len(available_movies)
             
             # Paginate
             paginated = available_movies[start:end]
@@ -576,14 +624,14 @@ async def get_watchlist(
             for movie, providers in paginated:
                 item = await feed_service.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=providers)
                 final_items.append(item)
-                
-            total_items = len(available_movies)
             
         else:
             # Easy case: Sort then Paginate then Fetch Providers for just the page
             if sort_by == "date_added": filtered_movies.sort(key=lambda x: x.id, reverse=True)
             elif sort_by == "title": filtered_movies.sort(key=lambda x: x.title)
             elif sort_by == "rating": filtered_movies.sort(key=lambda x: x.vectorbox_score or 0, reverse=True)
+            
+            total_items = len(filtered_movies)
             
             paginated_movies = filtered_movies[start:end]
             
@@ -596,8 +644,6 @@ async def get_watchlist(
                 flat_providers = [p["provider_name"] for p in movie_providers]
                 item = await feed_service.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=flat_providers)
                 final_items.append(item)
-                
-            total_items = len(filtered_movies)
 
         return {"items": final_items, "total": total_items, "page": page, "limit": limit}
 
@@ -670,7 +716,7 @@ async def get_hidden_gems_row(
     feed_service = FeedService()
     try:
         clustering = ClusteringService()
-        results = await clustering.get_general_recommendations(
+        results = await clustering.get_user_centric_recommendations(
             user_id=user_id,
             db=db,
             filters={"min_vote_count": 50, "min_rating": 5.0},

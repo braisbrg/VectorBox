@@ -1,0 +1,13 @@
+Found 10 raw candidates in Qdrant.
+SCORE    | TMDB_ID    | TITLE                          | IN_DB?    
+----------------------------------------------------------------------
+0.7694   | 1241983    | Train Dreams                   | True
+0.5607   | 842924     | The Life of Chuck              | True
+0.5582   | 428449     | A Ghost Story                  | True
+0.5187   | 639988     | No Other Choice                | True
+0.5166   | 661539     | A Complete Unknown             | True
+0.5162   | 1100099    | We Live in Time                | True
+0.5094   | 334        | Magnolia                       | True
+0.4980   | 3870       | 1900                           | True
+0.4901   | 549509     | The Brutalist                  | True
+0.4900   | 376867     | Moonlight                      | True
