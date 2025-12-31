@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Sparkles, Search, Loader2, X } from "lucide-react";
+import { Sparkles, Search, Loader2, X, BrainCircuit } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useMutation } from "@tanstack/react-query";
 import { MovieCard } from "@/components/ui/movie-card";
@@ -28,6 +28,7 @@ interface SearchResult {
     title_es?: string;
     overview_es?: string;
     streaming_providers?: string[];
+    ai_reason?: string; // Phase 4
 }
 
 import { useLanguage } from "@/components/language-provider";
@@ -35,6 +36,7 @@ import { useLanguage } from "@/components/language-provider";
 export function MagicSearch({ userId }: MagicSearchProps) {
     const { t } = useLanguage();
     const [query, setQuery] = useState("");
+    const [isDeepAnalysis, setIsDeepAnalysis] = useState(false);
     const [results, setResults] = useState<SearchResult[]>([]);
     const [intent, setIntent] = useState<any>(null);
 
@@ -47,13 +49,17 @@ export function MagicSearch({ userId }: MagicSearchProps) {
             const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/search/natural`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ query: text, user_id: userId }),
+                body: JSON.stringify({
+                    query: text,
+                    user_id: userId,
+                    use_deep_analysis: isDeepAnalysis
+                }),
             });
             if (!res.ok) throw new Error(t("search.error"));
             return res.json();
         },
         onSuccess: (data) => {
-            // Deduplicate results by movie_id to prevent "duplicate key" React error
+            // Deduplicate results
             const uniqueResults = data.results ? Array.from(new Map(data.results.map((item: any) => [item.movie_id, item])).values()) : [];
             setResults(uniqueResults as SearchResult[]);
             setIntent(data.intent);
@@ -79,25 +85,42 @@ export function MagicSearch({ userId }: MagicSearchProps) {
     return (
         <div className="w-full max-w-5xl mx-auto mb-12 space-y-8">
             <div className="text-center space-y-2">
-                <h2 className="text-4xl font-black font-space uppercase tracking-tighter text-acid-outline" data-text="AI_SEARCH_MODULE">
-                    AI_SEARCH_MODULE
+                <h2 className="text-4xl font-black font-space uppercase tracking-tighter text-acid-outline" data-text={t("search.module_title")}>
+                    {t("search.module_title")}
                 </h2>
-                <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest">
-                    // NEURAL_NET_ACTIVE //
-                </p>
+                <div className="flex items-center justify-center gap-2">
+                    <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest">
+                        {t("search.status_active")}
+                    </p>
+                    {isDeepAnalysis && (
+                        <span className="text-[10px] px-2 py-0.5 border border-primary text-primary font-mono uppercase bg-primary/10 rounded-full animate-pulse">
+                            High Intelligence
+                        </span>
+                    )}
+                </div>
             </div>
 
             <form onSubmit={handleSearch} className="relative group">
-                <div className="relative flex items-center bg-black border-2 border-primary shadow-[0_0_20px_rgba(204,255,0,0.15)] transition-all focus-within:shadow-[0_0_40px_rgba(204,255,0,0.3)]">
-                    <div className="pl-6 text-primary animate-pulse">
-                        <Sparkles className="w-6 h-6" />
-                    </div>
+                <div className={`relative flex items-center bg-black border-2 ${isDeepAnalysis ? 'border-primary shadow-[0_0_30px_rgba(204,255,0,0.2)]' : 'border-zinc-800 focus-within:border-primary'} shadow-[0_0_20px_rgba(204,255,0,0.15)] transition-all duration-300`}>
+
+                    {/* Deep Analysis Toggle */}
+                    <button
+                        type="button"
+                        onClick={() => setIsDeepAnalysis(!isDeepAnalysis)}
+                        className={`pl-6 pr-4 focus:outline-none transition-colors ${isDeepAnalysis ? 'text-primary' : 'text-zinc-600 hover:text-zinc-400'}`}
+                        title="Toggle Deep Analysis (Slower, Smarter)"
+                    >
+                        <BrainCircuit className="w-6 h-6" />
+                    </button>
+
+                    <div className="h-8 w-[1px] bg-zinc-800 mr-2" />
+
                     <input
                         type="text"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        placeholder={t("search.placeholder")}
-                        className="w-full px-6 py-6 bg-transparent border-none focus:ring-0 text-xl font-mono text-primary placeholder:text-zinc-700 uppercase"
+                        placeholder={isDeepAnalysis ? "Ask complex questions..." : t("search.placeholder")}
+                        className="w-full px-4 py-6 bg-transparent border-none focus:ring-0 text-xl font-mono text-primary placeholder:text-zinc-700 uppercase"
                     />
                     {query && (
                         <button
@@ -120,6 +143,12 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         )}
                     </button>
                 </div>
+                {/* Helper Text */}
+                <div className="absolute -bottom-6 left-0 right-0 text-center opacity-0 group-hover:opacity-100 transition-opacity">
+                    <span className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">
+                        {isDeepAnalysis ? "Powered by Llama 3.3 70B (Tier 2)" : "Powered by Llama 4 Scout (Tier 1)"}
+                    </span>
+                </div>
             </form>
 
             {/* Results Display */}
@@ -133,13 +162,14 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                     >
                         <div className="flex items-center justify-between mb-4">
                             <div>
-                                <h3 className="text-lg font-bold">Search Results</h3>
+                                <h3 className="text-lg font-bold flex items-center gap-2">
+                                    Search Results
+                                    {isDeepAnalysis && <BrainCircuit className="w-4 h-4 text-primary" />}
+                                </h3>
                                 {intent && (
                                     <p className="text-sm text-muted-foreground mt-1">
-                                        {intent.mood && <span>Mood: {intent.mood} • </span>}
-                                        {intent.year_range && <span>Years: {intent.year_range} • </span>}
-                                        {intent.runtime && <span>Runtime: {intent.runtime} • </span>}
-                                        {results.length} movies found
+                                        {intent.semantic_query && <span className="italic block mb-1">"{intent.semantic_query}"</span>}
+                                        {intent.reasoning && <span className="block text-xs text-primary/80 font-mono border-l-2 border-primary pl-2">{intent.reasoning}</span>}
                                     </p>
                                 )}
                             </div>
@@ -147,7 +177,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                                 onClick={clearSearch}
                                 className="text-sm text-muted-foreground hover:text-foreground underline"
                             >
-                                Clear Results
+                                {t("search.clear_results")}
                             </button>
                         </div>
 
@@ -158,6 +188,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                                     initial={{ opacity: 0, scale: 0.9 }}
                                     animate={{ opacity: 1, scale: 1 }}
                                     transition={{ delay: index * 0.05 }}
+                                    className="relative group"
                                 >
                                     <MovieCard
                                         id={movie.movie_id}
@@ -180,6 +211,15 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                                         title_es={movie.title_es}
                                         overview_es={movie.overview_es}
                                     />
+                                    {/* AI Reason Overlay for Deep Analysis */}
+                                    {movie.ai_reason && (
+                                        <div className="absolute bottom-0 left-0 right-0 bg-black/90 border-t border-primary p-3 transform translate-y-full group-hover:translate-y-0 transition-transform z-20">
+                                            <p className="text-[10px] text-primary font-mono leading-tight">
+                                                <BrainCircuit className="w-3 h-3 inline mr-1" />
+                                                {movie.ai_reason}
+                                            </p>
+                                        </div>
+                                    )}
                                 </motion.div>
                             ))}
                         </div>
@@ -219,7 +259,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         className="bg-muted/30 border border-dashed rounded-xl p-8 text-center"
                     >
                         <p className="text-muted-foreground">
-                            No movies found matching your search. Try adjusting your query!
+                            {t("search.no_results")}
                         </p>
                     </motion.div>
                 )}

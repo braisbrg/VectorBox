@@ -15,6 +15,8 @@ import { FeedContainer } from "@/components/feed-container";
 import { RecommendationGrid } from "@/components/recommendation-grid";
 import { MoodSelector } from "@/components/mood-selector";
 import { Sidebar } from "@/components/sidebar";
+import { MobileHeader } from "@/components/mobile-header";
+import { MobileNav } from "@/components/mobile-nav";
 import { AppTooltip, InfoTooltip } from "@/components/info-tooltip";
 import { MoreLikeThis } from "@/components/more-like-this";
 import { WatchlistView } from "@/components/watchlist-view";
@@ -156,17 +158,28 @@ export default function HomePage() {
         <main className="min-h-screen bg-background text-foreground">
             {/* Sidebar Navigation - Only show if user has data */}
             {userId && hasData && (
-                <Sidebar
-                    currentView={currentView}
-                    onViewChange={setCurrentView}
-                    users={users || []}
-                    currentUserId={userId}
-                    onUserSelect={setUserId}
-                />
+                <>
+                    <Sidebar
+                        currentView={currentView}
+                        onViewChange={setCurrentView}
+                        users={users || []}
+                        currentUserId={userId}
+                        onUserSelect={setUserId}
+                    />
+                    <MobileHeader />
+                    <MobileNav
+                        currentView={currentView}
+                        onViewChange={setCurrentView}
+                        users={users || []}
+                        currentUserId={userId}
+                        onUserSelect={setUserId}
+                    />
+                </>
             )}
 
             {/* Main Content Area */}
-            <div className={`${userId && hasData ? "pl-[80px] md:pl-[80px]" : ""} transition-all duration-300 min-h-screen flex flex-col pt-24`}>
+            {/* Added lg:pl-[300px] for desktop sidebar width and pt-[80px] for mobile header */}
+            <div className={`${userId && hasData ? "lg:pl-[80px]" : ""} transition-all duration-300 min-h-screen flex flex-col pt-[60px] lg:pt-0`}>
 
                 {/* Hero Section - Integrated Welcome */}
                 {currentView === "feed" && userId && (

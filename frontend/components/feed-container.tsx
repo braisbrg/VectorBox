@@ -51,6 +51,16 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
     available_now: "Movies from your watchlist that are currently available on your streaming services.",
 };
 
+// Map strict IDs to translation keys if they don't match exactly
+const TITLE_MAP: Record<string, string> = {
+    "popular_movies": "sections.popular_letterboxd",
+    "hidden_gems": "sections.hidden_gems",
+    "deep_dive": "sections.deep_dive",
+    "random_picks": "sections.random_picks",
+    "wildcard": "sections.wildcard",
+    "available_now": "sections.available_now"
+};
+
 export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [] }: FeedContainerProps) {
     const { settings } = useSettings();
     const includeLowQuality = settings.includeLowQuality;
@@ -118,7 +128,7 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
                     title={
                         (section.id === "your_taste" || section.id === "because_you_watched" || section.type === "wildcard")
                             ? section.title
-                            : (t(`sections.${section.id}`) || section.title)
+                            : (t(TITLE_MAP[section.id] || `sections.${section.id}`) || section.title)
                     }
                     items={section.items}
                     userId={userId}

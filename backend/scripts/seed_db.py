@@ -175,7 +175,11 @@ class DatabaseSeeder:
                 vectorbox_score=vectorbox_score,
                 imdb_rating=imdb_rating,
                 metacritic_rating=metacritic_rating,
-                rotten_tomatoes_rating=rotten_tomatoes_rating
+                imdb_rating=imdb_rating,
+                metacritic_rating=metacritic_rating,
+                rotten_tomatoes_rating=rotten_tomatoes_rating,
+                directors=details.get("directors", []),
+                cast=details.get("cast", [])
             )
             
             db.add(movie)
@@ -214,7 +218,10 @@ class DatabaseSeeder:
                     "runtime": runtime,
                     "original_language": original_language,
                     "keywords": keywords,
-                    "vectorbox_score": vectorbox_score
+                    "keywords": keywords,
+                    "vectorbox_score": vectorbox_score,
+                    "directors": details.get("directors", []),
+                    "cast": details.get("cast", [])
                 }
             )
             

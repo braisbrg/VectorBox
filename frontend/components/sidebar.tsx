@@ -67,7 +67,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
         },
         {
             id: "compatibility",
-            label: "Group Vibe",
+            label: t("sections.group_vibe"),
             icon: Users,
             description: "Find shared favorites"
         },
@@ -107,7 +107,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
         <motion.aside
             initial={false}
             animate={{ width: isCollapsed ? 80 : 300 }}
-            className="fixed left-0 top-0 h-screen bg-black border-r border-zinc-800 flex flex-col z-50 shadow-2xl"
+            className="hidden lg:flex fixed left-0 top-0 h-screen bg-black border-r border-zinc-800 flex-col z-50 shadow-2xl"
         >
             {/* Header */}
             <div className="p-4 border-b border-zinc-800 flex items-center justify-between h-[70px]">

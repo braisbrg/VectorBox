@@ -1,127 +1,179 @@
-
 import asyncio
 import os
 import sys
 import logging
+import argparse
 from sqlalchemy import select, func
-from sentence_transformers import SentenceTransformer
 
-# Fix paths for imports
-current_dir = os.path.dirname(os.path.abspath(__file__))
-backend_dir = os.path.dirname(current_dir)
-sys.path.append(backend_dir)
+# Fix paths
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import AsyncSessionLocal
 from models.database import Movie
 from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
+from tqdm import tqdm
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
-async def enrich_vectors():
-    logger.info("Starting Keyword Enrichment & Re-Vectorization...")
+async def enrich_vectors(missing_only: bool = True, limit: int = None):
+    """
+    Refetches keywords for movies and regenerates their vectors.
+    """
+    logger.info("Starting Keyword Enrichment & Vector Regeneration...")
     
     tmdb = TMDBClient()
     qdrant = QdrantService()
     embedding_service = EmbeddingService()
     
-    # Initialize Qdrant if needed
-    try:
-        await qdrant.init_collection()
-    except:
-        pass
+    # Init Qdrant just in case
+    await qdrant.init_collection()
 
     async with AsyncSessionLocal() as db:
-        # Fetch all movies
-        # In production, use cursor/pagination. For <10k movies, fetching all ID/Title/Overview/Keywords is safeish.
-        # Let's fetch IDs first to be safe memory-wise
-        result = await db.execute(select(Movie.id).order_by(Movie.id))
-        movie_ids = result.scalars().all()
+        # 1. Select Candidates
+        query = select(Movie)
         
-        logger.info(f"Found {len(movie_ids)} movies to process.")
+        if missing_only:
+            logger.info("Targeting movies with EMPTY metadata (Keywords/Directors/Cast)...")
+        else:
+            logger.info("Targeting ALL movies (Force Refresh)...")
+
+        result = await db.execute(query)
+        all_movies = result.scalars().all()
         
-        processed_count = 0
-        updated_keywords_count = 0
+        # Filter in memory
+        candidates = []
+        for m in all_movies:
+            if missing_only:
+                # Check keywords, directors, OR cast
+                if not m.keywords or not m.directors or not m.cast:
+                    candidates.append(m)
+            else:
+                candidates.append(m)
         
-        # Batch size for Qdrant upserts
-        BATCH_SIZE = 50
-        batch_points = []
+        if limit:
+            candidates = candidates[:limit]
+
+        logger.info(f"files to process: {len(candidates)}")
+
+        if not candidates:
+            return
+
+        # 2. Process
+        pbar = tqdm(total=len(candidates), desc="Enriching Metadata")
         
-        for mid in movie_ids:
-            # Fetch full movie object
-            stmt = select(Movie).where(Movie.id == mid)
-            res = await db.execute(stmt)
-            movie = res.scalar_one_or_none()
-            
-            if not movie:
-                continue
-            
-            # 1. Enrich Keywords if missing
-            if not movie.keywords:
-                logger.info(f"Fetching keywords for {movie.title} ({movie.tmdb_id})...")
-                keywords = await tmdb.get_movie_keywords(movie.tmdb_id)
-                if keywords:
-                    movie.keywords = keywords
-                    updated_keywords_count += 1
-                    # Commit keyword changes incrementally
-                    await db.commit() 
-                else:
-                    movie.keywords = [] # Mark as empty list to avoid re-fetching nulls indefinitely?
-            
-            # 2. Generate New Vector (New Format: "Themes: ...")
+        success_count = 0
+        
+        for movie in candidates:
             try:
-                vector = embedding_service.generate_embedding({
-                    "title": movie.title,
-                    "overview": movie.overview,
-                    "genres": movie.genres,
-                    "keywords": movie.keywords or []
-                })
+                # Flag to check if we need to update DB
+                db_updated = False
                 
-                # 3. Prepare Qdrant Point
-                # We reuse existing metadata logic but ensuring keywords are included
-                metadata = {
-                    "title": movie.title,
-                    "year": movie.year,
-                    "genres": movie.genres,
-                    "rating": movie.vote_average,
-                    "vote_count": movie.vote_count,
-                    "runtime": movie.runtime,
-                    "poster_path": movie.poster_path,
-                    "vectorbox_score": movie.vectorbox_score,
-                    "imdb_rating": movie.imdb_rating,
-                    "metacritic_rating": movie.metacritic_rating,
-                    "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
-                    "title_es": movie.title_es,
-                    "overview_es": movie.overview_es,
-                    "keywords": movie.keywords
+                # Check what is missing
+                needs_keywords = not movie.keywords or not missing_only
+                needs_credits = not movie.directors or not movie.cast or not missing_only
+                
+                fetched_details = None
+                
+                # Fetch fresh details if needed
+                if needs_keywords or needs_credits:
+                    fetched_details = await tmdb.get_movie_details(movie.tmdb_id)
+                    
+                if fetched_details:
+                    # Update Keywords
+                    if needs_keywords:
+                        movie.keywords = fetched_details.get("keywords_flat", [])
+                        db_updated = True
+                        
+                    # Update Credits (Directors & Cast)
+                    if needs_credits:
+                        # Directors handled in get_movie_details -> "directors" key
+                        movie.directors = fetched_details.get("directors", [])
+                        
+                        # Cast - Extract Top 3
+                        cast_list = []
+                        if "credits" in fetched_details and "cast" in fetched_details["credits"]:
+                            # Sort by order just in case, though TMDB usually returns sorted
+                            sorted_cast = sorted(fetched_details["credits"]["cast"], key=lambda x: x.get("order", 999))
+                            cast_list = [member["name"] for member in sorted_cast[:3]]
+                        
+                        movie.cast = cast_list
+                        db_updated = True
+                
+                if db_updated:
+                    db.add(movie)
+
+                # B. Generate NEW Embedding
+                # We need genres as well
+                genres = movie.genres or []
+                overview = movie.overview or ""
+                title = movie.title or ""
+                keywords = movie.keywords or []
+                
+                # Optional: Include Directors/Cast in embedding text?
+                # For now, sticking to standard v1 embedding logic to maintain consistency
+                
+                embedding_data = {
+                    "title": title,
+                    "overview": overview,
+                    "genres": genres,
+                    "keywords": keywords 
                 }
                 
-                # We can't batch easily with current QdrantService wrapper (upsert takes 1).
-                # But QdrantService.upsert_movie_vector is async, so we can await it.
-                # For speed, we could modify wrapper, but calling it is safer.
+                vector = embedding_service.generate_embedding(embedding_data)
+                
+                # C. Upsert to Qdrant
+                payload = {
+                    "tmdb_id": movie.tmdb_id,
+                    "title": title,
+                    "year": movie.year,
+                    "genres": genres,
+                    "overview": overview,
+                    "poster_path": movie.poster_path,
+                    "vote_average": movie.vote_average,
+                    "vote_count": movie.vote_count,
+                    "runtime": movie.runtime,
+                    "original_language": movie.original_language,
+                    "keywords": keywords,
+                    "directors": movie.directors, # Add to payload
+                    "cast": movie.cast,           # Add to payload
+                    "vectorbox_score": movie.vectorbox_score
+                }
+                
                 await qdrant.upsert_movie_vector(
-                    movie_id=movie.tmdb_id,
+                    movie_id=movie.id, # Internal DB ID
                     vector=vector.tolist(),
-                    metadata=metadata
+                    metadata=payload
                 )
                 
+                success_count += 1
+                
+                # Commit every 50
+                if success_count % 50 == 0:
+                    await db.commit()
+                    
             except Exception as e:
-                logger.error(f"Failed to process {movie.title}: {e}")
+                logger.error(f"Failed to enrich movie {movie.title} ({movie.id}): {e}")
             
-            processed_count += 1
-            if processed_count % 10 == 0:
-                logger.info(f"Processed {processed_count}/{len(movie_ids)} movies.")
-        
-        logger.info("Enrichment Complete!")
-        logger.info(f"Total Movies: {processed_count}")
-        logger.info(f"Keywords Fetched: {updated_keywords_count}")
+            pbar.update(1)
+            
+        await db.commit() # Final commit
+        pbar.close()
         
     await tmdb.close()
+    logger.info(f"Enrichment Complete. Updated {success_count} movies.")
 
 if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(enrich_vectors())
+        
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--all", action="store_true", help="Process ALL movies, not just those missing keywords")
+    parser.add_argument("--limit", type=int, default=None, help="Limit number of movies processed")
+    args = parser.parse_args()
+    
+    asyncio.run(enrich_vectors(missing_only=not args.all, limit=args.limit))

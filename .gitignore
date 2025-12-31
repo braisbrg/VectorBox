@@ -37,6 +37,9 @@ Thumbs.db
 # Database
 *.db
 *.sqlite
+postgres_data/
+qdrant_storage/
+redis_data/
 
 # Pytest
 .pytest_cache/
@@ -62,3 +65,25 @@ verify_ingestion_refactor.py
 # Debug & Audit scripts
 check_*.py
 run_*.py
+test_qdrant.py
+debug_data.py
+
+# AI & ML Heavy Artifacts
+models_cache/
+backend/models_cache/
+.cache/
+*.bin
+*.pth
+*.safetensors
+*.onnx
+
+# Additional Legacy/Debug Patterns
+temp_*.py
+test_scratch.py
+*.bak
+.env.*.local
+
+# Strict Script Allowlist Enforcement (Dev/Verify Scripts)
+backend/scripts/verify_ai.py
+backend/scripts/verify_trident.py
+backend/scripts/security_audit.py

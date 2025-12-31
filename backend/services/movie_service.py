@@ -87,7 +87,8 @@ class MovieService:
                 title_es=details.get("title_es"),
                 overview_es=details.get("overview_es"),
                 collection_id=details.get("belongs_to_collection", {}).get("id") if details.get("belongs_to_collection") else None,
-                keywords=details.get("keywords_flat", [])
+                keywords=details.get("keywords_flat", []),
+                directors=details.get("directors", [])
             )
 
             self.db.add(movie)
@@ -182,49 +183,71 @@ class MovieService:
 
     async def enrich_movie(self, movie: Movie) -> bool:
         """
-        Ensures movie has keywords and a valid vector.
+        Ensures movie has keywords, OMDb data (VB Score), and a valid vector.
         Self-heals missing data.
         """
         try:
-            # 1. Check/Fetch Keywords
+            changed = False
+            
+            # 1. Check OMDb / VectorBox Score
+            # Re-fetch if missing (None) or if it's 0 (invalid/empty initial fetch)
+            if movie.vectorbox_score is None or movie.vectorbox_score == 0:
+                logger.info(f"Enriching OMDb data for {movie.title} (Current Score: {movie.vectorbox_score})...")
+                details = await self.tmdb.get_movie_details(movie.tmdb_id)
+                if details and details.get("imdb_id"):
+                    imdb_id = details.get("imdb_id")
+                    omdb_data = await self.omdb.fetch_movie_data(imdb_id) or {}
+                    vb_score_data = self.omdb.calculate_vectorbox_score(omdb_data, details.get("vote_average"))
+                    
+                    movie.imdb_id = imdb_id
+                    movie.vectorbox_score = vb_score_data["score"]
+                    movie.imdb_rating = vb_score_data["breakdown"]["imdb"]
+                    movie.metacritic_rating = vb_score_data["breakdown"]["meta"]
+                    movie.rotten_tomatoes_rating = vb_score_data["breakdown"]["rt"]
+                    
+                    changed = True
+            
+            # 2. Check/Fetch Keywords
             if not movie.keywords:
                 logger.info(f"Enriching keywords for {movie.title} ({movie.tmdb_id})...")
                 keywords = await self.tmdb.get_movie_keywords(movie.tmdb_id)
                 if keywords:
                     movie.keywords = keywords
-                    await self.db.commit()
-                    
-                    # Force vector regeneration since keywords changed
-                    vector = self.embedding_service.generate_embedding({
-                        "title": movie.title,
-                        "overview": movie.overview,
-                        "genres": movie.genres,
-                        "keywords": movie.keywords
-                    })
-                    
-                    await self.qdrant.upsert_movie_vector(
-                        movie_id=movie.tmdb_id,
-                        vector=vector.tolist(),
-                        metadata={
-                            "title": movie.title,
-                            "year": movie.year,
-                            "genres": movie.genres,
-                            "rating": movie.vote_average,
-                            "vote_count": movie.vote_count,
-                            "runtime": movie.runtime,
-                            "poster_path": movie.poster_path,
-                            "vectorbox_score": movie.vectorbox_score,
-                            "imdb_rating": movie.imdb_rating,
-                            "metacritic_rating": movie.metacritic_rating,
-                            "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
-                            "title_es": movie.title_es,
-                            "overview_es": movie.overview_es,
-                            "keywords": movie.keywords
-                        }
-                    )
-                    return True
+                    changed = True
             
-            # 2. Even if keywords existed, ensure vector exists
+            if changed:
+                await self.db.commit()
+                # Force vector regeneration
+                vector = self.embedding_service.generate_embedding({
+                    "title": movie.title,
+                    "overview": movie.overview,
+                    "genres": movie.genres,
+                    "keywords": movie.keywords or []
+                })
+                
+                await self.qdrant.upsert_movie_vector(
+                    movie_id=movie.tmdb_id,
+                    vector=vector.tolist(),
+                    metadata={
+                        "title": movie.title,
+                        "year": movie.year,
+                        "genres": movie.genres,
+                        "rating": movie.vote_average,
+                        "vote_count": movie.vote_count,
+                        "runtime": movie.runtime,
+                        "poster_path": movie.poster_path,
+                        "vectorbox_score": movie.vectorbox_score,
+                        "imdb_rating": movie.imdb_rating,
+                        "metacritic_rating": movie.metacritic_rating,
+                        "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
+                        "title_es": movie.title_es,
+                        "overview_es": movie.overview_es,
+                        "keywords": movie.keywords
+                    }
+                )
+                return True
+            
+            # 3. Even if nothing changed, ensure vector exists
             return await self.ensure_vector_exists(movie)
             
         except Exception as e:

@@ -10,6 +10,8 @@ from services.qdrant_service import QdrantService
 from services.qdrant_service import QdrantService
 from services.clustering_service import ClusteringService
 from services.provider_service import ProviderService
+from services.recommendation_service import RecommendationService
+
 
 logger = logging.getLogger(__name__)
 
@@ -813,3 +815,30 @@ class FeedService:
             title="Popular on Letterboxd This Week",
             items=items
         )
+
+    async def get_hybrid_picks_section(
+        self,
+        user_id: int,
+        db: AsyncSession,
+        country: str,
+        seen_ids: Set[int],
+        provider_service: ProviderService = None
+    ) -> Optional[FeedSection]:
+        """
+        Trident Hybrid Recommendations (Signal A + B + C)
+        """
+        recommender = RecommendationService(db)
+        return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service)
+
+    async def get_auteur_section(
+        self,
+        user_id: int,
+        db: AsyncSession,
+        country: str,
+        seen_ids: Set[int]
+    ) -> Optional[FeedSection]:
+        """
+        Signal B: Auteur Expert
+        """
+        recommender = RecommendationService(db)
+        return await recommender.get_auteur_section(user_id, country, seen_ids)

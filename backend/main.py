@@ -78,13 +78,22 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Security: Trusted Host Middleware (prevent host header attacks)
+# Dynamically load from env for Cloudflare Tunnel and production domains
+allowed_hosts_str = os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1")
+allowed_hosts = [h.strip() for h in allowed_hosts_str.split(",") if h.strip()]
+logger.info(f"Trusted hosts: {allowed_hosts}")
+
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["localhost", "127.0.0.1", "*.cinematch.app"]  # Update for production
+    allowed_hosts=allowed_hosts
 )
 
-# Security: CORS with strict configuration
-allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",")
+# Security: CORS with dynamic configuration for Hybrid Deployment
+# Supports multiple origins for Vercel + Local development
+allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+allowed_origins = [o.strip() for o in allowed_origins_str.split(",") if o.strip()]
+logger.info(f"CORS allowed origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,

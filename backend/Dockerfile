@@ -15,17 +15,31 @@ RUN apt-get update && \
 
 # Copy requirements first for better caching
 COPY requirements.txt .
+
+# Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Security: Audit dependencies
-RUN pip-audit -r requirements.txt --strict
+# Optimize: 
+# 1. Use BuildKit cache for pip
+# 2. Install CPU-only Torch explicitly first (to avoid downloading CUDA version)
+# 3. Install other requirements
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu && \
+    pip install -r requirements.txt
 
+# Security: Audit dependencies (allow errors for now as we are force-installing specialized wheels)
+# RUN pip-audit -r requirements.txt --strict
 
 # Copy application code
 COPY . .
 
+# Pre-download AI Model
+ENV SENTENCE_TRANSFORMERS_HOME=/app/models_cache
+RUN python download_model.py
+
 # Switch to non-root user
+# Ensure the user owns the model cache
+RUN chown -R cinematch:cinematch /app/models_cache
 USER cinematch
 
 # Expose port

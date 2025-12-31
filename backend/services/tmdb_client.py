@@ -124,8 +124,8 @@ class TMDBClient:
                 logger.debug(f"Cache hit for movie {tmdb_id}")
                 return json.loads(cached)
         
-        # Phase 13: Data Enrichment - Fetch keywords in single call
-        params = {"append_to_response": "keywords"}
+        # Phase 13: Data Enrichment - Fetch keywords and credits in single call
+        params = {"append_to_response": "keywords,credits"}
         data = await self._make_request(f"/movie/{tmdb_id}", params=params)
         
         if data:
@@ -134,6 +134,21 @@ class TMDBClient:
                 data["keywords_flat"] = [k["name"] for k in data["keywords"]["keywords"]]
             else:
                 data["keywords_flat"] = []
+                
+            # Process Directors from credits
+            data["directors"] = []
+            if "credits" in data and "crew" in data["credits"]:
+                data["directors"] = [
+                    member["name"] 
+                    for member in data["credits"]["crew"] 
+                    if member.get("job") == "Director"
+                ]
+            
+            # Process Cast from credits (Top 3)
+            data["cast"] = []
+            if "credits" in data and "cast" in data["credits"]:
+                sorted_cast = sorted(data["credits"]["cast"], key=lambda x: x.get("order", 999))
+                data["cast"] = [member["name"] for member in sorted_cast[:3]]
 
             # Phase 12: Fetch Spanish metadata
             try:
