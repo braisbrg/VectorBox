@@ -1,0 +1,49 @@
+{
+    "sidebar": {
+        "feed": "Your Feed",
+        "grid": "Explore",
+        "watchlist": "Watchlist",
+        "ai_search": "Magic Box",
+        "more_like_this": "Clones",
+        "users": "Users",
+        "settings": "Settings",
+        "current_user": "Current User"
+    },
+    "search": {
+        "placeholder": "What vibe are you looking for today? (e.g. 80s cyberpunk)",
+        "error": "Neural Net connection error",
+        "module_title": "AI Module",
+        "status_active": "// NEURAL NET ACTIVE //",
+        "clear_results": "Clear Data",
+        "results_found": "movies detected",
+        "no_results": "No matches in database.",
+        "analyzing": "Analyzing intent..."
+    },
+    "sections": {
+        "available_now": "Available Now",
+        "popular_letterboxd": "Trending on Letterboxd",
+        "because_you_watched": "Because you watched...",
+        "your_taste": "Your Taste",
+        "hidden_gems": "Hidden Gems",
+        "deep_dive": "Deep Dive",
+        "wildcard": "Outside Your Comfort Zone",
+        "random_picks": "Gacha Roll",
+        "group_vibe": "Group Sync",
+        "hybrid_picks": "Hybrid Picks for You",
+        "directors_picks": "From Your Favorite Directors",
+        "crowd_picks": "Popular Among Fans"
+    },
+    "ui": {
+        "previous": "Previous",
+        "next": "Next",
+        "loading": "Loading...",
+        "retry": "Retry",
+        "uploading": "UPLOADING...",
+        "menu": "MENU"
+    },
+    "errors": {
+        "generic": "Glitch in the Matrix.",
+        "upload_failed": "Upload failed.",
+        "no_data": "No data. Upload your Letterboxd CSV."
+    }
+}

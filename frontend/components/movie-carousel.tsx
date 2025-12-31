@@ -118,7 +118,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                         </button>
                     )}
                 </div>
-                <div className="flex gap-2">
+                <div className="hidden md:flex gap-2">
                     <button
                         onClick={() => scroll("left")}
                         className="p-2 rounded-none border border-zinc-800 hover:bg-zinc-900 hover:border-primary hover:text-primary transition-all"

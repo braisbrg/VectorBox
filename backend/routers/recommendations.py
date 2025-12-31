@@ -472,23 +472,48 @@ async def get_feed(
                     # this method creates its own ProviderService internally using the passed db
                     return await feed_service.get_available_now_section(user_id, session, tmdb, set(), country_code, provider_ids)
 
+            async def task_hybrid():
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    # Use a copy of seen_ids or just empty since it's parallel
+                    # seen_ids is shared in the dedupe phase anyway
+                    return await feed_service.get_hybrid_picks_section(user_id, session, country_code, set(), local_provider)
+
+            async def task_auteur():
+                async with AsyncSessionLocal() as session:
+                    return await feed_service.get_auteur_section(user_id, session, country_code, set())
+
             tasks = [
                 task_popular(),
+                task_hybrid(), # Trident
                 task_watched(),
                 task_taste(),
                 task_wildcard(),
                 task_random(),
                 task_hidden(),
+                task_auteur(), # Signal B separate row
                 task_available()
             ]
             
             results = await asyncio.gather(*tasks)
-            section_popular, section_a, section_b, section_wildcard, section_random, section_c, section_d = results
+            section_popular, section_hybrid, section_a, section_b, section_wildcard, section_random, section_c, section_auteur, section_d = results
             
             # Deduplicate
             seen_ids = set()
             final_sections = []
-            ordered_results = [section_popular, section_a, section_b, section_wildcard, section_random, section_c, section_d]
+            
+            # Logic: Hybrid First, then Popular, then others
+            ordered_results = [
+                section_hybrid, 
+                section_popular, 
+                section_a, 
+                section_b, 
+                section_auteur,
+                section_wildcard, 
+                section_random, 
+                section_c, 
+                section_d
+            ]
             
             for section in ordered_results:
                 if not section or not section.items:
@@ -502,12 +527,13 @@ async def get_feed(
                     section.items = unique_items
                     final_sections.append(section)
             
-            # Deep Dive
+            # Deep Dive (Signal A only) - Kept as requested
             section_deep_dive = await feed_service.get_deep_dive_section(
                 user_id, db, tmdb, seen_ids, country_code, provider_service, include_low_quality=include_low_quality
             )
             if section_deep_dive and section_deep_dive.items:
-                insert_pos = min(len(final_sections), 4)
+                # Place Deep Dive further down, e.g. position 5
+                insert_pos = min(len(final_sections), 5)
                 final_sections.insert(insert_pos, section_deep_dive)
 
             return FeedResponse(feed=final_sections)

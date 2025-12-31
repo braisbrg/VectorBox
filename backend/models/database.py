@@ -48,6 +48,8 @@ class Movie(Base):
     keywords = Column(ARRAY(String))  # New: For vibe filtering
     letterboxd_uri = Column(String(500))  # From CSV
     letterboxd_rating = Column(Float)  # Scraped from Popular Chart
+    directors = Column(ARRAY(String))  # Signal B: Auteur Expert
+    cast = Column(ARRAY(String))  # Top 3 Cast Members
     
     # Phase 12: VectorBox Score & i18n
     imdb_id = Column(String(20), unique=True)

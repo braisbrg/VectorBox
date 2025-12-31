@@ -1,0 +1,49 @@
+{
+  "sidebar": {
+    "feed": "Tu Feed",
+    "grid": "Explorar",
+    "watchlist": "Watchlist",
+    "ai_search": "Magic Box",
+    "more_like_this": "Clones",
+    "users": "Usuarios",
+    "settings": "Ajustes",
+    "current_user": "Usuario Activo"
+  },
+  "search": {
+    "placeholder": "¿Qué vibe buscas hoy? (ej. cyberpunk en los 80)",
+    "error": "Error de conexión con la Neural Net",
+    "module_title": "Módulo IA",
+    "status_active": "// RED NEURONAL ACTIVA //",
+    "clear_results": "Limpiar Datos",
+    "results_found": "películas detectadas",
+    "no_results": "Sin coincidencias en la base de datos.",
+    "analyzing": "Analizando intención..."
+  },
+  "sections": {
+    "available_now": "Disponible Ya",
+    "popular_letterboxd": "Trending en Letterboxd",
+    "because_you_watched": "Porque viste...",
+    "your_taste": "Tu Rollo",
+    "hidden_gems": "Joyas Ocultas",
+    "deep_dive": "Profundizando",
+    "wildcard": "Fuera de tu Zona",
+    "random_picks": "Gacha Roll",
+    "group_vibe": "Sincronización de Grupo",
+    "hybrid_picks": "Selección Híbrida para Ti",
+    "directors_picks": "De tus Directores Favoritos",
+    "crowd_picks": "Popular entre Fans"
+  },
+  "ui": {
+    "previous": "Anterior",
+    "next": "Siguiente",
+    "loading": "Cargando...",
+    "retry": "Reintentar",
+    "uploading": "SUBIENDO...",
+    "menu": "MENÚ"
+  },
+  "errors": {
+    "generic": "Algo ha fallado en la Matrix.",
+    "upload_failed": "Error en la subida.",
+    "no_data": "Sin datos. Sube tu CSV de Letterboxd."
+  }
+}

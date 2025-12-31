@@ -62,13 +62,16 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ## 4. AI & NLP Layer
 
-### Model Configuration
-- **Provider:** Groq
-- **Model:** `llama-3.3-70b-versatile`
-- **Cascading Fallback:**
-    1.  Primary: Groq `llama-3.3-70b-versatile`.
-    2.  Secondary: Groq `llama-3.1-8b-instant`.
-    3.  Tertiary: OpenAI `gpt-4o-mini`.
+### Model Configuration (Dual-Model Strategy)
+- **Tier 1 (Speed):** `meta-llama/llama-4-scout-17b-16e-instruct`
+    - Use for: Real-time search bar intent parsing.
+- **Tier 2 (Intelligence):** `llama-3.3-70b-versatile`
+    - Use for: Deep Analysis (Re-ranking), detailed reasoning.
+
+### Cascading Fallback
+1.  Tier 1 Primary: Groq `llama-4-scout-17b-16e-instruct`
+2.  Tier 2 Primary: Groq `llama-3.3-70b-versatile`
+3.  Universal Fallback: OpenAI `gpt-oss-120b` (or `gpt-4o-mini`).
 
 ### Structured Output
 - **Library:** `instructor` (Python) with Pydantic models.

@@ -1,5 +1,4 @@
 fastapi[all]==0.122.0
-uvicorn[standard]==0.38.0
 sqlalchemy==2.0.44
 psycopg[binary]==3.2.13
 alembic==1.13.3
@@ -8,13 +7,10 @@ sentence-transformers==5.1.2
 scikit-learn==1.7.2
 qdrant-client==1.16.1
 redis==4.6.0
-httpx==0.28.1
-python-multipart==0.0.20
 
 passlib[bcrypt]==1.7.4
 pydantic[email]==2.12.4
 pydantic-settings==2.6.0
-python-dotenv==1.2.1
 pytest==8.3.3
 pytest-asyncio==0.24.0
 slowapi==0.1.9
@@ -32,3 +28,5 @@ beautifulsoup4==4.12.2
 
 apscheduler==3.10.4
 fastapi-cache2[redis]==0.2.1
+filelock>=3.20.1
+psycopg2-binary==2.9.10

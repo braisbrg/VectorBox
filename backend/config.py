@@ -16,8 +16,8 @@ engine = create_async_engine(
     DATABASE_URL,
     echo=False,  # Disable SQL logging in production
     pool_pre_ping=True,  # Verify connections before using
-    pool_size=10,
-    max_overflow=20,
+    pool_size=20,
+    max_overflow=40,
 )
 
 AsyncSessionLocal = async_sessionmaker(

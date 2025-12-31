@@ -86,20 +86,20 @@ export function MovieCard({
     // Badge Logic - Acid Style
     const renderBadge = () => {
         // Prepare VectorBox Score Badge (Reusable)
-        const vbBadge = (
+        const vbBadge = (vectorbox_score !== undefined && vectorbox_score !== null) ? (
             <div
                 className="bg-purple-600 text-white text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] cursor-help z-20"
                 title={[
-                    (vectorbox_score !== undefined && vectorbox_score !== null) ? `VectorBox Score: ${vectorbox_score.toFixed(1)} / 10` : "VectorBox Score: N/A",
+                    `VectorBox Score: ${vectorbox_score.toFixed(1)} / 10`,
                     rating ? `TMDB Rating: ${rating.toFixed(1)} / 10` : null,
                     imdb_rating ? `IMDb: ${imdb_rating} / 10` : null,
                     rotten_tomatoes_rating ? `Rotten Tomatoes: ${rotten_tomatoes_rating}%` : null,
                     metacritic_rating ? `Metacritic: ${metacritic_rating} / 100` : null,
                 ].filter(Boolean).join("\n")}
             >
-                VB: {(vectorbox_score !== undefined && vectorbox_score !== null) ? vectorbox_score.toFixed(1) : "N/A"}
+                VB: {vectorbox_score.toFixed(1)}
             </div>
-        );
+        ) : null;
 
         if (forceVectorBoxScore) {
             return (

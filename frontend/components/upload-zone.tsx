@@ -150,7 +150,7 @@ export function UploadZone({ onUploadSuccess, users, onUserCreated, currentUserI
         if (file && localSelectedUserId !== "new") {
             uploadMutation.mutate(file);
         } else if (localSelectedUserId === "new" && newUsername) {
-            createUserMutation.mutate(newUsername, {
+            createUserMutation.mutate({ username: newUsername }, {
                 onSuccess: (newUser) => {
                     if (file) {
                         // Immediate upload after creation
@@ -188,7 +188,7 @@ export function UploadZone({ onUploadSuccess, users, onUserCreated, currentUserI
                         />
                         <button
                             onClick={() => {
-                                if (newUsername) createUserMutation.mutate(newUsername);
+                                if (newUsername) createUserMutation.mutate({ username: newUsername });
                             }}
                             disabled={createUserMutation.isPending || !newUsername}
                             className="px-3 py-1 bg-primary text-primary-foreground rounded text-sm font-medium disabled:opacity-50"

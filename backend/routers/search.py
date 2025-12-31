@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
 from config import get_db
-from services.nlp_search import parse_user_intent
+from services.nlp_search import parse_user_intent, search_with_reasoning
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from models.database import UserRating, Movie
@@ -17,6 +17,7 @@ router = APIRouter()
 class SearchRequest(BaseModel):
     query: str
     user_id: int
+    use_deep_analysis: Optional[bool] = False
 
 class SearchResponse(BaseModel):
     results: List[dict]
@@ -358,13 +359,7 @@ async def natural_language_search(
         # 6. Fetch Streaming Providers
         try:
             from services.provider_service import ProviderService
-            # Ensure TMDB client is available (it might have been closed or not init if we hit cache)
-            # But we can re-init or check. 
-            # Actually, let's just use a new instance if needed or reuse if open.
-            # For simplicity and safety, let's use a context manager or just init.
-            # ProviderService needs a TMDBClient instance.
-            
-            # We need to make sure we have a valid TMDBClient
+            # Ensure TMDB client is available
             tmdb_for_providers = TMDBClient()
             provider_service = ProviderService(db, tmdb_for_providers)
             
@@ -387,9 +382,35 @@ async def natural_language_search(
             
         except Exception as e:
             logger.error(f"Failed to fetch providers for search results: {e}")
-            # Don't fail the search, just continue without providers
             for r in results:
                 r["streaming_providers"] = []
+
+        # 7. Deep Analysis (Optional RAG Step)
+        if request.use_deep_analysis and results:
+            logger.info("Deep Analysis requested. Calling Tier 2 Intelligence...")
+            try:
+                # Pass results to Llama 70B
+                reasoned_picks = await search_with_reasoning(request.query, results)
+                
+                if reasoned_picks:
+                    # Re-rank: Keep only selected, map reasons
+                    reasoned_map = {p.movie_id: p.ai_reason for p in reasoned_picks}
+                    new_results = []
+                    
+                    for r in results:
+                        mid = r["movie_id"]
+                        if mid in reasoned_map:
+                            r["ai_reason"] = reasoned_map[mid]
+                            r["score"] = 100 # Boost score for AI selected
+                            new_results.append(r)
+                            
+                    # If we have picks, return them. If LLM returned 0, fallback to original list.
+                    if new_results:
+                        logger.info(f"Deep Analysis curated {len(new_results)} items.")
+                        results = new_results
+                
+            except Exception as e:
+                logger.error(f"Deep Analysis failed (graceful fallback): {e}")
 
         return SearchResponse(
             results=results,
