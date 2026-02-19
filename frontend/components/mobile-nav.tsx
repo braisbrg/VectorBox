@@ -5,11 +5,12 @@ import { X, LayoutList, Grid3x3, Calendar, Sparkles, Film, Users, Settings, User
 import { useMobileNav } from "@/components/mobile-nav-context";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
+import { VectorboxUser } from "@/lib/api";
 
 interface MobileNavProps {
     currentView: string;
     onViewChange: (view: string) => void;
-    users?: { id: number; username: string }[];
+    users?: VectorboxUser[];
     currentUserId?: number | null;
     onUserSelect?: (id: number) => void;
 }
@@ -49,6 +50,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                         <button
                             onClick={() => setIsOpen(false)}
                             className="p-2 text-white hover:text-primary transition-colors"
+                            aria-label={t("aria.close_menu")}
                         >
                             <X className="w-8 h-8" />
                         </button>
@@ -73,7 +75,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                                 >
                                     <Icon className={`w-6 h-6 ${isActive ? "text-primary" : "hidden"}`} />
                                     <span>{item.label}</span>
-                                    {isActive && <div className="w-2 h-2 rounded-full bg-primary shadow-[0_0_10px_#ccff00]" />}
+                                    {isActive && <div className="w-2 h-2 rounded-full bg-primary shadow-[0_0_10px_hsl(var(--primary))]" />}
                                 </motion.button>
                             );
                         })}

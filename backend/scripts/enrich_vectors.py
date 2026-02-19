@@ -103,6 +103,15 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
                         
                         movie.cast = cast_list
                         db_updated = True
+
+                    # Update Spanish Metadata (Self-Healing)
+                    if not movie.title_es or not movie.overview_es:
+                         if fetched_details.get("title_es"): 
+                             movie.title_es = fetched_details.get("title_es")
+                             db_updated = True
+                         if fetched_details.get("overview_es"): 
+                             movie.overview_es = fetched_details.get("overview_es")
+                             db_updated = True
                 
                 if db_updated:
                     db.add(movie)
@@ -141,11 +150,16 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
                     "keywords": keywords,
                     "directors": movie.directors, # Add to payload
                     "cast": movie.cast,           # Add to payload
-                    "vectorbox_score": movie.vectorbox_score
+                    "vectorbox_score": movie.vectorbox_score,
+                    "imdb_rating": movie.imdb_rating,
+                    "metacritic_rating": movie.metacritic_rating,
+                    "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
+                    "title_es": movie.title_es,
+                    "overview_es": movie.overview_es
                 }
                 
                 await qdrant.upsert_movie_vector(
-                    movie_id=movie.id, # Internal DB ID
+                    movie_id=movie.tmdb_id, # Use TMDB ID for consistency with seed_db and ingest
                     vector=vector.tolist(),
                     metadata=payload
                 )
@@ -164,7 +178,7 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
         await db.commit() # Final commit
         pbar.close()
         
-    await tmdb.close()
+    await tmdb.aclose()
     logger.info(f"Enrichment Complete. Updated {success_count} movies.")
 
 if __name__ == "__main__":

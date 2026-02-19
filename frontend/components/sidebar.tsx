@@ -19,13 +19,13 @@ import { motion, AnimatePresence } from "framer-motion";
 import { AppTooltip } from "@/components/info-tooltip";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
-import { User } from "@/lib/api";
+import { VectorboxUser } from "@/lib/api";
 import { useQuery } from "@tanstack/react-query";
 
 interface SidebarProps {
     currentView: string;
     onViewChange: (view: string) => void;
-    users?: User[];
+    users?: VectorboxUser[];
     currentUserId?: number | null;
     onUserSelect?: (id: number) => void;
 }
@@ -39,37 +39,37 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
             id: "feed",
             label: t("sidebar.feed"),
             icon: LayoutList,
-            description: "Personalized recommendations"
+            description: t("sidebar_desc.feed")
         },
         {
             id: "grid",
             label: t("sidebar.grid"),
             icon: Grid3x3,
-            description: "Browse by mood & filters"
+            description: t("sidebar_desc.grid")
         },
         {
             id: "watchlist",
             label: t("sidebar.watchlist"),
             icon: Calendar,
-            description: "Your saved movies"
+            description: t("sidebar_desc.watchlist")
         },
         {
             id: "ai-search",
             label: t("sidebar.ai_search"),
             icon: Sparkles,
-            description: "Natural language search"
+            description: t("sidebar_desc.ai_search")
         },
         {
             id: "more-like-this",
             label: t("sidebar.more_like_this"),
             icon: Film,
-            description: "Find similar movies"
+            description: t("sidebar_desc.more_like_this")
         },
         {
             id: "compatibility",
             label: t("sections.group_vibe"),
             icon: Users,
-            description: "Find shared favorites"
+            description: t("sidebar_desc.group_vibe")
         },
     ];
 
@@ -129,7 +129,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                 <button
                     onClick={() => setIsCollapsed(!isCollapsed)}
                     className="p-2 rounded-none hover:bg-primary hover:text-black transition-colors border border-transparent hover:border-primary"
-                    aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                    aria-label={isCollapsed ? t("aria.expand_sidebar") : t("aria.collapse_sidebar")}
                 >
                     {isCollapsed ? (
                         <ChevronRight className="w-5 h-5" />
@@ -211,25 +211,14 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
             {/* Bottom Section */}
             <div className="border-t border-zinc-800 bg-black p-3 space-y-4">
 
-                {/* User Selector (Only visible when expanded) */}
-                {!isCollapsed && users && currentUserId && onUserSelect && (
-                    <div className="space-y-2">
-                        <label className="text-[10px] uppercase text-zinc-500 font-mono tracking-widest pl-1">
-                            {t("sidebar.current_user")}
-                        </label>
-                        <div className="relative">
-                            <select
-                                value={currentUserId}
-                                onChange={(e) => onUserSelect(Number(e.target.value))}
-                                className="w-full appearance-none bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs font-mono rounded-none pl-9 pr-8 py-2 focus:outline-none focus:border-primary focus:text-primary cursor-pointer hover:bg-zinc-800 transition-colors"
-                            >
-                                {users.map(u => (
-                                    <option key={u.id} value={u.id}>
-                                        {u.username}
-                                    </option>
-                                ))}
-                            </select>
-                            <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-500 pointer-events-none" />
+                {/* User Info (Read Only) */}
+                {!isCollapsed && users && currentUserId && (
+                    <div className="px-3 py-2 bg-zinc-900 border border-zinc-800 mb-2">
+                        <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                            <span className="text-xs font-mono text-zinc-400 uppercase tracking-wider">
+                                {users.find(u => u.id === currentUserId)?.username || "User"}
+                            </span>
                         </div>
                     </div>
                 )}

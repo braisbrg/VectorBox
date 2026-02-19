@@ -2,10 +2,27 @@
 
 > **Role:** Lead Software Architect Handover
 > **Target Audience:** CTO / Senior Developers
-> **Version:** 1.0.0
-> **Last Updated:** 2025-12-26
+> **Version:** 1.2.0 (Gold Master)
+> **Last Updated:** 2026-02-18
 
 This document serves as the absolute source of truth for the **VectorBox** (internal codename: *LetterboxRecommender* / *CineMatch*) project. It documents the existing state of the codebase, detailing architecture, algorithms, and logical flows.
+
+---
+
+## Quick Reference: Role-Specific Guides
+
+For detailed rules and context, see the **Agentic Team Structure** in `.ai_context/employees/`:
+
+| Role | Focus | File |
+| :--- | :--- | :--- |
+| **Architect** | Stack enforcement, forbidden patterns, async rules | [`.ai_context/employees/c-suite/architect.md`](.ai_context/employees/c-suite/architect.md) |
+| **Frontend Director** | Next.js, Tailwind, Acid Design, Mobile UX | [`.ai_context/employees/directors/frontend.md`](.ai_context/employees/directors/frontend.md) |
+| **Backend Director** | FastAPI, Postgres, Async patterns, Auth | [`.ai_context/employees/directors/backend.md`](.ai_context/employees/directors/backend.md) |
+| **Data Science Director** | Trident, RRF, Sigmoid, Qdrant, Clustering | [`.ai_context/employees/directors/data-science.md`](.ai_context/employees/directors/data-science.md) |
+| **DevOps Director** | Docker, Security, Scripts inventory | [`.ai_context/employees/directors/devops.md`](.ai_context/employees/directors/devops.md) |
+
+> [!TIP]
+> Use these role-specific files for detailed implementation guidance. This master guide provides the high-level overview.
 
 ---
 
@@ -14,51 +31,77 @@ This document serves as the absolute source of truth for the **VectorBox** (inte
 We use a modern, high-performance stack optimizing for **async concurrency** (Backend) and **visual fluidity** (Frontend).
 
 ### Frontend
-- **Framework:** **Next.js 16.0.7** (App Router). Used for server-side rendering and static optimization.
-- **Library:** **React 19.2.1**. Leveraging the latest concurrent features (Suspense, Transitions).
+- **Framework:** **Next.js 16.1.6** (App Router). Used for server-side rendering and static optimization.
+- **Library:** **React 19.2.4**. Leveraging the latest concurrent features (Suspense, Transitions).
 - **Styling:**
-  - **Tailwind CSS 3.4**: Utility-first styling for rapid development.
-  - **Tailwind Animate**: For simple keyframe animations.
-- **Animation:** **Framer Motion 11.11**. Powers all complex transitions, hover states, and carousel physics.
-- **Package Manager:** **pnpm**. Enforced via `STACK_RULES.md` for disk space efficiency and strict dependency handling.
+  - **Tailwind CSS 4.1.18**: **CSS-First Architecture**.
+    - Configured via `@theme` in `global.css`.
+    - No `tailwind.config.*` files.
+    - Uses `@tailwindcss/postcss` plugin.
+  - **Animations:** Pure CSS keyframes defined in `globals.css` (no `tailwindcss-animate`).
+- **Animation:** **Framer Motion 12.34.0**. Powers all complex transitions, hover states, and carousel physics.
+- **Utilities:** `tailwind-merge` v3 (Major version) + `clsx`.
+- **Package Manager:** **pnpm**. Enforced via `STACK_RULES.md`.
 - **Design System:** **Acid Design**. High-contrast neon aesthetics (`text-[#CCFF00]`, `bg-black/95`) with `Space Mono` typography.
+- **Build System:** **Multi-Stage Docker Build**. Uses `output: 'standalone'` to minimize image size (~150MB).
 - **Mobile First:** Fully responsive grid and touch-optimized navigation overlay.
+- **UI UX/Effects:** Custom **"Tweak" System** (inspired by Magic UI / Aceternity concepts).
+  - **Components:** `BorderBeam`, `SpotlightCard`, `ShimmerButton`, `GridPattern`.
+  - **Error Handling:** Custom **Acid Design** 404/500 pages with glitch effects.
+  - **Internationalization:** Full UI localization (EN/ES) via `next-intl` pattern.
+  - **Location:** `frontend/components/tweak/`.
 
 ### Backend
 - **Framework:** **FastAPI 0.122.0**. Chosen for native async support and high throughput.
+- **Runtime:** **Python 3.11-slim**.
 - **Server:** **Uvicorn** (Standard Worker).
-- **ORM:** **SQLAlchemy 2.0 (Async)**. Uses `asyncpg` driver for non-blocking PostgreSQL access.
+- **ORM:** **SQLAlchemy 2.0.44 (Async)**. Uses `asyncpg` + `psycopg` drivers.
 - **Validation:** **Pydantic V2**. Strongly typed data models for all inputs/outputs.
+- **Scraper:** **curl_cffi 0.7.4**. Impersonates Chrome 120 for evasion.
 - **AI/ML Layer:**
   - **Groq:** Primary Provider.
     - **Tier 1 (Speed):** `llama-4-scout-17b-16e-instruct` (Search Bar).
     - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile` ("Deep Analysis").
   - **Instructor:** Python library to force structured JSON outputs from LLMs.
-  - **Instructor:** Python library to force structured JSON outputs from LLMs.
-  - **Sentence-Transformers:** Local inference using `all-MiniLM-L6-v2` (**CPU Optimized**) for embedding generation.
+  - **Sentence-Transformers:** Local inference using `all-MiniLM-L6-v2` (**CPU Optimized**) for embedding generation. Singleton Pattern enforced.
 
 ### Data Layer
 - **Relational DB:** **PostgreSQL 15-alpine**. Stores User profiles, Ratings, Watchlists, Movie metadata, and Clusters.
+  - **Optimization:** Heavy use of Indexes (`vectorbox_score`, `popularity`, `vote_count`).
 - **Vector DB:** **Qdrant** (Latest Docker Image). Stores 384-dimensional dense vectors for semantic search.
+  - **Optimization:** Payload Indexes on `genres`, `year`, and `score` for fast filtering.
 - **Cache:** **Redis 7-alpine**. Used for:
   - Caching computed feed sections (`feed_service`).
   - Caching TMDB/Provider API responses (`provider_service`, `tmdb_client`).
   - Session/Rate limiting.
 
 ### Infrastructure
-- **Containerization:** **Docker Compose**. Orchestrates `frontend`, `backend`, `postgres`, `qdrant`, and `redis`.
+- **Containerization:** **Docker Compose**. Orchestrates `frontend`, `backend`, `postgres`, `qdrant`, `redis`, and `jaeger`.
 - **Optimization:** **Multi-Stage Builds** (Frontend) for minimal image size and **PyTorch CPU-only** (Backend) for reduced memory footprint.
+- **Observability:** **OpenTelemetry + Jaeger**. Full distributed tracing across all services.
+  - **Exporter:** OTLP/gRPC → Jaeger All-in-One (`jaegertracing/all-in-one`).
+  - **Auto-Instrumented:** FastAPI (HTTP spans), SQLAlchemy (DB query spans), Redis (cache spans).
+  - **Custom Spans:** Trident Engine signals (A, B, C) each produce named spans with `user_id` and `result_count` attributes.
+  - **Jaeger UI:** `http://localhost:16686` — search by service `vectorbox-backend`.
 - **Security Tools:**
-  - **Husky & Lint-Staged:** Pre-commit hooks for code quality.
+  - **Husky & Lint-Staged:** Pre-commit hooks for code quality (ESLint v10).
   - **pip-audit:** Scans Python dependencies for CVEs during build.
-  - **npm audit:** Scans JS dependencies.
+  - **pnpm audit:** Scans JS dependencies.
+- **Validation:**
+  - **Automated E2E Suite:** Playwright-based QA script (`tests/qa_automation.py`) checking Auth, Mobile UX, and Error States.
+
+### Authentication (v1.1)
+- **Model:** Netflix-style profiles with **Username + 4-digit PIN**.
+- **Hashing:** **passlib[bcrypt]** for PIN hashing.
+- **Sessions:** Long-lived **secret_token (UUID)** stored in cookies.
+- **Letterboxd Linking:** Decoupled from VectorBox username. Users link their Letterboxd profile separately.
 
 ---
 
 ## 2. Feature Catalogue (The "What")
 
 ### A. The Feed (Home Page)
-The feed is composed of multiple "Sections", generated largely in parallel by `FeedService`.
+The feed is composed of multiple "Sections", generated largely in parallel by `FeedService` using **Batch Fetching** to eliminate N+1 queries.
 
 | Section | Logic / Source |
 | :--- | :--- |
@@ -66,7 +109,7 @@ The feed is composed of multiple "Sections", generated largely in parallel by `F
 | **Popular on Letterboxd** | Fetches trending movies from TMDB/Letterboxd (cached via `ThreadingService`). |
 | **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated movie from user history, generates a *content-only* vector (ignoring title), and finds similar vectors in Qdrant. |
 | **Your Taste ([Cluster])** | **Centroid Search.** Picks one of the user's "Taste Clusters" (e.g., "80s Sci-Fi"), computes the centroid of that cluster, and searches Qdrant. |
-| **Hidden Gems** | **Filtered Discovery.** Searches Qdrant near the user's global profile centroid but strictly filters for: `Rating > 7.0`, `Vote Count 50-25k` (filters out blockbusters and trash). |
+| **Hidden Gems** | **Score-to-Hype Filtering (v1.1).** Searches Qdrant near user's global profile centroid with strict filters: `vectorbox_score > 75` (Quality Floor), `tmdb_popularity < 20` (Hype Ceiling), `vote_count > 500` (Validity Floor). Identifies critically acclaimed but underexposed films. |
 | **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic (see Algorithms) to find movies similar to the user's favorites. |
 | **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. |
 | **Random Picks** | Random selection from top 500 "VectorBox Scored" movies in DB. |
@@ -86,19 +129,25 @@ A natural language search interface powered by `nlp_search.py` with Dual-Model A
 - **Random Picker:** Selects a random movie from a filtered list of recommendations.
 
 ### D. Sync System
-- **RSS Sync:** `RSSService` pulls `letterboxd.com/username/rss`.
+- **RSS Sync:** `RSSService` pulls `letterboxd.com/{letterboxd_username}/rss`. Uses linked Letterboxd profile (v1.1).
 - **Phantom Check:** Detects if a movie on a given `watched_date` in DB matches the RSS feed. If not (and it's a "phantom" duplicate often caused by bad TMDB matching), it deletes it.
 - **Match Strategy:** 1. TMDB ID (if present in RSS) -> 2. Letterboxd URI -> 3. Title + Year match.
+
+### E. Background Tasks & Progress (v1.1)
+- **TaskStore:** Redis-based progress tracking for long-running operations.
+- **Endpoints:** `POST /upload/export` returns `task_id`, `GET /tasks/{task_id}` polls progress.
+- **Frontend:** `ProgressModal` component polls and displays real-time progress with step descriptions ("Enriching", "Clustering"). Replaces static success messages.
+- **Enrichment (v1.2):** `enrich_movie` self-healing logic now runs as a **Background Task** (FastAPI) to prevent blocking the main thread during recommendation generation.
 
 ---
 
 ## 3. The "Brain" of VectorBox (The Algorithms)
 
-### The "Trident" Hybrid System (Implemented)
+### The "Trident" Hybrid System (Fully Operational)
 VectorBox generates recommendations using three distinct engines fused via **Reciprocal Rank Fusion (RRF)**:
 1.  **Signal A: Vector (Vibe):** Qdrant search using dense embeddings. Captures "Vibe" and plot similarity.
 2.  **Signal B: Auteur (Directors):** Boosts movies by directors the user loves (explicit check against user's high-rated history).
-3.  **Signal C: Crowd (TMDB):** collaborative filtering from TMDB's vast user data ("People who liked X also liked Y") to ground recommendations in general popularity.
+3.  **Signal C: Crowd (TMDB):** Collaborates filtering from TMDB's vast user data ("People who liked X also liked Y") to ground recommendations in general popularity.
 
 ### The Scoring Formula
 Every recommendation gets a final score (0-100%) derived from:
@@ -127,7 +176,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ### Ingestion Pipeline
 1.  **Trigger:** `seed_db.py`, `RSS Sync`, or `Auto-Ingest` (when Qdrant returns a "Ghost" ID not in DB).
-2.  **TMDB API:** `TMDBClient` fetches metadata, credits, keywords, and release dates.
+2.  **TMDB API:** `TMDBClient` fetches metadata, credits, keywords, and release dates. **Singleton Instance** prevents connection exhaustion.
 3.  **Vector Generation:** `EmbeddingService` creates a synthetic text chunk: `Title + Overview + Genres + Keywords`. This chunk is embedded locally via `SentenceTransformer`.
 4.  **Storage:**
     -   **Postgres:** Stores metadata in `movies` table.
@@ -145,20 +194,39 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-## 5. Security & Safety Protocols
+## 5. Security & Safety Protocols (Implemented)
+
+### IDOR & Access Control (No-Trust Policy)
+- **Rule:** `user_id` is **NEVER** accepted from the client as a query/path parameter for protected resources.
+- **Mechanism:** Identity is strictly derived from the `vectorbox_token` session cookie via `dependencies.get_current_user`.
+- **Enforcement:** All sensitive endpoints (Uploads, Recommendations, User Data) use `verify_user_ownership` or implicit checking.
+
+### Session Management
+- **Token:** UUIDv4 `vectorbox_token`.
+- **Rotation:** Session tokens are rotated strictly upon login/logout to prevent fixation.
+- **CSRF:** `SameSite=Lax` cookie attribute prevents Cross-Site Request Forgery.
+- **HttpOnly:** Prevents XSS token theft.
 
 ### Supply Chain Security
-- **`minimum-release-age`:** Configured in `.npmrc` to block packages published < 24 hours ago.
+- **`minimum-release-age`:** Configured in `frontend/.npmrc` to block packages published < 24 hours ago.
 - **Audits:**
   - `audit_backend.ps1` runs `pip-audit --strict`.
-  - Frontend `package.json` runs `npm audit`.
+  - Frontend `package.json` runs `pnpm audit`.
 
 ### Privacy
 - **Email Dropping:** The `CSVParser` creates movie dictionaries containing *only* `{Title, Year, URI, Rating, Date}`. It ignores/drops the `Email` column from Letterboxd exports by virtue of not including it in the output schema.
 
 ### Container Hardening
-- **User:** Backend container runs as non-root user `cinematch` (UID 1000).
-- **Network:** Database ports (5432, 6333) are NOT exposed to the host machine in production configuration (commented out in `docker-compose.yml`), ensuring access only via the internal Docker network.
+- **User:** Backend container runs as non-root user `vectorbox` (UID 1000).
+- **Network Ports (Development vs Production):**
+    - **Development:** Database ports (5432, 6333) are **EXPOSED** in `docker-compose.yml` for convenience (debugging/GUI tools).
+    - **Production:** These ports **MUST** be commented out or protected by firewall to prevent external access. Only the internal Docker network should access them.
+
+### HTTP Security Headers
+The frontend (`next.config.js`) enforces:
+- `X-Frame-Options: DENY`
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: strict-origin-when-cross-origin`
 
 ---
 
@@ -183,4 +251,45 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **`ui/`**: Reusable primitives settings (buttons, dialogs).
 
 ---
+## 7. Disaster Recovery & Maintenance
+
+### Snapshot & Rotation Strategy
+We implement a "Snapshot & Rotation" strategy to ensure data resilience:
+- **Frequency:** Ad-hoc (Manual trigger via wrappers) or scheduled via host cron.
+- **Components:**
+  1.  **Qdrant:** Uses the Snapshot API (`PUT /collections/{name}/snapshots`) to capture vector shards.
+  2.  **Postgres:** Uses `pg_dump` to capture relational schema and data.
+- **Rotation:** The `backup_manager.py` script automatically enforces a policy to keep only the **last 5 backups**, deleting older ones to save disk space on resource-constrained hosts (Raspberry Pi).
+
+### Persistence Architecture
+- **Volume Mapping:** To prevent data loss during container recreation, backups are written to `/app/backups` inside the container but mapped to the Host machine at `./backups`.
+- **Mapping:** `host:./backups` <-> `container:/app/backups`.
+
+---
+
+## 8. Observability & Tracing
+
+### Architecture
+VectorBox uses **OpenTelemetry SDK** with a **Jaeger All-in-One** backend for distributed tracing. Every request produces a nested timeline visible in the Jaeger UI.
+
+### Instrumentation Layers
+| Layer | Instrumentation | Spans Generated |
+| :--- | :--- | :--- |
+| **HTTP** | `FastAPIInstrumentor` | One span per API request |
+| **Database** | `SQLAlchemyInstrumentor` | One span per SQL query |
+| **Cache** | `RedisInstrumentor` | One span per Redis command |
+| **Trident A** | Custom (`telemetry.py`) | `trident.signal_a.because_you_watched` |
+| **Trident B** | Custom (`telemetry.py`) | `trident.signal_b.your_taste` |
+| **Trident C** | Custom (`telemetry.py`) | `trident.signal_c.hidden_gems` |
+
+### Span Attributes
+All Trident spans include: `user_id`, `country`, `result_count`. Signal A also includes `anchor_movie`. Signal B includes `cluster_id`.
+
+### Access
+- **Jaeger UI:** `http://localhost:16686`
+- **Service Name:** `vectorbox-backend`
+- **Config:** `telemetry.py` — reads `OTEL_EXPORTER_OTLP_ENDPOINT` and `OTEL_SERVICE_NAME` from env.
+
+---
+
 **End of Project Master Guide**

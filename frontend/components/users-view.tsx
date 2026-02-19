@@ -1,14 +1,14 @@
 "use client";
 
 import { UploadZone } from "@/components/upload-zone";
-import { User } from "@/lib/api";
+import { VectorboxUser } from "@/lib/api";
 import { useLanguage } from "@/components/language-provider";
 
 interface UsersViewProps {
-    users: User[];
+    users: VectorboxUser[];
     currentUserId: number | null;
     onUserSelect: (id: number) => void;
-    onUserCreated: (user: User) => void;
+    onUserCreated: (user: VectorboxUser) => void;
     onUploadSuccess: (userId: number) => void;
 }
 
@@ -32,9 +32,9 @@ export function UsersView({
 
             <div className="bg-card border rounded-xl p-8 shadow-sm">
                 <UploadZone
-                    users={users}
-                    currentUserId={currentUserId}
-                    onUserSelect={onUserSelect}
+                    registeredUsers={users}
+                    activeSessionUserId={currentUserId}
+                    onSessionUserSelect={onUserSelect}
                     onUserCreated={onUserCreated}
                     onUploadSuccess={onUploadSuccess}
                 />

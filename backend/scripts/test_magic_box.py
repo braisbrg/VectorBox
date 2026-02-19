@@ -86,12 +86,12 @@ def construct_qdrant_filter_simulation(filters: Dict[str, Any]) -> Dict:
 
     # Build final filter object
     qdrant_filter = Filter(must=must_conditions if must_conditions else None, 
-                           must_not=must_not_conditions if must_not_conditions else None)
+                            must_not=must_not_conditions if must_not_conditions else None)
     return qdrant_filter.to_dict()
 
 
 async def run_stress_test():
-    print("🔮 MAGIC BOX STRESS TEST 🔮")
+    print("=== MAGIC BOX STRESS TEST ===")
     print("==================================================")
     
     test_cases = [
@@ -103,32 +103,32 @@ async def run_stress_test():
     ]
     
     for i, query in enumerate(test_cases, 1):
-        print(f"\n🧪 TEST CASE #{i}: '{query}'")
+        print(f"\n[TEST CASE #{i}: '{query}']")
         print("-" * 50)
         
         try:
-            # 1. Parse Intent
-            print("⏳ Analyzing with Llama 3.3...")
+            # 1. Intent Analysis
+            # print("Analyzing with Llama 3.3...")
             intent: MovieSearchIntent = await parse_user_intent(query)
             
             # Print Raw Intent
-            print("\n📄 GENERATED INTENT (JSON):")
+            print("\nGENERATED INTENT (JSON):")
             intent_dict = intent.model_dump()
             print(json.dumps(intent_dict, indent=2, ensure_ascii=False))
             
             # 2. Construct Filter
-            print("\n🛡️ QDRANT FILTER (Simulation):")
+            print("\nQDRANT FILTER (Simulation):")
             qdrant_filter = construct_qdrant_filter_simulation(intent_dict)
             
             # Custom plain print for readability
             print(json.dumps(qdrant_filter, indent=2, default=lambda o: o.__dict__))
             
             # 3. Semantic Query
-            print(f"\n🧠 SEMANTIC EXPANSION:\n'{intent.semantic_query}'")
-            print(f"\n🤔 REASONING:\n{intent.reasoning}")
+            print(f"SEMANTIC EXPANSION:\n'{intent.semantic_query}'")
+            print(f"REASONING:\n{intent.reasoning}")
             
         except Exception as e:
-            print(f"❌ ERROR: {e}")
+            print(f"ERROR: {e}")
             import traceback
             traceback.print_exc()
 

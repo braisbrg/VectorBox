@@ -1,23 +1,27 @@
 {
+    "app": {
+        "title": "VectorBox",
+        "description": "Advanced movie recommendation system",
+        "welcome": "Welcome back,",
+        "guide": "Guide",
+        "logout": "Logout"
+    },
     "sidebar": {
         "feed": "Your Feed",
         "grid": "Explore",
         "watchlist": "Watchlist",
         "ai_search": "Magic Box",
         "more_like_this": "Clones",
+        "compatibility": "Compatibility",
         "users": "Users",
         "settings": "Settings",
         "current_user": "Current User"
     },
-    "search": {
-        "placeholder": "What vibe are you looking for today? (e.g. 80s cyberpunk)",
-        "error": "Neural Net connection error",
-        "module_title": "AI Module",
-        "status_active": "// NEURAL NET ACTIVE //",
-        "clear_results": "Clear Data",
-        "results_found": "movies detected",
-        "no_results": "No matches in database.",
-        "analyzing": "Analyzing intent..."
+    "feed": {
+        "global": "Global",
+        "my_watchlist": "My Watchlist",
+        "reset": "Reset",
+        "scope_tooltip": "Global: Recommendations from the entire database.\nMy Watchlist: Only shows recommendations for movies already in your Letterboxd Watchlist."
     },
     "sections": {
         "available_now": "Available Now",
@@ -31,7 +35,212 @@
         "group_vibe": "Group Sync",
         "hybrid_picks": "Hybrid Picks for You",
         "directors_picks": "From Your Favorite Directors",
-        "crowd_picks": "Popular Among Fans"
+        "crowd_picks": "Popular Among Fans",
+        "watchlist_top_rated": "Top Rated in Your Watchlist",
+        "watchlist_short": "Short & Sweet (Watchlist)",
+        "random_watchlist": "Shuffle: From Your Watchlist"
+    },
+    "search": {
+        "placeholder": "What vibe are you looking for today? (e.g. 80s cyberpunk)",
+        "error": "Neural Net connection error",
+        "module_title": "AI Module",
+        "status_active": "// NEURAL NET ACTIVE //",
+        "clear_results": "Clear Data",
+        "results_found": "movies detected",
+        "no_results": "No matches in database.",
+        "analyzing": "Analyzing intent...",
+        "searching": "Searching..."
+    },
+    "magic_search": {
+        "high_intelligence": "High Intelligence",
+        "toggle_deep": "Toggle Deep Analysis (Slower, Smarter)",
+        "placeholder_deep": "Ask complex questions...",
+        "powered_by_tier1": "Powered by Llama 4 Scout (Tier 1)",
+        "powered_by_tier2": "Powered by Llama 3.3 70B (Tier 2)",
+        "search_results": "Search Results",
+        "page_of": "Page {current} of {total}",
+        "aria_toggle_deep": "Toggle deep analysis mode",
+        "aria_clear_search": "Clear search input",
+        "aria_submit_search": "Submit search"
+    },
+    "grid": {
+        "filters": "Filters",
+        "clear": "Clear",
+        "scope": {
+            "global": "Global",
+            "watchlist": "Watchlist"
+        },
+        "active_filters": "Active Filters",
+        "clear_all": "Clear All",
+        "streaming_services": "Streaming Services",
+        "year_from": "Year From",
+        "year_to": "Year To",
+        "genre": "Genre",
+        "all_genres": "All Genres",
+        "max_runtime": "Max Runtime",
+        "min_rating": "Min Rating",
+        "min_votes": "Min Popularity (Votes)",
+        "language": "Language",
+        "any_language": "Any Language",
+        "keywords": "Keywords",
+        "no_results": "No recommendations found. Try adjusting your filters.",
+        "loading": "Loading recommendations...",
+        "error": "Failed to load recommendations."
+    },
+    "movie": {
+        "synopsis": "Synopsis",
+        "why_recommended": "Why Recommended",
+        "cast": "Cast",
+        "director": "Director",
+        "runtime": "Runtime",
+        "rating": "Rating",
+        "release_date": "Release Date",
+        "genres": "Genres",
+        "watch_on": "Watch on",
+        "no_providers": "No streaming providers found",
+        "trailer": "Trailer",
+        "more_info": "More Info",
+        "vb_score": "VectorBox Score",
+        "match_prob": "Match Probability",
+        "tmdb_rating": "TMDB Rating",
+        "imdb_rating": "IMDb",
+        "rotten_tomatoes": "Rotten Tomatoes",
+        "metacritic": "Metacritic",
+        "letterboxd_rating": "Letterboxd Rating",
+        "flip_card": "Show synopsis",
+        "show_logic": "Show recommendation logic",
+        "close_panel": "Close panel",
+        "no_synopsis": "No synopsis available",
+        "no_contributors": "No contributor data available"
+    },
+    "guide": {
+        "title": "App Guide",
+        "welcome": "Welcome! Here's a quick tour of your sidebar navigation:",
+        "feed": "Your personalized movie rows (Hidden Gems, Because You Watched...).",
+        "grid": "Filter movies by mood, genre, year, and runtime.",
+        "watchlist": "Your saved movies with streaming availability filters.",
+        "ai_search": "Find movies using natural language (e.g. \"80s sci-fi with synth soundtrack\").",
+        "more_like_this": "Get recommendations based on a specific movie you love.",
+        "got_it": "Got it!"
+    },
+    "settings": {
+        "title": "Settings",
+        "subtitle": "Customize your VectorBox experience.",
+        "theme": {
+            "title": "Appearance",
+            "subtitle": "Select interface theme.",
+            "light": "Light",
+            "dark": "Dark",
+            "system": "System",
+            "system_desc": "Theme follows your system settings.",
+            "current": "Current theme: {theme}"
+        },
+        "show_low_quality": "Show Low Quality",
+        "show_low_quality_desc": "Include lower rated movies in recommendations.",
+        "about": {
+            "title": "About VectorBox",
+            "desc": "Vector-based recommendation system powered by your Letterboxd data.",
+            "version": "v1.1.0"
+        }
+    },
+    "users": {
+        "title": "Manage Users & Uploads",
+        "subtitle": "Select a user profile or create a new one to upload Letterboxd data.",
+        "create_new": "Create New User",
+        "select_user": "Select User",
+        "upload_data": "Upload Data",
+        "why": {
+            "title": "Why upload data?",
+            "desc": "Uploading your Letterboxd export allows our AI to learn your taste profile, recommend hidden gems, and find movies similar to your favorites."
+        },
+        "how": {
+            "title": "How to export",
+            "desc": "Go to Letterboxd Settings > Import & Export > Export Data. Download the zip file and drop it here."
+        },
+        "status": {
+            "uploading": "Uploading...",
+            "processing": "Processing...",
+            "success": "Success!",
+            "error": "Error uploading data"
+        }
+    },
+    "group_vibe": {
+        "title": "Group Vibe Check",
+        "desc": "Enter multiple Letterboxd usernames to find movies that match everyone's taste.",
+        "add_user": "Add username...",
+        "analyze": "Find Group Movies",
+        "analyzing": "Analyzing Vibe...",
+        "results_title": "Group Recommendations",
+        "contributors": "Contributors"
+    },
+    "auth": {
+        "welcome": "Login",
+        "username": "USERNAME",
+        "pin": "PIN",
+        "placeholders": {
+            "username": "Enter username...",
+            "pin": "1234"
+        },
+        "login_btn": "ENTER SYSTEM",
+        "new_user": "New Agent?",
+        "register_link": "Request Access",
+        "create_btn": "Create Profile",
+        "register_title": "New User Registration",
+        "try_again_in": "Try again in {seconds}s",
+        "back_to_login": "Back to Login",
+        "errors": {
+            "rate_limit": "Rate limit exceeded. Wait {seconds} seconds.",
+            "invalid_input": "Invalid input.",
+            "username_short": "Username too short.",
+            "invalid_credentials": "Invalid credentials.",
+            "generic": "Authentication failed."
+        }
+    },
+    "onboarding": {
+        "init_required": "Initialization Required",
+        "welcome_agent": "Welcome, Agent",
+        "activation_msg": "To activate your recommender system, you must upload your Letterboxd history.",
+        "abort": "ABORT_SESSION",
+        "link_title": "Link Letterboxd",
+        "link_desc": "Link your username to unlock uploads and syncing.",
+        "placeholder_user": "Letterboxd Username",
+        "btn_link": "Save",
+        "processing_title": "Processing export...",
+        "processing_desc": "Parsing ratings, watchlist, and likes...",
+        "upload_title": "Upload Letterboxd ZIP",
+        "upload_desc": "Drag and drop or click to browse",
+        "btn_choose": "Choose ZIP File",
+        "btn_start": "Start Upload",
+        "btn_cancel": "Cancel",
+        "footer_export": "Export your data from",
+        "confirm_title": "Confirm Identity",
+        "confirm_yes": "Yes, Link Account",
+        "confirm_no": "No, let me fix it",
+        "confirm_warning": "Are you sure this is your correct Letterboxd handle?",
+        "confirm_warning_hint": "A typo here will result in wrong recommendations."
+    },
+    "rss": {
+        "sync_btn": "Sync RSS",
+        "info": "Syncs last 50 items. Use ZIP upload for full history.",
+        "synced": "Synced:",
+        "new": "new",
+        "watched": "watched",
+        "updated": "updated",
+        "watchlist": "watchlist",
+        "error": "Sync failed."
+    },
+    "dashboard": {
+        "system_ready": "SYSTEM_READY // USER:",
+        "reset": "Reset",
+        "scope_tooltip": "Toggle between global recommendations or only from your Watchlist"
+    },
+    "sidebar_desc": {
+        "feed": "Personalized recommendations",
+        "grid": "Browse by mood & filters",
+        "watchlist": "Your saved movies",
+        "ai_search": "Natural language search",
+        "more_like_this": "Find similar movies",
+        "group_vibe": "Find shared favorites"
     },
     "ui": {
         "previous": "Previous",
@@ -40,6 +249,17 @@
         "retry": "Retry",
         "uploading": "UPLOADING...",
         "menu": "MENU"
+    },
+    "aria": {
+        "expand_sidebar": "Expand sidebar",
+        "collapse_sidebar": "Collapse sidebar",
+        "scroll_left": "Scroll carousel left",
+        "scroll_right": "Scroll carousel right",
+        "open_menu": "Open menu",
+        "close_menu": "Close menu",
+        "more_info": "More information",
+        "reroll_wildcard": "Reroll wildcard recommendations",
+        "reroll_random": "Get new random picks"
     },
     "errors": {
         "generic": "Glitch in the Matrix.",

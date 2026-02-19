@@ -2,18 +2,18 @@ services:
   # PostgreSQL Database
   postgres:
     image: postgres:15-alpine
-    container_name: cinematch-postgres
+    container_name: vectorbox-postgres
     environment:
-      POSTGRES_DB: cinematch
-      POSTGRES_USER: cinematch_user
-      POSTGRES_PASSWORD: cinematch_pass
+      POSTGRES_DB: vectorbox
+      POSTGRES_USER: vectorbox_user
+      POSTGRES_PASSWORD: change_me_in_prod
     # Security: Ports removed for production (internal access only)
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cinematch_user -d cinematch"]
+      test: ["CMD-SHELL", "pg_isready -U vectorbox_user -d vectorbox"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -21,7 +21,7 @@ services:
   # Qdrant Vector Database
   qdrant:
     image: qdrant/qdrant:latest
-    container_name: cinematch-qdrant
+    container_name: vectorbox-qdrant
     # Security: Ports removed for production (internal access only)
     ports:
       - "6333:6333"
@@ -32,7 +32,7 @@ services:
   # Redis Cache
   redis:
     image: redis:7-alpine
-    container_name: cinematch-redis
+    container_name: vectorbox-redis
     # Security: Ports removed for production (internal access only)
     # ports:
     #   - "6379:6379"
@@ -45,16 +45,27 @@ services:
       timeout: 5s
       retries: 5
 
+  # Observability: Jaeger All-in-One (Tracing UI + OTLP Collector)
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: vectorbox-jaeger
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC receiver
+      - "4318:4318"    # OTLP HTTP receiver
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+
   # FastAPI Backend
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: cinematch-backend
+    container_name: vectorbox-backend
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://cinematch_user:cinematch_pass@cinematch-postgres:5432/cinematch
+      - DATABASE_URL=postgresql+asyncpg://vectorbox_user:change_me_in_prod@postgres:5432/vectorbox
       - REDIS_URL=redis://redis:6379
       - QDRANT_URL=http://qdrant:6333
       - TMDB_API_KEY=${TMDB_API_KEY}
@@ -63,8 +74,12 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OMDB_API_KEY=${OMDB_API_KEY}
+      # Observability
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+      - OTEL_SERVICE_NAME=vectorbox-backend
     volumes:
       - ./backend:/app
+      - ./backups:/app/backups
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,18 +87,21 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+      jaeger:
+        condition: service_started
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --workers 1
 
   # Next.js Frontend
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: cinematch-frontend
+    container_name: vectorbox-frontend
     ports:
       - "3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - BACKEND_URL=http://backend:8000
     depends_on:
       - backend
 

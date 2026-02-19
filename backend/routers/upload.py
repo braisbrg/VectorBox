@@ -1,6 +1,7 @@
 """
 Upload router for CSV file processing
 Security: File validation, rate limiting, background tasks
+v1.1: Uses Redis-based TaskStore for progress tracking
 """
 from fastapi import APIRouter, UploadFile, File, Depends, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -11,6 +12,7 @@ from slowapi.util import get_remote_address
 import logging
 
 from config import get_db
+from dependencies import get_current_user, verify_user_ownership
 from services.tmdb_client import TMDBClient
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
@@ -18,136 +20,170 @@ from services.clustering_service import ClusteringService
 from services.provider_service import ProviderService
 from services.omdb_client import OMDbClient
 from services.data_processor import DataProcessor
+from services.task_store import get_task_store
 from models.database import User, Movie, UserRating
-from models.schemas import CSVUploadResponse
+from models.schemas import CSVUploadResponse, TokenResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
 
-# In-memory status tracking (Simple for single instance)
+# Legacy in-memory status (kept for backwards compatibility)
 upload_status = {}
 
 @router.get("/status/{user_id}")
-async def get_upload_status(user_id: int):
-    """Get current upload status for user"""
+async def get_upload_status(
+    user_id: int,
+    current_user: TokenResponse = Depends(verify_user_ownership)
+):
+    """Get current upload status for user (legacy endpoint)"""
     return upload_status.get(user_id, {"status": "idle", "message": "", "progress": 0})
+
+async def process_single_movie(
+    movie_data: dict,
+    user_id: int,
+    db_session: AsyncSession,
+    movie_service: "MovieService"
+):
+    """
+    Helper to process a single movie in a batch.
+    Returns: (Movie, needs_vector_update)
+    """
+    try:
+        # A. Check if exists + Self-Repair
+        tmdb = movie_service.tmdb # Re-use service clients
+        
+        # Search TMDB
+        tmdb_result = await tmdb.search_movie(
+            movie_data["title"],
+            movie_data.get("year")
+        )
+        
+        existing_movie = None
+        if tmdb_result:
+            tmdb_id = tmdb_result["id"]
+            
+            # Check DB
+            result = await db_session.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
+            existing_movie = result.scalar_one_or_none()
+            
+            if existing_movie:
+                # Update logic (Self-Heal) - skip_qdrant=True
+                # Return True if it needed update
+                updated = await movie_service.enrich_movie(existing_movie, skip_qdrant=True)
+                # If updated=True, it means vector is stale OR new data added
+                return existing_movie, updated
+            else:
+                # Ingest new - skip_qdrant=True
+                new_movie = await movie_service.ingest_movie(
+                    tmdb_id=tmdb_id,
+                    letterboxd_uri=movie_data.get("letterboxd_uri"),
+                    skip_qdrant=True
+                )
+                return new_movie, True # New movie needs vector
+        
+        return None, False
+        
+    except Exception as e:
+        logger.error(f"Error processing movie {movie_data.get('title')}: {e}")
+        return None, False
 
 async def enrich_movies_background(
     movies_data: list,
     user_id: int,
-    db: AsyncSession
+    db: AsyncSession,
+    task_id: str = None
 ):
     """
-    Background task to enrich movies with TMDB data and generate embeddings
+    Background task to enrich movies with TMDB data and generate embeddings.
+    Refactored v2.0: Chunked processing (Batch 50) + Parallel Fetch + Batch Upsert
     """
+    # Initialize Services
     tmdb = TMDBClient()
-    omdb = OMDbClient()
+    omdb = OMDbClient() # MovieService uses its own, but we keep this for cleanup if needed? 
+    # Actually MovieService manages its own clients. We should rely on MovieService lifecycle.
+    
+    # We create ONE MovieService instance for sharing clients across the loop
+    from services.movie_service import MovieService
+    movie_service = MovieService(db)
+    
     embedding_service = EmbeddingService()
     qdrant = QdrantService()
-    provider_service = ProviderService(db, tmdb)
+    task_store = get_task_store()
     
-    enriched_count = 0
     total_movies = len(movies_data)
+    CHUNK_SIZE = 50
+    enriched_count = 0
     
-    # Update status
+    # Legacy status init
     upload_status[user_id] = {
         "status": "processing",
-        "message": "Starting enrichment...",
+        "message": "Starting batch enrichment...",
         "progress": 0,
         "total": total_movies,
         "current": 0
     }
     
+    if task_id:
+        await task_store.update_progress(task_id, 0, f"Starting batch processing of {total_movies} movies...")
+    
+    import asyncio
+    
     try:
-        for i, movie_data in enumerate(movies_data):
-            existing_movie = None
-            try:
-                # Update progress every 5 movies
-                if i % 5 == 0:
-                    upload_status[user_id] = {
-                        "status": "processing",
-                        "message": f"Enriching movie {i+1}/{total_movies}",
-                        "progress": int((i / total_movies) * 100),
-                        "total": total_movies,
-                        "current": i + 1
-                    }
+        # Process in Chunks
+        for i in range(0, total_movies, CHUNK_SIZE):
+            chunk = movies_data[i : i + CHUNK_SIZE]
+            chunk_idx = (i // CHUNK_SIZE) + 1
+            total_chunks = (total_movies + CHUNK_SIZE - 1) // CHUNK_SIZE
+            
+            logger.info(f"Processing Batch {chunk_idx}/{total_chunks} ({len(chunk)} movies)...")
+            
+            # Update Progress
+            progress = int((i / total_movies) * 80)
+            msg = f"Processing Batch {chunk_idx}/{total_chunks}"
+            
+            if task_id:
+                await task_store.update_progress(task_id, progress, msg)
+            
+            # 1. Parallel Resolve & Ingest (DB Phase)
+            tasks = []
+            for m_data in chunk:
+                tasks.append(process_single_movie(m_data, user_id, db, movie_service))
+            
+            # Wait for all DB operations in this chunk
+            results = await asyncio.gather(*tasks)
+            # results is list of (movie_obj, needs_vector)
+            
+            # 2. Update User Ratings (DB Phase)
+            # We can do this serially securely or parallel. Serial is fine for 50 items (fast in DB).
+            movies_to_vectorize = []
+            
+            for idx, (movie, needs_vector) in enumerate(results):
+                if not movie: continue
                 
-                if not existing_movie:
-                    # Search TMDB
-                    tmdb_result = await tmdb.search_movie(
-                        movie_data["title"],
-                        movie_data.get("year")
-                    )
-                    
-                    if tmdb_result:
-                        tmdb_id = tmdb_result["id"]
-                        
-                        # CRITICAL: Check if this TMDB ID exists in DB (even if title/year didn't match exactly)
-                        result = await db.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
-                        existing_movie_by_tmdb = result.scalar_one_or_none()
-
-                        if existing_movie_by_tmdb:
-                            existing_movie = existing_movie_by_tmdb
-                        else:
-                            # Use MovieService to ingest (with full enrichment)
-                            # We initialize it here to use the shared DB session
-                            from services.movie_service import MovieService
-                            movie_service = MovieService(db)
-                            
-                            new_movie = await movie_service.ingest_movie(
-                                tmdb_id=tmdb_id,
-                                letterboxd_uri=movie_data.get("letterboxd_uri")
-                            )
-                            
-                            
-                            if new_movie:
-                                existing_movie = new_movie
-                                enriched_count += 1
-                        
-                        # Self-Heal: Ensure existing movie has keywords/vector (Phase 13)
-                        if existing_movie:
-                             from services.movie_service import MovieService
-                             # Note: instantiating service inside loop might be heavy if not reused, 
-                             # but here we need it occasionally. Better to init outside if frequent.
-                             # But existing_movie logic is nested.
-                             # Re-using previous import if available.
-                             if 'movie_service' not in locals():
-                                 from services.movie_service import MovieService
-                                 movie_service = MovieService(db)
-                                 
-                             await movie_service.enrich_movie(existing_movie)
+                movie_data = chunk[idx]
                 
-                # Create or Update UserRating record
-                if existing_movie:
-                    # Check if rating already exists
+                # Update UserRating
+                try:
                     result = await db.execute(
                         select(UserRating).where(
                             UserRating.user_id == user_id,
-                            UserRating.movie_id == existing_movie.id
+                            UserRating.movie_id == movie.id
                         )
                     )
                     existing_rating = result.scalar_one_or_none()
                     
                     if existing_rating:
-                        # Update existing record with new flags if present
-                        if movie_data.get("rating"):
-                            existing_rating.rating = movie_data["rating"]
-                        if movie_data.get("is_watchlist"):
-                            existing_rating.is_watchlist = True
-                        if movie_data.get("is_liked"):
-                            existing_rating.is_liked = True
-                        if movie_data.get("is_watched"):
-                            existing_rating.is_watched = True
-                        if movie_data.get("watched_date"):
-                            existing_rating.watched_date = movie_data["watched_date"]
-                        if movie_data.get("review"):
-                            existing_rating.review = movie_data["review"]
+                         if movie_data.get("rating"): existing_rating.rating = movie_data["rating"]
+                         if movie_data.get("is_watchlist"): existing_rating.is_watchlist = True
+                         if movie_data.get("is_liked"): existing_rating.is_liked = True
+                         if movie_data.get("is_watched"): existing_rating.is_watched = True
+                         if movie_data.get("watched_date"): existing_rating.watched_date = movie_data["watched_date"]
+                         if movie_data.get("review"): existing_rating.review = movie_data["review"]
                     else:
-                        # Create new record
                         rating = UserRating(
                             user_id=user_id,
-                            movie_id=existing_movie.id,
+                            movie_id=movie.id,
                             rating=movie_data.get("rating"),
                             is_watchlist=movie_data.get("is_watchlist", False),
                             is_liked=movie_data.get("is_liked", False),
@@ -156,21 +192,91 @@ async def enrich_movies_background(
                             review=movie_data.get("review")
                         )
                         db.add(rating)
-                
-                await db.commit()
-                
-            except Exception as e:
-                logger.error(f"Error enriching movie {movie_data.get('title')}: {e}")
-                await db.rollback()
-                continue
-        
+                    
+                    if needs_vector:
+                        movies_to_vectorize.append(movie)
+                        
+                except Exception as e:
+                    logger.error(f"Rating update failed for {movie.title}: {e}")
+
+            # Commit batch DB changes
+            await db.commit()
+            
+            # 3. Batch Vectorize & Upsert (Qdrant Phase)
+            if movies_to_vectorize:
+                try:
+                    logger.info(f"Generating vectors for {len(movies_to_vectorize)} movies in batch...")
+                    
+                    # Prepare data dicts for embedding service
+                    data_for_embedding = []
+                    for m in movies_to_vectorize:
+                        data_for_embedding.append({
+                            "title": m.title,
+                            "overview": m.overview,
+                            "genres": m.genres,
+                            "keywords": m.keywords or []
+                        })
+                    
+                    # Generate Batch Embeddings (Fast)
+                    vectors = embedding_service.generate_batch_embeddings(data_for_embedding)
+                    
+                    # Prepare Qdrant Points
+                    from qdrant_client.models import PointStruct
+                    points = []
+                    for idx, m in enumerate(movies_to_vectorize):
+                        points.append(PointStruct(
+                            id=m.tmdb_id,
+                            vector=vectors[idx].tolist(),
+                            payload={
+                                "title": m.title,
+                                "year": m.year,
+                                "genres": m.genres,
+                                "rating": m.vote_average,
+                                "vote_count": m.vote_count,
+                                "runtime": m.runtime,
+                                "poster_path": m.poster_path,
+                                "vectorbox_score": m.vectorbox_score,
+                                "imdb_rating": m.imdb_rating,
+                                "metacritic_rating": m.metacritic_rating,
+                                "rotten_tomatoes_rating": m.rotten_tomatoes_rating,
+                                "title_es": m.title_es,
+                                "overview_es": m.overview_es,
+                                "keywords": m.keywords
+                            }
+                        ))
+                    
+                    # Upsert Batch
+                    if points:
+                        await qdrant.upsert_batch(points)
+                        enriched_count += len(points)
+                        
+                except Exception as e:
+                    logger.error(f"Batch vector upsert failed: {e}")
+            
+            # End of Chunk Loop
+            
         # After all movies processed, create clusters
+        if task_id:
+            await task_store.update_progress(task_id, 85, "Analyzing your taste profile...")
+        
         try:
             clustering = ClusteringService()
             await clustering.create_user_clusters(user_id, db)
             logger.info(f"Created clusters for user {user_id}")
         except Exception as e:
             logger.error(f"Failed to create clusters: {e}")
+        
+        # v1.1: Pre-cache feed data (Eager Calculation)
+        if task_id:
+            await task_store.update_progress(task_id, 95, "Pre-caching your feed...")
+        
+        try:
+            # Invalidate any existing cache for this user
+            from services.cache_service import invalidate_user_cache
+            await invalidate_user_cache(user_id)
+            logger.info(f"Invalidated cache for user {user_id}")
+        except Exception as e:
+            logger.warning(f"Cache invalidation failed: {e}")
             
         # Mark as complete
         upload_status[user_id] = {
@@ -179,8 +285,13 @@ async def enrich_movies_background(
             "progress": 100
         }
         
+        if task_id:
+            await task_store.complete_task(task_id, "Upload complete!")
+        
     finally:
-        await tmdb.close()
+        # Close the shared service (closes internal TMDB/OMDb clients)
+        await movie_service.close()
+
 
 
 @router.post("/export", response_model=CSVUploadResponse)
@@ -189,13 +300,15 @@ async def upload_export(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    user_id: int = 1,  # TODO: Get from auth token
+    current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Upload Letterboxd export ZIP file.
     Parses ratings, watchlist, likes, and watched history.
     """
+    user_id = current_user.user_id
+
     try:
         # Parse ZIP
         # Security: Validate file size
@@ -248,21 +361,35 @@ async def upload_export(
             db.add(user)
             await db.commit()
         
+        # v1.1: Strict Onboarding - Require linked Letterboxd username
+        if not user.letterboxd_username:
+            raise HTTPException(
+                status_code=400, 
+                detail="Please link your Letterboxd username before uploading."
+            )
+        
+        # v1.1: Create task for progress tracking
+        task_store = get_task_store()
+        task_id = task_store.generate_task_id()
+        await task_store.create_task(task_id, 100, "Preparing upload...", user_id=user_id)
+        
         # Process in background to avoid timeout
         background_tasks.add_task(
             enrich_movies_background,
             movies_data,
             user_id,
-            db
+            db,
+            task_id
         )
         
-        return CSVUploadResponse(
-            status="processing",
-            message=f"Processing {len(movies_data)} movies from export",
-            movies_processed=len(movies_data),
-            movies_enriched=0,
-            errors=errors[:10]
-        )
+        return {
+            "status": "processing",
+            "message": f"Processing {len(movies_data)} movies from export",
+            "movies_processed": len(movies_data),
+            "movies_enriched": 0,
+            "errors": errors[:10],
+            "task_id": task_id  # v1.1: Return task_id for progress polling
+        }
         
     except HTTPException:
         raise

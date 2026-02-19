@@ -21,6 +21,11 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     country_code = Column(String(2), default="ES")  # ISO 3166-1 alpha-2
     
+    # v1.1: Decoupled Auth columns
+    pin_hash = Column(String(255), nullable=True)  # bcrypt hash of 4-digit PIN
+    secret_token = Column(UUID(as_uuid=True), unique=True, nullable=True, index=True)  # Session token
+    letterboxd_username = Column(String(50), nullable=True, index=True)  # Linked Letterboxd profile
+    
     # Relationships
     ratings = relationship("UserRating", back_populates="user", cascade="all, delete-orphan")
     clusters = relationship("UserCluster", back_populates="user", cascade="all, delete-orphan")
@@ -58,10 +63,9 @@ class Movie(Base):
     rotten_tomatoes_rating = Column(Integer)
     vectorbox_score = Column(Float)
     title_es = Column(String(500))
-    vectorbox_score = Column(Float)
-    title_es = Column(String(500))
     overview_es = Column(Text)
     collection_id = Column(Integer, index=True)  # New: For Franchise Bias fix
+    release_dates = Column(JSONB)  # Localized release dates map
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

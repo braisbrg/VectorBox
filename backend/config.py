@@ -42,5 +42,7 @@ async def get_db() -> AsyncSession:
 
 async def init_db():
     """Initialize database tables"""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # v1.1: Disabled to allow Alembic to manage schema
+    # async with engine.begin() as conn:
+    #     await conn.run_sync(Base.metadata.create_all)
+    pass
