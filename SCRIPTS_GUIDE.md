@@ -13,7 +13,7 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 | **`reset_profiles.py`** | **"The Refresh Button".** Forces a complete rebuild of User Clusters. Truncates `user_clusters` table and wipes Redis cache. | `docker-compose exec backend python scripts/reset_profiles.py` |
 | **`create_qdrant_indexes.py`** | **Performance.** Creates payload indexes for `vote_count`, `vectorbox_score`, `popularity`, `year`, and `genres` to enable fast filtering in Qdrant. | `docker-compose exec backend python scripts/create_qdrant_indexes.py` |
 | **`test_magic_box.py`** | **NLP Verification.** Runs a stress test on the Groq/Llama 3.3 pipeline to verify query parsing and Qdrant filter construction. | `docker-compose exec backend python scripts/test_magic_box.py` |
-| **`security_audit.py`** | **PyTorch Security.** Runs pip-audit and checks for dependency vulnerabilities. | `docker-compose exec backend python scripts/security_audit.py` |
+| **`security_audit.py`** | **Security Audit.** Runs `pip-audit --require-hashes` against `requirements.lock` for strict hash-verified CVE scanning. Falls back to `pip freeze` + `--no-deps` if no lockfile is present. Ignores known false positives (torchvision CPU builds, diskcache). | `docker-compose exec backend python scripts/security_audit.py` |
 | **`wait_for_db.py`** | **Infrastructure.** Blocks boot until Postgres is ready using `socket` check. Used automatically in Docker entrypoint. | *(Internal use only)* |
 | **`backup_manager.py`** | **Disaster Recovery.** Creates a comprehensive snapshot of Postgres (Schema + Data) and Qdrant (Shards), zips them, and rotates old backups (Max 5). | `docker-compose exec backend python scripts/backup_manager.py` |
 
@@ -42,13 +42,27 @@ Run these from the root directory of the project on your host machine.
 ## 🕵️ Security & Audit
 Standard auditing protocols for this project.
 
-1.  **Python Vulnerabilities:**
+1.  **Python Vulnerabilities (Hash-Verified):**
     ```bash
-    docker-compose exec backend pip-audit
+    docker-compose exec backend python scripts/security_audit.py
     ```
-    *Checks all installed `requirements.txt` packages against the PyPA Advisory Database.*
+    *Runs `pip-audit --require-hashes` against `backend/requirements.lock`. Strict cryptographic verification. No warnings.*
 
-2.  **Container Vulnerabilities:**
+2.  **Regenerate Lockfile** (after `requirements.txt` changes):
+    ```bash
+    docker-compose exec backend pip-compile --generate-hashes \
+      --extra-index-url https://download.pytorch.org/whl/cpu \
+      requirements.txt --output-file requirements.lock
+    ```
+    *Must be committed alongside any `requirements.txt` change.*
+
+3.  **Frontend Vulnerabilities:**
+    ```bash
+    cd frontend && pnpm audit
+    ```
+    *Scans npm dependency tree. High-severity issues are blocked via `pnpm.overrides`.*
+
+4.  **Container Vulnerabilities:**
     ```bash
     docker scout quickview vectorbox-backend
     ```
