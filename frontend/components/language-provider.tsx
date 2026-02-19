@@ -25,6 +25,8 @@ export function LanguageProvider({ children }: { children: React.ReactNode }) {
     const handleSetLanguage = (lang: Language) => {
         setLanguage(lang);
         localStorage.setItem("vectorbox_language", lang);
+        // Set NEXT_LOCALE cookie for server-side persistence
+        document.cookie = `NEXT_LOCALE=${lang}; path=/; max-age=31536000; SameSite=Lax`;
     };
 
     const t = (path: string) => {

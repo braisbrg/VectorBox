@@ -3,15 +3,19 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Security: Run as non-root user
-RUN useradd -m -u 1000 cinematch && \
-    chown -R cinematch:cinematch /app
+RUN useradd -m -u 1000 vectorbox && \
+    chown -R vectorbox:vectorbox /app
 
-# Install system dependencies
+# Install system dependencies (Basic)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     gcc \
     postgresql-client && \
     rm -rf /var/lib/apt/lists/*
+
+
+# Security: Audit dependencies (allow errors for now as we are force-installing specialized wheels)
+# RUN pip-audit -r requirements.txt --strict
 
 # Copy requirements first for better caching
 COPY requirements.txt .
@@ -27,9 +31,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu && \
     pip install -r requirements.txt
 
-# Security: Audit dependencies (allow errors for now as we are force-installing specialized wheels)
-# RUN pip-audit -r requirements.txt --strict
-
 # Copy application code
 COPY . .
 
@@ -39,8 +40,8 @@ RUN python download_model.py
 
 # Switch to non-root user
 # Ensure the user owns the model cache
-RUN chown -R cinematch:cinematch /app/models_cache
-USER cinematch
+RUN chown -R vectorbox:vectorbox /app/models_cache
+USER vectorbox
 
 # Expose port
 EXPOSE 8000

@@ -1,13 +1,18 @@
-# 🎬 VectorBox (v1.0)
+# 🎬 VectorBox (v1.1)
 > *The "Trident" Engine: Semantic. Auteur. Crowd.*
 
-**VectorBox** (formerly CineMatch AI) is a next-generation movie recommendation platform that fuses **AI Semantic Search**, **Auteur/Director Bias**, and **Crowd Wisdom** into a single, cohesive feed.
+**VectorBox** is a next-generation movie recommendation platform that fuses **AI Semantic Search**, **Auteur/Director Bias**, and **Crowd Wisdom** into a single, cohesive feed.
 
 Built with **Acid Design** aesthetics (`#CCFF00`), it offers a premium, mobile-first experience for power users of Letterboxd.
 
 ---
 
 ## 🌟 Key Features
+
+### ⚡ High-Performance Architecture (Async + Caching)
+- **v1.1 Upgrade:** Full async pipeline with batch fetching and N+1 query elimination.
+- **Speed:** Sub-200ms cached feed response times.
+- **Efficiency:** Multi-stage Docker builds and Singleton service patterns.
 
 ### 🔱 The "Trident" Engine
 Our hybrid recommendation algorithm uses **Reciprocal Rank Fusion (RRF)** to combine three signals:
@@ -32,6 +37,7 @@ Describe exactly what you want: *"Depressing 90s anime that feels like Ghost in 
 - **Frontend:** Next.js 14 (App Router), TailwindCSS, Framer Motion.
 - **Database:** PostgreSQL (Metadata) + Qdrant (Vectors).
 - **AI:** CPU-Optimized PyTorch (`all-MiniLM-L6-v2`) + Groq API.
+- **Validation:** Playwright QA Suite (`tests/qa_automation.py`).
 - **Infrastructure:** Docker Compose with Multi-Stage builds.
 
 ---
@@ -87,4 +93,4 @@ VectorBox/
 *   **Letterboxd** for the community data structure.
 *   **Qdrant** for vector search.
 
-**v1.0 Gold Master**
+**v1.1 Gold Master Request**

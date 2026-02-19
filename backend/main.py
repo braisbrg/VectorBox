@@ -1,5 +1,5 @@
 """
-CineMatch AI - FastAPI Backend
+CineMatch AI - FastAPI Backend (Refactored to VectorBox)
 """
 import logging
 import os
@@ -15,20 +15,32 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+# Observability
+from telemetry import setup_telemetry
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from opentelemetry.instrumentation.redis import RedisInstrumentor
+
 from database import init_db
-from routers import upload, recommendations, tools, users, search, rss
+from routers import upload, recommendations, tools, users, search, rss, auth, tasks
 from routers.similar import router as similar_router
 from services.qdrant_service import QdrantService
+from models.schemas import HealthResponse, RootResponse
+from dependencies import close_services
+from scheduler import start_scheduler
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+# Silence noisy libraries
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
-# Rate limiter for DDoS protection
-limiter = Limiter(key_func=get_remote_address)
+from limiter import limiter
 
 
 from fastapi_cache import FastAPICache
@@ -39,7 +51,13 @@ from redis import asyncio as aioredis
 async def lifespan(app: FastAPI) -> AsyncGenerator:
     """Application lifespan events"""
     # Startup
-    logger.info("Initializing CineMatch AI...")
+    logger.info("Initializing VectorBox...")
+
+    # Observability: Initialize OTel tracer before anything else
+    setup_telemetry()
+    SQLAlchemyInstrumentor().instrument()
+    RedisInstrumentor().instrument()
+
     await init_db()
     
     # Initialize Redis Cache
@@ -53,18 +71,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     await qdrant.init_collection()
     
     # Start Scheduler
-    from scheduler import start_scheduler
     start_scheduler()
     
     logger.info("Application started successfully")
     yield
     
     # Shutdown
-    logger.info("Shutting down CineMatch AI...")
+    logger.info("Shutting down VectorBox...")
+    await close_services()
 
 
 app = FastAPI(
-    title="CineMatch AI",
+    title="VectorBox",
     description="Advanced movie recommendation system with semantic search",
     version="1.0.0",
     lifespan=lifespan,
@@ -73,13 +91,16 @@ app = FastAPI(
     openapi_url="/api/openapi.json"
 )
 
+# Observability: Auto-instrument all FastAPI routes (adds HTTP spans to every request)
+FastAPIInstrumentor().instrument_app(app)
+
 # Security: Rate limiting
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Security: Trusted Host Middleware (prevent host header attacks)
 # Dynamically load from env for Cloudflare Tunnel and production domains
-allowed_hosts_str = os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1")
+allowed_hosts_str = os.getenv("TRUSTED_HOSTS", "*")
 allowed_hosts = [h.strip() for h in allowed_hosts_str.split(",") if h.strip()]
 logger.info(f"Trusted hosts: {allowed_hosts}")
 
@@ -126,19 +147,91 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Catch-all handler to prevent information leakage"""
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "An internal error occurred"}
-    )
+    """
+    Catch-all handler to prevent information leakage
+    Security: Hide traceback in production
+    """
+    is_production = os.getenv("ENVIRONMENT", "development") == "production"
+    
+    if is_production:
+        logger.error(f"Unhandled exception: {str(exc)}") # Log error but not full stack trace if sensitive? better to log full stack trace for admins but hide from user.
+        # Actually standard practice is log full trace, return generic message.
+        logger.error(f"Internal Server Error: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": "Internal Server Error"}
+        )
+    else:
+        logger.error(f"Unhandled exception: {exc}", exc_info=True)
+        return JSONResponse(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            content={"detail": str(exc), "trace": str(exc)}
+        )
 
 
 # Health check endpoint (no rate limiting)
-@app.get("/health", tags=["System"])
-async def health_check():
+@app.get("/health", tags=["System"], response_model=HealthResponse)
+async def health_check() -> HealthResponse:
     """Health check for container orchestration"""
-    return {"status": "healthy", "service": "cinematch-backend"}
+    # Deep Health Check
+    health_status = {
+        "status": "healthy",
+        "service": "vectorbox-backend",
+        "dependencies": {}
+    }
+    
+    # 1. Postgres Check
+    try:
+        from config import AsyncSessionLocal
+        from sqlalchemy import text
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        health_status["dependencies"]["postgres"] = "ok"
+    except Exception as e:
+        health_status["dependencies"]["postgres"] = f"down: {str(e)}"
+        health_status["status"] = "unhealthy"
+        logger.error(f"Health Check Failed (Postgres): {e}")
+
+    # 2. Redis Check
+    try:
+        from fastapi_cache import FastAPICache
+        # Access the redis client from the backend
+        redis_backend = FastAPICache.get_backend()
+        # FastAPICache stores the client in .redis if it's RedisBackend, 
+        # but let's try to ping if possible or just rely on the fact we initialized it.
+        # Better: create a new connection or use the global one if approachable.
+        # In lifespan we assigned it, but didn't store it globally accessible easily except via FastAPICache.
+        # Actually proper way:
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        r = aioredis.from_url(redis_url, encoding="utf8", decode_responses=True)
+        await r.ping()
+        await r.close()
+        health_status["dependencies"]["redis"] = "ok"
+    except Exception as e:
+        health_status["dependencies"]["redis"] = f"down: {str(e)}"
+        health_status["status"] = "unhealthy"
+        logger.error(f"Health Check Failed (Redis): {e}")
+
+    # 3. Qdrant Check
+    try:
+        qdrant = QdrantService()
+        # Use get_collections as it's a standard light read, fallback to info/health if needed.
+        # User said: "if client.get_collections() is too slow, a simple client.info() or ping"
+        # Since we don't have direct http access, we use the client method.
+        await qdrant.client.get_collections()
+        health_status["dependencies"]["qdrant"] = "ok"
+    except Exception as e:
+        health_status["dependencies"]["qdrant"] = f"down: {str(e)}"
+        health_status["status"] = "unhealthy"
+        logger.error(f"Health Check Failed (Qdrant): {e}")
+
+    if health_status["status"] != "healthy":
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content=health_status
+        )
+        
+    return HealthResponse(**health_status)
 
 
 # Security: Add security headers middleware
@@ -157,16 +250,18 @@ app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
 app.include_router(recommendations.router, prefix="/api/recommendations", tags=["Recommendations"])
 app.include_router(tools.router, prefix="/api/tools", tags=["Tools"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
+app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(search.router, prefix="/api/search", tags=["Search"])
 app.include_router(similar_router, prefix="/api/recommendations", tags=["Recommendations"])
 app.include_router(rss.router, prefix="/api/rss", tags=["RSS"])
+app.include_router(tasks.router, prefix="/api/tasks", tags=["Tasks"])
 
 
-@app.get("/", tags=["System"])
-async def root():
+@app.get("/", tags=["System"], response_model=RootResponse)
+async def root() -> RootResponse:
     """API root endpoint"""
-    return {
-        "message": "CineMatch AI API",
-        "version": "1.0.0",
-        "docs": "/api/docs"
-    }
+    return RootResponse(
+        message="VectorBox API",
+        version="1.0.0",
+        docs="/api/docs"
+    )

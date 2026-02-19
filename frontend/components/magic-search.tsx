@@ -5,6 +5,7 @@ import { Sparkles, Search, Loader2, X, BrainCircuit } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useMutation } from "@tanstack/react-query";
 import { MovieCard } from "@/components/ui/movie-card";
+import { BorderBeam } from "@/components/tweak/border-beam";
 
 interface MagicSearchProps {
     userId: number;
@@ -33,12 +34,17 @@ interface SearchResult {
 
 import { useLanguage } from "@/components/language-provider";
 
+interface SearchIntent {
+    summary?: string;
+    [key: string]: any;
+}
+
 export function MagicSearch({ userId }: MagicSearchProps) {
     const { t } = useLanguage();
     const [query, setQuery] = useState("");
     const [isDeepAnalysis, setIsDeepAnalysis] = useState(false);
     const [results, setResults] = useState<SearchResult[]>([]);
-    const [intent, setIntent] = useState<any>(null);
+    const [intent, setIntent] = useState<SearchIntent | null>(null);
 
     const [showResults, setShowResults] = useState(false);
     const [page, setPage] = useState(0);
@@ -94,21 +100,31 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                     </p>
                     {isDeepAnalysis && (
                         <span className="text-[10px] px-2 py-0.5 border border-primary text-primary font-mono uppercase bg-primary/10 rounded-full animate-pulse">
-                            High Intelligence
+                            {t("magic_search.high_intelligence")}
                         </span>
                     )}
                 </div>
             </div>
 
             <form onSubmit={handleSearch} className="relative group">
+                {/* Living AI Terminal Container with Border Beam */}
                 <div className={`relative flex items-center bg-black border-2 ${isDeepAnalysis ? 'border-primary shadow-[0_0_30px_rgba(204,255,0,0.2)]' : 'border-zinc-800 focus-within:border-primary'} shadow-[0_0_20px_rgba(204,255,0,0.15)] transition-all duration-300`}>
+                    {/* Border Beam Effect - Living AI Terminal */}
+                    <BorderBeam
+                        size={250}
+                        duration={8}
+                        borderWidth={2}
+                        colorFrom="hsl(var(--primary))"
+                        colorTo="transparent"
+                    />
 
                     {/* Deep Analysis Toggle */}
                     <button
                         type="button"
                         onClick={() => setIsDeepAnalysis(!isDeepAnalysis)}
                         className={`pl-6 pr-4 focus:outline-none transition-colors ${isDeepAnalysis ? 'text-primary' : 'text-zinc-600 hover:text-zinc-400'}`}
-                        title="Toggle Deep Analysis (Slower, Smarter)"
+                        title={t("magic_search.toggle_deep")}
+                        aria-label={t("magic_search.aria_toggle_deep")}
                     >
                         <BrainCircuit className="w-6 h-6" />
                     </button>
@@ -119,7 +135,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         type="text"
                         value={query}
                         onChange={(e) => setQuery(e.target.value)}
-                        placeholder={isDeepAnalysis ? "Ask complex questions..." : t("search.placeholder")}
+                        placeholder={isDeepAnalysis ? t("magic_search.placeholder_deep") : t("search.placeholder")}
                         className="w-full px-4 py-6 bg-transparent border-none focus:ring-0 text-xl font-mono text-primary placeholder:text-zinc-700 uppercase"
                     />
                     {query && (
@@ -127,6 +143,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                             type="button"
                             onClick={clearSearch}
                             className="px-4 text-zinc-600 hover:text-primary transition-colors"
+                            aria-label={t("magic_search.aria_clear_search")}
                         >
                             <X className="w-6 h-6" />
                         </button>
@@ -135,6 +152,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         type="submit"
                         disabled={searchMutation.isPending || !query.trim()}
                         className="px-8 py-6 bg-primary text-black font-black uppercase tracking-wider hover:bg-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed border-l-2 border-primary"
+                        aria-label={t("magic_search.aria_submit_search")}
                     >
                         {searchMutation.isPending ? (
                             <Loader2 className="w-6 h-6 animate-spin" />
@@ -146,7 +164,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                 {/* Helper Text */}
                 <div className="absolute -bottom-6 left-0 right-0 text-center opacity-0 group-hover:opacity-100 transition-opacity">
                     <span className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">
-                        {isDeepAnalysis ? "Powered by Llama 3.3 70B (Tier 2)" : "Powered by Llama 4 Scout (Tier 1)"}
+                        {isDeepAnalysis ? t("magic_search.powered_by_tier2") : t("magic_search.powered_by_tier1")}
                     </span>
                 </div>
             </form>
@@ -163,7 +181,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         <div className="flex items-center justify-between mb-4">
                             <div>
                                 <h3 className="text-lg font-bold flex items-center gap-2">
-                                    Search Results
+                                    {t("magic_search.search_results")}
                                     {isDeepAnalysis && <BrainCircuit className="w-4 h-4 text-primary" />}
                                 </h3>
                                 {intent && (
@@ -230,18 +248,20 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                                     onClick={() => setPage(p => Math.max(0, p - 1))}
                                     disabled={page === 0}
                                     className="px-4 py-2 rounded-lg border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                                    aria-label={t("ui.previous")}
                                 >
-                                    Previous
+                                    {t("ui.previous")}
                                 </button>
                                 <span className="text-sm text-muted-foreground">
-                                    Page {page + 1} of {Math.ceil(results.length / MESSAGES_PER_PAGE)}
+                                    {t("magic_search.page_of").replace("{current}", String(page + 1)).replace("{total}", String(Math.ceil(results.length / MESSAGES_PER_PAGE)))}
                                 </span>
                                 <button
                                     onClick={() => setPage(p => p + 1)}
                                     disabled={page >= Math.ceil(results.length / MESSAGES_PER_PAGE) - 1}
                                     className="px-4 py-2 rounded-lg border hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+                                    aria-label={t("ui.next")}
                                 >
-                                    Next
+                                    {t("ui.next")}
                                 </button>
                             </div>
                         )}

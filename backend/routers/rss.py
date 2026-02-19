@@ -38,6 +38,8 @@ async def sync_user_data(
     Syncs user data from Letterboxd:
     1. RSS Feed (Diary/Reviews) - For watched history and ratings.
     2. Watchlist Scraping (Light) - For recent watchlist additions.
+    
+    Note: username is the VectorBox username. Data is fetched from the linked letterboxd_username.
     """
     try:
         # Verify user exists
@@ -49,17 +51,23 @@ async def sync_user_data(
         
         if not user:
             # Auto-create user if not exists (for convenience)
-            user = User(username=username)
+            user = User(username=username, letterboxd_username=username)  # Default: same as VectorBox username
             db.add(user)
             await db.flush()
         
-        # 1. RSS Sync (Existing)
-        rss_service = RSSService(db)
-        rss_result = await rss_service.sync_user_rss(username, user.id)
+        # Determine which Letterboxd profile to use for data fetching
+        letterboxd_profile = user.letterboxd_username or username
+        logger.info(f"Using Letterboxd profile '{letterboxd_profile}' for user '{username}'")
         
-        # 2. Watchlist Sync (New - Light Scraping)
+        # 1. RSS Sync (Uses letterboxd_username)
+        rss_service = RSSService(db)
+        rss_result = await rss_service.sync_user_rss(letterboxd_profile, user.id)
+        
+        # 2. Watchlist Sync (Uses letterboxd_username)
         scraper = ScraperService()
-        watchlist_items = scraper.scrape_watchlist_recent(username)
+        import asyncio
+        loop = asyncio.get_running_loop()
+        watchlist_items = await loop.run_in_executor(None, scraper.scrape_watchlist_recent, letterboxd_profile)
         
         tmdb = TMDBClient()
         movie_service = MovieService(db)
@@ -72,7 +80,8 @@ async def sync_user_data(
             search_query = film_slug.replace("-", " ")
             
             # 1. Try to get authoritative TMDB ID from Letterboxd page
-            tmdb_id = scraper.get_tmdb_id(film_slug)
+            # Run in executor because it uses requests.get (blocking)
+            tmdb_id = await loop.run_in_executor(None, scraper.get_tmdb_id, film_slug)
             
             if tmdb_id:
                 logger.info(f"Found authoritative TMDB ID {tmdb_id} for {film_slug}")
@@ -99,7 +108,8 @@ async def sync_user_data(
 
                 # Strict Year Check (Only if we did a fuzzy search)
                 # If we got the ID from Letterboxd directly, we trust it 100%
-                if not scraper.get_tmdb_id(film_slug) and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
+                scraped_id = await loop.run_in_executor(None, scraper.get_tmdb_id, film_slug)
+                if not scraped_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
                     logger.warning(f"Year mismatch for {film_slug}: Scraped {film_year} vs DB {movie.year}. Skipping.")
                     continue
 

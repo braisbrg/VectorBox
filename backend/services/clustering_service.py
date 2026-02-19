@@ -13,6 +13,9 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, desc, func
 from fastapi_cache.decorator import cache
+import asyncio
+import time
+import functools
 
 from models.database import UserRating, Movie, UserCluster
 from services.qdrant_service import QdrantService
@@ -42,7 +45,8 @@ class ClusteringService:
         self,
         user_id: int,
         db: AsyncSession,
-        use_recency_bias: bool = False
+        use_recency_bias: bool = False,
+        background_tasks = None
     ) -> List[UserCluster]:
         """
         Generate K-Means clusters for a user's taste profile
@@ -69,24 +73,31 @@ class ClusteringService:
         
         # logger.info(f"Creating clusters for user {user_id} with {len(ratings_movies)} rated/liked movies")
         
-        # Retrieve vectors from Qdrant
+        # SAFETY CHECK (Audit Phase 3): Enrich movies missing keywords before vector fetch
+        # v1.2: Refactored to Background Task to prevent UI lag
+        from services.movie_service import MovieService
+        movie_service = MovieService(db)
+        
+        for _, movie in ratings_movies:
+            if not movie.keywords:
+                if background_tasks:
+                    background_tasks.add_task(movie_service.enrich_movie, movie)
+                else:
+                    # Fallback: Process inline if no background task context (e.g. CLI)
+                    await movie_service.enrich_movie(movie)
+
+        # Retrieve vectors from Qdrant (batch, no N+1)
+        movie_tmdb_ids = [movie.tmdb_id for _, movie in ratings_movies]
+        raw_vectors_map = await self.qdrant.get_vectors_batch(movie_tmdb_ids)
+
         vectors = []
         ratings = []
         movies_data = []
-        
-        # Initialize MovieService for enrichment
-        from services.movie_service import MovieService
-        movie_service = MovieService(db)
 
         for rating, movie in ratings_movies:
-            # SAFETY CHECK (Audit Phase 3): Ensure movie has keywords
-            # If not, enrich it immediately (Self-Healing)
-            if not movie.keywords:
-                 # This checks DB keywords and Qdrant vector
-                 await movie_service.enrich_movie(movie)
-
-            vector = await self.qdrant.get_vector(movie.id)
+            vector = raw_vectors_map.get(movie.tmdb_id)
             if vector is not None:
+
                 # Determine effective rating
                 effective_rating = rating.rating
                 if effective_rating is None and rating.is_liked:
@@ -172,7 +183,19 @@ class ClusteringService:
             n_init=10,
             max_iter=300
         )
-        cluster_labels = kmeans.fit_predict(X_weighted)
+        
+        # CPU-Bound: Offload to executor
+        loop = asyncio.get_running_loop()
+        start_time = time.perf_counter()
+        
+        cluster_labels = await loop.run_in_executor(
+            None,
+            kmeans.fit_predict, 
+            X_weighted
+        )
+        
+        duration = time.perf_counter() - start_time
+        logger.info(f"K-Means clustering for user {user_id} took {duration:.4f}s")
         
         # Analyze each cluster
         cluster_objects = []
@@ -251,7 +274,8 @@ class ClusteringService:
         db: AsyncSession,
         filters: Dict = None,
         limit: int = 20,
-        page: int = 1
+        page: int = 1,
+        background_tasks = None
     ) -> List[Dict]:
         """
         Get movie recommendations for a specific cluster (mood)
@@ -324,7 +348,8 @@ class ClusteringService:
         db: AsyncSession,
         filters: Dict = None,
         limit: int = 20,
-        page: int = 1
+        page: int = 1,
+        background_tasks = None
     ) -> List[Dict]:
         """
         Get general movie recommendations based on user's global taste profile (Clustering/Centroid).
@@ -341,13 +366,23 @@ class ClusteringService:
         )
         all_ratings = result.all()
         
+        # Self-healing (Background)
+        from services.movie_service import MovieService
+        movie_service = MovieService(db)
+        for _, movie in all_ratings:
+            if not movie.keywords and background_tasks:
+                 background_tasks.add_task(movie_service.enrich_movie, movie)
+        
         if not all_ratings:
             return []
         
-        # Retrieve vectors
+        # Retrieve vectors (batch, no N+1)
+        movie_tmdb_ids = [movie.tmdb_id for _, movie in all_ratings]
+        raw_vectors_map = await self.qdrant.get_vectors_batch(movie_tmdb_ids)
+
         vectors = []
-        for rating, movie in all_ratings:
-            vector = await self.qdrant.get_vector(movie.id)
+        for _, movie in all_ratings:
+            vector = raw_vectors_map.get(movie.tmdb_id)
             if vector:
                 vectors.append(vector)
         
@@ -414,7 +449,8 @@ class ClusteringService:
         filters: Dict = None,
         limit: int = 20,
         include_low_quality: bool = False,
-        page: int = 1
+        page: int = 1,
+        background_tasks = None
     ) -> List[Dict]:
         """
         Get recommendations using Weighted Item-Item Collaborative Filtering.
@@ -433,6 +469,13 @@ class ClusteringService:
         
         if not raw_seeds:
             return []
+
+        # Self-healing (Background)
+        from services.movie_service import MovieService
+        movie_service = MovieService(db)
+        for _, movie in raw_seeds:
+            if not movie.keywords and background_tasks:
+                 background_tasks.add_task(movie_service.enrich_movie, movie)
 
         # 2. Input De-duplication (Franchise Collapsing)
         collection_map = {}
@@ -694,7 +737,25 @@ class ClusteringService:
                     if internal_id:
                         vectors_map[internal_id] = np.array(p.vector)
                 
-                final_results = self.mmr_rerank(top_candidates, vectors_map, limit, lambda_param=0.7)
+                        vectors_map[internal_id] = np.array(p.vector)
+                
+                # CPU-Bound: Offload MMR to executor
+                loop = asyncio.get_running_loop()
+                start_time = time.perf_counter()
+                
+                # Use functools.partial to pass arguments cleanly
+                mmr_func = functools.partial(
+                    self.mmr_rerank, 
+                    top_candidates, 
+                    vectors_map, 
+                    limit, 
+                    lambda_param=0.7
+                )
+                
+                final_results = await loop.run_in_executor(None, mmr_func)
+                
+                duration = time.perf_counter() - start_time
+                logger.info(f"MMR Reranking took {duration:.4f}s for {len(top_candidates)} candidates")
                 
         except Exception as e:
             logger.error(f"MMR Reranking failed: {e}. Returning raw list.")

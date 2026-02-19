@@ -1,694 +1,77 @@
 import logging
-import random
+import asyncio
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, or_, func
-from models.database import UserRating, Movie, UserCluster
+from sqlalchemy import select, desc
+
+from config import AsyncSessionLocal
+from models.database import UserRating, Movie
 from models.schemas import FeedSection, FeedItem, FeedResponse
 from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
-from services.qdrant_service import QdrantService
-from services.clustering_service import ClusteringService
 from services.provider_service import ProviderService
 from services.recommendation_service import RecommendationService
+from services.recommendation_engine import RecommendationEngine
 
+from utils.decorators import safe_execution
 
 logger = logging.getLogger(__name__)
 
 class FeedService:
     def __init__(self):
-        self.clustering = ClusteringService()
+        self.engine = RecommendationEngine()
 
-    async def create_feed_item(self, movie: Movie, score: float, country: str, tmdb: TMDBClient, include_rating: bool = False, contributors: List[dict] = None, provider_service: ProviderService = None, streaming_providers: List[str] = None) -> FeedItem:
-        """Helper to create a FeedItem from a Movie (DB Object)"""
-        # Get streaming providers
-        if streaming_providers is None:
-            streaming_providers = []
-            
-            if provider_service:
-                # Use cached service
-                providers_data = await provider_service.get_providers(movie.id, country)
-                # ProviderService returns list of dicts with provider_name
-                streaming_providers = [p["provider_name"] for p in providers_data]
-            else:
-                # Fallback to direct TMDB call (legacy)
-                providers_data = await tmdb.get_watch_providers(movie.tmdb_id, country)
-                if providers_data:
-                    for provider_type in ["flatrate", "free"]:
-                        if provider_type in providers_data:
-                            streaming_providers.extend([p["provider_name"] for p in providers_data[provider_type]])
-        
-        # Scale match score
-        min_sim = 0.2
-        max_sim = 0.7
-        
-        if score > max_sim:
-            final_score = 90 + ((score - max_sim) * 100)
-            final_score = min(99, final_score)
-        else:
-            normalized = (score - min_sim) / (max_sim - min_sim)
-            normalized = max(0.0, min(1.0, normalized))
-            final_score = 60 + (normalized * 30)
-        
-        return FeedItem(
-            id=movie.tmdb_id,
-            title=movie.title,
-            poster_url=movie.poster_path,
-            match_score=round(final_score, 0),
-            streaming_providers=list(set(streaming_providers)),
-            year=movie.year,
-            runtime=movie.runtime,
-            letterboxd_uri=movie.letterboxd_uri,
-            rating=movie.vote_average,
-            overview=movie.overview,
-            contributors=contributors or [],
-            # Phase 12 Fields
-            vectorbox_score=movie.vectorbox_score,
-            imdb_rating=movie.imdb_rating,
-            metacritic_rating=movie.metacritic_rating,
-            rotten_tomatoes_rating=movie.rotten_tomatoes_rating,
-            title_es=movie.title_es,
-            overview_es=movie.overview_es
-        )
-
-    async def create_feed_item_from_tmdb(self, tmdb_data: dict, score: float, country: str, tmdb: TMDBClient) -> FeedItem:
-        """Helper to create a FeedItem directly from TMDB data (for non-DB movies)"""
-        tmdb_id = tmdb_data.get("id")
-        
-        # Get streaming providers
-        streaming_providers = []
-        if tmdb_id:
-            providers_data = await tmdb.get_watch_providers(tmdb_id, country)
-            if providers_data:
-                for provider_type in ["flatrate", "free"]:
-                    if provider_type in providers_data:
-                        streaming_providers.extend([p["provider_name"] for p in providers_data[provider_type]])
-        
-        # Scale match score
-        # If score is small (0-1), assume it's a raw similarity or weighted score that needs scaling.
-        # If score is large (>1), assume it's already a percentage or we should leave it.
-        # However, our new logic produces weighted scores in 0-1 range (e.g. 0.4).
-        # We want to map these to 0-100.
-        
-        # New Logic: Just multiply by 100. The caller (ClusteringService) now handles the weighting.
-        # If the score is very low (<0.4), it will show as <40% match, which is correct.
-        final_score = score * 100
-            
-        # Extract year
-        year = None
-        release_date = tmdb_data.get("release_date")
-        if release_date:
-            try:
-                year = int(release_date.split("-")[0])
-            except:
-                pass
-
-        return FeedItem(
-            id=tmdb_id,
-            title=tmdb_data.get("title"),
-            poster_url=tmdb_data.get("poster_path"),
-            match_score=round(final_score, 0),
-            streaming_providers=list(set(streaming_providers)),
-            year=year,
-            runtime=None, # TMDB list response often doesn't have runtime
-            letterboxd_uri=f"https://letterboxd.com/tmdb/{tmdb_id}" if tmdb_id else None,
-            rating=tmdb_data.get("vote_average"),
-            overview=tmdb_data.get("overview"),
-            contributors=[],
-            # Phase 12 Fields
-            vectorbox_score=movie.vectorbox_score if movie else None,
-            imdb_rating=None,
-            metacritic_rating=None,
-            rotten_tomatoes_rating=None,
-            title_es=None,
-            overview_es=None
-        )
-
+    @safe_execution(fallback_return=FeedSection(id="because_you_watched", title="Recommended for You", items=[]))
     async def get_because_you_watched_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        qdrant: QdrantService,
-        seen_ids: Set[int],
-        country: str,
-        provider_service: ProviderService = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, qdrant: QdrantService, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
     ) -> FeedSection:
-        """Section A: Because you watched [Movie X]"""
-        # ... (implementation)
-        # Pass provider_service to create_feed_item
-        # ...
-        # (I need to replace the whole method or just the signature and call?)
-        # Let's replace the signature and the create_feed_item calls.
-        
-        # Find latest movies rated 4+ stars (fetch top 5 candidates)
-        result = await db.execute(
-            select(UserRating, Movie)
-            .join(Movie, UserRating.movie_id == Movie.id)
-            .where(
-                UserRating.user_id == user_id,
-                UserRating.rating >= 4.0
-            )
-            .order_by(
-                desc(func.coalesce(UserRating.watched_date, UserRating.created_at))
-            )
-            .limit(5)
-        )
-        
-        candidates = result.all()
-        if not candidates:
-        # logger.info(f"No ratings found for user {user_id} in 'Because you watched' section")
-            return FeedSection(id="because_you_watched", title="Recommended for You", items=[])
-        
-        # Try candidates until we find one with recommendations
-        for row in candidates:
-            user_rating, anchor_movie = row
-            
-            # Generate FRESH Content-Only Vector (ignores title to avoid name-matching)
-            # This aligns with "More Like This" logic
-            from services.embedding_service import EmbeddingService
-            embedding_service = EmbeddingService()
-            
-            # Fetch keywords to ensure high-quality vector (matches "More Like This" logic)
-            keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
-            # logger.info(f"Generated vector for {anchor_movie.title} using keywords: {keywords}")
-            
-            anchor_vector = embedding_service.generate_embedding({
-                "title": anchor_movie.title, # Included in input but ignored by flag below
-                "overview": anchor_movie.overview or "",
-                "genres": anchor_movie.genres or [],
-                "keywords": keywords
-            }, include_title=False).tolist()
-            
-            # Fallback to stored vector if generation fails (unlikely)
-            if not anchor_vector:
-                 anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
-            
-            if not anchor_vector:
-                 # For non-first candidates, or if repair failed, just skip
-                 logger.warning(f"Could not retrieve vector for {anchor_movie.title} (TMDB ID: {anchor_movie.tmdb_id}), skipping.")
-                 continue
-            
-            # Search for similar movies using the vector
-            similar_results = await qdrant.search_similar(
-                query_vector=anchor_vector,
-                limit=500,  # Maximum pool for best variety after deduplication
-                score_threshold=0.1  # Low threshold to ensure we get results even for obscure movies
-            )
-            
-            items = []
-            
-            # 1. Identify IDs found in Qdrant
-            found_tmdb_ids = []
-            for res in similar_results:
-                movie_id = res["movie_id"] 
-                # movie_id here is TMDB ID (Qdrant point ID)
-                found_tmdb_ids.append(movie_id)
-                
-            # 2. Check which ones exist in DB
-            existing_movies_result = await db.execute(
-                select(Movie.tmdb_id).where(Movie.tmdb_id.in_(found_tmdb_ids))
-            )
-            existing_tmdb_ids = set(existing_movies_result.scalars().all())
-            
-            # 3. Identify Missing & Auto-Ingest (The "Explorer" Logic)
-            missing_ids = [mid for mid in found_tmdb_ids if mid not in existing_tmdb_ids]
-            
-            if missing_ids:
-                # Limit ingestion to top 5 to avoid timeouts during feed generation
-                # We prioritize the highest scoring matches
-                ids_to_ingest = missing_ids[:5]
-                # logger.info(f"Auto-ingesting {len(ids_to_ingest)} missing movies for feed: {ids_to_ingest}")
-                
-                from services.movie_service import MovieService
-                movie_service = MovieService(db)
-                
-                for mid in ids_to_ingest:
-                    try:
-                        await movie_service.get_or_create_movie(mid)
-                    except Exception as e:
-                        logger.error(f"Failed to auto-ingest movie {mid} for feed: {e}")
-            
-            # 4. Fetch All (Now that they are ingested) & Build Items
-            # We iterate similar_results to preserve ranking order
-            for res in similar_results:
-                movie_id = res["movie_id"]
-                if movie_id in seen_ids or movie_id == anchor_movie.tmdb_id:
-                    continue
-                
-                movie_result = await db.execute(select(Movie).where(Movie.tmdb_id == movie_id))
-                movie = movie_result.scalar_one_or_none()
-                
-                if movie:
-                    item = await self.create_feed_item(movie, res["score"], country, tmdb, provider_service=provider_service)
-                    items.append(item)
-                    seen_ids.add(movie_id)
-                    
-                    if len(items) >= 10:
-                        break
-            
-            if items:
-                return FeedSection(
-                    id="because_you_watched",
-                    title=f"Because you watched {anchor_movie.title}",
-                    items=items
-                )
-                
-        return FeedSection(id="because_you_watched", title="Recommended for You", items=[])
+        return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks)
 
+    @safe_execution(fallback_return=FeedSection(id="your_taste", title="Your Taste", items=[]))
     async def get_your_taste_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        seen_ids: Set[int],
-        country: str,
-        provider_service: ProviderService = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
     ) -> FeedSection:
-        """Section B: Your Taste: [Cluster Name]"""
-        # Get user's clusters
-        clusters_result = await db.execute(
-            select(UserCluster)
-            .where(UserCluster.user_id == user_id)
-            .order_by(desc(UserCluster.movie_count))
-        )
-        clusters = clusters_result.scalars().all()
-        
-        if not clusters:
-            return FeedSection(id="your_taste", title="Your Taste", items=[])
-        
-        # Pick dominant or random cluster
-        cluster = clusters[0]  # Dominant cluster
-        
-        # Get recommendations for this cluster
-        results = await self.clustering.get_cluster_recommendations(
-            user_id=user_id,
-            cluster_id=cluster.cluster_id,
-            db=db,
-            filters={},
-            limit=500  # Maximum pool for best variety
-        )
-        
-        items = []
-        for res in results:
-            movie_id = res["movie_id"]
-            if movie_id in seen_ids:
-                continue
-            
-            movie_result = await db.execute(select(Movie).where(Movie.id == movie_id))
-            movie = movie_result.scalar_one_or_none()
-            
-            if movie:
-                item = await self.create_feed_item(movie, res["score"], country, tmdb, provider_service=provider_service)
-                items.append(item)
-                seen_ids.add(movie_id)
-                
-                if len(items) >= 10:
-                    break
-        
-        title = "Your Taste"
-        if cluster.dominant_genres:
-            title = ", ".join(cluster.dominant_genres[:3])
-            
-        return FeedSection(
-            id="your_taste",
-            title=title,
-            items=items
-        )
+        return await self.engine.get_your_taste_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks)
 
+    @safe_execution(fallback_return=FeedSection(id="hidden_gems", title="Hidden Gems", items=[]))
     async def get_hidden_gems_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        seen_ids: Set[int],
-        country: str,
-        provider_service: ProviderService = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
     ) -> FeedSection:
-        """Section C: Hidden Gems"""
-        # Get general recommendations (User-Centric / Clustering)
-        results = await self.clustering.get_user_centric_recommendations(
-            user_id=user_id,
-            db=db,
-            filters={
-                "min_vote_count": 1000,
-                "max_vote_count": 25000, 
-                "min_rating": 7.0
-            },
-            limit=500  # Maximum pool for best variety in hidden gems
-        )
-        
-        items = []
-        for res in results:
-            movie_id = res["movie_id"]
-            if movie_id in seen_ids:
-                continue
-            
-            movie_result = await db.execute(select(Movie).where(Movie.id == movie_id))
-            movie = movie_result.scalar_one_or_none()
-            
-            # Filter for hidden gems criteria
-            if movie and movie.vote_average and movie.vote_average > 7.0:
-                # Note: vote_count might not be in DB, skip if not available
-                # Show rating instead of match score for hidden gems
-                item = await self.create_feed_item(movie, res["score"], country, tmdb, include_rating=True, provider_service=provider_service)
-                items.append(item)
-                seen_ids.add(movie_id)
-                
-                if len(items) >= 10:
-                    break
-        
-        return FeedSection(
-            id="hidden_gems",
-            title="Hidden Gems",
-            items=items
-        )
+        return await self.engine.get_hidden_gems_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks)
 
+    @safe_execution(fallback_return=FeedSection(id="available_now", title="Available on Your Services", items=[]))
     async def get_available_now_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        seen_ids: Set[int],
-        country: str,
-        streaming_providers: List[int]
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, streaming_providers: List[int]
     ) -> FeedSection:
-        """
-        Get movies available on user's streaming services.
-        PRIORITY: Watchlist items first, then general recommendations.
-        """
-        items = []
-        
-        # 1. Fetch User's Watchlist (Unwatched)
-        watchlist_result = await db.execute(
-            select(Movie)
-            .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(
-                UserRating.user_id == user_id,
-                UserRating.is_watchlist.is_(True),
-                UserRating.is_watched.is_(False)
-            )
-            .limit(200) # Check top 200 watchlist items
-        )
-        watchlist_movies = watchlist_result.scalars().all()
-        
-        # 2. Check availability for watchlist items (Optimized with ProviderService)
-        if streaming_providers:
-            provider_service = ProviderService(db, tmdb)
-            
-            # Batch fetch providers
-            movie_ids = [m.id for m in watchlist_movies if m.tmdb_id not in seen_ids]
-            providers_map = await provider_service.get_providers_batch(movie_ids, country)
-            
-            for movie in watchlist_movies:
-                if movie.tmdb_id in seen_ids:
-                    continue
-                    
-                # Check availability
-                available_providers = []
-                movie_providers = providers_map.get(movie.id, [])
-                
-                for p in movie_providers:
-                    if p["provider_id"] in streaming_providers:
-                        available_providers.append(p["provider_name"])
-                
-                if available_providers:
-                    # It's available! Add to feed.
-                    # Calculate dynamic match score based on rating or default high
-                    match_score = 95
-                    if movie.vote_average:
-                        # Map 7.0-9.0 to 90-99%
-                        match_score = 90 + min(9, max(0, (movie.vote_average - 7.0) * 4.5))
-                    
-                    items.append(FeedItem(
-                        id=movie.tmdb_id,
-                        title=movie.title,
-                        poster_url=movie.poster_path,
-                        match_score=round(match_score, 0),
-                        streaming_providers=list(set(available_providers)),
-                        year=movie.year,
-                        runtime=movie.runtime,
-                        letterboxd_uri=movie.letterboxd_uri,
-                        rating=movie.vote_average,
-                        # Phase 12 Fields
-                        vectorbox_score=movie.vectorbox_score,
-                        imdb_rating=movie.imdb_rating,
-                        metacritic_rating=movie.metacritic_rating,
-                        rotten_tomatoes_rating=movie.rotten_tomatoes_rating,
-                        title_es=movie.title_es,
-                        overview_es=movie.overview_es,
-                        overview=movie.overview
-                    ))
-                    seen_ids.add(movie.tmdb_id)
-                    
-                    if len(items) >= 20: # Limit watchlist items to 20
-                        break
-        
-        return FeedSection(
-            id="available_now",
-            title="Available on Your Services",
-            items=items
-        )
+        return await self.engine.get_available_now_section(user_id, db, tmdb, seen_ids, country, streaming_providers)
 
+    @safe_execution(fallback_return=FeedSection(id="deep_dive", title="Deep Dive", items=[]))
     async def get_deep_dive_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        seen_ids: Set[int],
-        country: str,
-        provider_service: ProviderService = None,
-        include_low_quality: bool = False
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, include_low_quality: bool = False, background_tasks = None
     ) -> FeedSection:
-        """
-        Section: Deep Dive (Item-Based Collaborative Filtering)
-        """
-        results = await self.clustering.get_item_based_recommendations(
-            user_id=user_id,
-            db=db,
-            limit=60, # Request more to handle 'seen_ids' deduplication overlap
-            include_low_quality=include_low_quality
-        )
-        
-        items = []
-        for res in results:
-            movie_id = res["movie_id"]
-            if movie_id in seen_ids:
-                continue
-                
-            movie_result = await db.execute(select(Movie).where(Movie.id == movie_id))
-            movie = movie_result.scalar_one_or_none()
-            
-            if movie:
-                # Extract contributors from result
-                contributors = res.get("contributors", [])
-                item = await self.create_feed_item(movie, res["score"], country, tmdb, contributors=contributors, provider_service=provider_service)
-                items.append(item)
-                seen_ids.add(movie_id)
-                
-                if len(items) >= 10:
-                    break
-                    
-        return FeedSection(
-            id="deep_dive",
-            title="Deep Dive",
-            items=items
-        )
+        return await self.engine.get_deep_dive_section(user_id, db, tmdb, seen_ids, country, provider_service, include_low_quality, background_tasks=background_tasks)
 
+    @safe_execution(fallback_return=None)
     async def get_wildcard_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        seen_ids: Set[int],
-        country: str,
-        provider_service: ProviderService = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None
     ) -> Optional[FeedSection]:
-        """
-        Wildcard Section: "Outside Your Comfort Zone"
-        Logic: Recommend high-rated movies that do NOT match the user's dominant genres.
-        """
-        try:
-            # 1. Get user's dominant genres from clusters
-            clusters_result = await db.execute(
-                select(UserCluster)
-                .where(UserCluster.user_id == user_id)
-                .order_by(desc(UserCluster.movie_count))
-                .limit(3)
-            )
-            clusters = clusters_result.scalars().all()
-            
-            excluded_genres = set()
-            for c in clusters:
-                if c.dominant_genres:
-                    excluded_genres.update(c.dominant_genres)
-            
-            if not excluded_genres:
-                # If no clusters/genres, return None (don't spam random)
-                return None
+        return await self.engine.get_wildcard_section(user_id, db, tmdb, seen_ids, country, provider_service)
 
-            # 2. Get high rated movies from DB
-            # We fetch a larger pool to filter
-            result = await db.execute(
-                select(Movie)
-                .where(Movie.vectorbox_score.isnot(None))
-                .where(Movie.vote_average > 7.0)
-                .where(Movie.vote_count > 100)
-                .order_by(desc(Movie.vectorbox_score))
-                .limit(1000)
-            )
-            candidates = result.scalars().all()
-            
-            # 3. Filter out movies that match excluded genres AND exclude watched movies
-            
-            # Get watched movies
-            watched_result = await db.execute(
-                select(UserRating.movie_id)
-                .where(UserRating.user_id == user_id, UserRating.is_watched == True)
-            )
-            watched_ids = set(watched_result.scalars().all())
-            
-            wildcard_candidates = []
-            for m in candidates:
-                if m.tmdb_id in seen_ids or m.id in watched_ids:
-                    continue
-                    
-                movie_genres = set(m.genres or [])
-                # If the movie has NO overlap with excluded genres, it's a candidate
-                if movie_genres.isdisjoint(excluded_genres):
-                    wildcard_candidates.append(m)
-            
-            if not wildcard_candidates:
-                return None
-                
-            # 4. Pick random 10
-            import random
-            sample = random.sample(wildcard_candidates, min(10, len(wildcard_candidates)))
-            
-            items = []
-            for m in sample:
-                item = await self.create_feed_item(m, 0.85, country, tmdb, include_rating=True, provider_service=provider_service)
-                items.append(item)
-                seen_ids.add(m.tmdb_id)
-                
-            return FeedSection(
-                id="wildcard",
-                title="Outside Your Comfort Zone",
-                items=items
-            )
-            
-        except Exception as e:
-            logger.error(f"Wildcard generation failed: {e}")
-            return None
-
+    @safe_execution(fallback_return=None)
     async def get_random_recommendations_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        seen_ids: Set[int],
-        country: str,
-        provider_service: ProviderService = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None
     ) -> Optional[FeedSection]:
-        """
-        Random Picks: Random selection from Top 500 VectorBox Scored movies in DB.
-        """
-        try:
-            # 1. Get Top 500 movies by VectorBox Score
-            # If VB score is null, fallback to vote_average? No, user requested VB score.
-            result = await db.execute(
-                select(Movie)
-                .where(Movie.vectorbox_score.isnot(None))
-                .order_by(desc(Movie.vectorbox_score))
-                .limit(500)
-            )
-            candidates = result.scalars().all()
-            
-            if not candidates:
-                # Fallback to vote_average if no VB scores yet
-                result = await db.execute(
-                    select(Movie)
-                    .where(Movie.vote_average > 7.0)
-                    .order_by(desc(Movie.vote_average))
-                    .limit(500)
-                )
-                candidates = result.scalars().all()
-            
-            # Filter seen
-            # Also filter watched history?
-            watched_result = await db.execute(
-                select(UserRating.movie_id)
-                .where(UserRating.user_id == user_id, UserRating.is_watched == True)
-            )
-            watched_ids = set(watched_result.scalars().all())
-            
-            unseen_candidates = [m for m in candidates if m.id not in seen_ids and m.id not in watched_ids]
-            
-            if not unseen_candidates:
-                return None
-                
-            # Pick 10 random
-            import random
-            sample = random.sample(unseen_candidates, min(10, len(unseen_candidates)))
-            
-            items = []
-            for m in sample:
-                # For Random row, show VB Score if available, or just high match?
-                # User said: "in this row show only the VB score"
-                # create_feed_item handles score display logic usually, but we can pass a flag or handle in UI.
-                # We'll pass a dummy match score (0.9) but ensure VB score is populated.
-                item = await self.create_feed_item(m, 0.9, country, tmdb, include_rating=True, provider_service=provider_service)
-                items.append(item)
-                seen_ids.add(m.tmdb_id)
-                
-            return FeedSection(
-                id="random_picks", 
-                title="Random Top Picks", 
-                items=items
-            )
+        return await self.engine.get_random_recommendations_section(user_id, db, tmdb, seen_ids, country, provider_service)
 
-        except Exception as e:
-            logger.error(f"Random generation failed: {e}")
-            return None
-
-    async def get_random_watchlist_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        country: str
+    async def get_popular_on_letterboxd_section(
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, country: str, provider_service: ProviderService = None
     ) -> Optional[FeedSection]:
-        """
-        Get random movies from the user's watchlist.
-        """
-        # Get all watchlist items
-        result = await db.execute(
-            select(Movie)
-            .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(
-                UserRating.user_id == user_id,
-                UserRating.is_watchlist.is_(True),
-                UserRating.is_watched.is_(False)
-            )
-        )
-        candidates = result.scalars().all()
+        return await self.engine.get_popular_on_letterboxd_section(user_id, db, tmdb, country, provider_service)
         
-        if not candidates:
-            return None
-            
-        # Pick 20 random
-        selected_movies = random.sample(candidates, min(20, len(candidates)))
-        
-        items = []
-        for movie in selected_movies:
-            item = await self.create_feed_item(movie, 1.0, country, tmdb, include_rating=True)
-            items.append(item)
-            
-        return FeedSection(
-            id="random_watchlist",
-            title="Shuffle: From Your Watchlist",
-            items=items
-        )
+    async def get_random_watchlist_section(self, user_id: int, db: AsyncSession, tmdb: TMDBClient, country: str, provider_service: ProviderService = None) -> Optional[FeedSection]:
+        return await self.engine.get_random_watchlist_section(user_id, db, tmdb, country, provider_service)
+
+
 
     async def get_watchlist_feed(
         self,
@@ -696,7 +79,8 @@ class FeedService:
         db: AsyncSession,
         tmdb: TMDBClient,
         country: str,
-        streaming_providers: List[int]
+        streaming_providers: List[int],
+        background_tasks = None
     ) -> FeedResponse:
         """
         Generate a feed based ONLY on the user's watchlist.
@@ -717,9 +101,17 @@ class FeedService:
             .limit(20)
         )
         top_rated_movies = top_rated_result.scalars().all()
+        
+        # Batch fetch providers for top rated
+        start_provider = ProviderService(db, tmdb)
+        tr_ids = [m.id for m in top_rated_movies]
+        tr_providers_map = await start_provider.get_providers_batch(tr_ids, country)
+        
         top_rated_items = []
         for movie in top_rated_movies:
-            item = await self.create_feed_item(movie, 1.0, country, tmdb, include_rating=True)
+            movie_providers = tr_providers_map.get(movie.id, [])
+            flat_providers = [p["provider_name"] for p in movie_providers]
+            item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, include_rating=True, streaming_providers=flat_providers)
             top_rated_items.append(item)
             
         top_rated_section = FeedSection(
@@ -743,9 +135,17 @@ class FeedService:
         )
         short_movies = short_result.scalars().all()
         short_items = []
+        if short_movies:
+            short_ids = [m.id for m in short_movies]
+            short_providers_map = await start_provider.get_providers_batch(short_ids, country)
+        else:
+            short_providers_map = {}
         for movie in short_movies:
-            item = await self.create_feed_item(movie, 1.0, country, tmdb, include_rating=True)
+            p_data = short_providers_map.get(movie.id, [])
+            flat_providers = [p["provider_name"] for p in p_data]
+            item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, include_rating=True, streaming_providers=flat_providers)
             short_items.append(item)
+
             
         short_section = FeedSection(
             id="watchlist_short",
@@ -754,91 +154,191 @@ class FeedService:
         )
 
         # 4. Random Shuffle
-        random_section = await self.get_random_watchlist_section(user_id, db, tmdb, country)
+        local_provider_for_watchlist = ProviderService(db, tmdb)
+        random_section = await self.get_random_watchlist_section(user_id, db, tmdb, country, local_provider_for_watchlist)
+
         
         sections = [available_section, top_rated_section, short_section, random_section]
         feed = [s for s in sections if s and s.items]
         
         return FeedResponse(feed=feed)
 
-    async def get_popular_on_letterboxd_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        country: str,
-        provider_service: ProviderService = None
-    ) -> Optional[FeedSection]:
-        """
-        Section: Popular on Letterboxd This Week
-        """
-        from services.trending_service import TrendingService
-        
-        trending_service = TrendingService(db)
-        popular_ids = trending_service.get_popular_movie_ids()
-        
-        if not popular_ids:
-            return None
-            
-        # Fetch movies from DB
-        result = await db.execute(
-            select(Movie).where(Movie.tmdb_id.in_(popular_ids))
-        )
-        movies_map = {m.tmdb_id: m for m in result.scalars().all()}
-        
-        # Maintain order from Redis
-        items = []
-        for tmdb_id in popular_ids:
-            movie = movies_map.get(tmdb_id)
-            if movie:
-                # Create item (High match score for trending items)
-                item = await self.create_feed_item(
-                    movie, 
-                    0.95, # High score for trending
-                    country, 
-                    tmdb, 
-                    include_rating=True, 
-                    provider_service=provider_service
-                )
-                
-                # Override rating with Letterboxd specific if available
-                if movie.letterboxd_rating:
-                    item.letterboxd_rating = movie.letterboxd_rating
-                
-                items.append(item)
-                
-        if not items:
-            return None
-            
-        return FeedSection(
-            id="popular_letterboxd",
-            title="Popular on Letterboxd This Week",
-            items=items
-        )
+    async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None) -> Optional[FeedSection]:
+        tmdb = provider_service.tmdb if provider_service else None
+        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
+        return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service, background_tasks=background_tasks)
 
-    async def get_hybrid_picks_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        country: str,
-        seen_ids: Set[int],
-        provider_service: ProviderService = None
-    ) -> Optional[FeedSection]:
-        """
-        Trident Hybrid Recommendations (Signal A + B + C)
-        """
-        recommender = RecommendationService(db)
-        return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service)
-
-    async def get_auteur_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        country: str,
-        seen_ids: Set[int]
-    ) -> Optional[FeedSection]:
-        """
-        Signal B: Auteur Expert
-        """
-        recommender = RecommendationService(db)
+    async def get_auteur_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int]) -> Optional[FeedSection]:
+        # This one doesn't even take provider_service in signature here.
+        # We should probably instantiate a lightweight client or rely on the default if we can't pass it.
+        # But wait, we can change the signature if we update the call site.
+        recommender = RecommendationService(db) 
+        # We will fix the call site to pass tmdb if possible, or accept this one is less frequent (once per feed).
         return await recommender.get_auteur_section(user_id, country, seen_ids)
+
+    async def get_main_feed(
+        self,
+        user_id: int,
+        country_code: str,
+        streaming_providers: List[int],
+        tmdb: TMDBClient,
+        qdrant: QdrantService,
+        include_low_quality: bool = False,
+        background_tasks = None
+    ) -> FeedResponse:
+        """
+        Generate the main feed using PARALLEL EXECUTION.
+        """
+        
+        # 1. Define Parallel Tasks with Session Isolation
+        
+        async def task_popular():
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await self.get_popular_on_letterboxd_section(user_id, session, tmdb, country_code, local_provider)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Popular]: {e}")
+                return None
+
+        async def task_watched():
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, set(), country_code, local_provider, background_tasks=background_tasks)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Watched]: {e}")
+                return None
+
+        async def task_taste():
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await self.get_your_taste_section(user_id, session, tmdb, set(), country_code, local_provider, background_tasks=background_tasks)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Taste]: {e}")
+                return None
+
+        async def task_wildcard():
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await self.get_wildcard_section(user_id, session, tmdb, set(), country_code, local_provider)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Wildcard]: {e}")
+                return None
+
+        async def task_random():
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await self.get_random_recommendations_section(user_id, session, tmdb, set(), country_code, local_provider)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Random]: {e}")
+                return None
+
+        async def task_hidden():
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await self.get_hidden_gems_section(user_id, session, tmdb, set(), country_code, local_provider, background_tasks=background_tasks)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Hidden]: {e}")
+                return None
+
+        async def task_available():
+            try:
+                async with AsyncSessionLocal() as session:
+                    return await self.get_available_now_section(user_id, session, tmdb, set(), country_code, streaming_providers)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Available]: {e}")
+                return None
+
+        async def task_hybrid():
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    # We need to pass tmdb/qdrant to get_hybrid_picks_section
+                    # But get_hybrid_picks_section signature doesn't take qdrant explicitly. 
+                    # We updated RecommendationService to take them in init. 
+                    # We need to update get_hybrid_picks_section to take them or handle it.
+                    # The previous edit updated get_hybrid_picks_section to extract tmdb from provider_service.
+                    # Qdrant is still a leak in hybrid picks if we don't pass it.
+                    # Let's update get_hybrid_picks_section signature in a moment. For now, calling as is.
+                    return await self.get_hybrid_picks_section(user_id, session, country_code, set(), local_provider, qdrant=qdrant, background_tasks=background_tasks)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Hybrid]: {e}")
+                return None
+
+        async def task_auteur():
+            try:
+                async with AsyncSessionLocal() as session:
+                    # We should pass tmdb here too
+                    recommender = RecommendationService(session, tmdb=tmdb)
+                    return await recommender.get_auteur_section(user_id, country_code, set())
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Auteur]: {e}")
+                return None
+        
+        # 2. Execute Parallel Tasks
+        tasks = [
+            task_popular(),
+            task_hybrid(), # Trident
+            task_watched(),
+            task_taste(),
+            task_wildcard(),
+            task_random(),
+            task_hidden(),
+            task_auteur(), # Signal B separate row
+            task_available()
+        ]
+        
+        results = await asyncio.gather(*tasks)
+        
+        # Unpack results
+        section_popular, section_hybrid, section_a, section_b, section_wildcard, section_random, section_c, section_auteur, section_d = results
+        
+        # 3. Deduplicate and Aggregate
+        seen_ids = set()
+        final_sections = []
+        
+        ordered_results = [
+            section_hybrid, 
+            section_popular, 
+            section_a, 
+            section_b, 
+            section_auteur,
+            section_wildcard, 
+            section_random, 
+            section_c, 
+            section_d
+        ]
+        
+        for section in ordered_results:
+            if not section or not section.items:
+                continue
+            
+            unique_items = []
+            for item in section.items:
+                if item.id not in seen_ids:
+                    unique_items.append(item)
+                    seen_ids.add(item.id)
+            
+            if unique_items:
+                section.items = unique_items
+                final_sections.append(section)
+        
+        # 4. Deep Dive (Sequential)
+        try:
+            async with AsyncSessionLocal() as session:
+                local_provider = ProviderService(session, tmdb)
+                section_deep_dive = await self.get_deep_dive_section(
+                    user_id, session, tmdb, seen_ids, country_code, local_provider, include_low_quality=include_low_quality, background_tasks=background_tasks
+                )
+                if section_deep_dive and section_deep_dive.items:
+                    insert_pos = min(len(final_sections), 5)
+                    final_sections.insert(insert_pos, section_deep_dive)
+        except Exception as e:
+            logger.error(f"Feed Task Failed [Deep Dive]: {e}")
+        
+        return FeedResponse(feed=final_sections, status="ok")

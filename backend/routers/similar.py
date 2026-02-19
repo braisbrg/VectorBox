@@ -12,6 +12,7 @@ from models.database import Movie
 from services.qdrant_service import QdrantService
 from services.tmdb_client import TMDBClient
 from services.embedding_service import EmbeddingService
+from dependencies import get_tmdb_client, get_qdrant_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -22,7 +23,9 @@ async def get_similar_movies(
     tmdb_id: int,
     user_id: int = Query(..., description="User ID for personalization"),
     limit: int  = Query(12, ge=1, le=50),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service)
 ):
     """
     Get movies similar to the specified movie.
@@ -32,8 +35,6 @@ async def get_similar_movies(
     4. Fallback to TMDB recommendations if local results are scarce.
     """
     try:
-        tmdb = TMDBClient()
-        qdrant = QdrantService()
         embedding_service = EmbeddingService()
         
         # 1. Get movie details (Local or TMDB) to generate a FRESH query vector
@@ -164,7 +165,8 @@ async def get_similar_movies(
                     try:
                         details = await tmdb.get_movie_details(r_tmdb_id)
                         if details: poster_path = details.get("poster_path")
-                    except: pass
+                    except Exception as e:
+                        logger.warning(f"Poster fetch failed for movie {r_tmdb_id}: {e}")
                     
                 recommendations.append({
                     "movie_id": r_tmdb_id,
@@ -261,7 +263,7 @@ async def get_similar_movies(
 
         recommendations = await asyncio.gather(*[fetch_providers(m) for m in recommendations])
         
-        await tmdb.close()
+        # Singleton TMDBClient lifecycle managed by dependencies.close_services()
         
         return {
             "source_movie": {

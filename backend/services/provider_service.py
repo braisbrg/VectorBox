@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Set
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -122,22 +123,35 @@ class ProviderService:
         movie_res = await self.db.execute(movie_stmt)
         movies = movie_res.scalars().all()
         
-        for movie in movies:
-            providers_data = await self.tmdb.get_watch_providers(movie.tmdb_id, country_code)
+        # Concurrent Fetching
+        tasks = [self.tmdb.get_watch_providers(movie.tmdb_id, country_code) for movie in movies]
+        # Return exceptions=True to prevent one failure from crashing the batch
+        tmdb_results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for i, movie in enumerate(movies):
+            providers_data = tmdb_results[i]
             
-            providers_list = []
-            if providers_data:
-                for provider_type in ["flatrate", "free"]:
-                    if provider_type in providers_data:
-                        for p in providers_data[provider_type]:
-                            providers_list.append({
-                                "provider_id": p["provider_id"],
-                                "provider_name": p["provider_name"]
-                            })
-            
-            # Deduplicate
-            unique_providers = {p["provider_id"]: p for p in providers_list}.values()
-            final_providers = list(unique_providers)
+            if isinstance(providers_data, Exception) or not providers_data:
+                if isinstance(providers_data, Exception):
+                     logger.error(f"Failed to fetch providers for movie {movie.id}: {providers_data}")
+                final_providers = []
+                # Don't cache empty failures? Or cache empty? 
+                # If network error, maybe don't cache. If valid empty, cache.
+                # TMDBClient returns None on error.
+                if providers_data is None: 
+                    continue
+            else:
+                 providers_list = []
+                 for provider_type in ["flatrate", "free"]:
+                     if provider_type in providers_data:
+                         for p in providers_data[provider_type]:
+                             providers_list.append({
+                                 "provider_id": p["provider_id"],
+                                 "provider_name": p["provider_name"]
+                             })
+                 
+                 unique_providers = {p["provider_id"]: p for p in providers_list}.values()
+                 final_providers = list(unique_providers)
             
             final_results[movie.id] = final_providers
             
@@ -158,3 +172,43 @@ class ProviderService:
         await self.db.commit()
         
         return final_results
+
+    async def save_providers(self, movie_id: int, country_code: str, providers_raw: List[Dict]):
+        """
+        Save providers data directly (without fetching).
+        Used during ingestion when data is pre-fetched via super-request.
+        """
+        # Deduplicate and Format
+        providers_list = []
+        for p in providers_raw:
+             # JustWatch raw format usually has provider_id, provider_name
+             providers_list.append({
+                "provider_id": p["provider_id"],
+                "provider_name": p["provider_name"]
+            })
+            
+        unique_providers = {p["provider_id"]: p for p in providers_list}.values()
+        final_providers = list(unique_providers)
+
+        # Upsert into DB
+        stmt = select(MovieAvailability).where(
+            MovieAvailability.movie_id == movie_id,
+            MovieAvailability.country_code == country_code
+        )
+        result = await self.db.execute(stmt)
+        availability = result.scalar_one_or_none()
+
+        if availability:
+            availability.providers = final_providers
+            availability.last_updated = datetime.utcnow()
+        else:
+            new_availability = MovieAvailability(
+                movie_id=movie_id,
+                country_code=country_code,
+                providers=final_providers,
+                last_updated=datetime.utcnow()
+            )
+            self.db.add(new_availability)
+        
+        # Note: We rely on caller to commit to support bulk operations
+

@@ -1,28 +1,26 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { Upload, FileText, Loader2, FileArchive, Plus, User as UserIcon, RefreshCw, Check, AlertCircle } from "lucide-react";
+import { Upload, FileText, Loader2, FileArchive, Plus, User as UserIcon, RefreshCw, Check, AlertCircle, Link as LinkIcon, Save, ArrowRight } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
-import { uploadExportZIP, createUser, syncRSS } from "@/lib/api";
+import { uploadExportZIP, createUser, syncRSS, linkLetterboxd, VectorboxUser } from "@/lib/api";
 import { motion } from "framer-motion";
-
-interface User {
-    id: number;
-    username: string;
-}
+import { ProgressModal } from "./progress-modal";
+import { useLanguage } from "@/components/language-provider";
 
 interface UploadZoneProps {
     onUploadSuccess: (userId: number) => void;
-    users: User[];
-    onUserCreated: (user: User) => void;
-    currentUserId?: number | null;
-    onUserSelect?: (userId: number) => void;
+    registeredUsers: VectorboxUser[];
+    onUserCreated: (user: VectorboxUser) => void;
+    activeSessionUserId: number | null;
+    onSessionUserSelect?: (userId: number) => void;
 }
 
 function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSuccess: () => void }) {
     const [isLoading, setIsLoading] = useState(false);
     const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
     const [stats, setStats] = useState<any>(null);
+    const { t } = useLanguage();
 
     const handleSync = async () => {
         if (!username) return;
@@ -50,16 +48,14 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
                     className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 disabled:opacity-50 flex items-center gap-2 transition-colors"
                 >
                     {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                    Sync RSS for {username}
+                    {t("rss.sync_btn")} {username}
                 </button>
             </div>
 
             {/* Info Box */}
             <div className="text-xs text-muted-foreground bg-muted/50 p-3 rounded border w-full text-center">
                 <p>
-                    Syncs last <strong>50 items</strong> from Diary & Watchlist.
-                    <br />
-                    Use <strong>Zip Upload ONLY</strong> for full history.
+                    {t("rss.info")}
                 </p>
             </div>
 
@@ -68,7 +64,7 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
                     <div className="text-xs text-green-500 flex items-center gap-1.5 bg-green-500/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
                         <Check className="w-3 h-3" />
                         <span>
-                            Synced: {stats.rss_new_movies || 0} new, {stats.rss_new_ratings || 0} watched, {stats.rss_updated_ratings || 0} updated, {stats.watchlist_added || 0} watchlist
+                            {t("rss.synced")} {stats.rss_new_movies || 0} {t("rss.new")}, {stats.rss_new_ratings || 0} {t("rss.watched")}, {stats.rss_updated_ratings || 0} {t("rss.updated")}, {stats.watchlist_added || 0} {t("rss.watchlist")}
                         </span>
                     </div>
                     {stats.rss_errors > 0 && (
@@ -83,56 +79,82 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
             {status === "error" && (
                 <div className="text-xs text-destructive flex items-center gap-1.5 bg-destructive/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
                     <AlertCircle className="w-3 h-3" />
-                    <span>Sync failed. Check console for details (likely timeout).</span>
+                    <span>{t("rss.error")}</span>
                 </div>
             )}
         </div>
     );
 }
 
-export function UploadZone({ onUploadSuccess, users, onUserCreated, currentUserId, onUserSelect }: UploadZoneProps) {
+export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, activeSessionUserId, onSessionUserSelect }: UploadZoneProps) {
     const [isDragging, setIsDragging] = useState(false);
     const [file, setFile] = useState<File | null>(null);
-    const [localSelectedUserId, setLocalSelectedUserId] = useState<number | "new">(
-        currentUserId || (users.length > 0 ? users[0].id : "new")
-    );
-    const [newUsername, setNewUsername] = useState("");
-    const [isCreatingUser, setIsCreatingUser] = useState(false);
 
-    // Sync with parent prop if provided
-    useEffect(() => {
-        if (currentUserId) {
-            setLocalSelectedUserId(currentUserId);
-        }
-    }, [currentUserId]);
+    // Flattened State Logic
+    // STRICT TYPE SAFETY: Use strict equality for ID lookup
+    const activeUserProfile = registeredUsers.find(u => u.id === activeSessionUserId);
 
-    const createUserMutation = useMutation({
-        mutationFn: createUser,
-        onSuccess: (newUser) => {
-            onUserCreated(newUser);
-            setLocalSelectedUserId(newUser.id);
-            if (onUserSelect) onUserSelect(newUser.id);
-            setIsCreatingUser(false);
-            setNewUsername("");
+    // Explicit 2-Step Logic:
+    // Step 1: Link (if no letterboxd_username)
+    // Step 2: Upload (if linked)
+
+    // We maintain a local check for isLinked to update UI optimistically
+    const [localLinkedUser, setLocalLinkedUser] = useState<string | null>(null);
+    const isLinked = !!(activeUserProfile?.letterboxd_username || localLinkedUser);
+
+    const [linkUsername, setLinkUsername] = useState("");
+    const [linkStep, setLinkStep] = useState<'input' | 'confirm'>('input');
+    const [taskId, setTaskId] = useState<string | null>(null);
+    const { t } = useLanguage();
+
+    const linkMutation = useMutation({
+        mutationFn: async ({ id, username }: { id: number, username: string }) => {
+            return linkLetterboxd(id, username);
         },
+        onSuccess: (data) => {
+            // Optimistic Update
+            setLocalLinkedUser(data.letterboxd_username);
+
+            // Persist to LocalStorage
+            if (typeof window !== "undefined") {
+                const stored = localStorage.getItem("vectorbox_user");
+                if (stored) {
+                    try {
+                        const user = JSON.parse(stored);
+                        user.letterboxd_username = data.letterboxd_username;
+                        localStorage.setItem("vectorbox_user", JSON.stringify(user));
+                    } catch (e) {
+                        console.error("LS Error", e);
+                    }
+                }
+            }
+            // Force refresh is mostly usually needed, but let's try just state for smooth transition first
+            window.location.reload();
+        }
     });
 
     const uploadMutation = useMutation({
         mutationFn: (file: File) => {
-            if (localSelectedUserId === "new") throw new Error("Please select or create a user");
-            return uploadExportZIP(file, localSelectedUserId);
+            if (!activeSessionUserId) throw new Error("No user selected");
+            return uploadExportZIP(file);
         },
-        onSuccess: () => {
-            if (typeof localSelectedUserId === "number") {
-                onUploadSuccess(localSelectedUserId);
+        onSuccess: (data) => {
+            if (data.task_id) {
+                setTaskId(data.task_id);
+            } else {
+                if (activeSessionUserId) onUploadSuccess(activeSessionUserId);
             }
         },
     });
 
+    const handleProgressComplete = () => {
+        setTaskId(null);
+        if (activeSessionUserId) onUploadSuccess(activeSessionUserId);
+    };
+
     const handleDrop = useCallback((e: React.DragEvent) => {
         e.preventDefault();
         setIsDragging(false);
-
         const droppedFile = e.dataTransfer.files[0];
         if (droppedFile && droppedFile.name.endsWith(".zip")) {
             setFile(droppedFile);
@@ -147,218 +169,231 @@ export function UploadZone({ onUploadSuccess, users, onUserCreated, currentUserI
     };
 
     const handleUpload = () => {
-        if (file && localSelectedUserId !== "new") {
+        if (file) {
             uploadMutation.mutate(file);
-        } else if (localSelectedUserId === "new" && newUsername) {
-            createUserMutation.mutate({ username: newUsername }, {
-                onSuccess: (newUser) => {
-                    if (file) {
-                        // Immediate upload after creation
-                        uploadExportZIP(file, newUser.id)
-                            .then(() => onUploadSuccess(newUser.id))
-                            .catch(() => { }); // Handle error if needed
-                    }
-                }
-            });
+        }
+    };
+
+    const handleLink = () => {
+        if (activeSessionUserId && linkUsername) {
+            linkMutation.mutate({ id: activeSessionUserId, username: linkUsername });
         }
     };
 
     return (
-        <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="relative space-y-4"
-        >
-            {/* User Selection */}
-            <div className="flex items-center justify-center gap-4 p-4 bg-card rounded-lg border">
-                <div className="flex items-center gap-2">
-                    <UserIcon className="w-4 h-4 text-muted-foreground" />
-                    <span className="text-sm font-medium">User:</span>
-                </div>
+        <>
+            <ProgressModal
+                taskId={taskId}
+                onComplete={handleProgressComplete}
+                onError={(error) => console.error("Upload error:", error)}
+            />
 
-                {isCreatingUser || (users.length === 0 && localSelectedUserId === "new") ? (
-                    <div className="flex items-center gap-2">
-                        <input
-                            type="text"
-                            placeholder="Enter Letterboxd username"
-                            value={newUsername}
-                            onChange={(e) => setNewUsername(e.target.value)}
-                            className="px-3 py-1 bg-background border rounded text-sm"
-                            autoFocus
-                        />
-                        <button
-                            onClick={() => {
-                                if (newUsername) createUserMutation.mutate({ username: newUsername });
-                            }}
-                            disabled={createUserMutation.isPending || !newUsername}
-                            className="px-3 py-1 bg-primary text-primary-foreground rounded text-sm font-medium disabled:opacity-50"
-                        >
-                            {createUserMutation.isPending ? "Creating..." : "Create"}
-                        </button>
-                        {users.length > 0 && (
-                            <button
-                                onClick={() => {
-                                    setIsCreatingUser(false);
-                                    if (currentUserId) setLocalSelectedUserId(currentUserId);
-                                }}
-                                className="p-1 hover:bg-muted rounded"
-                            >
-                                ✕
-                            </button>
-                        )}
-                    </div>
-                ) : (
-                    <div className="flex items-center gap-2">
-                        <select
-                            value={localSelectedUserId}
-                            onChange={(e) => {
-                                const val = Number(e.target.value);
-                                setLocalSelectedUserId(val);
-                                if (onUserSelect) onUserSelect(val);
-                            }}
-                            className="px-3 py-1 bg-background border rounded text-sm min-w-[150px]"
-                        >
-                            {users.map((u) => (
-                                <option key={u.id} value={u.id}>
-                                    {u.username}
-                                </option>
-                            ))}
-                        </select>
+            <div className="space-y-6">
 
-                        <button
-                            onClick={() => {
-                                setIsCreatingUser(true);
-                                setLocalSelectedUserId("new");
-                            }}
-                            className="p-1.5 bg-primary/10 hover:bg-primary/20 text-primary rounded-md transition-colors"
-                            title="Create New User"
-                        >
-                            <Plus className="w-4 h-4" />
-                        </button>
-                    </div>
-                )}
-            </div>
+                {/* STEP 1: IDENTITY LINK */}
+                {/* STEP 1: IDENTITY LINK */}
+                {!isLinked && (
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.95 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        className="bg-zinc-900 border border-yellow-500/30 rounded-xl p-8 text-center space-y-6 shadow-[0_0_20px_rgba(234,179,8,0.1)] relative overflow-hidden"
+                    >
+                        {/* Acid Design Background Element */}
+                        <div className="absolute top-0 right-0 w-32 h-32 bg-yellow-500/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none" />
 
-            {/* RSS Sync Button - Only show if user is selected */}
-            {typeof localSelectedUserId === "number" && !isCreatingUser && (
-                <div className="flex justify-center">
-                    <RSSSyncButton
-                        username={users.find(u => u.id === localSelectedUserId)?.username || ""}
-                        onSyncSuccess={() => onUploadSuccess(localSelectedUserId)}
-                    />
-                </div>
-            )}
+                        {linkStep === 'input' ? (
+                            <>
+                                <div className="w-16 h-16 bg-yellow-500/20 text-yellow-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-yellow-500/20">
+                                    <LinkIcon size={32} />
+                                </div>
 
+                                <div className="space-y-2">
+                                    <h3 className="text-xl font-bold text-white tracking-tight">{t("onboarding.link_title")}</h3>
+                                    <p className="text-zinc-400 text-sm max-w-sm mx-auto">
+                                        {t("onboarding.link_desc")}
+                                    </p>
+                                </div>
 
-            <div
-                onDragOver={(e) => {
-                    e.preventDefault();
-                    setIsDragging(true);
-                }}
-                onDragLeave={() => setIsDragging(false)}
-                onDrop={handleDrop}
-                className={`
-          border-2 border-dashed rounded-lg p-12 text-center transition-all
-          ${isDragging ? "border-primary bg-primary/5 scale-105" : "border-muted-foreground/25"}
-          ${uploadMutation.isPending ? "opacity-50 pointer-events-none" : ""}
-        `}
-            >
-                {uploadMutation.isPending ? (
-                    <div className="space-y-4">
-                        <Loader2 className="w-12 h-12 mx-auto animate-spin text-primary" />
-                        <p className="text-lg font-medium">Processing your Letterboxd export...</p>
-                        <p className="text-sm text-muted-foreground">
-                            Parsing ratings, watchlist, and likes to build your profile
-                        </p>
-                    </div>
-                ) : uploadMutation.isSuccess ? (
-                    <div className="space-y-4">
-                        <div className="w-12 h-12 mx-auto rounded-full bg-green-500/10 flex items-center justify-center">
-                            <span className="text-2xl">✓</span>
-                        </div>
-                        <p className="text-lg font-medium text-green-600 dark:text-green-400">
-                            Upload successful!
-                        </p>
-                        <p className="text-sm text-muted-foreground">
-                            Your taste clusters are being generated...
-                        </p>
-                        <button
-                            onClick={() => uploadMutation.reset()}
-                            className="text-xs text-primary hover:underline"
-                        >
-                            Upload another file
-                        </button>
-                    </div>
-                ) : (
-                    <div className="space-y-4">
-                        <FileArchive className="w-12 h-12 mx-auto text-muted-foreground" />
-                        <div>
-                            <p className="text-lg font-medium mb-2">
-                                Upload your Letterboxd Export (ZIP)
-                            </p>
-                            <p className="text-sm text-muted-foreground mb-4">
-                                Drag and drop or click to browse
-                            </p>
-                        </div>
+                                <div className="flex flex-col gap-3 max-w-xs mx-auto">
+                                    <div className="relative group">
+                                        <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 group-focus-within:text-yellow-500 transition-colors" />
+                                        <input
+                                            type="text"
+                                            value={linkUsername}
+                                            onChange={(e) => setLinkUsername(e.target.value)}
+                                            onKeyDown={(e) => {
+                                                if (e.key === 'Enter' && linkUsername.trim()) setLinkStep('confirm');
+                                            }}
+                                            placeholder="Letterboxd Username"
+                                            className="w-full bg-black/50 border border-zinc-700 rounded-md pl-10 pr-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 transition-all font-mono"
+                                            autoFocus
+                                        />
+                                    </div>
 
-                        {!file ? (
-                            <label className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-primary-foreground rounded-lg cursor-pointer hover:bg-primary/90 transition-colors">
-                                <FileText className="w-4 h-4" />
-                                <span>Choose ZIP File</span>
-                                <input
-                                    type="file"
-                                    accept=".zip"
-                                    onChange={handleFileInput}
-                                    className="hidden"
-                                />
-                            </label>
-                        ) : (
-                            <div className="space-y-3">
-                                <p className="text-sm font-medium bg-muted px-3 py-1 rounded inline-block">
-                                    {file.name}
-                                </p>
-                                <div>
                                     <button
-                                        onClick={handleUpload}
-                                        disabled={localSelectedUserId === "new" && !newUsername}
-                                        className="px-6 py-3 bg-primary text-primary-foreground rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50"
+                                        onClick={() => setLinkStep('confirm')}
+                                        disabled={!linkUsername.trim()}
+                                        className="w-full bg-yellow-600 text-white font-bold py-3 rounded-md hover:bg-yellow-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                                     >
-                                        Start Upload
+                                        {t("onboarding.btn_link")} <ArrowRight className="w-4 h-4" />
                                     </button>
+                                </div>
+                            </>
+                        ) : (
+                            <div className="space-y-6 animate-in zoom-in-95 duration-200">
+                                <div className="space-y-2">
+                                    <h3 className="text-lg font-bold text-zinc-100 uppercase tracking-widest text-xs">{t("onboarding.confirm_title")}</h3>
+                                </div>
+
+                                <div className="py-6 bg-black/40 rounded-lg border border-yellow-500/20">
+                                    <p className="text-4xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-yellow-400 to-yellow-200 font-mono tracking-tighter break-all px-4">
+                                        {linkUsername}
+                                    </p>
+                                </div>
+
+                                <div className="bg-yellow-500/10 border border-yellow-500/20 p-4 rounded-md text-sm text-yellow-200/80 flex items-start gap-3 text-left">
+                                    <AlertCircle className="w-5 h-5 shrink-0 text-yellow-500 mt-0.5" />
+                                    <p>
+                                        {t("onboarding.confirm_warning")}
+                                        <br />
+                                        <span className="text-xs opacity-70 mt-1 block">{t("onboarding.confirm_warning_hint")}</span>
+                                    </p>
+                                </div>
+
+                                <div className="flex flex-col gap-3 max-w-xs mx-auto pt-2">
                                     <button
-                                        onClick={() => setFile(null)}
-                                        className="ml-2 px-4 py-3 text-sm hover:bg-muted rounded-lg transition-colors"
+                                        onClick={handleLink}
+                                        disabled={linkMutation.isPending}
+                                        className="w-full bg-yellow-500 text-black font-black uppercase tracking-wide py-3 rounded-md hover:bg-yellow-400 hover:scale-[1.02] transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-yellow-500/20"
                                     >
-                                        Cancel
+                                        {linkMutation.isPending ? (
+                                            <Loader2 className="w-4 h-4 animate-spin" />
+                                        ) : (
+                                            <>
+                                                {t("onboarding.confirm_yes")}
+                                            </>
+                                        )}
+                                    </button>
+
+                                    <button
+                                        onClick={() => setLinkStep('input')}
+                                        disabled={linkMutation.isPending}
+                                        className="w-full text-zinc-500 hover:text-white text-sm font-medium py-2 transition-colors"
+                                    >
+                                        {t("onboarding.confirm_no")}
                                     </button>
                                 </div>
                             </div>
                         )}
-                    </div>
+
+                        {linkMutation.isError && (
+                            <motion.div
+                                initial={{ opacity: 0, height: 0 }}
+                                animate={{ opacity: 1, height: "auto" }}
+                                className="bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-md text-sm flex items-center gap-2 mt-4"
+                            >
+                                <AlertCircle className="w-4 h-4 shrink-0" />
+                                <span>
+                                    {linkMutation.error instanceof Error ? linkMutation.error.message : "Failed to link account"}
+                                </span>
+                            </motion.div>
+                        )}
+                    </motion.div>
                 )}
 
-                {uploadMutation.isError && (
-                    <div className="mt-4 p-4 bg-destructive/10 border border-destructive/20 rounded-lg">
-                        <p className="text-sm text-destructive">
-                            Upload failed. Please ensure you&apos;re uploading a valid Letterboxd export ZIP.
-                        </p>
-                    </div>
-                )}
-            </div>
 
-            <div className="mt-4 text-center text-xs text-muted-foreground">
-                <p>
-                    Export your data from{" "}
-                    <a
-                        href="https://letterboxd.com/settings/data/"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary hover:underline"
+                {/* STEP 2: DATA INGESTION (Only if Linked) */}
+                {isLinked && (
+                    <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="space-y-6"
                     >
-                        Letterboxd Settings → Data
-                    </a>
-                </p>
+                        {/* Header for Step 2 */}
+                        <div className="text-center space-y-2">
+                            <h2 className="text-lg font-medium text-zinc-300">
+                                Import History for <span className="text-primary font-bold">{activeUserProfile?.letterboxd_username || localLinkedUser}</span>
+                            </h2>
+                        </div>
+
+                        <div
+                            onDragOver={(e) => {
+                                e.preventDefault();
+                                setIsDragging(true);
+                            }}
+                            onDragLeave={() => setIsDragging(false)}
+                            onDrop={handleDrop}
+                            className={`
+                                relative border-2 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer group
+                                ${isDragging ? "border-primary bg-primary/10 scale-[1.02]" : "border-zinc-800 bg-zinc-900/50 hover:border-zinc-700"}
+                                ${uploadMutation.isPending || taskId ? "opacity-50 pointer-events-none" : ""}
+                            `}
+                        >
+                            <input
+                                type="file"
+                                accept=".zip"
+                                onChange={handleFileInput}
+                                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                            />
+
+                            <div className="pointer-events-none space-y-4">
+                                <div className="w-16 h-16 mx-auto bg-zinc-800 rounded-full flex items-center justify-center group-hover:bg-zinc-700 transition-colors">
+                                    {file ? <FileArchive className="w-8 h-8 text-primary" /> : <Upload className="w-8 h-8 text-zinc-500 group-hover:text-zinc-300" />}
+                                </div>
+
+                                <div className="space-y-1">
+                                    {file ? (
+                                        <>
+                                            <p className="text-lg font-bold text-white break-all">{file.name}</p>
+                                            <p className="text-sm text-primary">Ready to upload</p>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <p className="text-lg font-bold text-zinc-300 group-hover:text-white transition-colors">{t("onboarding.upload_title")}</p>
+                                            <p className="text-sm text-zinc-500">{t("onboarding.upload_desc")}</p>
+                                        </>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+
+                        {file && (
+                            <div className="flex justify-center animate-in slide-in-from-bottom-2">
+                                <button
+                                    onClick={handleUpload}
+                                    disabled={uploadMutation.isPending}
+                                    className="bg-primary text-black font-bold uppercase tracking-wide px-8 py-3 rounded-full hover:bg-primary/90 transition-transform hover:scale-105 shadow-lg shadow-primary/20 flex items-center gap-2"
+                                >
+                                    {uploadMutation.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                                    {t("onboarding.btn_start")}
+                                </button>
+                            </div>
+                        )}
+
+                        {/* RSS Fallback / Sync */}
+                        <div className="pt-8 border-t border-zinc-900/50">
+                            <RSSSyncButton
+                                username={activeUserProfile?.letterboxd_username || localLinkedUser || ""}
+                                onSyncSuccess={() => activeSessionUserId && onUploadSuccess(activeSessionUserId)}
+                            />
+                        </div>
+                    </motion.div>
+                )}
+
+                <div className="mt-8 text-center text-xs text-zinc-600">
+                    <p>
+                        {t("onboarding.footer_export")}{" "}
+                        <a
+                            href="https://letterboxd.com/settings/data/"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-zinc-400 hover:text-primary underline transition-colors"
+                        >
+                            Letterboxd Settings → Data
+                        </a>
+                    </p>
+                </div>
             </div>
-        </motion.div >
+        </>
     );
 }

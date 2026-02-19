@@ -3,7 +3,6 @@ import httpx
 from bs4 import BeautifulSoup
 import logging
 from typing import List, Optional, Dict
-import requests
 import re
 
 logger = logging.getLogger(__name__)
@@ -14,29 +13,17 @@ class ScraperService:
             "User-Agent": "VectorBox-Student-Project/1.0 (Educational Purpose)"
         }
 
-    def scrape_watchlist_recent(self, username: str) -> List[dict]:
+    async def scrape_watchlist_recent(self, username: str) -> List[dict]:
         """
         Scrapes the first page of a user's watchlist to get recent additions.
-        Returns a list of dicts with 'film_slug' and 'film_id' (if available).
+        Returns a list of dicts with 'film_slug' and 'year' (if available).
         """
         url = f"https://letterboxd.com/{username}/watchlist/"
         logger.info(f"Scraping watchlist for {username}: {url}")
         
         try:
-            # Use httpx.Client for synchronous request (since this method is sync)
-            # Or better, make it async? The caller is async.
-            # But changing to async requires changing the signature.
-            # Let's keep it sync for now using httpx.Client, or better, make it async if possible.
-            # The caller `sync_user_data` is async.
-            # Let's make this async for better performance.
-            
-            # Wait, I cannot change the signature easily without checking the caller.
-            # Caller: `watchlist_items = scraper.scrape_watchlist_recent(username)`
-            # It's called synchronously.
-            # I should make it async and await it in the caller.
-            
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(url, headers=self.headers)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, headers=self.headers)
                 
             if response.status_code != 200:
                 logger.error(f"Failed to fetch watchlist: {response.status_code}")
@@ -44,11 +31,10 @@ class ScraperService:
                 
             soup = BeautifulSoup(response.text, "html.parser")
             
-            # Find the grid of posters
-            # Try new selector (React components)
+            # Find the grid of posters (React components)
             poster_containers = soup.find_all("div", attrs={"data-component-class": "LazyPoster"})
             
-            # Fallback to old selector if new one fails (just in case)
+            # Fallback to old selector if new one fails
             if not poster_containers:
                 poster_containers = soup.find_all("li", class_="poster-container")
 
@@ -58,15 +44,21 @@ class ScraperService:
             for container in poster_containers:
                 # New React structure
                 if container.name == "div":
-                    film_slug = container.get("data-item-slug")
-                    film_name = container.get("data-item-name") # "Title (Year)"
+                    slug_raw = container.get("data-item-slug")
+                    # Security: strict slug validation
+                    if slug_raw and re.match(r'^[a-zA-Z0-9-]+$', slug_raw):
+                        film_slug = slug_raw
+                    else:
+                        film_slug = None
+                        
+                    film_name = container.get("data-item-name")  # "Title (Year)"
                     
                     year = None
                     if film_name and "(" in film_name:
                         try:
                             year_str = film_name.split("(")[-1].replace(")", "")
                             year = int(year_str)
-                        except:
+                        except (ValueError, IndexError):
                             pass
                             
                     if film_slug:
@@ -100,7 +92,7 @@ class ScraperService:
             logger.error(f"Error scraping watchlist: {e}")
             return []
 
-    def get_tmdb_id(self, film_slug: str) -> Optional[int]:
+    async def get_tmdb_id(self, film_slug: str) -> Optional[int]:
         """
         Visits the Letterboxd film page to extract the authoritative TMDB ID.
         This avoids ambiguity with Title+Year matching.
@@ -109,8 +101,8 @@ class ScraperService:
         logger.info(f"Fetching TMDB ID for slug: {film_slug}")
         
         try:
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(url, headers=self.headers)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, headers=self.headers)
                 
             if response.status_code != 200:
                 logger.warning(f"Failed to fetch film page {film_slug}: {response.status_code}")
@@ -129,19 +121,17 @@ class ScraperService:
                     pass
             
             # Fallback: Look for links to TMDB
-            # <a href="https://www.themoviedb.org/movie/12345/" ...>
             tmdb_link = soup.find("a", href=lambda href: href and "themoviedb.org/movie/" in href)
             if tmdb_link:
                 try:
                     href = tmdb_link["href"]
-                    # Extract ID from URL
                     parts = href.split("themoviedb.org/movie/")
                     if len(parts) > 1:
                         id_part = parts[1].split("/")[0].split("?")[0]
                         tmdb_id = int(id_part)
                         logger.info(f"Found TMDB ID {tmdb_id} from link for {film_slug}")
                         return tmdb_id
-                except:
+                except (ValueError, IndexError, KeyError):
                     pass
                     
             logger.warning(f"Could not find TMDB ID for {film_slug}")
@@ -151,27 +141,24 @@ class ScraperService:
             logger.error(f"Error fetching TMDB ID for {film_slug}: {e}")
             return None
 
-    def scrape_popular_this_week(self) -> List[Dict]:
+    async def scrape_popular_this_week(self) -> List[Dict]:
         """
         Scrapes the 'Popular This Week' list from Letterboxd.
-        Returns a list of dicts with:
-          - title
-          - year
-          - letterboxd_slug
-          - letterboxd_rating (float)
+        Returns a list of dicts with title, year, letterboxd_slug, letterboxd_rating.
         """
-        # Letterboxd now loads the grid via AJAX
         url = "https://letterboxd.com/films/ajax/popular/this/week/?esiAllowFilters=true"
         
         try:
-            response = requests.get(url, headers=self.headers)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, headers=self.headers)
+                
             if response.status_code != 200:
                 logger.error(f"Failed to fetch popular movies: {response.status_code}")
                 return []
 
             soup = BeautifulSoup(response.content, 'html.parser')
             
-            # The new structure is a list of li.posteritem
+            # The structure is a list of li.posteritem
             items = soup.select("li.posteritem")
             
             popular_movies = []
@@ -188,19 +175,17 @@ class ScraperService:
                         continue
                         
                     slug = div.get('data-item-slug')
-                    name_year = div.get('data-item-name') # e.g. "Wicked (2024)"
+                    name_year = div.get('data-item-name')  # e.g. "Wicked (2024)"
                     
                     if not slug or not name_year:
                         continue
 
                     # Parse title and year from "Title (Year)"
-                    # Use regex to be safe
                     match = re.match(r"(.*)\s\((\d{4})\)$", name_year)
                     if match:
                         title = match.group(1)
                         year = int(match.group(2))
                     else:
-                        # Fallback if format doesn't match
                         title = name_year
                         year = None
 
@@ -221,6 +206,3 @@ class ScraperService:
         except Exception as e:
             logger.error(f"Error scraping popular movies: {e}")
             return []
-                    
-
-

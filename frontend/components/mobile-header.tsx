@@ -2,9 +2,11 @@
 
 import { Menu } from "lucide-react";
 import { useMobileNav } from "@/components/mobile-nav-context";
+import { useLanguage } from "@/components/language-provider";
 
 export function MobileHeader() {
     const { setIsOpen } = useMobileNav();
+    const { t } = useLanguage();
 
     return (
         <header className="lg:hidden fixed top-0 left-0 right-0 h-[60px] bg-black/80 backdrop-blur-md border-b border-zinc-800 flex items-center justify-between px-4 z-40">
@@ -20,7 +22,7 @@ export function MobileHeader() {
             <button
                 onClick={() => setIsOpen(true)}
                 className="p-2 text-white hover:text-primary transition-colors"
-                aria-label="Open menu"
+                aria-label={t("aria.open_menu")}
             >
                 <Menu className="w-6 h-6" />
             </button>
