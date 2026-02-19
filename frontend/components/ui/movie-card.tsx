@@ -2,11 +2,13 @@
 
 import { motion } from "framer-motion";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { Star, Clock, Tv, Film, RotateCcw, HelpCircle, Zap } from "lucide-react";
 import { getTMDBImageUrl } from "@/lib/api";
 import { useState } from "react";
 import { STREAMING_PROVIDERS } from "@/lib/constants";
 import { useLanguage } from "@/components/language-provider";
+import { SpotlightCard } from "@/components/tweak/spotlight-card";
 
 export interface MovieCardProps {
     id: number;
@@ -36,6 +38,7 @@ export interface MovieCardProps {
     overview_es?: string;
     letterboxd_rating?: number;
     forceVectorBoxScore?: boolean; // New prop to force VB display
+    release_dates?: Record<string, string>;
 }
 
 export function MovieCard({
@@ -65,7 +68,9 @@ export function MovieCard({
     overview_es,
     letterboxd_rating,
     forceVectorBoxScore = false,
+    release_dates,
 }: MovieCardProps) {
+    const router = useRouter();
     const [flipContent, setFlipContent] = useState<"synopsis" | "contributors" | null>(null);
     const [imageError, setImageError] = useState(false);
     const { t, language } = useLanguage();
@@ -90,11 +95,11 @@ export function MovieCard({
             <div
                 className="bg-purple-600 text-white text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] cursor-help z-20"
                 title={[
-                    `VectorBox Score: ${vectorbox_score.toFixed(1)} / 10`,
-                    rating ? `TMDB Rating: ${rating.toFixed(1)} / 10` : null,
-                    imdb_rating ? `IMDb: ${imdb_rating} / 10` : null,
-                    rotten_tomatoes_rating ? `Rotten Tomatoes: ${rotten_tomatoes_rating}%` : null,
-                    metacritic_rating ? `Metacritic: ${metacritic_rating} / 100` : null,
+                    `${t("movie.vb_score")}: ${vectorbox_score.toFixed(1)} / 10`,
+                    rating ? `${t("movie.tmdb_rating")}: ${rating.toFixed(1)} / 10` : null,
+                    imdb_rating ? `${t("movie.imdb_rating")}: ${imdb_rating} / 10` : null,
+                    rotten_tomatoes_rating ? `${t("movie.rotten_tomatoes")}: ${rotten_tomatoes_rating}%` : null,
+                    metacritic_rating ? `${t("movie.metacritic")}: ${metacritic_rating} / 100` : null,
                 ].filter(Boolean).join("\n")}
             >
                 VB: {vectorbox_score.toFixed(1)}
@@ -115,8 +120,8 @@ export function MovieCard({
 
         const lbBadge = showLetterboxd ? (
             <div
-                className={`text-black text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] cursor-help z-20 ${isLetterboxdPrimary ? "bg-[#00e054] mb-1" : "bg-[#00e054] mt-1"}`}
-                title={`Letterboxd Rating: ${letterboxd_rating?.toFixed(1)} / 5.0`}
+                className={`text-black text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] cursor-help z-20 ${isLetterboxdPrimary ? "bg-[hsl(var(--letterboxd))] mb-1" : "bg-[hsl(var(--letterboxd))] mt-1"}`}
+                title={`${t("movie.letterboxd_rating")}: ${letterboxd_rating?.toFixed(1)} / 5.0`}
             >
                 LB: {letterboxd_rating?.toFixed(1)}
             </div>
@@ -139,7 +144,7 @@ export function MovieCard({
                 <div className="absolute top-0 right-0 z-10 flex flex-col items-end">
                     <div
                         className="bg-primary text-black text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] cursor-help"
-                        title={`Match Probability: ${Math.round(matchScore)}%`}
+                        title={`${t("movie.match_prob")}: ${Math.round(matchScore)}%`}
                     >
                         {Math.round(matchScore)}% MATCH
                     </div>
@@ -165,7 +170,7 @@ export function MovieCard({
             return (
                 <div className="absolute top-0 right-0 flex flex-col items-end z-10">
                     <div className="bg-black text-primary text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-primary shadow-[2px_2px_0px_0px_rgba(204,255,0,1)]"
-                        title={`TMDB: ${rating.toFixed(1)}`}>
+                        title={`${t("movie.tmdb_rating")}: ${rating.toFixed(1)}`}>
                         ★ {rating.toFixed(1)}
                     </div>
                     {lbBadge}
@@ -175,15 +180,58 @@ export function MovieCard({
         return null;
     };
 
+    // Release Warning Logic
+    const getReleaseWarning = () => {
+        if (!release_dates) return null;
+
+        const now = new Date();
+        const targetCountry = language === 'es' ? 'ES' : 'US';
+        const localDateStr = release_dates[targetCountry];
+
+        // Check Local
+        if (localDateStr) {
+            const localDate = new Date(localDateStr);
+            if (localDate > now) {
+                // Formatting
+                const formatted = new Intl.DateTimeFormat(language, { dateStyle: 'short' }).format(localDate);
+                const daysDiff = Math.ceil((localDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+                const isHyped = daysDiff <= 30;
+
+                return (
+                    <div
+                        className={`absolute top-2 left-2 z-20 w-3 h-3 rounded-full bg-[#FFB800] border border-black shadow-sm cursor-help ${isHyped ? 'animate-pulse' : ''}`}
+                        title={`${t("movie.release_date")} (${targetCountry}): ${formatted}`}
+                    />
+                );
+            }
+        }
+
+        // Check Global (US fallback) if local passed or missing
+        const globalDateStr = release_dates['US'];
+        if (globalDateStr && targetCountry !== 'US') {
+            const globalDate = new Date(globalDateStr);
+            if (globalDate > now) {
+                const formatted = new Intl.DateTimeFormat(language, { dateStyle: 'short' }).format(globalDate);
+                return (
+                    <div
+                        className="absolute top-2 left-2 z-20 w-3 h-3 rounded-full bg-[#FFB800] border border-black shadow-sm cursor-help opacity-75"
+                        title={`${t("movie.release_date")} (Global): ${formatted}`}
+                    />
+                );
+            }
+        }
+        return null;
+    };
+
     const PosterContent = (
         <div
             className="relative aspect-[2/3] overflow-hidden bg-zinc-900 w-full border-b-2 border-zinc-800 group-hover/card:border-primary transition-all duration-200 group-hover/card:shadow-[4px_4px_0px_0px_var(--primary)] group-hover/card:-translate-y-1 group-hover/card:-translate-x-1"
             title={[
-                (vectorbox_score !== undefined && vectorbox_score !== null) ? `VectorBox Score: ${vectorbox_score.toFixed(1)} / 10` : null,
-                rating ? `TMDB Rating: ${rating.toFixed(1)} / 10` : null,
-                imdb_rating ? `IMDb: ${imdb_rating} / 10` : null,
-                rotten_tomatoes_rating ? `Rotten Tomatoes: ${rotten_tomatoes_rating}%` : null,
-                metacritic_rating ? `Metacritic: ${metacritic_rating} / 100` : null,
+                (vectorbox_score !== undefined && vectorbox_score !== null) ? `${t("movie.vb_score")}: ${vectorbox_score.toFixed(1)} / 10` : null,
+                rating ? `${t("movie.tmdb_rating")}: ${rating.toFixed(1)} / 10` : null,
+                imdb_rating ? `${t("movie.imdb_rating")}: ${imdb_rating} / 10` : null,
+                rotten_tomatoes_rating ? `${t("movie.rotten_tomatoes")}: ${rotten_tomatoes_rating}%` : null,
+                metacritic_rating ? `${t("movie.metacritic")}: ${metacritic_rating} / 100` : null,
             ].filter(Boolean).join("\n")}
         >
             {!imageError && posterPath ? (
@@ -191,8 +239,8 @@ export function MovieCard({
                     src={getTMDBImageUrl(posterPath)}
                     alt={title}
                     fill
-                    className={`object-cover transition-all duration-300 group-hover/card:grayscale group-hover/card:contrast-125 ${isFlipped ? 'opacity-10' : 'opacity-100'}`}
-                    sizes="(max-width: 768px) 50vw, (max-width: 1200px) 33vw, 20vw"
+                    className={`object-cover transition-transform duration-300 ease-out group-hover/card:scale-110 group-hover/card:grayscale group-hover/card:contrast-125 ${isFlipped ? 'opacity-10' : 'opacity-100'}`}
+                    sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
                     priority={priority}
                     onError={() => setImageError(true)}
                 />
@@ -206,9 +254,10 @@ export function MovieCard({
             <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-[5] bg-[length:100%_2px,3px_100%] pointer-events-none" />
 
             {renderBadge()}
+            {getReleaseWarning()}
 
-            {/* Actions (Flip / Why) - Acid Style */}
-            <div className="absolute bottom-0 left-0 right-0 p-2 flex justify-between items-end z-20 opacity-0 group-hover/card:opacity-100 transition-opacity">
+            {/* Actions (Flip / Why) - Acid Style - Always visible on mobile, hover on desktop */}
+            <div className="absolute bottom-0 left-0 right-0 p-2 flex justify-between items-end z-20 opacity-100 md:opacity-0 md:group-hover/card:opacity-100 transition-opacity">
                 <div className="flex gap-2">
                     {/* Flip Button */}
                     <button
@@ -219,6 +268,7 @@ export function MovieCard({
                         }}
                         className="p-1.5 bg-black border border-primary text-primary hover:bg-primary hover:text-black transition-colors"
                         title={t("movie.synopsis")}
+                        aria-label={t("movie.flip_card")}
                     >
                         <RotateCcw className="w-4 h-4" />
                     </button>
@@ -233,17 +283,18 @@ export function MovieCard({
                             }}
                             className="p-1.5 bg-black border border-zinc-500 text-zinc-400 hover:border-white hover:text-white transition-colors"
                             title={t("movie.why_recommended")}
+                            aria-label={t("movie.show_logic")}
                         >
                             <HelpCircle className="w-4 h-4" />
                         </button>
                     )}
                 </div>
 
-                <div className="flex items-center gap-2 text-[10px] font-mono text-white bg-black/60 px-2 py-1 rounded backdrop-blur-sm border border-white/10">
+                <div className="flex items-center gap-2 text-[10px] font-mono text-zinc-400 bg-black/60 px-2 py-1 rounded backdrop-blur-sm border border-white/10">
                     {year && <span>{year}</span>}
                     {runtime && (
                         <>
-                            <span className="text-zinc-500">|</span>
+                            <span className="text-zinc-600">|</span>
                             <span>{runtime}m</span>
                         </>
                     )}
@@ -264,6 +315,7 @@ export function MovieCard({
                                 setFlipContent(null);
                             }}
                             className="text-zinc-500 hover:text-primary"
+                            aria-label={t("movie.close_panel")}
                         >
                             <RotateCcw className="w-4 h-4 rotate-180" />
                         </button>
@@ -273,7 +325,7 @@ export function MovieCard({
                         {flipContent === "synopsis" ? (
                             <div className="space-y-4">
                                 <p className="text-xs text-zinc-300 font-mono leading-relaxed">
-                                    {overview || t("movie.no_synopsis")}
+                                    {displayOverview || t("movie.no_synopsis")}
                                 </p>
                             </div>
                         ) : (
@@ -327,8 +379,8 @@ export function MovieCard({
                     </h4>
 
                     <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-500 mb-3">
-                        {year && <span className="bg-zinc-900 px-1 py-0.5 text-zinc-300">{year}</span>}
-                        {runtime && <span>{runtime}m</span>}
+                        {year && <span className="bg-zinc-900 px-1 py-0.5 text-zinc-400">{year}</span>}
+                        {runtime && <span className="text-zinc-500">{runtime}m</span>}
                     </div>
 
                     {displayOverview && (
@@ -360,31 +412,40 @@ export function MovieCard({
         </div>
     );
 
-    const Container = motion.div;
-
     const content = (
-        <Container
+        <SpotlightCard
             className={`group/card relative bg-black border border-zinc-800 hover:border-primary transition-colors cursor-pointer h-full ${className}`}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            whileHover={{ y: -2 }}
-            transition={{ duration: 0.1 }} // Snappy transition
-            onClick={onClick}
+            spotlightColor="hsl(var(--primary) / 0.06)"
+            spotlightSize={300}
         >
-            {GridContent}
-        </Container>
+            <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                className="h-full"
+                onClick={onClick}
+            >
+                {GridContent}
+            </motion.div>
+        </SpotlightCard>
     );
 
+    // Use programmatic navigation if href is present to avoid nested interactive elements (buttons)
     if (href) {
         return (
-            <a
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="block h-full"
+            <div
+                onClick={() => router.push(href)}
+                className="block h-full cursor-pointer"
+                role="link"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        router.push(href);
+                    }
+                }}
             >
                 {content}
-            </a>
+            </div>
         );
     }
 

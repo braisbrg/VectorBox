@@ -9,21 +9,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Singleton instance
+_model_instance = None
+
+def get_model():
+    """Lazy load the model only once"""
+    global _model_instance
+    if _model_instance is None:
+        logger.info(f"Loading AI Model into Memory (Singleton): {EmbeddingService.MODEL_NAME}")
+        _model_instance = SentenceTransformer(EmbeddingService.MODEL_NAME)
+        logger.info("Model loaded successfully")
+    return _model_instance
+
 class EmbeddingService:
     """Generate embeddings for movie metadata"""
     
     MODEL_NAME = "all-MiniLM-L6-v2"  # Fast, 384 dimensions
     
     def __init__(self):
-        logger.info(f"Loading embedding model: {self.MODEL_NAME}")
-        self.model = SentenceTransformer(self.MODEL_NAME)
-        logger.info("Model loaded successfully")
+        # Model is now loaded lazily via get_model()
+        pass
     
     def generate_embedding(self, movie_data: dict, include_title: bool = True) -> np.ndarray:
         """
         Generate embedding from movie metadata
         Combines: title, overview, genres, keywords
         """
+        model = get_model()
         # Build rich text representation (New Format)
         # Format: f"{title}. {overview}. Genres: {genres}. Themes: {keywords_string}"
         
@@ -53,12 +65,13 @@ class EmbeddingService:
             raise ValueError("No text available for embedding generation")
         
         # Generate embedding
-        embedding = self.model.encode(combined_text, convert_to_numpy=True)
+        embedding = model.encode(combined_text, convert_to_numpy=True)
         
         return embedding
     
     def generate_batch_embeddings(self, movies_data: List[dict]) -> List[np.ndarray]:
         """Generate embeddings for multiple movies (more efficient)"""
+        model = get_model()
         texts = []
         
         for movie in movies_data:
@@ -85,6 +98,6 @@ class EmbeddingService:
             texts.append(combined_text if combined_text else movie.get("title", "Unknown"))
         
         # Batch encoding (much faster)
-        embeddings = self.model.encode(texts, convert_to_numpy=True, show_progress_bar=True)
+        embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=True)
         
         return embeddings

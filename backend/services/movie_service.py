@@ -9,6 +9,7 @@ from services.omdb_client import OMDbClient
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.provider_service import ProviderService
+from services.movie_factory import MovieFactory
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ class MovieService:
         self.qdrant = QdrantService()
         self.embedding_service = EmbeddingService()
         self.provider_service = ProviderService(db, self.tmdb)
+        self.factory = MovieFactory(self.tmdb, self.omdb, self.embedding_service)
 
     async def get_or_create_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None) -> Optional[Movie]:
         """
@@ -40,95 +42,48 @@ class MovieService:
         # 2. Ingest if missing
         return await self.ingest_movie(tmdb_id, letterboxd_uri)
 
-    async def ingest_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None) -> Optional[Movie]:
+    async def ingest_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None, skip_qdrant: bool = False) -> Optional[Movie]:
         """
-        Fetches full metadata (TMDB + OMDb), saves to DB, and upserts to Qdrant.
+        Fetches full metadata (TMDB + OMDb), saves to DB. 
+        If skip_qdrant is False (default), upserts to Qdrant immediately.
         """
         try:
             logger.info(f"Ingesting movie TMDB ID: {tmdb_id}")
             
-            # A. Fetch TMDB Details
-            details = await self.tmdb.get_movie_details(tmdb_id)
-            if not details:
-                logger.warning(f"TMDB ID {tmdb_id} not found.")
+            # A. Build Movie & Point using Factory
+            # This replaces the entire manual fetch -> build -> score -> vector pipeline
+            movie, point, providers_raw = await self.factory.build_movie(tmdb_id, letterboxd_uri)
+            
+            if not movie:
                 return None
 
-            # B. Fetch OMDb Data (VectorBox Score)
-            imdb_id = details.get("imdb_id")
-            omdb_data = {}
-            if imdb_id:
-                omdb_data = await self.omdb.fetch_movie_data(imdb_id) or {}
-            
-            vb_score_data = self.omdb.calculate_vectorbox_score(omdb_data, details.get("vote_average"))
-
-            # C. Create Movie Record
-            movie = Movie(
-                tmdb_id=tmdb_id,
-                title=details.get("title"),
-                original_title=details.get("original_title"),
-                year=int(details.get("release_date", "0000")[:4]) if details.get("release_date") else None,
-                runtime=details.get("runtime"),
-                genres=[g["name"] for g in details.get("genres", [])],
-                overview=details.get("overview"),
-                poster_path=details.get("poster_path"),
-                backdrop_path=details.get("backdrop_path"),
-                vote_average=details.get("vote_average"),
-                vote_count=details.get("vote_count"),
-                popularity=details.get("popularity"),
-                original_language=details.get("original_language"),
-                letterboxd_uri=letterboxd_uri,
-                
-                # Phase 12 Fields
-                imdb_id=imdb_id,
-                imdb_rating=vb_score_data["breakdown"]["imdb"],
-                metacritic_rating=vb_score_data["breakdown"]["meta"],
-                rotten_tomatoes_rating=vb_score_data["breakdown"]["rt"],
-                vectorbox_score=vb_score_data["score"],
-                title_es=details.get("title_es"),
-                overview_es=details.get("overview_es"),
-                collection_id=details.get("belongs_to_collection", {}).get("id") if details.get("belongs_to_collection") else None,
-                keywords=details.get("keywords_flat", []),
-                directors=details.get("directors", [])
-            )
-
+            # B. Save to SQL
             self.db.add(movie)
             await self.db.commit()
             await self.db.refresh(movie)
             logger.info(f"Created movie: {movie.title} (VB Score: {movie.vectorbox_score})")
 
-            # D. Upsert to Qdrant
-            # Use the keywords we just fetched
-            keywords = movie.keywords or []
-            
-            vector = self.embedding_service.generate_embedding({
-                "title": movie.title,
-                "overview": movie.overview,
-                "genres": movie.genres,
-                "keywords": keywords
-            })
+            # C. Upsert to Qdrant (if not skipped)
+            if not skip_qdrant and point:
+                # Factory returns a generic point, we upsert it using service helper
+                # Note: upsert_movie_vector helper expects explicit args, but we have a PointStruct.
+                # Use batch upsert for single point to reuse the struct directly?
+                # Or just map the fields? 
+                # Converting PointStruct back to args for `upsert_movie_vector` is redundant.
+                # Let's use `upsert_batch` for single point efficiency or `upsert_movie_vector` if we want to keep that method alive.
+                # Actually, `QdrantService.upsert_batch` takes a list of `PointStruct`.
+                await self.qdrant.upsert_batch([point])
 
-            await self.qdrant.upsert_movie_vector(
-                movie_id=movie.tmdb_id,
-                vector=vector.tolist(),
-                metadata={
-                    "title": movie.title,
-                    "year": movie.year,
-                    "genres": movie.genres,
-                    "rating": movie.vote_average,
-                    "vote_count": movie.vote_count,
-                    "runtime": movie.runtime,
-                    "poster_path": movie.poster_path,
-                    "vectorbox_score": movie.vectorbox_score,
-                    "imdb_rating": movie.imdb_rating,
-                    "metacritic_rating": movie.metacritic_rating,
-                    "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
-                    "title_es": movie.title_es,
-                    "overview_es": movie.overview_es
-                }
-            )
-
-            # E. Cache Providers
-            await self.provider_service.get_providers(movie.id, "ES")
+            # D. Save Providers (if available)
+            if providers_raw:
+                # Flatten providers logic (same as original)
+                providers_list = []
+                for p_type in ["flatrate", "free"]:
+                    if p_type in providers_raw:
+                        providers_list.extend(providers_raw[p_type])
+                
+                if providers_list:
+                     await self.provider_service.save_providers(movie.id, "ES", providers_list)
 
             return movie
 
@@ -181,7 +136,7 @@ class MovieService:
             logger.error(f"Failed to repair vector for {movie.title}: {e}")
             return False
 
-    async def enrich_movie(self, movie: Movie) -> bool:
+    async def enrich_movie(self, movie: Movie, skip_qdrant: bool = False) -> bool:
         """
         Ensures movie has keywords, OMDb data (VB Score), and a valid vector.
         Self-heals missing data.
@@ -196,14 +151,14 @@ class MovieService:
                 details = await self.tmdb.get_movie_details(movie.tmdb_id)
                 if details and details.get("imdb_id"):
                     imdb_id = details.get("imdb_id")
-                    omdb_data = await self.omdb.fetch_movie_data(imdb_id) or {}
-                    vb_score_data = self.omdb.calculate_vectorbox_score(omdb_data, details.get("vote_average"))
+                    omdb_data = await self.omdb.fetch_movie_data(imdb_id)
+                    vb_score_obj = self.omdb.calculate_vectorbox_score(omdb_data, details.get("vote_average"))
                     
                     movie.imdb_id = imdb_id
-                    movie.vectorbox_score = vb_score_data["score"]
-                    movie.imdb_rating = vb_score_data["breakdown"]["imdb"]
-                    movie.metacritic_rating = vb_score_data["breakdown"]["meta"]
-                    movie.rotten_tomatoes_rating = vb_score_data["breakdown"]["rt"]
+                    movie.vectorbox_score = vb_score_obj.score
+                    movie.imdb_rating = vb_score_obj.breakdown.imdb
+                    movie.metacritic_rating = vb_score_obj.breakdown.meta
+                    movie.rotten_tomatoes_rating = vb_score_obj.breakdown.rt
                     
                     changed = True
             
@@ -215,6 +170,37 @@ class MovieService:
                     movie.keywords = keywords
                     changed = True
             
+            # 3. Check/Fetch Release Dates (New)
+            if not movie.release_dates:
+                 logger.info(f"Enriching release dates for {movie.title}...")
+                 # We need full details again if we didn't fetch them above
+                 # Optimization: reuse details if we fetched them for OMDb
+                 if not details: 
+                     details = await self.tmdb.get_movie_details(movie.tmdb_id)
+                 
+                 release_dates_map = {}
+                 if details and "release_dates" in details and "results" in details["release_dates"]:
+                     for country in details["release_dates"]["results"]:
+                         iso = country["iso_3166_1"]
+                         # Find theatrical release (type 3) or digital (4)
+                         # Priority: 3 > 4 > anything
+                         best_date = None
+                         for date_entry in country["release_dates"]:
+                             if date_entry["type"] == 3: # Theatrical
+                                 best_date = date_entry["release_date"]
+                                 break # Found best
+                             elif date_entry["type"] == 4 and not best_date:
+                                 best_date = date_entry["release_date"]
+                             elif not best_date:
+                                 best_date = date_entry["release_date"]
+                         
+                         if best_date:
+                             release_dates_map[iso] = best_date.split("T")[0]
+                     
+                     if release_dates_map:
+                         movie.release_dates = release_dates_map
+                         changed = True
+            
             if changed:
                 await self.db.commit()
                 # Force vector regeneration
@@ -225,34 +211,42 @@ class MovieService:
                     "keywords": movie.keywords or []
                 })
                 
-                await self.qdrant.upsert_movie_vector(
-                    movie_id=movie.tmdb_id,
-                    vector=vector.tolist(),
-                    metadata={
-                        "title": movie.title,
-                        "year": movie.year,
-                        "genres": movie.genres,
-                        "rating": movie.vote_average,
-                        "vote_count": movie.vote_count,
-                        "runtime": movie.runtime,
-                        "poster_path": movie.poster_path,
-                        "vectorbox_score": movie.vectorbox_score,
-                        "imdb_rating": movie.imdb_rating,
-                        "metacritic_rating": movie.metacritic_rating,
-                        "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
-                        "title_es": movie.title_es,
-                        "overview_es": movie.overview_es,
-                        "keywords": movie.keywords
-                    }
-                )
+                if not skip_qdrant:
+                    from models.external_schemas import QdrantPayload
+                    payload = QdrantPayload(
+                        tmdb_id=movie.tmdb_id,
+                        title=movie.title,
+                        year=movie.year,
+                        genres=movie.genres or [],
+                        rating=movie.vote_average,
+                        vote_count=movie.vote_count,
+                        runtime=movie.runtime,
+                        poster_path=movie.poster_path,
+                        vectorbox_score=movie.vectorbox_score,
+                        imdb_rating=movie.imdb_rating,
+                        metacritic_rating=movie.metacritic_rating,
+                        rotten_tomatoes_rating=movie.rotten_tomatoes_rating,
+                        title_es=movie.title_es,
+                        overview_es=movie.overview_es,
+                        keywords=movie.keywords or []
+                    )
+                    
+                    await self.qdrant.upsert_movie_vector(
+                        movie_id=movie.tmdb_id,
+                        vector=vector.tolist(),
+                        metadata=payload
+                    )
                 return True
             
-            # 3. Even if nothing changed, ensure vector exists
-            return await self.ensure_vector_exists(movie)
+            # 3. Even if nothing changed, ensure vector exists (unless skipping)
+            if not skip_qdrant:
+                return await self.ensure_vector_exists(movie)
+            return True
             
         except Exception as e:
             logger.error(f"Failed to enrich movie {movie.title}: {e}")
             return False
 
     async def close(self):
-        await self.tmdb.close()
+        await self.tmdb.aclose()
+        await self.omdb.aclose()

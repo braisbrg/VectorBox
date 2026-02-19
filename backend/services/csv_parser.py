@@ -8,6 +8,7 @@ from typing import List, Dict, Tuple
 from fastapi import UploadFile, HTTPException
 import logging
 from datetime import datetime
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
@@ -78,12 +79,15 @@ class CSVParser:
             for idx, row in df.iterrows():
                 try:
                     # Security: Sanitize and validate data
-                    title = str(row.get("Name", "")).strip()[:500]
+                    title = BeautifulSoup(str(row.get("Name", "")), "html.parser").get_text().strip()[:500]
                     year = row.get("Year")
-                    letterboxd_uri = str(row.get("Letterboxd URI", "")).strip()[:500]
+                    letterboxd_uri = BeautifulSoup(str(row.get("Letterboxd URI", "")), "html.parser").get_text().strip()[:500]
                     rating = row.get("Rating")
                     watched_date = row.get("Watched Date")
-                    review = row.get("Review", "")
+                    
+                    # Security: Review needs to be text-only
+                    review_raw = row.get("Review", "")
+                    review = BeautifulSoup(str(review_raw), "html.parser").get_text().strip() if pd.notna(review_raw) else ""
                     
                     # Validate required fields
                     if not title:
@@ -114,7 +118,7 @@ class CSVParser:
                             watched_date = pd.to_datetime(watched_date).to_pydatetime()
                         else:
                             watched_date = None
-                    except:
+                    except (ValueError, TypeError):
                         watched_date = None
                     
                     # Security: Limit review length
@@ -192,7 +196,7 @@ class CSVParser:
                             watched_date = pd.to_datetime(watched_date).to_pydatetime()
                         else:
                             watched_date = None
-                    except:
+                    except (ValueError, TypeError):
                         watched_date = None
                     
                     movies.append({

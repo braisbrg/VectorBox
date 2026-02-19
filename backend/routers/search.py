@@ -420,7 +420,7 @@ async def natural_language_search(
     except Exception as e:
         import traceback
         logger.error(f"Search failed: {e}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Search service unavailable")
 
 @router.get("/movies", response_model=SearchResponse)
 async def search_movies(
@@ -591,5 +591,5 @@ async def search_movies(
             intent={"semantic_query": query}
         )
     except Exception as e:
-        logger.error(f"Movie search failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Movie search failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Search service unavailable")

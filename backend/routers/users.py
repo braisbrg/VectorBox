@@ -116,11 +116,74 @@ async def list_users(
             "username": user.username,
             "country_code": user.country_code,
             "created_at": user.created_at,
-            "has_data": count > 0
+            "has_data": count > 0,
+            "letterboxd_username": user.letterboxd_username
         }
         response.append(user_dict)
         
     return response
+
+
+from dependencies import verify_user_ownership
+from models.schemas import TokenResponse
+
+@router.patch("/{user_id}/link-letterboxd")
+async def link_letterboxd(
+    user_id: int,
+    letterboxd_username: str,
+    current_user: TokenResponse = Depends(verify_user_ownership),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Link a Letterboxd profile to a VectorBox user.
+    This sets the data source for RSS sync and scrapers.
+    No ownership verification - we trust the user.
+    """
+    # Find user
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Optional: Quick check that Letterboxd profile exists
+    # Optional: Quick check that Letterboxd profile exists
+    import httpx
+    # Use a browser-like User-Agent to avoid superficial blocking
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    async with httpx.AsyncClient(headers=headers, follow_redirects=True) as client:
+        try:
+            lb_response = await client.get(
+                f"https://letterboxd.com/{letterboxd_username}/",
+                timeout=5.0
+            )
+            if lb_response.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Letterboxd profile '{letterboxd_username}' not found"
+                )
+        except httpx.TimeoutException:
+            logger.warning(f"Timeout validating Letterboxd profile: {letterboxd_username}")
+            # Allow linking anyway if network times out
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.warning(f"Could not validate Letterboxd profile: {e}")
+            # Allow linking anyway on network errors
+    
+    user.letterboxd_username = letterboxd_username
+    await db.commit()
+    
+    logger.info(f"User {user.username} linked Letterboxd profile: {letterboxd_username}")
+    
+    return {
+        "message": "Letterboxd profile linked successfully",
+        "user_id": user.id,
+        "username": user.username,
+        "letterboxd_username": letterboxd_username
+    }
 
 
 @router.get("/{username}/activity")

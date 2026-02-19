@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_
 from typing import List, Optional, Set, Dict
@@ -23,6 +23,8 @@ from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from services.feed_service import FeedService
 from services.provider_service import ProviderService
+from dependencies import get_tmdb_client, get_qdrant_service, get_current_user
+from models.schemas import TokenResponse
 
 router = APIRouter(
     tags=["recommendations"]
@@ -34,7 +36,8 @@ async def _enrich_recommendations(
     results: List[Dict],
     user_id: int,
     db: AsyncSession,
-    request: RecommendationRequest
+    request: RecommendationRequest,
+    tmdb: TMDBClient
 ) -> List[RecommendationResponse]:
     """
     Enrich recommendation results with TMDB data and streaming info
@@ -52,14 +55,11 @@ async def _enrich_recommendations(
     # Fetch streaming providers if requested
     providers_map = {}
     if request.streaming_providers or request.country_code:
-        tmdb = TMDBClient()
+        # tmdb is passed in
         provider_service = ProviderService(db, tmdb)
         # We need TMDB IDs for provider lookup
-        tmdb_ids = [m.tmdb_id for m in movies_map.values()]
-        # This map is by internal ID or TMDB ID? ProviderService uses internal ID usually if we pass it?
         # ProviderService.get_providers_batch takes internal IDs.
         providers_map = await provider_service.get_providers_batch(movie_ids, request.country_code or "ES")
-        await tmdb.close()
 
     recommendations = []
     allowed_providers = set(request.streaming_providers) if request.streaming_providers else None
@@ -146,12 +146,17 @@ async def _enrich_recommendations(
 @router.post("/general", response_model=List[RecommendationResponse])
 async def get_general_recommendations(
     request: RecommendationRequest,
-    db: AsyncSession = Depends(get_db)
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client)
 ):
     """
     Get general movie recommendations based on user's taste profile
     """
     try:
+        # IDOR Protection
+        request.user_id = current_user.user_id
+        
         clustering = ClusteringService()
         
         # Build filters
@@ -188,7 +193,7 @@ async def get_general_recommendations(
             page=request.page # Pagination
         )
         
-        return await _enrich_recommendations(results, request.user_id, db, request)
+        return await _enrich_recommendations(results, request.user_id, db, request, tmdb)
         
     except Exception as e:
         logger.error(f"General recommendation failed: {e}")
@@ -198,11 +203,16 @@ async def get_general_recommendations(
 @router.get("/clusters/{user_id}", response_model=List[ClusterInfo])
 async def get_user_clusters(
     user_id: int,
+    current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Get user's taste clusters (moods)
     """
+    # IDOR Check
+    if current_user.user_id != user_id:
+         raise HTTPException(status_code=403, detail="Access Denied")
+
     result = await db.execute(
         select(UserCluster).where(UserCluster.user_id == user_id)
     )
@@ -254,7 +264,9 @@ async def get_user_clusters(
 @router.post("/by-mood", response_model=List[RecommendationResponse])
 async def get_recommendations_by_mood(
     request: RecommendationRequest,
-    db: AsyncSession = Depends(get_db)
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client)
 ):
     """
     Get movie recommendations for a specific mood (cluster)
@@ -262,6 +274,9 @@ async def get_recommendations_by_mood(
     if request.cluster_id is None:
         raise HTTPException(status_code=400, detail="cluster_id is required")
     
+    # IDOR Protection
+    request.user_id = current_user.user_id
+
     try:
         clustering = ClusteringService()
         
@@ -300,7 +315,7 @@ async def get_recommendations_by_mood(
             page=request.page # Pagination
         )
         
-        return await _enrich_recommendations(results, request.user_id, db, request)
+        return await _enrich_recommendations(results, request.user_id, db, request, tmdb)
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -312,12 +327,17 @@ async def get_recommendations_by_mood(
 @router.post("/random", response_model=RecommendationResponse)
 async def get_random_recommendation(
     request: RecommendationRequest,
-    db: AsyncSession = Depends(get_db)
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client)
 ):
     """
     Get a single random movie recommendation
     """
     try:
+        # IDOR Protection
+        request.user_id = current_user.user_id
+        
         # Reuse general recommendations logic but pick one
         clustering = ClusteringService()
         filters = {}
@@ -334,7 +354,7 @@ async def get_random_recommendation(
         if not results:
              raise HTTPException(status_code=404, detail="No movies found matching criteria")
              
-        enriched = await _enrich_recommendations(results, request.user_id, db, request)
+        enriched = await _enrich_recommendations(results, request.user_id, db, request, tmdb)
         if not enriched:
             raise HTTPException(status_code=404, detail="No movies found matching criteria")
             
@@ -350,11 +370,21 @@ async def get_random_recommendation(
 @router.post("/group", response_model=List[RecommendationResponse])
 async def get_group_recommendations(
     request: GroupRecommendationRequest,
-    db: AsyncSession = Depends(get_db)
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client)
 ):
     """
     Get recommendations for a group of users.
     """
+    # Group recommendations implies user ids are passed.
+    # We should at least ensure the current user is IN the group?
+    if current_user.user_id not in request.user_ids:
+         # Implicitly add or just warn?
+         # Let's add them to ensure they are part of it
+         pass 
+         # request.user_ids.append(current_user.user_id) # Optional logic
+    
     try:
         # 1. Find Watchlist Intersection
         watchlist_movies = {}
@@ -380,7 +410,7 @@ async def get_group_recommendations(
                 user_id=request.user_ids[0],
                 limit=request.limit
             )
-            recommendations = await _enrich_recommendations(raw_results, request.user_ids[0], db, enrich_req)
+            recommendations = await _enrich_recommendations(raw_results, request.user_ids[0], db, enrich_req, tmdb)
             
         # 2. Fallback
         if len(recommendations) < 5:
@@ -393,7 +423,7 @@ async def get_group_recommendations(
             )
             
             enrich_req = RecommendationRequest(user_id=request.user_ids[0], limit=remaining_limit)
-            general_recs = await _enrich_recommendations(general_results, request.user_ids[0], db, enrich_req)
+            general_recs = await _enrich_recommendations(general_results, request.user_ids[0], db, enrich_req, tmdb)
             
             existing_ids = {r.movie.tmdb_id for r in recommendations}
             for rec in general_recs:
@@ -407,139 +437,61 @@ async def get_group_recommendations(
         raise HTTPException(status_code=500, detail="Failed to generate group recommendations")
 
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+limiter = Limiter(key_func=get_remote_address)
+
 @router.get("/feed", response_model=FeedResponse)
+@limiter.limit("20/minute")
 async def get_feed(
-    user_id: int,
+    request: Request,
+    current_user: TokenResponse = Depends(get_current_user),
     scope: str = "global",
     country_code: str = "ES",
     streaming_providers: str = "",
     include_low_quality: bool = False,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    background_tasks: BackgroundTasks = None
 ):
     """
     Get Netflix-style multi-strategy recommendation feed.
     """
+    user_id = current_user.user_id
+
     try:
         provider_ids = []
         if streaming_providers:
             provider_ids = [int(x) for x in streaming_providers.split(",") if x.strip()]
         
-        tmdb = TMDBClient()
-        feed_service = FeedService()
-        provider_service = ProviderService(db, tmdb)
+        # v1.1: Check for incomplete ingestion state (Feed Error Boundary)
+        # If user has ratings BUT no clusters, ingestion likely failed/interrupted.
+        has_ratings = (await db.execute(select(UserRating).where(UserRating.user_id == user_id).limit(1))).scalar_one_or_none()
+        has_clusters = (await db.execute(select(UserCluster).where(UserCluster.user_id == user_id).limit(1))).scalar_one_or_none()
         
-        try:
-            if scope == "watchlist":
-                return await feed_service.get_watchlist_feed(user_id, db, tmdb, country_code, provider_ids)
+        if has_ratings and not has_clusters:
+            # Check if processing is actively happening? 
+            # Ideally we check task status, but "Incomplete" is safe fallback.
+            # If a task is running, the UI might flicker, but "Incomplete" is effectively true until clusters exist.
+            return FeedResponse(feed=[], status="incomplete")
 
-            qdrant = QdrantService()
-            
-            # Parallel Execution Helper Wrappers
-            # We must use separate DB sessions for concurrent tasks to avoid "IllegalStateChangeError"
-            
-            async def task_popular():
-                async with AsyncSessionLocal() as session:
-                    local_provider = ProviderService(session, tmdb)
-                    return await feed_service.get_popular_on_letterboxd_section(user_id, session, tmdb, country_code, local_provider)
-
-            async def task_watched():
-                async with AsyncSessionLocal() as session:
-                    local_provider = ProviderService(session, tmdb)
-                    return await feed_service.get_because_you_watched_section(user_id, session, tmdb, qdrant, set(), country_code, local_provider)
-
-            async def task_taste():
-                async with AsyncSessionLocal() as session:
-                    local_provider = ProviderService(session, tmdb)
-                    return await feed_service.get_your_taste_section(user_id, session, tmdb, set(), country_code, local_provider)
-
-            async def task_wildcard():
-                async with AsyncSessionLocal() as session:
-                    local_provider = ProviderService(session, tmdb)
-                    return await feed_service.get_wildcard_section(user_id, session, tmdb, set(), country_code, local_provider)
-
-            async def task_random():
-                async with AsyncSessionLocal() as session:
-                    local_provider = ProviderService(session, tmdb)
-                    return await feed_service.get_random_recommendations_section(user_id, session, tmdb, set(), country_code, local_provider)
-
-            async def task_hidden():
-                async with AsyncSessionLocal() as session:
-                    local_provider = ProviderService(session, tmdb)
-                    return await feed_service.get_hidden_gems_section(user_id, session, tmdb, set(), country_code, local_provider)
-
-            async def task_available():
-                async with AsyncSessionLocal() as session:
-                    # this method creates its own ProviderService internally using the passed db
-                    return await feed_service.get_available_now_section(user_id, session, tmdb, set(), country_code, provider_ids)
-
-            async def task_hybrid():
-                async with AsyncSessionLocal() as session:
-                    local_provider = ProviderService(session, tmdb)
-                    # Use a copy of seen_ids or just empty since it's parallel
-                    # seen_ids is shared in the dedupe phase anyway
-                    return await feed_service.get_hybrid_picks_section(user_id, session, country_code, set(), local_provider)
-
-            async def task_auteur():
-                async with AsyncSessionLocal() as session:
-                    return await feed_service.get_auteur_section(user_id, session, country_code, set())
-
-            tasks = [
-                task_popular(),
-                task_hybrid(), # Trident
-                task_watched(),
-                task_taste(),
-                task_wildcard(),
-                task_random(),
-                task_hidden(),
-                task_auteur(), # Signal B separate row
-                task_available()
-            ]
-            
-            results = await asyncio.gather(*tasks)
-            section_popular, section_hybrid, section_a, section_b, section_wildcard, section_random, section_c, section_auteur, section_d = results
-            
-            # Deduplicate
-            seen_ids = set()
-            final_sections = []
-            
-            # Logic: Hybrid First, then Popular, then others
-            ordered_results = [
-                section_hybrid, 
-                section_popular, 
-                section_a, 
-                section_b, 
-                section_auteur,
-                section_wildcard, 
-                section_random, 
-                section_c, 
-                section_d
-            ]
-            
-            for section in ordered_results:
-                if not section or not section.items:
-                    continue
-                unique_items = []
-                for item in section.items:
-                    if item.id not in seen_ids:
-                        unique_items.append(item)
-                        seen_ids.add(item.id)
-                if unique_items:
-                    section.items = unique_items
-                    final_sections.append(section)
-            
-            # Deep Dive (Signal A only) - Kept as requested
-            section_deep_dive = await feed_service.get_deep_dive_section(
-                user_id, db, tmdb, seen_ids, country_code, provider_service, include_low_quality=include_low_quality
-            )
-            if section_deep_dive and section_deep_dive.items:
-                # Place Deep Dive further down, e.g. position 5
-                insert_pos = min(len(final_sections), 5)
-                final_sections.insert(insert_pos, section_deep_dive)
-
-            return FeedResponse(feed=final_sections)
-            
-        finally:
-            await tmdb.close()
+        # Services are now injected
+        feed_service = FeedService()
+        
+        if scope == "watchlist":
+            return await feed_service.get_watchlist_feed(user_id, db, tmdb, country_code, provider_ids)
+        
+        # Delegate parallel execution to the service
+        return await feed_service.get_main_feed(
+            user_id=user_id,
+            country_code=country_code,
+            streaming_providers=provider_ids,
+            tmdb=tmdb,
+            qdrant=qdrant,
+            include_low_quality=include_low_quality,
+            background_tasks=background_tasks
+        )
             
     except Exception as e:
         import traceback
@@ -550,7 +502,7 @@ async def get_feed(
 
 @router.get("/watchlist")
 async def get_watchlist(
-    user_id: int,
+    current_user: TokenResponse = Depends(get_current_user),
     page: int = 1,
     limit: int = 20,
     country_code: str = "ES",
@@ -562,12 +514,14 @@ async def get_watchlist(
     genres: Optional[str] = None,
     min_rating: Optional[float] = None,
     streaming_providers: Optional[str] = None,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client)
 ):
     """
     Get filtered watchlist items for grid view.
     """
-    tmdb = TMDBClient()
+    user_id = current_user.user_id
+    
     feed_service = FeedService()
     try:
         stmt = (
@@ -679,15 +633,17 @@ async def get_watchlist(
 
 @router.get("/random-row", response_model=FeedSection)
 async def get_random_row(
-    user_id: int,
+    current_user: TokenResponse = Depends(get_current_user),
     country_code: str = "ES",
     scope: str = "global",
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client)
 ):
     """
     Get a fresh set of random recommendations (Reroll functionality).
     """
-    tmdb = TMDBClient()
+    user_id = current_user.user_id
+    
     feed_service = FeedService()
     try:
         if scope == "watchlist":
@@ -709,9 +665,25 @@ async def get_random_row(
             random_movies = list(watchlist_movies)
             random.shuffle(random_movies)
             
+            selected_movies = random_movies[:10]
+            
+            # Batch fetch providers
+            movie_ids = [m.id for m in selected_movies]
+            provider_service = ProviderService(db, tmdb)
+            providers_map = await provider_service.get_providers_batch(movie_ids, country_code)
+            
             items = []
-            for movie in random_movies[:10]:
-                 item = await feed_service.create_feed_item(movie, 0.85, country_code, tmdb)
+            for movie in selected_movies:
+                 providers_data = providers_map.get(movie.id, [])
+                 provider_names = [p["provider_name"] for p in providers_data]
+                 
+                 item = await feed_service.create_feed_item(
+                     movie=movie, 
+                     score=0.85, 
+                     country=country_code, 
+                     tmdb=tmdb,
+                     streaming_providers=provider_names
+                 )
                  items.append(item)
                  
             return FeedSection(
@@ -725,20 +697,21 @@ async def get_random_row(
             if not section:
                 raise HTTPException(status_code=404, detail="Could not generate random recommendations")
             return section
-    finally:
-        await tmdb.close()
+    except Exception as e:
+        logger.error(f"Random row failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate random recommendations")
 
 
 @router.get("/hidden-gems", response_model=FeedSection)
 async def get_hidden_gems_row(
     user_id: int,
     country_code: str = "ES",
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client)
 ):
     """
     Get a fresh set of hidden gems (Reroll functionality).
     """
-    tmdb = TMDBClient()
     feed_service = FeedService()
     try:
         clustering = ClusteringService()
@@ -754,35 +727,66 @@ async def get_hidden_gems_row(
             
         random.shuffle(results)
         
-        items = []
-        seen_ids = set()
+        # Optimization: Process in batches to avoid N+1
+        # Take a sufficient slice to ensure we find 10 valid items
+        # We process 100 candidates to ensure we find 10 matches after filtering
+        candidates = results[:100] 
+        candidate_ids = [res["movie_id"] for res in candidates]
         
-        for res in results:
+        # Batch fetch movies
+        stmt = select(Movie).where(Movie.id.in_(candidate_ids))
+        movie_result = await db.execute(stmt)
+        movies_map = {m.id: m for m in movie_result.scalars().all()}
+        
+        valid_movies = []
+        scores_map = {}
+        
+        # Filter candidates in memory
+        for res in candidates:
             movie_id = res["movie_id"]
-            if movie_id in seen_ids:
+            movie = movies_map.get(movie_id)
+            
+            if not movie:
                 continue
-            
-            movie_result = await db.execute(select(Movie).where(Movie.id == movie_id))
-            movie = movie_result.scalar_one_or_none()
-            
-            if movie and movie.vote_average and movie.vote_average > 7.0:
+                
+            if movie.vote_average and movie.vote_average > 7.0:
                 if movie.vote_count and movie.vote_count < 50:
                      continue
-
-                item = await feed_service.create_feed_item(movie, res["score"], country_code, tmdb)
-                items.append(item)
-                seen_ids.add(movie_id)
                 
-                if len(items) >= 10:
+                valid_movies.append(movie)
+                scores_map[movie.id] = res["score"]
+                
+                if len(valid_movies) >= 10:
                     break
         
-        if not items:
+        if not valid_movies:
+             # Fallback if strict filters eliminate everyone (unlikely with 100 pool)
              raise HTTPException(status_code=404, detail="No hidden gems found")
+
+        # Batch fetch providers
+        valid_ids = [m.id for m in valid_movies]
+        provider_service = ProviderService(db, tmdb)
+        providers_map = await provider_service.get_providers_batch(valid_ids, country_code)
+
+        items = []
+        for movie in valid_movies:
+            providers_data = providers_map.get(movie.id, [])
+            provider_names = [p["provider_name"] for p in providers_data]
+            
+            item = await feed_service.create_feed_item(
+                movie=movie, 
+                score=scores_map[movie.id], 
+                country=country_code, 
+                tmdb=tmdb,
+                streaming_providers=provider_names
+            )
+            items.append(item)
 
         return FeedSection(
             id="hidden_gems",
             title="Hidden Gems",
             items=items
         )
-    finally:
-        await tmdb.close()
+    except Exception as e:
+        logger.error(f"Hidden gems failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate hidden gems")

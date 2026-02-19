@@ -6,6 +6,7 @@ import { getTMDBImageUrl, getWildcardRecommendation, getRandomRecommendation, ge
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { useRef, useState, useEffect } from "react";
 import { MovieCard } from "@/components/ui/movie-card";
+import { useLanguage } from "@/components/language-provider";
 
 interface FeedItem {
     id: number;
@@ -42,6 +43,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
     const [localItems, setLocalItems] = useState<FeedItem[]>(items);
     const [localTitle, setLocalTitle] = useState<string>(title);
     const [isRerolling, setIsRerolling] = useState(false);
+    const { t } = useLanguage();
 
     // Update local state when props change
     useEffect(() => {
@@ -57,17 +59,17 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
     const showReroll = isWildcard || isRandom || isHiddenGems;
 
     const handleReroll = async () => {
-        if (!userId || isRerolling) return;
+        if (isRerolling) return;
 
         setIsRerolling(true);
         try {
             let newSection;
             if (isWildcard) {
-                newSection = await getWildcardRecommendation(userId);
+                newSection = await getWildcardRecommendation();
             } else if (isRandom) {
-                newSection = await getRandomRecommendation(userId);
+                newSection = await getRandomRecommendation();
             } else if (isHiddenGems) {
-                newSection = await getHiddenGemsRecommendation(userId);
+                newSection = await getHiddenGemsRecommendation();
             }
 
             if (newSection) {
@@ -113,6 +115,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             disabled={isRerolling}
                             className={`p-2 rounded-full bg-primary/10 hover:bg-primary/20 text-primary transition-all ${isRerolling ? "opacity-50 cursor-not-allowed" : ""}`}
                             title={isWildcard ? "Reroll wildcard" : "Get new random picks"}
+                            aria-label={isWildcard ? t("aria.reroll_wildcard") : t("aria.reroll_random")}
                         >
                             <RefreshCw className={`w-4 h-4 ${isRerolling ? "animate-spin" : ""}`} />
                         </button>
@@ -122,12 +125,14 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                     <button
                         onClick={() => scroll("left")}
                         className="p-2 rounded-none border border-zinc-800 hover:bg-zinc-900 hover:border-primary hover:text-primary transition-all"
+                        aria-label={t("aria.scroll_left")}
                     >
                         <ChevronLeft className="w-5 h-5" />
                     </button>
                     <button
                         onClick={() => scroll("right")}
                         className="p-2 rounded-none border border-zinc-800 hover:bg-zinc-900 hover:border-primary hover:text-primary transition-all"
+                        aria-label={t("aria.scroll_right")}
                     >
                         <ChevronRight className="w-5 h-5" />
                     </button>

@@ -8,12 +8,35 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // Create axios instance with defaults
 const api = axios.create({
-    baseURL: API_URL,
+    baseURL: typeof window === "undefined" ? API_URL : undefined, // Proxy on client, Direct on server
     timeout: 60000, // 60 seconds
     headers: {
         "Content-Type": "application/json",
     },
+    withCredentials: true,
 });
+
+// Request interceptor: Attach Token from LocalStorage
+api.interceptors.request.use(
+    (config) => {
+        if (typeof window !== "undefined") {
+            const userStr = localStorage.getItem("vectorbox_user");
+            if (userStr) {
+                try {
+                    const user = JSON.parse(userStr);
+                    if (user.token) {
+                        console.log("Interceptor: Attaching Bearer token");
+                        config.headers.Authorization = `Bearer ${user.token}`;
+                    }
+                } catch (e) {
+                    console.error("Invalid user in localStorage", e);
+                }
+            }
+        }
+        return config;
+    },
+    (error) => Promise.reject(error)
+);
 
 // Response interceptor for error handling
 api.interceptors.response.use(
@@ -22,6 +45,16 @@ api.interceptors.response.use(
         if (error.response) {
             // Server responded with error
             console.error("API Error:", error.response.data);
+
+            // v1.1: Auto-logout on 401 Unauthorized (Invalid/Expire Token)
+            if (error.response.status === 401) {
+                if (typeof window !== "undefined") {
+                    localStorage.removeItem("vectorbox_user");
+                    if (!window.location.pathname.includes("/login")) {
+                        window.location.href = "/login";
+                    }
+                }
+            }
         } else if (error.request) {
             // Request made but no response
             console.error("Network Error:", error.message);
@@ -32,11 +65,27 @@ api.interceptors.response.use(
 
 // Types
 // Types
-export interface User {
+export interface UserSession {
+    id: number;
+    username: string; // vectorbox_handle
+    token?: string;
+    letterboxd_username?: string; // letterboxd_handle
+}
+
+export interface VectorboxUser {
     id: number;
     username: string;
     created_at?: string;
     has_data?: boolean;
+    letterboxd_username?: string;
+}
+
+// v1.1: Task progress tracking
+export interface TaskStatus {
+    task_id: string;
+    status: "pending" | "processing" | "completed" | "failed";
+    progress: number;
+    step?: string;
 }
 
 export interface MovieMetadata {
@@ -57,6 +106,7 @@ export interface MovieMetadata {
     rotten_tomatoes_rating?: number;
     title_es?: string;
     overview_es?: string;
+    release_dates?: Record<string, string>;
 }
 
 export interface ClusterInfo {
@@ -116,6 +166,7 @@ export interface FeedItem {
     title_es?: string;
     overview_es?: string;
     letterboxd_rating?: number;
+    release_dates?: Record<string, string>;
 }
 
 export interface FeedSection {
@@ -125,16 +176,29 @@ export interface FeedSection {
     items: FeedItem[];
 }
 // API Functions
-export const uploadExportZIP = async (file: File, userId: number = 1) => {
+export const uploadExportZIP = async (file: File): Promise<{
+    status: string;
+    message: string;
+    movies_processed: number;
+    movies_enriched: number;
+    errors: string[];
+    task_id: string;
+}> => {
     const formData = new FormData();
     formData.append("file", file);
 
-    const response = await api.post(`/api/upload/export?user_id=${userId}`, formData, {
+    const response = await api.post(`/api/upload/export`, formData, {
         headers: {
             "Content-Type": "multipart/form-data",
         },
     });
 
+    return response.data;
+};
+
+// v1.1: Task progress polling
+export const getTaskStatus = async (taskId: string): Promise<TaskStatus> => {
+    const response = await api.get(`/api/tasks/${taskId}`);
     return response.data;
 };
 
@@ -192,23 +256,24 @@ export const getUserActivity = async (username: string): Promise<{
     return response.data;
 };
 
-export const getUsers = async (): Promise<User[]> => {
+export const getUsers = async (): Promise<VectorboxUser[]> => {
     const response = await api.get("/api/users");
     return response.data;
 };
 
-export const getWildcardRecommendation = async (userId: number): Promise<FeedSection> => {
-    const response = await api.get(`/api/recommendations/random-row?user_id=${userId}&scope=global`);
+// ... (omitted sections)
+export const getWildcardRecommendation = async (): Promise<FeedSection> => {
+    const response = await api.get(`/api/recommendations/random-row?scope=global`);
     return response.data;
 };
 
-export const getRandomRecommendation = async (userId: number, scope: string = "global"): Promise<FeedSection> => {
-    const response = await api.get(`/api/recommendations/random-row?user_id=${userId}&scope=${scope}`);
+export const getRandomRecommendation = async (scope: string = "global"): Promise<FeedSection> => {
+    const response = await api.get(`/api/recommendations/random-row?scope=${scope}`);
     return response.data;
 };
 
-export const getHiddenGemsRecommendation = async (userId: number): Promise<FeedSection> => {
-    const response = await api.get(`/api/recommendations/hidden-gems?user_id=${userId}`);
+export const getHiddenGemsRecommendation = async (): Promise<FeedSection> => {
+    const response = await api.get(`/api/recommendations/hidden-gems`);
     return response.data;
 };
 
@@ -230,22 +295,73 @@ export interface UserCreate {
 
 export interface FeedResponse {
     feed: FeedSection[];
+    status?: "ok" | "incomplete" | "error";
 }
 
-export const createUser = async (user: UserCreate): Promise<User> => {
+export const createUser = async (user: UserCreate): Promise<VectorboxUser> => {
     const response = await api.post("/api/users/", user);
     return response.data;
 };
 
-export const getFeed = async (
+// v1.1: Authentication API
+export interface AuthResponse {
+    token: string;
+    user_id: number;
+    username: string;
+    has_data?: boolean;
+    letterboxd_username?: string;
+}
+
+export const register = async (
+    username: string,
+    pin: string,
+    countryCode: string = "ES"
+): Promise<AuthResponse> => {
+    const response = await api.post("/api/auth/register", {
+        username,
+        pin,
+        country_code: countryCode,
+    });
+    return response.data;
+};
+
+export const login = async (
+    username: string,
+    pin: string
+): Promise<AuthResponse> => {
+    const response = await api.post("/api/auth/login", {
+        username: username.trim(),
+        pin: pin.toString(),
+    });
+    return response.data;
+};
+
+export const logout = async (): Promise<void> => {
+    await api.post("/api/auth/logout");
+};
+
+export const getCurrentUser = async (): Promise<AuthResponse> => {
+    const response = await api.get("/api/auth/me");
+    return response.data;
+};
+
+export const linkLetterboxd = async (
     userId: number,
+    letterboxdUsername: string
+): Promise<{ message: string; letterboxd_username: string }> => {
+    const response = await api.patch(
+        `/api/users/${userId}/link-letterboxd?letterboxd_username=${encodeURIComponent(letterboxdUsername)}`
+    );
+    return response.data;
+};
+
+export const getFeed = async (
     scope: "global" | "watchlist" = "global",
     countryCode: string = "ES",
     streamingProviders: number[] = [],
     includeLowQuality: boolean = false
 ): Promise<FeedResponse> => {
     const params = new URLSearchParams();
-    params.append("user_id", userId.toString());
     params.append("scope", scope);
     params.append("country_code", countryCode);
     if (streamingProviders.length > 0) {
@@ -270,7 +386,6 @@ export const getTMDBImageUrl = (path: string | null, size: string = "w500") => {
 };
 
 export const getWatchlist = async (
-    userId: number,
     page: number = 1,
     limit: number = 20,
     countryCode: string = "ES",
@@ -286,7 +401,6 @@ export const getWatchlist = async (
     } = {}
 ): Promise<{ items: FeedItem[]; total: number; page: number; limit: number }> => {
     const params = new URLSearchParams();
-    params.append("user_id", userId.toString());
     params.append("page", page.toString());
     params.append("limit", limit.toString());
     params.append("country_code", countryCode);
@@ -302,4 +416,48 @@ export const getWatchlist = async (
 
     const response = await api.get("/api/recommendations/watchlist", { params });
     return response.data;
+};
+
+/**
+ * Server-Side Feed Fetcher (for Next.js SSR)
+ * Uses native fetch to work in Server Components
+ * Forwards cookies for authentication
+ */
+export const getFeedServerSide = async (
+    scope: "global" | "watchlist" = "global",
+    countryCode: string = "ES",
+    streamingProviders: number[] = [],
+    includeLowQuality: boolean = false,
+    cookieHeader?: string
+): Promise<FeedResponse | null> => {
+    try {
+        const params = new URLSearchParams();
+        params.append("scope", scope);
+        params.append("country_code", countryCode);
+        if (streamingProviders.length > 0) {
+            params.append("streaming_providers", streamingProviders.join(","));
+        }
+        params.append("include_low_quality", includeLowQuality.toString());
+
+        const response = await fetch(
+            `${API_URL}/api/recommendations/feed?${params.toString()}`,
+            {
+                cache: "no-store", // Dynamic data, always fresh
+                headers: {
+                    "Content-Type": "application/json",
+                    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+                },
+            }
+        );
+
+        if (!response.ok) {
+            console.error("SSR Feed fetch failed:", response.status);
+            return null;
+        }
+
+        return response.json();
+    } catch (error) {
+        console.error("SSR Feed fetch error:", error);
+        return null;
+    }
 };

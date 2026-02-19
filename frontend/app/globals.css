@@ -1,52 +1,167 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
 
-@layer base {
-  :root {
-    /* Light Mode - Light acid theme, still high contrast */
-    --background: 0 0% 98%;
-    --foreground: 0 0% 5%;
-    --card: 0 0% 100%;
-    --card-foreground: 0 0% 5%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 5%;
-    /* Primary: Toxic Green #CCFF00 => HSL 74 100% 50% */
-    --primary: 74 100% 50%;
-    --primary-foreground: 0 0% 0%;
-    --secondary: 0 0% 92%;
-    --secondary-foreground: 0 0% 5%;
-    --muted: 0 0% 92%;
-    --muted-foreground: 0 0% 40%;
-    /* Accent: Electric Purple #7000FF => HSL 266 100% 50% */
-    --accent: 266 100% 50%;
-    --accent-foreground: 0 0% 100%;
-    --destructive: 0 100% 50%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 85%;
-    --input: 0 0% 90%;
-    --ring: 74 100% 50%;
-    --radius: 0px;
+/* ============================================================================
+   VectorBox Acid Design Theme - Tailwind CSS v4.0 (CSS-First)
+   ============================================================================ */
+
+@theme {
+  /* ==========================================================================
+     Color Palette (Semantic Tokens)
+     ========================================================================== */
+
+  /* Core Brand Colors */
+  --color-primary: oklch(0.9 0.4 110);
+  /* Toxic Green #CCFF00 */
+  --color-primary-rgb: 204 255 0;
+  --color-primary-foreground: oklch(0 0 0);
+  /* Black text on primary */
+
+  --color-background: oklch(0.05 0 0);
+  /* Deep Black #050505 */
+  --color-foreground: oklch(0.95 0 0);
+  /* Off-white text */
+
+  --color-accent: oklch(0.5 0.3 290);
+  /* Electric Purple #7000FF */
+  --color-accent-foreground: oklch(1 0 0);
+  /* White text */
+
+  --color-letterboxd: oklch(0.7 0.25 145);
+  /* Letterboxd Green #00e054 */
+
+  /* Shadcn Semantic Colors (HSL for compatibility) */
+  --color-card: oklch(0.08 0 0);
+  --color-card-foreground: oklch(0.95 0 0);
+  --color-popover: oklch(0.08 0 0);
+  --color-popover-foreground: oklch(0.95 0 0);
+
+  --color-secondary: oklch(0.12 0 0);
+  --color-secondary-foreground: oklch(0.95 0 0);
+
+  --color-muted: oklch(0.10 0 0);
+  --color-muted-foreground: oklch(0.60 0 0);
+
+  --color-destructive: oklch(0.6 0.3 30);
+  /* Red */
+  --color-destructive-foreground: oklch(1 0 0);
+
+  --color-border: oklch(0.18 0 0);
+  --color-input: oklch(0.12 0 0);
+  --color-ring: oklch(0.9 0.4 110);
+  /* Same as primary */
+
+  /* ==========================================================================
+     Typography
+     ========================================================================== */
+  --font-family-mono: var(--font-space), ui-monospace, monospace;
+  --font-family-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+
+  /* ==========================================================================
+     Border Radius (Brutalist = Flat)
+     ========================================================================== */
+  --radius-lg: 0.5rem;
+  --radius-md: calc(0.5rem - 2px);
+  --radius-sm: calc(0.5rem - 4px);
+  --radius: 0px;
+  /* Acid: Hard edges */
+
+  /* ==========================================================================
+     Shadows (Acid Design: Hard offset shadows)
+     ========================================================================== */
+  --shadow-acid: 2px 2px 0px 0px oklch(0 0 0);
+  --shadow-acid-primary: 2px 2px 0px 0px oklch(0.9 0.4 110);
+
+  /* ==========================================================================
+     Animations
+     ========================================================================== */
+  --animate-accordion-down: accordion-down 0.2s ease-out;
+  --animate-accordion-up: accordion-up 0.2s ease-out;
+}
+
+/* Keyframes (v4 uses standard CSS, no directive needed for keyframes) */
+@keyframes accordion-down {
+  from {
+    height: 0;
   }
 
-  .dark {
-    /* Acid Design Theme - Cyber Brutalist */
-    /* Background: Deep Black #050505 => HSL 0 0% 2% */
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+
+  to {
+    height: 0;
+  }
+}
+
+@keyframes blink-caret {
+
+  from,
+  to {
+    border-color: transparent;
+  }
+
+  50% {
+    border-color: oklch(0.9 0.4 110);
+  }
+}
+
+@keyframes border-beam {
+  0% {
+    background-position: 0% 0%;
+  }
+
+  100% {
+    background-position: 200% 0%;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+@keyframes spotlight-pulse {
+
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+/* ============================================================================
+   Base Layer
+   ============================================================================ */
+@layer base {
+  :root {
+    color-scheme: dark;
+    /* Legacy HSL fallbacks for Shadcn components */
     --background: 0 0% 2%;
     --foreground: 0 0% 95%;
-    /* Card: Slightly lighter than background */
     --card: 0 0% 4%;
     --card-foreground: 0 0% 95%;
     --popover: 0 0% 4%;
     --popover-foreground: 0 0% 95%;
-    /* Primary: Toxic Green #CCFF00 => HSL 74 100% 50% */
     --primary: 74 100% 50%;
     --primary-foreground: 0 0% 0%;
     --secondary: 0 0% 12%;
     --secondary-foreground: 0 0% 95%;
     --muted: 0 0% 10%;
     --muted-foreground: 0 0% 60%;
-    /* Accent: Electric Purple #7000FF => HSL 266 100% 50% */
     --accent: 266 100% 50%;
     --accent-foreground: 0 0% 100%;
     --destructive: 0 100% 50%;
@@ -54,17 +169,22 @@
     --border: 0 0% 18%;
     --input: 0 0% 12%;
     --ring: 74 100% 50%;
+    --letterboxd: 142 100% 44%;
+    --radius: 0px;
   }
-}
 
-@layer base {
   * {
-    @apply border-border;
+    border-color: var(--color-border, hsl(var(--border)));
   }
 
   body {
-    @apply bg-background text-foreground;
+    background-color: var(--color-background, hsl(var(--background)));
+    color: var(--color-foreground, hsl(var(--foreground)));
     font-feature-settings: "rlig" 1, "calt" 1;
+    /* Safe area for notched devices (iPhone X+) */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+    padding-bottom: env(safe-area-inset-bottom);
   }
 
   /* Custom Scrollbar */
@@ -74,11 +194,16 @@
   }
 
   ::-webkit-scrollbar-track {
-    @apply bg-zinc-900;
+    background-color: oklch(0.12 0 0);
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply bg-zinc-700 hover:bg-primary border-2 border-zinc-900;
+    background-color: oklch(0.30 0 0);
+    border: 2px solid oklch(0.12 0 0);
+
+    &:hover {
+      background-color: oklch(0.9 0.4 110);
+    }
   }
 
   /* Hide scrollbar utility */
@@ -90,57 +215,65 @@
     -ms-overflow-style: none;
     scrollbar-width: none;
   }
+
+  /* Mobile tap optimization */
+  button,
+  a,
+  [role="button"] {
+    touch-action: manipulation;
+  }
 }
 
-/* Acid Design Utilities */
+/* ============================================================================
+   Utilities Layer
+   ============================================================================ */
 @layer utilities {
 
   /* Glow effects - Toxic Green */
   .glow-primary {
-    box-shadow: 0 0 10px hsl(74 100% 50% / 0.3), 0 0 20px hsl(74 100% 50% / 0.15);
+    box-shadow: 0 0 10px oklch(0.9 0.4 110 / 0.3), 0 0 20px oklch(0.9 0.4 110 / 0.15);
   }
 
   .glow-primary-hover:hover {
-    box-shadow: 0 0 15px hsl(74 100% 50% / 0.5), 0 0 30px hsl(74 100% 50% / 0.25);
+    box-shadow: 0 0 15px oklch(0.9 0.4 110 / 0.5), 0 0 30px oklch(0.9 0.4 110 / 0.25);
     transition: box-shadow 0.2s ease-out;
   }
 
   /* Glow effects - Electric Purple */
   .glow-accent {
-    box-shadow: 0 0 10px hsl(266 100% 50% / 0.3), 0 0 20px hsl(266 100% 50% / 0.15);
+    box-shadow: 0 0 10px oklch(0.5 0.3 290 / 0.3), 0 0 20px oklch(0.5 0.3 290 / 0.15);
   }
 
   .glow-accent-hover:hover {
-    box-shadow: 0 0 15px hsl(266 100% 50% / 0.5), 0 0 30px hsl(266 100% 50% / 0.25);
+    box-shadow: 0 0 15px oklch(0.5 0.3 290 / 0.5), 0 0 30px oklch(0.5 0.3 290 / 0.25);
     transition: box-shadow 0.2s ease-out;
   }
 
   /* Gradient backgrounds */
   .bg-acid-gradient {
-    background: linear-gradient(135deg, hsl(74 100% 50% / 0.1) 0%, hsl(266 100% 50% / 0.1) 100%);
+    background: linear-gradient(135deg, oklch(0.9 0.4 110 / 0.1) 0%, oklch(0.5 0.3 290 / 0.1) 100%);
   }
 
   /* Text glow */
   .text-glow-primary {
-    text-shadow: 0 0 10px hsl(74 100% 50% / 0.5);
+    text-shadow: 0 0 10px oklch(0.9 0.4 110 / 0.5);
   }
 
-  /* Typewriter animation for headings */
-  @keyframes blink-caret {
-
-    from,
-    to {
-      border-color: transparent;
-    }
-
-    50% {
-      border-color: hsl(74 100% 50%);
-    }
-  }
-
+  /* Typewriter cursor */
   .typewriter-cursor::after {
     content: "";
-    border-right: 2px solid hsl(74 100% 50%);
+    border-right: 2px solid oklch(0.9 0.4 110);
     animation: blink-caret 0.75s step-end infinite;
+  }
+
+  /* Border Beam Animation */
+  .animate-border-beam {
+    animation: border-beam calc(var(--duration) * 1s) linear infinite;
+    animation-delay: var(--delay);
+  }
+
+  /* Shimmer Animation */
+  .animate-shimmer {
+    animation: shimmer var(--shimmer-duration, 2.5s) ease-in-out infinite;
   }
 }

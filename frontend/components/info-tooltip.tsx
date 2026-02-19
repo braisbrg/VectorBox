@@ -14,13 +14,14 @@ interface InfoTooltipProps {
 
 export function InfoTooltip({ id, title, description, className = "" }: InfoTooltipProps) {
     const [isOpen, setIsOpen] = useState(false);
+    const { t } = useLanguage();
 
     return (
         <div className={`relative inline-block ${className}`}>
             <button
                 onClick={() => setIsOpen(!isOpen)}
                 className="p-1 rounded-full hover:bg-primary/10 text-muted-foreground hover:text-primary transition-colors"
-                aria-label="More information"
+                aria-label={t("aria.more_info")}
             >
                 <Info className="w-4 h-4" />
             </button>

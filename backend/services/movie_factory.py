@@ -1,0 +1,169 @@
+import logging
+from typing import Optional, Tuple, Dict, Any, List
+from datetime import datetime
+
+from models.database import Movie
+from services.tmdb_client import TMDBClient
+from services.omdb_client import OMDbClient
+from services.embedding_service import EmbeddingService
+from qdrant_client.models import PointStruct
+
+logger = logging.getLogger(__name__)
+
+class MovieFactory:
+    """
+    Centralized factory for creating Movie objects and their corresponding Vector Points.
+    Unifies logic from seed_db.py and movie_service.py.
+    """
+
+    def __init__(self, tmdb_client: TMDBClient, omdb_client: OMDbClient, embedding_service: EmbeddingService):
+        self.tmdb = tmdb_client
+        self.omdb = omdb_client
+        self.embedding_service = embedding_service
+
+    async def build_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None) -> Tuple[Optional[Movie], Optional[PointStruct]]:
+        """
+        Orchestrates the full pipeline:
+        1. Fetch TMDB Details
+        2. Fetch/Calculate OMDb Data (VectorBox Score)
+        3. Parse Release Dates
+        4. Construct SQL Model
+        5. Generate Embedding
+        6. Construct Qdrant Point
+        
+        Returns: (Movie, PointStruct) or (None, None) if failed.
+        """
+        try:
+            # 1. Fetch TMDB Details
+            details = await self.tmdb.get_movie_details(tmdb_id)
+            if not details:
+                logger.warning(f"TMDB ID {tmdb_id} not found.")
+                return None, None
+
+            # 2. Fetch OMDb Data (VectorBox Score)
+            imdb_id = details.get("imdb_id")
+            omdb_data = None
+            if imdb_id:
+                omdb_data = await self.omdb.fetch_movie_data(imdb_id)
+            
+            # Returns VectorBoxScore object
+            vb_score_data = self.omdb.calculate_vectorbox_score(omdb_data, details.get("vote_average"))
+            
+            # 3. Process Release Dates
+            release_dates_map = self._process_release_dates(details)
+
+            # 4. Construct Movie Object (SQL)
+            movie = Movie(
+                tmdb_id=tmdb_id,
+                title=details.get("title"),
+                original_title=details.get("original_title"),
+                year=int(details.get("release_date", "0000")[:4]) if details.get("release_date") else None,
+                runtime=details.get("runtime"),
+                genres=[g["name"] for g in details.get("genres", [])],
+                overview=details.get("overview"),
+                poster_path=details.get("poster_path"),
+                backdrop_path=details.get("backdrop_path"),
+                vote_average=details.get("vote_average"),
+                vote_count=details.get("vote_count"),
+                popularity=details.get("popularity"),
+                original_language=details.get("original_language"),
+                letterboxd_uri=letterboxd_uri or f"https://letterboxd.com/tmdb/{tmdb_id}",
+                
+                # Extended Fields
+                imdb_id=imdb_id,
+                imdb_rating=vb_score_data.breakdown.imdb,
+                metacritic_rating=vb_score_data.breakdown.meta,
+                rotten_tomatoes_rating=vb_score_data.breakdown.rt,
+                vectorbox_score=vb_score_data.score,
+                title_es=details.get("title_es"),
+                overview_es=details.get("overview_es"),
+                collection_id=details.get("belongs_to_collection", {}).get("id") if details.get("belongs_to_collection") else None,
+                keywords=details.get("keywords_flat", []),
+                directors=details.get("directors", []),
+                cast=details.get("cast", []),
+                release_dates=release_dates_map
+            )
+
+            # 5. Generate Embedding
+            # Use keywords if available
+            keywords = movie.keywords or []
+            
+            vector = self.embedding_service.generate_embedding({
+                "title": movie.title,
+                "overview": movie.overview,
+                "genres": movie.genres,
+                "keywords": keywords
+            })
+
+            # 6. Construct PointStruct (Qdrant)
+            point = PointStruct(
+                id=tmdb_id,
+                vector=vector.tolist(),
+                payload={
+                    "tmdb_id": tmdb_id,
+                    "title": movie.title,
+                    "year": movie.year,
+                    "genres": movie.genres,
+                    "rating": movie.vote_average,
+                    "vote_count": movie.vote_count,
+                    "runtime": movie.runtime,
+                    "poster_path": movie.poster_path,
+                    "vectorbox_score": movie.vectorbox_score,
+                    "imdb_rating": movie.imdb_rating,
+                    "metacritic_rating": movie.metacritic_rating,
+                    "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
+                    "title_es": movie.title_es,
+                    "overview_es": movie.overview_es,
+                    "keywords": movie.keywords,
+                    "directors": movie.directors,
+                    "cast": movie.cast
+                }
+            )
+
+            # 7. Providers (Optional return or handled by caller)
+            # The original movie_service logic handled providers separately after creation.
+            # We can return the providers data if needed, but for now we'll stick to Movie/Point
+            # and let the caller handle provider saving if they have the 'details' dict, 
+            # BUT efficient batching means we might want to return details too?
+            # For strict separation, `build_movie` returns the core entities.
+            # The caller might need `details` for providers. 
+            # Let's attach providers data to the Movie object transiently? No, that's messy.
+            
+            # IMPROVEMENT: Return `details` as a third element if needed, 
+            # OR handle provider parsing here and return it.
+            
+            # Let's check usage. 
+            # movie_service: saves providers if "providers_data" in details.
+            # seed_db: skips providers or does them individually.
+            
+            # Best approach: Return a `MovieConstructionResult` dataclass?
+            # For now, let's just attach the providers raw data to the movie object as a non-mapped attribute
+            # strictly for transport, or return it.
+            # Returning (Movie, Point, ProvidersData) seems cleanest.
+            
+            providers_data = details.get("providers_data", {}).get("ES", {})
+            
+            return movie, point, providers_data
+
+        except Exception as e:
+            logger.error(f"Error building movie {tmdb_id}: {e}")
+            return None, None, None
+
+    def _process_release_dates(self, details: Dict) -> Dict[str, str]:
+        release_dates_map = {}
+        if "release_dates" in details and "results" in details["release_dates"]:
+            for country in details["release_dates"]["results"]:
+                iso = country["iso_3166_1"]
+                best_date = None
+                for date_entry in country["release_dates"]:
+                    if date_entry["type"] == 3: # Theatrical
+                        best_date = date_entry["release_date"]
+                        break 
+                    elif date_entry["type"] == 4 and not best_date:
+                        best_date = date_entry["release_date"]
+                    elif not best_date:
+                        best_date = date_entry["release_date"]
+                
+                if best_date:
+                    release_dates_map[iso] = best_date.split("T")[0]
+        return release_dates_map

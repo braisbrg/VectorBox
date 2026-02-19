@@ -16,6 +16,8 @@ from services.clustering_service import ClusteringService
 from services.movie_service import MovieService
 from services.provider_service import ProviderService
 
+from utils.decorators import safe_execution
+
 logger = logging.getLogger(__name__)
 
 class RecommendationService:
@@ -27,19 +29,21 @@ class RecommendationService:
     - Signal C: Crowd (TMDB Collaborative Filtering)
     """
 
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, tmdb: TMDBClient = None, qdrant: QdrantService = None):
         self.db = db
-        self.tmdb = TMDBClient()
-        self.qdrant = QdrantService()
+        self.tmdb = tmdb or TMDBClient()
+        self.qdrant = qdrant or QdrantService()
         self.clustering = ClusteringService()
         self.movie_service = MovieService(db)
 
+    @safe_execution(fallback_return=FeedSection(id="hybrid_picks", title="Hybrid Picks (Signal Lost)", items=[]))
     async def get_hybrid_picks_section(
         self, 
         user_id: int, 
         country: str,
         seen_ids: Set[int],
-        provider_service: ProviderService = None
+        provider_service: ProviderService = None,
+        background_tasks = None
     ) -> FeedSection:
         """
         Main entry point for "The Trident" row.
@@ -47,11 +51,25 @@ class RecommendationService:
         logger.info(f"Generating Trident Hybrid Picks for User {user_id}")
         
         # 1. Gather Signals in Parallel
-        signal_a_task = self.get_signal_a_vibe(user_id, exclude_ids=seen_ids)
-        signal_b_task = self.get_signal_b_auteur(user_id, exclude_ids=seen_ids)
-        signal_c_task = self.get_signal_c_crowd(user_id, exclude_ids=seen_ids)
+        import time
+        start_time = time.time()
+        
+        # Define wrappers to measure individual signal time
+        async def measure_signal(name, task):
+            t0 = time.time()
+            res = await task
+            duration = (time.time() - t0) * 1000
+            logger.info(f"[TRIDENT] Signal {name} took {duration:.2f}ms")
+            return res
+
+        signal_a_task = measure_signal("A (Vibe)", self.get_signal_a_vibe(user_id, exclude_ids=seen_ids, background_tasks=background_tasks))
+        signal_b_task = measure_signal("B (Auteur)", self.get_signal_b_auteur(user_id, exclude_ids=seen_ids))
+        signal_c_task = measure_signal("C (Crowd)", self.get_signal_c_crowd(user_id, exclude_ids=seen_ids))
         
         results = await asyncio.gather(signal_a_task, signal_b_task, signal_c_task, return_exceptions=True)
+        
+        total_time = (time.time() - start_time) * 1000
+        logger.info(f"[TRIDENT] Full Trident gathering took {total_time:.2f}ms")
         
         # Handle exceptions gracefully
         candidates_lists = []
@@ -64,7 +82,7 @@ class RecommendationService:
                 
         signal_a, signal_b, signal_c = candidates_lists
         
-        logger.info(f"Signal Counts -> A: {len(signal_a)}, B: {len(signal_b)}, C: {len(signal_c)}")
+        logger.info(f"[TRIDENT] Signal Counts -> A: {len(signal_a)}, B: {len(signal_b)}, C: {len(signal_c)}")
         
         # 2. Fusion (RRF)
         # We assume candidates are Movie objects (or dicts representing them)
@@ -85,7 +103,7 @@ class RecommendationService:
             items=final_items
         )
 
-    async def get_signal_a_vibe(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
+    async def get_signal_a_vibe(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
         """
         Signal A: The Vibe Expert (Vectors)
         Uses Qdrant via ClusteringService logic.
@@ -95,7 +113,8 @@ class RecommendationService:
             user_id=user_id,
             db=self.db,
             filters={"min_vote_count": 500}, # Basic quality filter
-            limit=50
+            limit=50,
+            background_tasks=background_tasks
         )
         
         movie_ids = [r["movie_id"] for r in raw_recs if r["movie_id"] not in exclude_ids]
@@ -190,29 +209,47 @@ class RecommendationService:
         if not seeds:
             return []
             
-        crowd_candidates = []
+        # 2. Collect all TMDB IDs from TMDB recommendations (parallel, no sequential N+1)
+        all_tmdb_ids: List[int] = []
+        tasks = [self.tmdb.get_movie_recommendations(seed.tmdb_id) for seed in seeds]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, recs in enumerate(results):
+            if isinstance(recs, Exception):
+                logger.warning(f"[Signal C] TMDB recs failed for seed {seeds[i].tmdb_id}: {recs}")
+                continue
+            for r in recs[:5]:
+                tid = r['id']
+                if tid not in exclude_ids:
+                    all_tmdb_ids.append(tid)
+
         
-        # 2. Fetch Recs for each
-        for seed in seeds:
-            recs = await self.tmdb.get_movie_recommendations(seed.tmdb_id) # Returns dicts
-            
-            # Need to ingest/map these TMDB IDs to DB Movies
-            tmdb_ids = [r['id'] for r in recs[:5]] # Take top 5 per seed
-            
-            for tid in tmdb_ids:
-                if tid in exclude_ids:
-                    continue
-                    
-                # Try to get from DB
+        if not all_tmdb_ids:
+            return []
+
+        # 3. BATCH CHECK: which IDs already exist in DB? (single query, no N+1)
+        existing_result = await self.db.execute(
+            select(Movie).where(Movie.tmdb_id.in_(all_tmdb_ids))
+        )
+        existing_movies = existing_result.scalars().all()
+        existing_tmdb_ids = {m.tmdb_id for m in existing_movies}
+
+        # 4. Ingest only the missing ones (max 5 to avoid long waits)
+        missing_ids = [tid for tid in all_tmdb_ids if tid not in existing_tmdb_ids][:5]
+        newly_ingested: List[Movie] = []
+        for tid in missing_ids:
+            try:
                 movie = await self.movie_service.get_or_create_movie(tid)
                 if movie:
-                    crowd_candidates.append(movie)
-                    
-        # Remove duplicates
-        seen_local = set()
-        unique = []
-        for m in crowd_candidates:
-            if m.id not in seen_local and m.id not in exclude_ids:
+                    newly_ingested.append(movie)
+            except Exception as e:
+                logger.warning(f"[Signal C] Could not ingest TMDB {tid}: {e}")
+
+        # 5. Combine and deduplicate
+        all_movies = list(existing_movies) + newly_ingested
+        seen_local: Set[int] = set()
+        unique: List[Movie] = []
+        for m in all_movies:
+            if m.id not in seen_local and m.tmdb_id not in exclude_ids:
                 unique.append(m)
                 seen_local.add(m.id)
                 
@@ -237,141 +274,91 @@ class RecommendationService:
         return scores
 
     async def hybrid_reranking(
-        self, 
-        rrf_scores: Dict[int, float], 
+        self,
+        rrf_scores: Dict[int, float],
         user_id: int,
         country: str,
         provider_service: ProviderService
     ) -> List[FeedItem]:
         """
-        Final polish: RRF Score * Quality Score -> MMR Diversity
+        Final polish: RRF Score * Quality Score -> Collection Collapsing -> Batch Provider Fetch
         """
         if not rrf_scores:
             return []
-            
-        # 1. Convert to List and Fetch objects
-        # We need the Movie objects which we probably have in memory if we passed them around
-        # But RRF only returned scores.
-        # I should have stored the movie objects in RRF or passed them.
-        # Let's simple query them back or use a map if I had one. 
-        # I updated RRF to use a map? No, I returned dict.
-        # Wait, I cannot fetch objects from just IDs easily without query. 
-        # Efficient way: in RRF, populate a map.
-        
-        # Let's fix RRF logic to return map of scores and objects? 
-        # Actually I can just re-fetch using IDs.
+
+        # 1. Batch-fetch Movie objects from DB (single query)
         movie_ids = list(rrf_scores.keys())
         stmt = select(Movie).where(Movie.id.in_(movie_ids))
         result = await self.db.execute(stmt)
         movies = result.scalars().all()
-        
+
+        # 2. Score = RRF * Sigmoid Quality Weight
         candidates = []
         for m in movies:
             rrf_score = rrf_scores.get(m.id, 0)
-            
-            # Sigmoid Quality Weight (0.0 - 1.0)
             vb_score = m.vectorbox_score or 50
             quality_weight = self.clustering.calculate_quality_weight(vb_score)
-            
-            final_score = rrf_score * quality_weight
-            
-            candidates.append({
-                "movie": m,
-                "score": final_score
-            })
-            
-        # Sort by Final Score
+            candidates.append({"movie": m, "score": rrf_score * quality_weight})
+
         candidates.sort(key=lambda x: x["score"], reverse=True)
-        
-        # 2. Diversity (Simple MMR-lite via Franchise Bias)
-        # We don't need full vector MMR here (too expensive for this step maybe?), 
-        # or we could reuse `clustering.mmr_rerank` if we had vectors.
-        # The prompt says: "Apply Diversity: Run the existing MMR logic"
-        # Okay, let's assume we want full MMR. We need vectors.
-        
-        # Retrieve vectors for top 20 candidates
+
+        # 3. Batch-fetch Qdrant vectors for top 20 (single call, no N+1)
+        import numpy as np
+        import functools
         top_candidates = candidates[:20]
-        candidate_ids = [c["movie"].tmdb_id for c in top_candidates]
-        
-        # We need the qdrant vectors
-        vectors_map = {}
-        for c in top_candidates:
-            v = await self.qdrant.get_vector(c["movie"].tmdb_id)
-            if v:
-                import numpy as np
-                vectors_map[c["movie"].tmdb_id] = np.array(v)
-                
-        # Reformat for ClusteringService.mmr_rerank
-        # It expects [{"movie_id": tmdb_id, "score": ...}]
-        mmr_input = []
-        movie_obj_map = {}
-        for c in top_candidates:
-            mmr_input.append({
-                "movie_id": c["movie"].tmdb_id, # MMR uses TMDB ID usually in clustering service?
-                # Check clustering service: "item_vec = vectors_map.get(item['movie_id'])"
-                # "vectors_map[internal_id] = ..."
-                # Clustering service uses Internal ID for map keys but TMDB ID for Qdrant retrieve.
-                # Let's standardise on TMDB ID for this localized logic to avoid confusion.
-                "score": c["score"]
-            })
-            movie_obj_map[c["movie"].tmdb_id] = c["movie"]
-            
-        # Custom MMR here to avoid service dependency mismatch
-        # Or just use the one in ClusteringService but it expects Internal IDs in the map? 
-        # Let's look at ClusteringService lines 693-695: 
-        # "internal_id = next(...); vectors_map[internal_id] = ..."
-        # It uses Internal ID.
-        
-        # Simplified: Just run Collection Collapsing (One per franchise)
-        # and maybe just return the top list for now. 
-        # Full MMR might be overkill if we trust the 3 signals diversity.
-        # But user asked for it.
-        
-        # Let's do Collection Collapsing at least
-        seen_collections = set()
-        final_list = []
-        
-        for c in candidates:
-            m = c["movie"]
-            if m.collection_id:
-                if m.collection_id in seen_collections:
-                    continue
-                seen_collections.add(m.collection_id)
-            
-            final_list.append(c)
-            if len(final_list) >= 10:
-                break
-                
-        # Create Feed Items
+        candidate_tmdb_ids = [c["movie"].tmdb_id for c in top_candidates]
+        raw_vectors = await self.qdrant.get_vectors_batch(candidate_tmdb_ids)
+        # Map internal_id -> vector (get_vectors_batch returns tmdb_id -> vector)
+        tmdb_to_internal = {c["movie"].tmdb_id: c["movie"].id for c in top_candidates}
+        vectors_map = {
+            tmdb_to_internal[tmdb_id]: np.array(v)
+            for tmdb_id, v in raw_vectors.items()
+            if tmdb_id in tmdb_to_internal
+        }
+
+        # 4. MMR Reranking (diversity-aware, CPU-bound → executor)
+        loop = asyncio.get_running_loop()
+        mmr_func = functools.partial(
+            self.clustering.mmr_rerank,
+            top_candidates,
+            vectors_map,
+            10,          # limit: 10 final items
+            0.7          # lambda_param: 70% relevance, 30% diversity
+        )
+        try:
+            final_list = await loop.run_in_executor(None, mmr_func)
+        except Exception as e:
+            logger.error(f"[Trident] MMR failed, falling back to top-10: {e}")
+            # Fallback: simple collection collapsing
+            seen_collections: set = set()
+            final_list = []
+            for c in candidates:
+                m = c["movie"]
+                if m.collection_id:
+                    if m.collection_id in seen_collections:
+                        continue
+                    seen_collections.add(m.collection_id)
+                final_list.append(c)
+                if len(final_list) >= 10:
+                    break
+
+        # 5. Batch-fetch providers (single query, no N+1)
         feed_items = []
-        from services.feed_service import FeedService
-        # Needed to use helper... but circular import.
-        # We should accept FeedService instance or replicate logic.
-        # Replicating simple FeedItem creation logic here to avoid circular dep.
-        # Or better: FeedService calls this, transforms Movie->FeedItem itself?
-        # No, FeedService expects FeedSection with Items.
-        
-        # I'll implement a static helper or simple conversion here.
-        
+        if provider_service and final_list:
+            movie_internal_ids = [item["movie"].id for item in final_list]
+            providers_map = await provider_service.get_providers_batch(movie_internal_ids, country)
+        else:
+            providers_map = {}
+
         for item in final_list:
             movie = item["movie"]
-            
-            # Basic Score scaling (RRF scores are small, e.g. 0.1)
-            # Map top score to 99%
-            # We just give it a high "Hybrid" badge score
-            display_score = 98 
-            
-            # Providers
-            providers = []
-            if provider_service:
-                p_data = await provider_service.get_providers(movie.id, country)
-                providers = [p["provider_name"] for p in p_data]
-            
+            p_data = providers_map.get(movie.id, [])
+            providers = [p["provider_name"] for p in p_data]
             feed_items.append(FeedItem(
                 id=movie.tmdb_id,
                 title=movie.title,
                 poster_url=movie.poster_path,
-                match_score=display_score,
+                match_score=98,
                 streaming_providers=list(set(providers)),
                 year=movie.year,
                 runtime=movie.runtime,
@@ -386,9 +373,10 @@ class RecommendationService:
                 title_es=movie.title_es,
                 overview_es=movie.overview_es
             ))
-            
+
         return feed_items
 
+    @safe_execution(fallback_return=FeedSection(id="auteur_picks", title="From Your Favorite Directors", items=[]))
     async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int]) -> FeedSection:
         """
         Signal B Only Row: "From Your Favorite Directors"
@@ -415,3 +403,10 @@ class RecommendationService:
             title="From Your Favorite Directors",
             items=items
         )
+
+    async def close(self):
+        """Cleanup resources"""
+        if self.tmdb:
+            await self.tmdb.aclose()
+        if self.movie_service:
+            await self.movie_service.close()

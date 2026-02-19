@@ -3,7 +3,8 @@ Qdrant vector database service for semantic search
 """
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union
+from models.external_schemas import QdrantPayload
 import os
 import logging
 from dotenv import load_dotenv
@@ -31,14 +32,21 @@ class QdrantService:
             
             if self.COLLECTION_NAME not in collection_names:
                 logger.info(f"Creating Qdrant collection: {self.COLLECTION_NAME}")
-                await self.client.create_collection(
-                    collection_name=self.COLLECTION_NAME,
-                    vectors_config=VectorParams(
-                        size=self.VECTOR_SIZE,
-                        distance=Distance.COSINE
+                try:
+                    await self.client.create_collection(
+                        collection_name=self.COLLECTION_NAME,
+                        vectors_config=VectorParams(
+                            size=self.VECTOR_SIZE,
+                            distance=Distance.COSINE
+                        )
                     )
-                )
-                logger.info("Collection created successfully")
+                    logger.info("Collection created successfully")
+                except Exception as e:
+                    # Handle Race Condition: 409 Conflict means it was created by another process
+                    if "409" in str(e) or "already exists" in str(e):
+                        logger.warning(f"Collection creation race condition handled: {e}")
+                    else:
+                        raise e
             else:
                 logger.info(f"Collection {self.COLLECTION_NAME} already exists")
         except Exception as e:
@@ -49,7 +57,7 @@ class QdrantService:
         self,
         movie_id: int,
         vector: List[float],
-        metadata: Dict
+        metadata: Union[Dict, QdrantPayload]
     ):
         """
         Insert or update movie vector
@@ -58,20 +66,46 @@ class QdrantService:
         if len(vector) != self.VECTOR_SIZE:
             raise ValueError(f"Vector size mismatch. Expected {self.VECTOR_SIZE}, got {len(vector)}")
         
+        # Convert Pydantic model to dict if necessary
+        payload = metadata
+        if hasattr(metadata, "model_dump"):
+             payload = metadata.model_dump(exclude_none=True)
+        elif hasattr(metadata, "dict"): # Compat
+             payload = metadata.dict(exclude_none=True)
+        
         try:
             point = PointStruct(
                 id=movie_id,
                 vector=vector,
-                payload=metadata
+                payload=payload
             )
             
             await self.client.upsert(
                 collection_name=self.COLLECTION_NAME,
                 points=[point]
             )
-            logger.info(f"Successfully upserted vector for movie: {metadata.get('title', movie_id)}")
+            # Safe access for logging
+            title = payload.get('title') if isinstance(payload, dict) else str(movie_id)
+            logger.info(f"Successfully upserted vector for movie: {title}")
         except Exception as e:
             logger.error(f"Failed to upsert vector for movie {movie_id}: {e}")
+            raise
+
+    async def upsert_batch(self, points: List[PointStruct]):
+        """
+        Batch upsert generic points
+        """
+        if not points:
+            return
+            
+        try:
+            await self.client.upsert(
+                collection_name=self.COLLECTION_NAME,
+                points=points
+            )
+            logger.info(f"Successfully upserted batch of {len(points)} vectors")
+        except Exception as e:
+            logger.error(f"Failed to upsert batch: {e}")
             raise
     
     async def search_similar(
@@ -238,6 +272,14 @@ class QdrantService:
                         )
                     )
                 
+                # 12. TMDB Popularity Filter (for Hidden Gems - Hype Ceiling)
+                if "max_popularity" in filters and filters["max_popularity"]:
+                    must_conditions.append(
+                        FieldCondition(
+                            key="popularity",
+                            range={"lte": filters["max_popularity"]}
+                        )
+                    )
                 # Build final filter
                 if must_conditions or must_not_conditions:
                     filter_params = {}
@@ -261,7 +303,19 @@ class QdrantService:
                 offset=offset,
                 score_threshold=effective_threshold,
                 query_filter=qdrant_filter,
-                with_payload=True
+                # [OPTIMIZATION] Payload Selector
+                # Only fetch essential fields for sorting/filtering.
+                # Exclude heavy text fields (overview, keywords, cast, directors)
+                with_payload=[
+                    "tmdb_id", 
+                    "title", 
+                    "year", 
+                    "vectorbox_score", 
+                    "vote_count", 
+                    "popularity",
+                    "poster_path", # Useful for debugging or quick UI
+                    "vote_average"
+                ]
             )
             
             return [
@@ -311,6 +365,25 @@ class QdrantService:
             logger.error(f"Failed to retrieve vector for movie {movie_id}: {e}")
             return None
     
+    async def get_vectors_batch(self, movie_ids: List[int]) -> Dict[int, List[float]]:
+        """
+        Retrieve vectors for multiple movies in a SINGLE Qdrant call.
+        Returns a dict mapping movie_id -> vector.
+        Eliminates N+1 when fetching vectors for a list of candidates.
+        """
+        if not movie_ids:
+            return {}
+        try:
+            points = await self.client.retrieve(
+                collection_name=self.COLLECTION_NAME,
+                ids=movie_ids,
+                with_vectors=True
+            )
+            return {p.id: p.vector for p in points if p.vector is not None}
+        except Exception as e:
+            logger.error(f"Failed to batch-retrieve vectors for {len(movie_ids)} movies: {e}")
+            return {}
+
     async def delete_movie(self, movie_id: int):
         """Delete movie vector"""
         try:

@@ -1,0 +1,37 @@
+# Dependencies
+**/node_modules/
+**/venv/
+**/.venv/
+**/__pycache__/
+
+# AI Cache
+models_cache/
+backend/models_cache/
+**/.cache/
+
+# Persistence & Data
+postgres_data/
+qdrant_storage/
+redis_data/
+**/qdrant_data/
+**/redis_data/
+**/postgres_data/
+
+# Build Artifacts
+**/.next/
+**/dist/
+**/build/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Logs & Secrets
+*.log
+logs/
+.env
+.env.*
+!.env.example
+.git/
+.gitignore
+tests/artifacts/
+test-results/

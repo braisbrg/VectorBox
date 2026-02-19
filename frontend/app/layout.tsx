@@ -15,7 +15,12 @@ export const metadata: Metadata = {
     icons: {
         icon: "/icon.png",
     },
-    viewport: "width=device-width, initial-scale=1, maximum-scale=1",
+};
+
+export const viewport = {
+    width: "device-width",
+    initialScale: 1,
+    // maximumScale removed - accessibility: allow pinch-to-zoom
 };
 
 export default function RootLayout({

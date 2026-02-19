@@ -1,6 +1,30 @@
-# Environment files
+# -----------------------------------------------------------------------------
+# VECTORBOX PROJECT IGNORE RULES (v1.2 Hardened)
+# -----------------------------------------------------------------------------
+
+# System Junk
+.DS_Store
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.bak
+*.swp
+*.swo
+*~
+
+# IDE/Editor
+.vscode/
+.idea/
+.history/
+*.sublime-project
+*.sublime-workspace
+
+# Secrets & Environment (CRITICAL)
 .env
+.env.production
 .env.local
+.env.*.local
+!.env.example
 
 # Python
 __pycache__/
@@ -11,64 +35,30 @@ __pycache__/
 env/
 venv/
 ENV/
-.venv
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
 
-# Node.js
+# Node.js / Frontend
 node_modules/
 .next/
 out/
 build/
 dist/
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
 
-# IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Docker
-*.log
-
-# Database
-*.db
-*.sqlite
+# Docker Persistence (Do not commit production data)
 postgres_data/
 qdrant_storage/
 redis_data/
+*.db
+*.sqlite
 
-# Pytest
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Misc
-*.bak
-
-# Local Verification & Data
-*.csv
-*.html
-debug_*.py
-python_procs.txt
-test_upload.py
-verify_ingestion_refactor.py
-*.ps1
-!update_project.ps1
-!audit_backend.ps1
-!run_backfill.ps1
-!trigger_update.ps1
-
-# Debug & Audit scripts
-check_*.py
-run_*.py
-test_qdrant.py
-debug_data.py
-
-# AI & ML Heavy Artifacts
+# AI Model Artifacts (Heavy files)
 models_cache/
 backend/models_cache/
 .cache/
@@ -77,13 +67,23 @@ backend/models_cache/
 *.safetensors
 *.onnx
 
-# Additional Legacy/Debug Patterns
-temp_*.py
-test_scratch.py
-*.bak
-.env.*.local
+# Backups & Private Data
+backups/
+*.snapshot
+*.sql
+*.sql.gz
+*.csv
+!backend/fixtures/*.csv
 
-# Strict Script Allowlist Enforcement (Dev/Verify Scripts)
-backend/scripts/verify_ai.py
-backend/scripts/verify_trident.py
-backend/scripts/security_audit.py
+# QA & Testing Artifacts
+tests/artifacts/
+test-results/
+*.png
+python_procs.txt
+
+# Scripts (Allowlist approach: Ignore temporary debug scripts)
+debug_*.py
+test_scratch.py
+verify_*.py
+!backend/scripts/verify_*.py
+

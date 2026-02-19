@@ -2,21 +2,16 @@ import asyncio
 import os
 import sys
 import logging
-import httpx
-from bs4 import BeautifulSoup
-from typing import List
-import redis.asyncio as redis
-import json
 import re
+import json
+from curl_cffi.requests import AsyncSession
+import redis.asyncio as redis
 
 # Fix paths
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.tmdb_client import TMDBClient
 from config import AsyncSessionLocal
-from models.database import Movie
-from sqlalchemy import select
-
 from services.movie_service import MovieService
 
 # Configure logging
@@ -24,181 +19,156 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 REDIS_KEY_POPULAR = "cache:feed:popular_letterboxd:ids"
-# AJAX endpoint returns pre-rendered grid (bypassing full page skeleton)
-LETTERBOXD_URL = "https://letterboxd.com/films/ajax/popular/this/week/?esiAllowFilters=true"
+
+# TRUCO: Usamos directamente la URL AJAX que contiene los datos crudos
+# Esta URL devuelve HTML puro con los posters, no una app React vacía.
+LETTERBOXD_AJAX_URL = "https://letterboxd.com/films/ajax/popular/this/week/?esiAllowFilters=true"
 
 async def scrape_letterboxd_popular():
     """
-    Scrapes Letterboxd Popular films via AJAX endpoint.
-    Matches slugs to TMDB IDs.
-    Extracts 'data-average-rating'.
-    Updates 'Movie' in DB with rating.
-    Stores list of IDs in Redis.
+    Scrapes Letterboxd Popular films via curl_cffi + Regex.
+    Targets the internal AJAX endpoint to ensure data presence.
     """
-    logger.info(f"Scraping {LETTERBOXD_URL}...")
+    logger.info(f"Scraping {LETTERBOXD_AJAX_URL} with curl_cffi...")
     
     tmdb = TMDBClient()
     
-    # 1. Fetch Page
-    # Mimic real browser to avoid soft-blocks (Cloudflare)
+    # Headers quirúrgicos para parecer una navegación interna
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://letterboxd.com/films/popular/this/week/",
+        "X-Requested-With": "XMLHttpRequest", # Vital para endpoints AJAX
+        "Accept": "text/html, */*",
         "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-        # "X-Requested-With": "XMLHttpRequest", # Sometimes helps, sometimes hurts. Keeping it simple first.
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            response = await client.get(LETTERBOXD_URL, headers=headers)
+        # Impersonate Chrome para saltar Cloudflare
+        async with AsyncSession(impersonate="chrome120") as s:
+            # 1. Warm-up (Visita la home para pillar cookies de sesión)
+            await s.get("https://letterboxd.com/", headers=headers)
+            
+            # 2. Petición Real al AJAX
+            response = await s.get(LETTERBOXD_AJAX_URL, headers=headers, timeout=30)
+            
             if response.status_code != 200:
-                logger.error(f"Failed to fetch page. Status: {response.status_code}")
+                logger.error(f"Failed to fetch content. Status: {response.status_code}")
+                # Si falla aquí, es bloqueo duro de IP.
                 return
+
             html = response.text
-    except Exception as e:
-        logger.error(f"Network error: {e}")
-        return
-
-    # 2. Parse HTML
-    try:
-        soup = BeautifulSoup(html, "html.parser")
-        
-        # New Structure: <li class="posteritem" data-average-rating="4.30">
-        items = soup.select("li.posteritem")
-        
-        movie_data = [] # List of dicts
-        
-        for item in items:
-            # Extract Rating
-            rating_str = item.get("data-average-rating")
-            rating = float(rating_str) if rating_str else None
             
-            # Find inner div with slug/name
-            # Look for div with data-item-slug OR data-film-slug
-            comp = item.select_one("div[data-item-slug]") 
-            if not comp:
-                 comp = item.select_one("div[data-film-slug]")
+            # --- REGEX EXTRACTION (Ajustado al HTML de AJAX) ---
+            # En el AJAX, suelen usar 'data-film-slug' o 'data-item-slug'
+            slugs = re.findall(r'data-film-slug="([^"]+)"', html)
             
-            if comp:
-                slug = comp.get("data-item-slug") or comp.get("data-film-slug")
-                name_attr = comp.get("data-item-name") # e.g. "Wake Up Dead Man (2025)"
+            if not slugs:
+                slugs = re.findall(r'data-item-slug="([^"]+)"', html)
+            
+            # Rating regex (data-average-rating="3.45")
+            ratings = re.findall(r'data-average-rating="(\d+\.?\d*)"', html)
+
+            # Deduplicación preservando orden
+            unique_slugs = [] 
+            seen = set()
+            for s in slugs:
+                if s not in seen:
+                    unique_slugs.append(s)
+                    seen.add(s)
+            
+            if not unique_slugs:
+                 logger.error("⚠️ 0 Slugs found via Regex. The HTML might be empty or changed.")
+                 logger.info(f"HTML Preview: {html[:500]}...") # Ver qué nos devuelve
+                 return
+
+            logger.info(f"✅ Extracted {len(unique_slugs)} unique slugs via Regex.")
+            
+            # 3. Resolve to TMDB IDs & Update DB
+            tmdb_ids = []
+            failed_slugs = []
+            
+            async with AsyncSessionLocal() as db:
+                movie_service = MovieService(db)
                 
-                entry = {"slug": slug, "rating": rating}
-                
-                if name_attr:
-                    # Regex to extract Title and Year
-                    match = re.match(r"^(.*?) \((\d{4})\)$", name_attr)
-                    if match:
-                        entry["title"] = match.group(1)
-                        entry["year"] = int(match.group(2))
-                    else:
-                         entry["title"] = name_attr
-                         entry["year"] = None
-                else:
-                    entry["title"] = None
-                    entry["year"] = None
-                    
-                if slug:
-                    movie_data.append(entry)
-
-        # Debug check
-        if not movie_data:
-            logger.warning("⚠️ No movies found (0 items).")
-            return
-
-        logger.info(f"Found {len(movie_data)} movies to resolve...")
-
-    except Exception as e:
-        logger.error(f"Parsing error: {e}")
-        return
-
-    # 3. Resolve to TMDB IDs & Update DB
-    tmdb_ids = []
-    
-    logger.info("Resolving movies to TMDB IDs and Updating DB...")
-    
-    async with AsyncSessionLocal() as db:
-        # Initialize MovieService with the session
-        movie_service = MovieService(db)
-        
-        try:
-            for item in movie_data:
                 try:
-                    result_movie = None
-                    
-                    # Strategy A: Precise Search (Title + Year)
-                    if item["title"]:
-                        result_movie = await tmdb.search_movie(item["title"], year=item["year"])
-                    
-                    # Strategy B: Fallback to Slug
-                    if not result_movie and item["slug"]:
-                        query = item["slug"].replace("-", " ")
-                        result_movie = await tmdb.search_movie(query)
-                    
-                    if result_movie:
-                        tmdb_id = result_movie["id"]
-                        tmdb_ids.append(tmdb_id)
-                        
-                        # Construct URI
-                        uri = f"https://letterboxd.com/film/{item['slug']}/"
-                        item["uri"] = uri
-                        
-                        # --- DB UPSERT via MovieService (Async & Enriched) ---
-                        # This will:
-                        # 1. Check if movie exists
-                        # 2. If not, fetch full TMDB details + OMDb data + Calculate VB Score
-                        # 3. Generate Qdrant Vector
-                        # 4. Save everything
-                        db_movie = await movie_service.get_or_create_movie(tmdb_id, letterboxd_uri=uri)
-                        
-                        if db_movie:
-                            # Update Rating if available
-                            if item["rating"] is not None:
-                                 db_movie.letterboxd_rating = item["rating"]
-                                 # We need to commit the rating change
-                                 await db.commit()
+                    for i, slug in enumerate(unique_slugs):
+                        try:
+                            # Smart slug parsing for patterns like:
+                            # - "sinners-2025" -> title="sinners", year=2025
+                            # - "eternity-2025-1" -> title="eternity", year=2025 (strip "-1" disambiguation suffix)
+                            query = slug.replace("-", " ")
+                            year = None
                             
-                            # Heal missing VectorBox Score (for legacy movies)
-                            if db_movie.vectorbox_score is None or db_movie.vectorbox_score == 0:
-                                logger.info(f"Missing/Zero VB Score for {db_movie.title}. Attempting enrichment...")
-                                await movie_service.enrich_movie(db_movie)
-                        else:
-                            logger.error(f"Failed to ingest movie: {result_movie['title']}")
+                            # FIRST: Strip trailing disambiguation suffix (e.g., "1" in "eternity 2025 1")
+                            query = re.sub(r'\s\d$', '', query)
+                            
+                            # THEN: Extract year if at end (e.g., "eternity 2025" -> year=2025)
+                            year_match = re.search(r'\s(\d{4})$', query)
+                            if year_match:
+                                potential_year = int(year_match.group(1))
+                                if 1888 <= potential_year <= 2030:
+                                    year = potential_year
+                                    query = query[:year_match.start()].strip()
+                            
+                            # Primary search: with year parameter (sorted by popularity)
+                            result_movie = await tmdb.search_movie(query, year=year)
+                            
+                            # Fallback: Try without year if year search failed
+                            if not result_movie and year:
+                                result_movie = await tmdb.search_movie(query)
+                            
+                            if result_movie:
+                                tmdb_id = result_movie["id"]
+                                tmdb_ids.append(tmdb_id)
+                                
+                                uri = f"https://letterboxd.com/film/{slug}/"
+                                
+                                # Upsert (crear si no existe)
+                                db_movie = await movie_service.get_or_create_movie(tmdb_id, letterboxd_uri=uri)
+                                
+                                # Actualizar rating si lo tenemos
+                                if i < len(ratings) and db_movie:
+                                     try:
+                                         db_movie.letterboxd_rating = float(ratings[i])
+                                     except (ValueError, TypeError) as e:
+                                         logger.warning(f"Failed to parse rating for slug {slug}: {e}")
+                                
+                                # Commit por lotes sería mejor, pero uno a uno es seguro
+                                await db.commit()
+                            else:
+                                logger.warning(f"Could not resolve slug: {slug}")
+                                failed_slugs.append(slug)
+                        except Exception as inner_e:
+                            logger.warning(f"Skipping {slug}: {inner_e}")
+                            failed_slugs.append(f"{slug} (Error)")
+                            await db.rollback()
+                            
+                finally:
+                    # Clean up batches
+                    pass
+            
+            logger.info(f"🎉 Resolved {len(tmdb_ids)} movies successfully.")
+            if failed_slugs:
+                logger.warning(f"⚠️ Failed to resolve {len(failed_slugs)} slugs:")
+                for fs in failed_slugs:
+                    logger.warning(f"   - {fs}")
 
-                    else:
-                        logger.warning(f"Could not resolve: {item.get('title') or item.get('slug')}")
-                        
+
+            # 4. Store in Redis
+            if tmdb_ids:
+                redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+                try:
+                    r = await redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+                    await r.set(REDIS_KEY_POPULAR, json.dumps(tmdb_ids), ex=60*60*24)
+                    logger.info("Saved Popular IDs to Redis.")
+                    await r.close()
                 except Exception as e:
-                    logger.error(f"Error processing item {item.get('title')}: {e}")
-                    # Rollback handled by get_or_create_movie for ingestion, but for outer loop safety:
-                    await db.rollback()
-        
-        except Exception as e:
-            logger.error(f"Global DB loop error: {e}")
-        
-        finally:
-            # Clean up services
-            await movie_service.close()
-            
-    logger.info(f"Resolved {len(tmdb_ids)}/{len(movie_data)} movies.")
+                    logger.error(f"Redis error: {e}")
 
-    # 4. Store in Redis
-    if tmdb_ids:
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-        try:
-            r = await redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
-            
-            # Store as JSON string
-            await r.set(REDIS_KEY_POPULAR, json.dumps(tmdb_ids), ex=60*60*24) # 24h expire
-            logger.info("Saved Popular IDs to Redis.")
-            
-            await r.close()
-        except Exception as e:
-            logger.error(f"Redis error: {e}")
-            
-    await tmdb.close()
+    except Exception as e:
+        logger.error(f"Critical Scraper Error: {e}")
+    finally:
+        await tmdb.aclose()
 
 if __name__ == "__main__":
     if sys.platform == "win32":

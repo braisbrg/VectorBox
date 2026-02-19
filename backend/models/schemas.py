@@ -8,6 +8,21 @@ from enum import Enum
 
 
 # Security: Strict validation for user inputs
+
+# System Response Schemas (for OpenAPI documentation)
+class HealthResponse(BaseModel):
+    """Health check endpoint response"""
+    status: str
+    service: str
+
+
+class RootResponse(BaseModel):
+    """API root endpoint response"""
+    message: str
+    version: str
+    docs: str
+
+
 class MovieMetadata(BaseModel):
     """TMDB movie metadata"""
     tmdb_id: int
@@ -26,6 +41,7 @@ class MovieMetadata(BaseModel):
     imdb_rating: Optional[float] = None
     metacritic_rating: Optional[int] = None
     rotten_tomatoes_rating: Optional[int] = None
+    release_dates: Optional[Dict[str, str]] = None
     title_es: Optional[str] = None
     overview_es: Optional[str] = None
 
@@ -37,6 +53,7 @@ class CSVUploadResponse(BaseModel):
     movies_processed: int
     movies_enriched: int
     errors: List[str] = []
+    task_id: Optional[str] = None
 
 
 class ClusterInfo(BaseModel):
@@ -67,9 +84,7 @@ class RecommendationRequest(BaseModel):
     min_rating: Optional[confloat(ge=0, le=100)] = None
     original_language: Optional[constr(min_length=2, max_length=10)] = None
     include_keywords: Optional[List[str]] = []
-    include_keywords: Optional[List[str]] = []
     watchlist_only: Optional[bool] = False
-    streaming_providers: Optional[List[int]] = [] # New filter (Provider IDs)
     include_low_quality: Optional[bool] = False # Trash Gate Bypass
     page: conint(ge=1) = 1 # Pagination
     
@@ -106,9 +121,9 @@ class RecommendationResponse(BaseModel):
 
 class UserCreate(BaseModel):
     """Create new user"""
-    username: constr(min_length=3, max_length=50, pattern=r'^[a-zA-Z0-9_-]+$')
-    email: Optional[constr(max_length=255)] = None
-    country_code: constr(min_length=2, max_length=2) = "ES"
+    username: constr(min_length=3, max_length=20, pattern=r'^[a-zA-Z0-9_-]+$', strip_whitespace=True)
+    email: Optional[constr(max_length=255, strip_whitespace=True)] = None
+    country_code: constr(min_length=2, max_length=2, strip_whitespace=True) = "ES"
 
 
 class UserResponse(BaseModel):
@@ -118,9 +133,46 @@ class UserResponse(BaseModel):
     country_code: str
     created_at: datetime
     has_data: bool = False
+    letterboxd_username: Optional[str] = None
     
     class Config:
         from_attributes = True
+
+
+# v1.1: Auth Schemas
+class RegisterRequest(BaseModel):
+    """Register a new VectorBox user"""
+    username: constr(min_length=3, max_length=20, pattern=r'^[a-zA-Z0-9_-]+$', strip_whitespace=True)
+    pin: constr(min_length=4, max_length=4, pattern=r'^\d{4}$', strip_whitespace=True)
+    country_code: constr(min_length=2, max_length=2, strip_whitespace=True) = "ES"
+
+
+class LoginRequest(BaseModel):
+    """Login with username and PIN"""
+    username: constr(min_length=3, max_length=20, pattern=r'^[a-zA-Z0-9_-]+$', strip_whitespace=True)
+    pin: constr(min_length=4, max_length=4, pattern=r'^\d{4}$', strip_whitespace=True)
+
+
+class TokenResponse(BaseModel):
+    """Auth token response"""
+    token: str
+    user_id: int
+    username: str
+    has_data: bool = False
+    letterboxd_username: Optional[str] = None
+
+
+class LinkLetterboxdRequest(BaseModel):
+    """Link a Letterboxd profile to user account"""
+    letterboxd_username: constr(min_length=1, max_length=50, pattern=r'^[a-zA-Z0-9_-]+$')
+
+
+class TaskStatusResponse(BaseModel):
+    """Background task status"""
+    task_id: str
+    status: str  # "pending", "processing", "completed", "failed"
+    progress: int = 0  # 0-100
+    step: Optional[str] = None  # Current step description
 
 
 class StreamingProviderCreate(BaseModel):
@@ -174,6 +226,22 @@ class ErrorResponse(BaseModel):
     error_code: Optional[str] = None
 
 
+class MovieCardSchema(BaseModel):
+    """Lightweight schema for list views to prevent over-fetching"""
+    id: int
+    title: str
+    poster_url: Optional[str] = None
+    match_score: confloat(ge=0, le=100)
+    year: Optional[int] = None
+    streaming_providers: List[str] = []
+    vectorbox_score: Optional[float] = None
+    
+    # Minimal fields for UI badges
+    imdb_rating: Optional[float] = None
+    rotten_tomatoes_rating: Optional[int] = None
+    release_dates: Optional[Dict[str, str]] = None
+
+
 class FeedItem(BaseModel):
     """Individual item in a feed section"""
     id: int  # Movie TMDB ID
@@ -193,7 +261,7 @@ class FeedItem(BaseModel):
     imdb_rating: Optional[float] = None
     metacritic_rating: Optional[int] = None
     rotten_tomatoes_rating: Optional[int] = None
-    title_es: Optional[str] = None
+    release_dates: Optional[Dict[str, str]] = None
     title_es: Optional[str] = None
     overview_es: Optional[str] = None
     letterboxd_rating: Optional[float] = None
@@ -210,4 +278,5 @@ class FeedSection(BaseModel):
 class FeedResponse(BaseModel):
     """Complete feed response with multiple sections"""
     feed: List[FeedSection]
+    status: str = "ok"  # "ok", "incomplete", "error"
 

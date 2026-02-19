@@ -17,6 +17,7 @@ from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.omdb_client import OMDbClient
 from services.provider_service import ProviderService
+from services.movie_factory import MovieFactory
 
 # Configure logging
 logging.basicConfig(
@@ -40,6 +41,7 @@ class DatabaseSeeder:
         self.qdrant = QdrantService()
         self.embedding_service = EmbeddingService()
         self.omdb = OMDbClient()
+        self.factory = MovieFactory(self.tmdb, self.omdb, self.embedding_service)
         self.processed_count = 0
         self.skipped_count = 0
         self.error_count = 0
@@ -93,143 +95,8 @@ class DatabaseSeeder:
         pbar.close()
         return candidates
 
-    async def process_movie(self, movie_data: Dict, db):
-        """Process a single movie: fetch details, embed, save"""
-        try:
-            tmdb_id = movie_data["id"]
-            
-            # ... (details fetching remains same)
-            details = await self.tmdb.get_movie_details(tmdb_id)
-            if not details:
-                logger.warning(f"Could not fetch details for {tmdb_id}")
-                return
+    # Old process_movie method removed in favor of prepare_movie_batch_item
 
-            title = details.get("title")
-            overview = details.get("overview")
-            year = int(details.get("release_date", "0000").split("-")[0]) if details.get("release_date") else None
-            runtime = details.get("runtime")
-            poster_path = details.get("poster_path")
-            backdrop_path = details.get("backdrop_path")
-            genres = [g["name"] for g in details.get("genres", [])]
-            vote_average = details.get("vote_average")
-            vote_count = details.get("vote_count")
-            popularity = details.get("popularity")
-            original_language = details.get("original_language")
-            
-            # Phase 12: Calculate VectorBox Score
-            imdb_id = details.get("imdb_id")
-            # Optimized: Keywords already fetched in get_movie_details via append_to_response
-            keywords = details.get("keywords_flat", [])
-            if not keywords:
-                 # Fallback if tmdb client didn't extract them (redundancy)
-                 keywords = await self.tmdb.get_movie_keywords(tmdb_id)
-            
-            # Fetch Spanish metadata
-            title_es = details.get("title_es")
-            overview_es = details.get("overview_es")
-            vectorbox_score = None
-            imdb_rating = None
-            metacritic_rating = None
-            rotten_tomatoes_rating = None
-            
-            if imdb_id and self.omdb.api_key:
-                # Check rate limit
-                if self.omdb_requests < self.OMDB_LIMIT:
-                    try:
-                        omdb_data = await self.omdb.fetch_movie_data(imdb_id)
-                        if omdb_data:
-                            self.omdb_requests += 1
-                            vb_data = self.omdb.calculate_vectorbox_score(omdb_data, vote_average)
-                            vectorbox_score = vb_data["score"]
-                            imdb_rating = vb_data["breakdown"]["imdb"]
-                            metacritic_rating = vb_data["breakdown"]["meta"]
-                            rotten_tomatoes_rating = vb_data["breakdown"]["rt"]
-                    except Exception as e:
-                        logger.warning(f"Failed to fetch OMDb data for {title}: {e}")
-                else:
-                    if self.omdb_requests == self.OMDB_LIMIT:
-                        logger.warning("OMDb limit reached (950). Skipping further score fetches.")
-                        self.omdb_requests += 1 # Increment once to stop logging this message
-
-            # Create DB object
-            movie = Movie(
-                tmdb_id=tmdb_id,
-                title=title,
-                original_title=details.get("original_title"),
-                overview=overview,
-                year=year,
-                runtime=runtime,
-                poster_path=poster_path,
-                backdrop_path=backdrop_path,
-                genres=genres,
-                vote_average=vote_average,
-                vote_count=vote_count,
-                popularity=popularity,
-                original_language=original_language,
-                keywords=keywords,
-                letterboxd_uri=f"https://letterboxd.com/tmdb/{tmdb_id}", # Approximation
-                # New Fields
-                imdb_id=imdb_id,
-                title_es=title_es,
-                overview_es=overview_es,
-                vectorbox_score=vectorbox_score,
-                imdb_rating=imdb_rating,
-                metacritic_rating=metacritic_rating,
-                imdb_rating=imdb_rating,
-                metacritic_rating=metacritic_rating,
-                rotten_tomatoes_rating=rotten_tomatoes_rating,
-                directors=details.get("directors", []),
-                cast=details.get("cast", [])
-            )
-            
-            db.add(movie)
-            await db.flush() # Get ID
-            
-            # Phase 14: Fetch Streaming Providers
-            try:
-                provider_service = ProviderService(db, self.tmdb)
-                await provider_service.get_providers(movie.id, "ES")
-            except Exception as e:
-                logger.warning(f"Failed to fetch providers for {title}: {e}")
-
-            # Generate embedding
-            embedding_data = {
-                "title": title,
-                "overview": overview,
-                "genres": genres,
-                "keywords": keywords
-            }
-            
-            embedding = self.embedding_service.generate_embedding(embedding_data)
-            
-            # Upsert to Qdrant
-            await self.qdrant.upsert_movie_vector(
-                movie_id=movie.id,
-                vector=embedding.tolist(),
-                metadata={
-                    "tmdb_id": tmdb_id,
-                    "title": title,
-                    "year": year,
-                    "genres": genres,
-                    "overview": overview,
-                    "poster_path": poster_path,
-                    "vote_average": vote_average,
-                    "vote_count": vote_count,
-                    "runtime": runtime,
-                    "original_language": original_language,
-                    "keywords": keywords,
-                    "keywords": keywords,
-                    "vectorbox_score": vectorbox_score,
-                    "directors": details.get("directors", []),
-                    "cast": details.get("cast", [])
-                }
-            )
-            
-            self.processed_count += 1
-            
-        except Exception as e:
-            logger.error(f"Error processing movie {movie_data.get('id')}: {e}")
-            self.error_count += 1
 
     async def run(self):
         logger.info(f"Starting database seed (Limit: {self.limit})")
@@ -254,25 +121,89 @@ class DatabaseSeeder:
                 return
 
             # 4. Process
-            pbar = tqdm(total=len(new_movies), desc="Seeding Movies")
+            pbar = tqdm(total=len(new_movies), desc="Seeding Movies (Batch Mode)")
             
             # Process in chunks to commit to DB periodically
             chunk_size = 50
             for i in range(0, len(new_movies), chunk_size):
                 chunk = new_movies[i:i+chunk_size]
                 
-                for movie_data in chunk:
-                    await self.process_movie(movie_data, db)
-                    pbar.update(1)
-                    
-                await db.commit()
+                movies_batch = []
+                points_batch = []
                 
+                # A. Prepare Batch
+                for movie_data in chunk:
+                    try:
+                        # Prepare data (fetch + embed + object creation)
+                        result = await self.prepare_movie_batch_item(movie_data, db)
+                        if result:
+                            movie, point = result
+                            movies_batch.append(movie)
+                            points_batch.append(point)
+                    except Exception as e:
+                        logger.error(f"Error preparing movie {movie_data.get('id')}: {e}")
+                        self.error_count += 1
+                    finally:
+                        pbar.update(1)
+                
+                # B. Bulk Persist (SQL)
+                if movies_batch:
+                    try:
+                        db.add_all(movies_batch)
+                        await db.commit()
+                        
+                        # C. Bulk Persist (Vector DB)
+                        # Only upsert vectors if SQL commit succeeded
+                        if points_batch:
+                             # Important: Map DB IDs to Qdrant Points? 
+                             # Currently using TMDB ID as ID in Qdrant (seed_db.py line 213 in original: movie_id=movie.id)
+                             # Original code used movie.id (Auto-increment PK).
+                             # However, we prefer using TMDB ID or UUID for consistency?
+                             # Looking at `process_movie` original: movie_id=movie.id.
+                             # BUT `ingest_movie` uses `movie.tmdb_id` in line 111 of movie_service.py?
+                             # Wait, let's check movie_service.py again. 
+                             # seed_db.py L212: movie_id=movie.id
+                             # movie_service.py L111: movie_id=movie.tmdb_id
+                             # This is an INCONSISTENCY I should fix. 
+                             # Best practice: Use TMDB ID for Qdrant ID if it's integer, simpler to lookup.
+                             # If I change this now, I might break existing specific lookups if they rely on PK.
+                             # But `ingest_movie` uses `tmdb_id`. So I should align `seed_db` to use `tmdb_id`.
+                             # Wait, I CANNOT get `movie.id` (PK) before commit if I use `add_all` on async driver sometimes?
+                             # Actually `add_all` + `commit` generates IDs.
+                             # Let's align on TMDB ID for Qdrant ID. It allows upserting before knowing the SQL PK.
+                             
+                             await self.qdrant.upsert_batch(points_batch)
+                             self.processed_count += len(movies_batch)
+                             
+                    except Exception as e:
+                        logger.error(f"Batch commit failed: {e}")
+                        await db.rollback()
+                        self.error_count += len(movies_batch)
+
             pbar.close()
             
         logger.info(f"Seeding complete. Processed: {self.processed_count}, Skipped: {self.skipped_count}, Errors: {self.error_count}")
         
         # Close connections
-        await self.tmdb.close()
+        await self.tmdb.aclose()
+        await self.omdb.aclose()
+
+    async def prepare_movie_batch_item(self, movie_data: Dict, db):
+        """
+        Prepares a single movie for batch insertion using the unified MovieFactory.
+        Returns (MovieObject, PointStruct)
+        """
+        tmdb_id = movie_data["id"]
+        
+        # Delegate to factory
+        # Factory returns (Movie, Point, ProvidersData)
+        movie, point, _ = await self.factory.build_movie(tmdb_id)
+        
+        if not movie:
+            return None
+            
+        return movie, point
+                
 
 async def main():
     parser = argparse.ArgumentParser(description="Seed database with TMDB movies")

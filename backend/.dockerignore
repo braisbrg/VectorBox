@@ -1,12 +1,31 @@
-__pycache__
+# AI & Heavy Cache (CRITICAL)
+models_cache/
+.cache/
+
+# Python & Dependencies
+__pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
 env/
 venv/
+.venv/
+
+# Environment & Git
 .env
+.env.*
+!.env.example
 .git
 .gitignore
+
+# Logs
 logs/
 *.log
+
+# Data/Persistence
+postgres_data/
+qdrant_storage/
+redis_data/
+qdrant_data/
+redis_data/

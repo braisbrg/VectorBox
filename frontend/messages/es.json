@@ -1,13 +1,44 @@
 {
+  "app": {
+    "title": "VectorBox",
+    "description": "Sistema avanzado de recomendación de películas",
+    "welcome": "Bienvenido,",
+    "guide": "Guía",
+    "logout": "Cerrar Sesión"
+  },
   "sidebar": {
     "feed": "Tu Feed",
     "grid": "Explorar",
-    "watchlist": "Watchlist",
+    "watchlist": "Tu Lista",
     "ai_search": "Magic Box",
     "more_like_this": "Clones",
     "users": "Usuarios",
     "settings": "Ajustes",
+    "compatibility": "Compatibilidad",
     "current_user": "Usuario Activo"
+  },
+  "feed": {
+    "global": "Global",
+    "my_watchlist": "Mi Lista",
+    "reset": "Reiniciar",
+    "scope_tooltip": "Global: Recomendaciones de toda la base de datos.\nMi Lista: Solo muestra recomendaciones de películas que ya están en tu Watchlist de Letterboxd."
+  },
+  "sections": {
+    "available_now": "Disponible Ya",
+    "popular_letterboxd": "Trending en Letterboxd",
+    "because_you_watched": "Porque viste [Película]",
+    "your_taste": "Tu Rollo",
+    "hidden_gems": "Joyas Ocultas",
+    "deep_dive": "Inmersión Temática",
+    "wildcard": "Fuera de tu Zona",
+    "random_picks": "Probar suerte",
+    "group_vibe": "Sincronización de Grupo",
+    "hybrid_picks": "Selección Híbrida para ti",
+    "directors_picks": "De tus Directores Favoritos",
+    "crowd_picks": "Lo que dicen los fans",
+    "watchlist_top_rated": "Mejor Valoradas en tu Lista",
+    "watchlist_short": "Cortas y Buenas (Lista)",
+    "random_watchlist": "Aleatorio: De tu Lista"
   },
   "search": {
     "placeholder": "¿Qué vibe buscas hoy? (ej. cyberpunk en los 80)",
@@ -16,34 +47,223 @@
     "status_active": "// RED NEURONAL ACTIVA //",
     "clear_results": "Limpiar Datos",
     "results_found": "películas detectadas",
-    "no_results": "Sin coincidencias en la base de datos.",
-    "analyzing": "Analizando intención..."
+    "no_results": "No hemos encontrado nada. ¿Prueba a subir tu ZIP?",
+    "analyzing": "Analizando intención...",
+    "searching": "Buscando..."
   },
-  "sections": {
-    "available_now": "Disponible Ya",
-    "popular_letterboxd": "Trending en Letterboxd",
-    "because_you_watched": "Porque viste...",
-    "your_taste": "Tu Rollo",
-    "hidden_gems": "Joyas Ocultas",
-    "deep_dive": "Profundizando",
-    "wildcard": "Fuera de tu Zona",
-    "random_picks": "Gacha Roll",
-    "group_vibe": "Sincronización de Grupo",
-    "hybrid_picks": "Selección Híbrida para Ti",
-    "directors_picks": "De tus Directores Favoritos",
-    "crowd_picks": "Popular entre Fans"
+  "magic_search": {
+    "high_intelligence": "Alta Inteligencia",
+    "toggle_deep": "Activar Análisis Profundo (Más lento, Más inteligente)",
+    "placeholder_deep": "Haz preguntas complejas...",
+    "powered_by_tier1": "Powered by Llama 4 Scout (Tier 1)",
+    "powered_by_tier2": "Powered by Llama 3.3 70B (Tier 2)",
+    "search_results": "Resultados de Búsqueda",
+    "page_of": "Página {current} de {total}",
+    "aria_toggle_deep": "Activar modo de análisis profundo",
+    "aria_clear_search": "Limpiar búsqueda",
+    "aria_submit_search": "Enviar búsqueda"
+  },
+  "grid": {
+    "filters": "Filtros",
+    "clear": "Limpiar",
+    "scope": {
+      "global": "Global",
+      "watchlist": "Mi Lista"
+    },
+    "active_filters": "Filtros Activos",
+    "clear_all": "Limpiar Todo",
+    "streaming_services": "Servicios de Streaming",
+    "year_from": "Año Desde",
+    "year_to": "Año Hasta",
+    "genre": "Género",
+    "all_genres": "Todos los Géneros",
+    "max_runtime": "Duración Máx.",
+    "min_rating": "Valoración Mín.",
+    "min_votes": "Popularidad Mín. (Votos)",
+    "language": "Idioma",
+    "any_language": "Cualquier Idioma",
+    "keywords": "Palabras Clave",
+    "no_results": "No se encontraron recomendaciones. Intenta ajustar tus filtros.",
+    "loading": "Cargando recomendaciones...",
+    "error": "Error al cargar recomendaciones."
+  },
+  "movie": {
+    "synopsis": "Sinopsis",
+    "why_recommended": "Por qué se recomienda",
+    "cast": "Reparto",
+    "director": "Director",
+    "runtime": "Duración",
+    "rating": "Valoración",
+    "release_date": "Fecha de Estreno",
+    "genres": "Géneros",
+    "watch_on": "Ver en",
+    "no_providers": "No hay proveedores de streaming",
+    "trailer": "Tráiler",
+    "more_info": "Más Info",
+    "vb_score": "Puntuación VectorBox",
+    "match_prob": "Probabilidad de Match",
+    "tmdb_rating": "Valoración TMDB",
+    "imdb_rating": "IMDb",
+    "rotten_tomatoes": "Rotten Tomatoes",
+    "metacritic": "Metacritic",
+    "letterboxd_rating": "Valoración Letterboxd",
+    "flip_card": "Ver sinopsis",
+    "show_logic": "Ver lógica de recomendación",
+    "close_panel": "Cerrar panel",
+    "no_synopsis": "Sinopsis no disponible",
+    "no_contributors": "Sin datos de contribución"
+  },
+  "guide": {
+    "title": "Guía de la App",
+    "welcome": "¡Bienvenido! Aquí tienes un tour rápido de la navegación:",
+    "feed": "Tus filas de películas personalizadas (Joyas Ocultas, Porque Viste...).",
+    "grid": "Filtra películas por estado de ánimo, género, año y duración.",
+    "watchlist": "Tus películas guardadas con filtros de disponibilidad.",
+    "ai_search": "Encuentra películas usando lenguaje natural (ej. \"sci-fi de los 80 con banda sonora synth\").",
+    "more_like_this": "Obtén recomendaciones basadas en una película específica que te guste.",
+    "got_it: ": "¡Entendido!"
+  },
+  "settings": {
+    "title": "Configuración",
+    "subtitle": "Personaliza tu experiencia en VectorBox.",
+    "theme": {
+      "title": "Apariencia",
+      "subtitle": "Selecciona el tema de la interfaz.",
+      "light": "Claro",
+      "dark": "Oscuro",
+      "system": "Sistema",
+      "system_desc": "El tema se ajustará a la configuración de tu sistema.",
+      "current": "Tema actual: {theme}"
+    },
+    "show_low_quality": "Mostrar baja calidad",
+    "show_low_quality_desc": "Incluir películas con ratings bajos en las recomendaciones.",
+    "about": {
+      "title": "Sobre VectorBox",
+      "desc": "Sistema de recomendación vectorial basado en tus datos de Letterboxd.",
+      "version": "v1.1.0"
+    }
+  },
+  "users": {
+    "title": "Gestionar Usuarios y Cargas",
+    "subtitle": "Selecciona un perfil o crea uno nuevo para subir datos de Letterboxd.",
+    "create_new": "Crear Nuevo Usuario",
+    "select_user": "Seleccionar Usuario",
+    "upload_data": "Subir Datos",
+    "why": {
+      "title": "¿Por qué subir datos?",
+      "desc": "Subir tu exportación de Letterboxd permite a nuestra IA aprender tu perfil de gustos, recomendar joyas ocultas y encontrar películas similares a tus favoritas."
+    },
+    "how": {
+      "title": "Cómo exportar",
+      "desc": "Ve a Ajustes de Letterboxd > Importar y Exportar > Exportar Datos. Descarga el zip y suéltalo aquí."
+    },
+    "status": {
+      "uploading": "Subiendo...",
+      "processing": "Procesando...",
+      "success": "¡Éxito!",
+      "error": "Error al subir datos"
+    }
+  },
+  "group_vibe": {
+    "title": "Vibe de Grupo",
+    "desc": "Introduce varios usuarios de Letterboxd para encontrar películas que encajen con el gusto de todos.",
+    "add_user": "Añadir usuario...",
+    "analyze": "Buscar Películas de Grupo",
+    "analyzing": "Analizando Vibe...",
+    "results_title": "Recomendaciones de Grupo",
+    "contributors": "Contribuyentes"
+  },
+  "auth": {
+    "welcome": "Acceder",
+    "username": "USUARIO",
+    "pin": "PIN",
+    "placeholders": {
+      "username": "Tu usuario...",
+      "pin": "1234"
+    },
+    "login_btn": "ENTRAR AL SISTEMA",
+    "new_user": "¿Primera vez?",
+    "register_link": "Solicitar Acceso",
+    "create_btn": "Crear Perfil",
+    "register_title": "Registro de Nuevo Usuario",
+    "try_again_in": "Reintentar en {seconds}s",
+    "back_to_login": "Volver al Acceso",
+    "errors": {
+      "rate_limit": "Demasiados intentos. Espera {seconds} segundos.",
+      "invalid_input": "Datos inválidos.",
+      "username_short": "Usuario muy corto.",
+      "invalid_credentials": "Credenciales incorrectas.",
+      "generic": "Error de autenticación."
+    }
+  },
+  "onboarding": {
+    "init_required": "Inicialización Requerida",
+    "welcome_agent": "Bienvenido, Agente",
+    "activation_msg": "Para activar el sistema, importa tu historial de Letterboxd.",
+    "abort": "ABORTAR_SESIÓN",
+    "link_title": "Vincular Letterboxd",
+    "link_desc": "Vincula tu usuario para desbloquear subidas y sync.",
+    "placeholder_user": "Usuario de Letterboxd",
+    "btn_link": "Guardar",
+    "processing_title": "Procesando exportación...",
+    "processing_desc": "Analizando ratings, watchlist y likes...",
+    "upload_title": "Sube tu Export ZIP",
+    "upload_desc": "Arrastra el archivo o haz clic para buscar",
+    "btn_choose": "Elegir ZIP",
+    "btn_start": "Iniciar Importación",
+    "btn_cancel": "Cancelar",
+    "footer_export": "Exporta tus datos desde",
+    "confirm_title": "Confirmar Identidad",
+    "confirm_yes": "Sí, Vincular Cuenta",
+    "confirm_no": "No, déjame corregirlo",
+    "confirm_warning": "¿Estás seguro de que este es tu usuario de Letterboxd?",
+    "confirm_warning_hint": "Un error aquí resultará en recomendaciones incorrectas."
+  },
+  "rss": {
+    "sync_btn": "Sincronizar RSS",
+    "info": "Sincroniza los últimos 50 ítems. Usa ZIP para historial completo.",
+    "synced": "Sincronizado:",
+    "new": "nuevas",
+    "watched": "vistas",
+    "updated": "actualizadas",
+    "watchlist": "lista",
+    "error": "Error en la sincronización."
+  },
+  "dashboard": {
+    "system_ready": "SISTEMA_LISTO // AGENTE:",
+    "reset": "Reset",
+    "scope_tooltip": "Alternar entre recomendaciones globales o solo de tu Watchlist"
+  },
+  "sidebar_desc": {
+    "feed": "Recomendaciones personalizadas",
+    "grid": "Navega por mood y filtros",
+    "watchlist": "Tus películas guardadas",
+    "ai_search": "Búsqueda con lenguaje natural",
+    "more_like_this": "Encuentra películas similares",
+    "group_vibe": "Encuentra favoritos compartidos"
   },
   "ui": {
     "previous": "Anterior",
     "next": "Siguiente",
-    "loading": "Cargando...",
+    "loading": "Analizando tus gustos...",
     "retry": "Reintentar",
-    "uploading": "SUBIENDO...",
+    "uploading": "IMPORTANDO DATOS...",
     "menu": "MENÚ"
+  },
+  "aria": {
+    "expand_sidebar": "Expandir barra lateral",
+    "collapse_sidebar": "Contraer barra lateral",
+    "scroll_left": "Desplazar carrusel a la izquierda",
+    "scroll_right": "Desplazar carrusel a la derecha",
+    "open_menu": "Abrir menú",
+    "close_menu": "Cerrar menú",
+    "more_info": "Más información",
+    "reroll_wildcard": "Volver a generar recomendaciones wildcard",
+    "reroll_random": "Obtener nuevas recomendaciones aleatorias"
   },
   "errors": {
     "generic": "Algo ha fallado en la Matrix.",
-    "upload_failed": "Error en la subida.",
-    "no_data": "Sin datos. Sube tu CSV de Letterboxd."
+    "upload_failed": "No se pudo importar. ¿El formato es correcto?",
+    "no_data": "Está vacío. Importa tus datos para empezar."
   }
 }

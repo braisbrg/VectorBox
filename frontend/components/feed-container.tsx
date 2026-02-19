@@ -2,44 +2,20 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { MovieCarousel } from "./movie-carousel";
+import { UploadZone } from "@/components/upload-zone";
 import { Skeleton } from "@/components/ui/skeleton";
+import { AcidError } from "@/components/ui/acid-error";
 import { InfoTooltip } from "./info-tooltip";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
-import { getFeed } from "@/lib/api";
-
-interface FeedItem {
-    id: number;
-    title: string;
-    poster_url?: string;
-    match_score: number;
-    streaming_providers: string[];
-    year?: number;
-    runtime?: number;
-    letterboxd_uri?: string;
-    rating?: number;
-    overview?: string;
-    contributors?: { seed_title: string; contribution: number }[];
-    letterboxd_rating?: number;
-    vectorbox_score?: number;
-}
-
-interface FeedSection {
-    id: string;
-    title: string;
-    type: string;
-    items: FeedItem[];
-}
-
-interface FeedResponse {
-    feed: FeedSection[];
-}
+import { getFeed, FeedResponse } from "@/lib/api";
 
 interface FeedContainerProps {
     userId: number;
     scope: "global" | "watchlist";
     countryCode?: string;
     streamingProviders?: number[];
+    initialData?: FeedResponse | null; // SSR Prefetched Data
 }
 
 const SECTION_DESCRIPTIONS: Record<string, string> = {
@@ -61,14 +37,15 @@ const TITLE_MAP: Record<string, string> = {
     "available_now": "sections.available_now"
 };
 
-export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [] }: FeedContainerProps) {
+export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [], initialData }: FeedContainerProps) {
     const { settings } = useSettings();
     const includeLowQuality = settings.includeLowQuality;
 
     const { data: feedData, isLoading, error } = useQuery<FeedResponse>({
         queryKey: ["feed", userId, scope, countryCode, streamingProviders, includeLowQuality],
-        queryFn: async () => getFeed(userId, scope, countryCode, streamingProviders, includeLowQuality),
+        queryFn: async () => getFeed(scope, countryCode, streamingProviders, includeLowQuality),
         staleTime: 5 * 60 * 1000, // 5 minutes
+        initialData: initialData ?? undefined, // SSR Prefetched Data
     });
 
 
@@ -96,26 +73,40 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
 
     if (error) {
         return (
-            <div className="p-6 bg-destructive/10 border border-destructive/20 rounded-lg flex flex-col items-center gap-4">
-                <p className="text-destructive">
-                    Failed to load recommendations. Please try again.
-                </p>
-                <button
-                    onClick={() => window.location.reload()}
-                    className="px-4 py-2 bg-background border rounded-md text-sm hover:bg-muted transition-colors"
-                >
-                    Retry
-                </button>
+            <div className="flex justify-center w-full">
+                <AcidError
+                    message="DATA_STREAM_INTERRUPTED"
+                    onRetry={() => window.location.reload()}
+                    className="max-w-2xl"
+                />
             </div>
         );
     }
 
-    if (!feedData || feedData.feed.length === 0) {
+    if (!feedData || feedData.feed.length === 0 || feedData.status === "incomplete") {
+        const isIncomplete = feedData?.status === "incomplete";
+
         return (
-            <div className="p-6 bg-muted/50 rounded-lg text-center">
-                <p className="text-muted-foreground">
-                    No recommendations available yet. Upload your Letterboxd data to get started!
-                </p>
+            <div className="flex flex-col items-center justify-center min-h-[50vh] space-y-8">
+                <div className="text-center space-y-2">
+                    <h2 className={`text-2xl font-bold font-mono ${isIncomplete ? "text-orange-500" : "text-primary"}`}>
+                        {isIncomplete ? "DATA_INCOMPLETE" : "DATA_MISSING"}
+                    </h2>
+                    <p className="text-muted-foreground max-w-md mx-auto">
+                        {isIncomplete
+                            ? "Your data import seems to have been interrupted. Please upload your Letterboxd export again to fix your profile."
+                            : "VectorBox needs your Letterboxd data to generate recommendations."}
+                    </p>
+                </div>
+
+                <div className="w-full max-w-xl bg-card border border-border rounded-xl shadow-lg p-6">
+                    <UploadZone
+                        registeredUsers={[{ id: userId, username: "" } as any]}
+                        activeSessionUserId={userId}
+                        onUploadSuccess={() => window.location.reload()}
+                        onUserCreated={() => { }}
+                    />
+                </div>
             </div>
         );
     }
