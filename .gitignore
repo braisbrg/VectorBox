@@ -74,6 +74,7 @@ backups/
 *.sql.gz
 *.csv
 !backend/fixtures/*.csv
+!backend/requirements.lock
 
 # QA & Testing Artifacts
 tests/artifacts/
