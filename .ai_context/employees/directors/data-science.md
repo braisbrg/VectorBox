@@ -2,7 +2,7 @@
 
 > **Role:** Data Science & ML Lead
 > **Domain:** Recommendation Algorithms, Vector Search, Scoring Math
-> **Last Updated:** 2026-01-13
+> **Last Updated:** 2026-03-03
 
 This file contains all data science logic, mathematical formulas, and Qdrant configuration for the VectorBox recommendation engine.
 
@@ -46,6 +46,9 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 - **Source:** TMDB collaborative data
 - **Purpose:** "People who liked X also liked Y"
 - **Logic:** Grounds recommendations in general popularity patterns
+
+### Observability Logs (The `[TRIDENT]` Prefix)
+- **Requirement:** All Trident signal execution times (A, B, C) MUST be logged using the `[TRIDENT]` prefix to track sub-millisecond performance of each individual engine phase.
 
 ### Reciprocal Rank Fusion (RRF)
 ```python
@@ -180,9 +183,10 @@ When `use_recency_bias=True`:
 
 ## 6. Qdrant Configuration
 
-### Client
+### Client & Schemas
 > [!WARNING]
 > Use `AsyncQdrantClient` exclusively. Synchronous client is forbidden.
+> Use `QdrantPayload` (Pydantic) from `models/external_schemas.py` to validate and enforce schema on vector insert/upsert. Do not use raw dicts.
 
 ### Search API
 ```python

@@ -43,6 +43,9 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
                     className="fixed inset-0 z-50 bg-black/95 backdrop-blur-xl flex flex-col"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label={t("ui.menu")}
                 >
                     {/* Header */}
                     <div className="flex items-center justify-between p-4 border-b border-white/10">
@@ -85,7 +88,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                     <div className="p-6 border-t border-white/10 space-y-6">
                         {users && users.length > 0 && currentUserId && onUserSelect && (
                             <div className="space-y-2">
-                                <label className="text-xs font-mono uppercase text-white/40 block text-center">
+                                <label className="text-xs font-mono uppercase text-zinc-400 block text-center">
                                     {t("sidebar.current_user")}
                                 </label>
                                 <div className="flex justify-center">
@@ -101,7 +104,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                                                 </option>
                                             ))}
                                         </select>
-                                        <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/50 pointer-events-none" />
+                                        <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none" />
                                     </div>
                                 </div>
                             </div>

@@ -25,11 +25,10 @@ api.interceptors.request.use(
                 try {
                     const user = JSON.parse(userStr);
                     if (user.token) {
-                        console.log("Interceptor: Attaching Bearer token");
                         config.headers.Authorization = `Bearer ${user.token}`;
                     }
                 } catch (e) {
-                    console.error("Invalid user in localStorage", e);
+                    // console.error("Invalid user in localStorage", e); // Removed as per instruction
                 }
             }
         }
@@ -439,10 +438,14 @@ export const getFeedServerSide = async (
         }
         params.append("include_low_quality", includeLowQuality.toString());
 
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
         const response = await fetch(
             `${API_URL}/api/recommendations/feed?${params.toString()}`,
             {
                 cache: "no-store", // Dynamic data, always fresh
+                signal: controller.signal,
                 headers: {
                     "Content-Type": "application/json",
                     ...(cookieHeader ? { Cookie: cookieHeader } : {}),
@@ -450,14 +453,14 @@ export const getFeedServerSide = async (
             }
         );
 
+        clearTimeout(timeoutId);
+
         if (!response.ok) {
-            console.error("SSR Feed fetch failed:", response.status);
             return null;
         }
 
         return response.json();
     } catch (error) {
-        console.error("SSR Feed fetch error:", error);
         return null;
     }
 };

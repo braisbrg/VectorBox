@@ -36,9 +36,10 @@ interface MovieCarouselProps {
     type?: string;
     titlePrefix?: React.ReactNode;
     forceVectorBoxScore?: boolean;
+    priority?: boolean;
 }
 
-export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore }: MovieCarouselProps) {
+export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore, priority = false }: MovieCarouselProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const [localItems, setLocalItems] = useState<FeedItem[]>(items);
     const [localTitle, setLocalTitle] = useState<string>(title);
@@ -143,7 +144,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                 ref={scrollContainerRef}
                 className="flex gap-4 overflow-x-auto px-4 md:px-8 pb-4 scrollbar-hide snap-x snap-mandatory"
             >
-                {localItems.map((movie) => (
+                {localItems.map((movie, index) => (
                     <div key={movie.id} className="flex-none w-[160px] md:w-[200px] snap-start">
                         <MovieCard
                             id={movie.id}
@@ -165,6 +166,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             letterboxd_rating={movie.letterboxd_rating}
                             providers={movie.streaming_providers}
                             forceVectorBoxScore={forceVectorBoxScore}
+                            priority={priority && index < 4}
                         />
                     </div>
                 ))}

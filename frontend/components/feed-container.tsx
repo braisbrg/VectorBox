@@ -113,7 +113,7 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
 
     return (
         <div className="space-y-12">
-            {feedData.feed.map((section) => (
+            {feedData.feed.map((section, index) => (
                 <MovieCarousel
                     key={section.id}
                     title={
@@ -126,6 +126,7 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
                     sectionId={section.id}
                     type={section.type}
                     forceVectorBoxScore={section.id === "wildcard"}
+                    priority={index === 0}
                     titlePrefix={SECTION_DESCRIPTIONS[section.id] ? (
                         <InfoTooltip
                             id={`feed-section-${section.id}`}

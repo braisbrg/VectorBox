@@ -26,9 +26,9 @@ export function SpotlightCard({
     spotlightSize = 350,
 }: SpotlightCardProps) {
     const containerRef = useRef<HTMLDivElement>(null);
+    const spotlightRef = useRef<HTMLDivElement>(null);
     const cachedRectRef = useRef<DOMRect | null>(null);
     const rafIdRef = useRef<number | null>(null);
-    const [position, setPosition] = useState({ x: 0, y: 0 });
     const [isHovered, setIsHovered] = useState(false);
 
     // Cache geometry on enter - avoids layout thrashing during move
@@ -54,15 +54,14 @@ export function SpotlightCard({
 
         rafIdRef.current = requestAnimationFrame(() => {
             const rect = cachedRectRef.current;
-            if (rect) {
-                setPosition({
-                    x: e.clientX - rect.left,
-                    y: e.clientY - rect.top,
-                });
+            if (rect && spotlightRef.current) {
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                spotlightRef.current.style.background = `radial-gradient(${spotlightSize}px circle at ${x}px ${y}px, ${spotlightColor}, transparent 60%)`;
             }
             rafIdRef.current = null;
         });
-    }, []);
+    }, [spotlightSize, spotlightColor]);
 
     return (
         <motion.div
@@ -79,10 +78,10 @@ export function SpotlightCard({
         >
             {/* Spotlight Effect */}
             <div
+                ref={spotlightRef}
                 className="pointer-events-none absolute inset-0 z-10 transition-opacity duration-300"
                 style={{
                     opacity: isHovered ? 1 : 0,
-                    background: `radial-gradient(${spotlightSize}px circle at ${position.x}px ${position.y}px, ${spotlightColor}, transparent 60%)`,
                 }}
             />
             {children}

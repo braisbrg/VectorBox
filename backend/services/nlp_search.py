@@ -2,7 +2,7 @@ import os
 import instructor
 from pydantic import BaseModel, Field
 from typing import List, Optional, Literal
-from openai import OpenAI
+from openai import AsyncOpenAI
 import logging
 
 logger = logging.getLogger(__name__)
@@ -45,8 +45,8 @@ def get_scout_client():
         return None
     
     # We use OpenAI client but point to Groq
-    client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
-    return instructor.patch(client, mode=instructor.Mode.TOOLS)
+    client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
+    return instructor.from_openai(client, mode=instructor.Mode.TOOLS)
 
 def get_intelligence_client():
     """Tier 2: Intelligence (Llama 3.3 70B)"""
@@ -55,8 +55,8 @@ def get_intelligence_client():
 def get_fallback_client():
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key: return None
-    client = OpenAI(api_key=api_key)
-    return instructor.patch(client, mode=instructor.Mode.TOOLS)
+    client = AsyncOpenAI(api_key=api_key)
+    return instructor.from_openai(client, mode=instructor.Mode.TOOLS)
 
 # 3. Core Functions
 
@@ -82,21 +82,52 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     4. Extract "Like [Movie]" references to `reference_movie`.
     """
 
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": f"### USER QUERY ###\n{user_query}\n### END USER QUERY ###"},
+    ]
+
     try:
         # Tier 1 Model: Scout
-        return client.chat.completions.create(
+        return await client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct", # Updated Model ID
             response_model=MovieSearchIntent,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"### USER QUERY ###\n{user_query}\n### END USER QUERY ###"},
-            ],
+            messages=messages,
             temperature=0.1,
         )
     except Exception as e:
-        logger.warning(f"Tier 1 (Scout) failed: {e}. Trying Fallback.")
-        # Fallback logic (could try OpenAI or older Llama)
-        return MovieSearchIntent(semantic_query=user_query, reasoning=f"LLM Error: {e}")
+        logger.warning(f"Tier 1 (Scout) failed: {e}. Trying Tier 2 (70B).")
+        try:
+            return await client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                response_model=MovieSearchIntent,
+                messages=messages,
+                temperature=0.1,
+            )
+        except Exception as e2:
+            logger.warning(f"Tier 2 (70B) failed: {e2}. Trying Tertiary (OSS-120B).")
+            try:
+                return await client.chat.completions.create(
+                    model="openai/gpt-oss-120b",
+                    response_model=MovieSearchIntent,
+                    messages=messages,
+                    temperature=0.1,
+                )
+            except Exception as e3:
+                logger.warning(f"Tier 3 (OSS-120B) failed: {e3}. Triggering Universal Fallback.")
+                fallback_client = get_fallback_client()
+                if fallback_client:
+                    try:
+                        return await fallback_client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            response_model=MovieSearchIntent,
+                            messages=messages,
+                            temperature=0.1,
+                        )
+                    except Exception as e4:
+                        logger.error(f"Universal Fallback failed: {e4}")
+                        return MovieSearchIntent(semantic_query=user_query, reasoning=f"All models failed: {e4}")
+                return MovieSearchIntent(semantic_query=user_query, reasoning=f"LLM Error, no fallback client: {e3}")
 
 async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List[ReasonedMovie]:
     """
@@ -127,7 +158,7 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
 
     try:
         # Tier 2 Model: 70B Versatile
-        response = client.chat.completions.create(
+        response = await client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             response_model=DeepAnalysisResponse,
             messages=[

@@ -7,12 +7,14 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 
 | Script | Description | Command (Safe to Run) |
 | :--- | :--- | :--- |
-| **`seed_db.py`** | **The Main Engine.** Fetches movies from TMDB with **Spanish Metadata** (`title_es`, `overview_es`), **Keywords**, and **OMDb Ratings** (Score adjustment). Upserts to Postgres + Qdrant. | `docker-compose exec backend python scripts/seed_db.py --limit 100` |
+| **`seed_db.py`** | **The Main Engine.** Uses `MovieFactory` to fetch movies from TMDB with **Spanish Metadata**, **Keywords**, and strict Pydantic **OMDb Ratings**. Upserts to Postgres + Qdrant. | `docker-compose exec backend python scripts/seed_db.py --limit 100` |
 | **`enrich_vectors.py`** | **Data Fixer.** Iterates over movies, fetches missing keywords, **Directors, and Cast** from TMDB, and regenerates/upserts embeddings. Use `--all` to force update tokens/genres. | `docker-compose exec backend python scripts/enrich_vectors.py` |
 | **`popular_scraper.py`** | **Trends Scraper.** Fetches "Popular This Week" from Letterboxd HTML, resolves Slugs to TMDB IDs, and caches in Redis with **24h TTL**. | `docker-compose exec backend python scripts/popular_scraper.py` |
 | **`reset_profiles.py`** | **"The Refresh Button".** Forces a complete rebuild of User Clusters. Truncates `user_clusters` table and wipes Redis cache. | `docker-compose exec backend python scripts/reset_profiles.py` |
 | **`create_qdrant_indexes.py`** | **Performance.** Creates payload indexes for `vote_count`, `vectorbox_score`, `popularity`, `year`, and `genres` to enable fast filtering in Qdrant. | `docker-compose exec backend python scripts/create_qdrant_indexes.py` |
-| **`test_magic_box.py`** | **NLP Verification.** Runs a stress test on the Groq/Llama 3.3 pipeline to verify query parsing and Qdrant filter construction. | `docker-compose exec backend python scripts/test_magic_box.py` |
+| **`test_magic_box.py`** | **NLP Verification.** Runs a stress test on the 4-Tier Cascading Fallback pipeline to verify query parsing and Qdrant filter construction. | `docker-compose exec backend python scripts/test_magic_box.py` |
+| **`verify_nlp_fallback.py`** | **Chaos Monkey.** Mocks failures in 1st/2nd tier LLM clients to guarantee that the application successfully cascades down to the universal fallback tiers without crashing. | `docker-compose run --rm backend python scripts/verify_nlp_fallback.py` |
+| **`test_es_whitelist.py`** | **QA Whitelist.** Unit tests the pure standalone function `filter_es_providers` to guarantee disallowed streaming services don't reach the frontend. | `docker-compose run --rm backend python scripts/test_es_whitelist.py` |
 | **`security_audit.py`** | **Security Audit.** Runs `pip-audit --require-hashes` against `requirements.lock` for strict hash-verified CVE scanning. Falls back to `pip freeze` + `--no-deps` if no lockfile is present. Ignores known false positives (torchvision CPU builds, diskcache). | `docker-compose exec backend python scripts/security_audit.py` |
 | **`wait_for_db.py`** | **Infrastructure.** Blocks boot until Postgres is ready using `socket` check. Used automatically in Docker entrypoint. | *(Internal use only)* |
 | **`backup_manager.py`** | **Disaster Recovery.** Creates a comprehensive snapshot of Postgres (Schema + Data) and Qdrant (Shards), zips them, and rotates old backups (Max 5). | `docker-compose exec backend python scripts/backup_manager.py` |
@@ -60,7 +62,7 @@ Standard auditing protocols for this project.
     ```bash
     cd frontend && pnpm audit
     ```
-    *Scans npm dependency tree. High-severity issues are blocked via `pnpm.overrides`.*
+    *Scans npm dependency tree. Fix high-severity issues promptly.*
 
 4.  **Container Vulnerabilities:**
     ```bash

@@ -2,7 +2,7 @@
 
 > **Role:** DevOps & Infrastructure Lead
 > **Domain:** Containerization, Security, Maintenance Scripts
-> **Last Updated:** 2026-02-18
+> **Last Updated:** 2026-03-03
 
 This file contains all DevOps rules, security protocols, Docker configuration, and the complete scripts inventory for the VectorBox project.
 
@@ -83,6 +83,10 @@ USER vectorbox
 - **Development:** Ports 5432 (Postgres) and 6333 (Qdrant) are **exposed** to the host for convenience (debugging tools).
 - **Production:** These ports **MUST** be commented out or protected by firewall. Only `backend` container should reach them via internal Docker network.
 
+### Active Health Monitoring (Deep Checks)
+- **Endpoint:** `/health`
+- **Logic:** The Load Balancer/Docker health check should expect HTTP 200 or 503. The backend explicitly pings dependencies (Postgres, Qdrant, Redis) and returns a 503 with specific failed components if any downstream connection drops.
+
 ---
 
 ## 4. Supply Chain Security
@@ -90,8 +94,9 @@ USER vectorbox
 ### Python Dependencies
 | Tool | Command | Purpose |
 | :--- | :--- | :--- |
-| **pip-audit** | `pip-audit --strict` | Scan for CVEs |
-| **audit_backend.ps1** | `.\audit_backend.ps1` | Wrapper script |
+| **pip-audit** | `pip-audit --require-hashes -r backend/requirements.lock` | Strict hash-verified CVE scanning |
+| **pip-compile** | `pip-compile --generate-hashes ...` | Regenerate lockfile after dep changes |
+| **audit_backend.ps1** | `.\audit_backend.ps1` | Wrapper script invoking `security_audit.py` |
 
 ### JavaScript Dependencies
 | Tool | Command | Purpose |
@@ -143,8 +148,10 @@ Located in `backend/scripts/`. Run via Docker execution.
 | **`popular_scraper.py`** | **Trends Scraper.** Uses `curl_cffi` (Chrome 120 impersonation) + Regex to fetch "Popular This Week" from Letterboxd AJAX endpoint. Resolves to TMDB IDs. | `docker-compose exec backend python scripts/popular_scraper.py` |
 | **`reset_profiles.py`** | **The Refresh Button.** Truncates `user_clusters` table and wipes Redis cache. Forces complete rebuild of user clusters. | `docker-compose exec backend python scripts/reset_profiles.py` |
 | **`create_qdrant_indexes.py`** | **Performance.** Creates payload indexes for `vote_count`, `vectorbox_score`, `popularity`, `year`, and `genres`. | `docker-compose exec backend python scripts/create_qdrant_indexes.py` |
-| **`test_magic_box.py`** | **NLP Verification.** Stress tests Groq/Llama pipeline to verify query parsing and Qdrant filter construction. | `docker-compose exec backend python scripts/test_magic_box.py` |
-| **`security_audit.py`** | **PyTorch Security.** Runs `pip-audit` and checks for dependency vulnerabilities. | `docker-compose exec backend python scripts/security_audit.py` |
+| **`test_magic_box.py`** | **NLP Verification.** Stress tests the 4-Tier Cascading Fallback pipeline to verify query parsing and Qdrant filter construction. | `docker-compose exec backend python scripts/test_magic_box.py` |
+| **`verify_nlp_fallback.py`** | **Chaos Monkey.** Mocks failures in 1st/2nd tier LLM clients to guarantee the application cascades correctly without crashing. | `docker-compose run --rm backend python scripts/verify_nlp_fallback.py` |
+| **`test_es_whitelist.py`** | **QA Whitelist.** Unit tests the pure standalone function `filter_es_providers` to guarantee disallowed streaming services are blocked. | `docker-compose run --rm backend python scripts/test_es_whitelist.py` |
+| **`security_audit.py`** | **Security Audit.** Runs `pip-audit --require-hashes` against `requirements.lock` for strict hash-verified CVE scanning. Ignores known false positives (torchvision CPU builds, diskcache). | `docker-compose exec backend python scripts/security_audit.py` |
 | **`wait_for_db.py`** | **Infrastructure.** Blocks boot until Postgres is ready. Used automatically in Docker entrypoint. | *(Internal use only)* |
 
 ### 📦 Frontend Utility Scripts
@@ -161,11 +168,19 @@ Defined in `frontend/package.json`. Run from host machine in `frontend/` directo
 
 ### 🔒 Auditing Protocols
 
-#### Python Vulnerabilities
+#### Python Vulnerabilities (Hash-Verified)
 ```bash
-docker-compose exec backend pip-audit
+docker-compose exec backend python scripts/security_audit.py
 ```
-*Checks all `requirements.txt` packages against the PyPA Advisory Database.*
+*Runs `pip-audit --require-hashes` against `backend/requirements.lock`. Strict cryptographic verification.*
+
+#### Lockfile Regeneration
+```bash
+docker-compose exec backend pip-compile --generate-hashes \
+  --extra-index-url https://download.pytorch.org/whl/cpu \
+  requirements.txt --output-file requirements.lock
+```
+*Required after any `requirements.txt` modification.*
 
 #### Container Vulnerabilities
 ```bash

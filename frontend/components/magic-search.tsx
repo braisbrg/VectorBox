@@ -95,7 +95,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                     {t("search.module_title")}
                 </h2>
                 <div className="flex items-center justify-center gap-2">
-                    <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest">
+                    <p className="text-zinc-400 font-mono text-sm uppercase tracking-widest">
                         {t("search.status_active")}
                     </p>
                     {isDeepAnalysis && (
@@ -163,7 +163,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                 </div>
                 {/* Helper Text */}
                 <div className="absolute -bottom-6 left-0 right-0 text-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    <span className="text-[10px] text-zinc-500 font-mono uppercase tracking-widest">
+                    <span className="text-[10px] text-zinc-400 font-mono uppercase tracking-widest">
                         {isDeepAnalysis ? t("magic_search.powered_by_tier2") : t("magic_search.powered_by_tier1")}
                     </span>
                 </div>
@@ -284,6 +284,13 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                     </motion.div>
                 )}
             </AnimatePresence>
+
+            {/* Screen Reader Announcements */}
+            <div className="sr-only" aria-live="polite" role="status">
+                {searchMutation.isPending && t("search.loading")}
+                {showResults && results.length > 0 && t("magic_search.search_results")}
+                {showResults && results.length === 0 && !searchMutation.isPending && t("search.no_results")}
+            </div>
         </div>
     );
 }

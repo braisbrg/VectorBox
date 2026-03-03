@@ -1,36 +1,61 @@
-# VectorBox v1.2 QA Testing Protocol
+# VectorBox QA Testing Protocol
 
-> **Role:** QA Lead / Release Certification  
-> **Version:** 1.2.0 ("The Magic Update")  
-> **Last Updated:** 2026-01-13
+> **Role:** QA Lead / Release Certification
+> **Version:** 1.2.0 (Post-Security Hardening & Web Quality Audit)
+> **Last Updated:** 2026-03-03
 
-This document is a **step-by-step verification script** required to certify the VectorBox application for release. Each section must be completed in order. A **single FAIL** blocks the release.
+This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
 ---
 
 ## 📋 Pre-Flight Checklist
 
+Before starting, confirm **all** of the following:
+
 | # | Item | Status |
 |:--|:-----|:------:|
-| 1 | Docker Desktop Running | ☐ |
-| 2 | `.env` file exists with valid API keys | ☐ |
+| 1 | Docker Desktop running | ☐ |
+| 2 | `.env` file exists with valid keys (see §0) | ☐ |
 | 3 | Chrome/Firefox with DevTools access | ☐ |
-| 4 | Letterboxd Export ZIP (ratings.csv, watchlist.csv) | ☐ |
+| 4 | Letterboxd export ZIP available (`ratings.csv`, `watchlist.csv`) | ☐ |
+| 5 | Project is on `master` branch, git tree is clean | ☐ |
+
+### § 0: Required `.env` Keys
+
+Verify all the following keys are present and non-empty in `.env`:
+
+```
+POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+REDIS_URL
+QDRANT_HOST, QDRANT_PORT
+TMDB_API_KEY
+OMDB_API_KEY
+GROQ_API_KEY
+OPENAI_API_KEY          # Fallback LLM provider
+SECRET_KEY              # Session token signing
+OTEL_EXPORTER_OTLP_ENDPOINT   # e.g. http://jaeger:4317
+OTEL_SERVICE_NAME       # e.g. vectorbox-backend
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| No key is literally `"your_key_here"` | All real values | ☐ |
+| No extra spaces or quotes around values | Clean `.env` format | ☐ |
 
 ---
 
 ## 🔴 PHASE 1: Infrastructure — "The Hard Reset"
 
-> **Goal:** Simulate a fresh install. Ensure all data is wiped and rebuilt from scratch.
+> **Goal:** Simulate a fresh install. All data wiped and rebuilt from scratch.
 
 ### Step 1.1: Data Wipe
 ```powershell
-# From project root directory
 docker-compose down -v
 ```
 **Expected:** All containers stopped. Volumes `postgres_data`, `qdrant_data`, `redis_data` deleted.
 
 ### Step 1.2: Master Setup
+
 **Windows:**
 ```powershell
 ./setup.ps1
@@ -40,15 +65,15 @@ docker-compose down -v
 chmod +x setup.sh && ./setup.sh
 ```
 
-**Verification Checkpoints:**
+Wait for the full sequence. Verify each checkpoint in the logs:
 
 | Checkpoint | Log Message | Pass? |
 |:-----------|:------------|:-----:|
-| **DB Ready** | `✅ Database Schema Applied` | ☐ |
-| **Seeding** | `✅ Database Seeded & Collection Created` | ☐ |
-| **Qdrant Indexes** | `✅ Qdrant Indexes Created` | ☐ |
-| **Trending** | `✅ Trending Movies Updated` | ☐ |
-| **Final** | `🎉 VectorBox is ready and running!` | ☐ |
+| DB Ready | `✅ Database Schema Applied` | ☐ |
+| Seeding | `✅ Database Seeded & Collection Created` | ☐ |
+| Qdrant Indexes | `✅ Qdrant Indexes Created` | ☐ |
+| Trending | `✅ Trending Movies Updated` | ☐ |
+| Final | `🎉 VectorBox is ready and running!` | ☐ |
 
 ### Step 1.3: Container Health
 ```powershell
@@ -66,175 +91,176 @@ docker ps --format "table {{.Names}}\t{{.Status}}"
 
 > ❌ **FAIL if:** Any container shows `Restarting`, `Exited`, or is missing.
 
+### Step 1.4: API Health Check
+```powershell
+curl http://localhost:8000/health
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| HTTP 200 or 503 | `{"status": "ok", "components": {"postgres": "ok", ...}}` | ☐ |
+| Deep Check | Verifies connections to Postgres, Redis, and Qdrant | ☐ |
+| Backend responds within 2s | No timeout | ☐ |
+
+### Step 1.5: Frontend Loads
+Navigate to `http://localhost:3000`.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Page loads | Shows `/login` page (redirect) | ☐ |
+| No console errors | DevTools console is clean | ☐ |
+| No Next.js build errors | No red error overlays | ☐ |
+
 ---
 
 ## 🔐 PHASE 2: Auth Guard Gauntlet
 
-> **Goal:** Verify auth flow is bulletproof. No "limbo" states.
+> **Goal:** Verify auth flow is bulletproof — no "limbo" states.
 
 ### Step 2.1: Fresh Entry (Incognito)
-1. Open **Chrome Incognito** (`Ctrl+Shift+N`).
+1. Open Chrome Incognito (`Ctrl+Shift+N`).
 2. Navigate to `http://localhost:3000`.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
 | Redirect | Immediately redirects to `/login` | ☐ |
-| No Flash | No flash of dashboard content before redirect | ☐ |
+| No flash | No flash of dashboard content before redirect | ☐ |
 
-### Step 2.2: Brute Force Protection
+### Step 2.2: Brute Force Protection (Rate Limiting)
 1. Enter username: `test_user` (does not exist).
 2. Enter PIN: `0000`.
 3. Click "Login" **5 times rapidly**.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Rate Limit UI | Red error box appears | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Rate limit UI | Red error box appears | ☐ |
 | Message | "Too many attempts. Try again in Xs." | ☐ |
-| Button State | Login button disabled during cooldown | ☐ |
+| Button disabled | Login button disabled during cooldown | ☐ |
 
 ### Step 2.3: Registration Flow
 1. Click "New Agent? Request Access".
-2. Fill form:
-   - Username: `QA_Tester`
-   - PIN: `1234`
-   - Confirm PIN: `1234`
-   - Country: `ES`
+2. Fill in: Username `QA_Tester`, PIN `1234`, Confirm `1234`, Country `ES`.
 3. Click "Create Profile".
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Success Animation | Checkmark animation plays | ☐ |
-| Redirect | Redirects to Onboarding (NOT Feed) | ☐ |
-| Current View | "Link Letterboxd" screen visible | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Success animation | Checkmark animation plays | ☐ |
+| Redirect | Goes to Onboarding, NOT Feed | ☐ |
+| Current view | "Link Letterboxd" screen visible | ☐ |
 
-### Step 2.4: The "Limbo" Check (Critical v1.1 Test)
+### Step 2.4: Onboarding Limbo Guard (Critical)
 
-**Test A: Skip Letterboxd Link**
-1. While on "Link Letterboxd" screen, manually navigate to `/` in URL bar.
+**Test A — Skip Letterboxd link:**
+Navigate manually to `/` while on "Link Letterboxd" screen.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Bounce Back | Redirects back to "Link Letterboxd" | ☐ |
-| No Feed Access | Cannot see any feed content | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Bounce back | Redirects back to "Link Letterboxd" | ☐ |
+| No feed access | Cannot see any feed content | ☐ |
 
-**Test B: Complete Linking**
-1. Enter Letterboxd username (e.g., `dave`).
-2. Click "Save" → **Confirmation screen appears**.
-
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Confirm UI | Large neon username displayed | ☐ |
-| Warning Text | "Are you sure this is your correct..." | ☐ |
-
+**Test B — Complete Letterboxd link:**
+1. Enter a Letterboxd username (e.g., `dave`). Click Save.
+2. Confirm screen shows large neon username and warning text.
 3. Click "Yes, Link Account".
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Transition | Smoothly transitions to "Upload Data" screen | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Confirm UI | Large neon username displayed | ☐ |
+| Smooth transition | Moves to "Upload Data" screen | ☐ |
 
-**Test C: Skip Upload**
-1. While on "Upload Data" screen, manually navigate to `/`.
+**Test C — Skip upload:**
+Navigate manually to `/` while on "Upload Data" screen.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Bounce Back | Redirects back to "Upload Data" | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Bounce back | Redirects back to "Upload Data" | ☐ |
 
-**Test D: Complete Upload**
-1. Drag & drop Letterboxd export ZIP.
-2. Click "Start Upload".
+**Test D — Complete upload:**
+1. Drag & drop Letterboxd export ZIP. Click "Start Upload".
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Progress Modal | Appears with step description | ☐ |
-| Steps Visible | Shows "Processing export...", "Enriching...", "Clustering..." | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Progress modal | Appears with step description | ☐ |
+| Steps visible | "Processing export…", "Enriching…", "Clustering…" | ☐ |
 | Completion | Auto-closes and redirects to Feed | ☐ |
 
 > ❌ **FAIL if:** User can access Feed without completing all onboarding steps.
 
----
+### Step 2.5: IDOR Access Control
+1. Log in as `QA_Tester`. Note the user ID from DevTools → Network → any `/api/` request.
+2. Copy the session cookie (`vectorbox_token`).
+3. Open a new incognito window, register a second user `QA_Tester2`.
+4. Using DevTools `fetch()` in `QA_Tester2`'s session, try to access `QA_Tester`'s data:
 
-## ✨ PHASE 2.5: Magic UI & Micro-interactions
+```js
+fetch('/api/recommendations/feed?user_id=<QA_Tester_ID>')
+```
 
-> **Goal:** Verify the "Quantum Leap" UI upgrade (v1.2). Ensure all Tweak/Magic effects are active.
-
-### Step 2.5.1: Ambient Backgrounds (Auth Pages)
-1. Navigate to `/login`.
-2. Look at the background behind the login form.
-
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Not Flat Black | Background shows subtle visual depth | ☐ |
-| GridPattern Visible | Subtle grid lines (neon green tint) fade from center | ☐ |
-| Radial Fade | Grid fades out at edges (`mask-image: radial-gradient`) | ☐ |
-| Ambient Glow | Primary accent blur visible in corner (green or purple) | ☐ |
-
-3. Navigate to `/register` and verify same effects.
-
-### Step 2.5.2: Interactive Buttons (ShimmerButton)
-1. While on `/login`, observe the "Login" button.
-
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Shimmer Effect | Light reflection sweeps across button periodically | ☐ |
-| Color Scheme | Black background, Neon Green text/border (#CCFF00) | ☐ |
-| Hover State | Button inverts (green bg, black text) on hover | ☐ |
-| Scale Animation | Slight scale-up on hover (physics-based) | ☐ |
-
-2. Navigate to `/register` and verify button has shimmer (purple variant).
-
-### Step 2.5.3: The "Alive" Search Bar (BorderBeam)
-1. Log in and navigate to Feed.
-2. Click on "AI Search" or Magic Box in the sidebar.
-3. Observe the search input container.
-
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| BorderBeam Active | Neon Green gradient visibly rotating around input | ☐ |
-| Continuous Animation | Beam loops indefinitely (no pause) | ☐ |
-| Terminal Aesthetic | Input resembles a sci-fi "processing" terminal | ☐ |
-| Deep Analysis Toggle | Brain icon toggles enhanced glow state | ☐ |
-
-### Step 2.5.4: Movie Card Physics (SpotlightCard + Zoom)
-1. Navigate to Feed or Grid view.
-2. Hover over any movie poster.
-
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| **Spotlight Effect** | Radial glow follows your mouse cursor INSIDE the card | ☐ |
-| Spotlight Color | Subtle neon green tint (rgba(204, 255, 0, ~0.06)) | ☐ |
-| **Poster Zoom** | Image scales up smoothly (~110%) on hover | ☐ |
-| Border Fixed | Card border does NOT scale (only image zooms) | ☐ |
-| Overflow Hidden | Zoomed image does not overflow card bounds | ☐ |
-| Grayscale Filter | Image becomes desaturated on hover (cinematic effect) | ☐ |
-
-3. Test on at least 3 different cards in different sections.
-
-> ❌ **FAIL if:** Any of the Magic UI effects are missing, using wrong colors (blue/purple), or causing performance issues.
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| No user_id param accepted | Returns data for QA_Tester2 (from token, not param) | ☐ |
+| No 500 leaking data | Response is user2's data or 403 | ☐ |
 
 ---
 
-## 📱 PHASE 3: Mobile UX Verification
+## ✨ PHASE 3: Magic UI & Micro-Interactions
 
-> **Goal:** Verify responsive design and touch interactions.
+> **Goal:** Verify Tweak/Magic effects are all active and correct.
 
-### Step 3.1: Enter Mobile Mode
-1. Open Chrome DevTools (`F12` or `Ctrl+Shift+I`).
-2. Toggle Device Toolbar (`Ctrl+Shift+M`).
-3. Select **"iPhone SE"** from device dropdown.
-4. Refresh page (`F5`).
+### Step 3.1: Auth Pages — Ambient Background
+Navigate to `/login`.
 
-### Step 3.2: Hamburger Menu
-1. Tap the hamburger icon (☰) in header.
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| GridPattern | Subtle neon-green grid lines visible | ☐ |
+| Radial fade | Grid fades at edges | ☐ |
+| Ambient glow | Accent blur visible in corner | ☐ |
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Overlay | Full-screen overlay appears | ☐ |
-| Backdrop | Uses `backdrop-blur-xl` (visible blur effect) | ☐ |
-| Typography | Menu items in uppercase `Space Mono` | ☐ |
-| Centering | Items are vertically centered | ☐ |
-| Close | Tap "X" or outside → menu closes | ☐ |
+Navigate to `/register` — verify same effects.
 
-### Step 3.3: Grid Layout Verification
+### Step 3.2: ShimmerButton
+On `/login`, observe the login button.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Shimmer effect | Light sweep across button periodically | ☐ |
+| Color | Black bg, Neon Green text/border (#CCFF00) | ☐ |
+| Hover inverts | Green bg, black text on hover | ☐ |
+| Scale on hover | Slight scale-up (physics-based) | ☐ |
+
+### Step 3.3: BorderBeam (Magic Search)
+1. Log in. Open Magic Box (✦ icon in sidebar).
+2. Observe the search input container.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| BorderBeam active | Neon green gradient rotating around input | ☐ |
+| Continuous loop | Never pauses | ☐ |
+| Deep Analysis toggle | Brain icon changes glow state | ☐ |
+
+### Step 3.4: SpotlightCard (Movie Cards)
+Hover over any movie poster in Feed or Grid.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Spotlight | Radial glow follows mouse cursor inside card | ☐ |
+| Poster zoom | Image scales ~110% on hover | ☐ |
+| Border fixed | Card border does NOT scale | ☐ |
+| Overflow hidden | Zoomed image stays inside card bounds | ☐ |
+
+> ❌ **FAIL if:** Effects missing, wrong colors (blue/purple instead of neon green), or causes visual jank.
+
+---
+
+## 📱 PHASE 4: Mobile UX
+
+> **Goal:** Verify responsive layout and touch interactions.
+
+### Step 4.1: Enter Mobile Mode
+1. Open DevTools (`F12`). Toggle Device Toolbar (`Ctrl+Shift+M`).
+2. Select **iPhone SE** (375px).
+
+### Step 4.2: Grid Layout
 
 | Device | Expected Columns | Pass? |
 |:-------|:-----------------|:-----:|
@@ -242,211 +268,441 @@ docker ps --format "table {{.Names}}\t{{.Status}}"
 | iPhone 14 Pro (393px) | **2 columns** | ☐ |
 | Desktop (1200px+) | **4 columns** | ☐ |
 
-### Step 3.4: Horizontal Feed Swipe
-1. Navigate to Feed.
-2. Swipe left on "Popular on Letterboxd" row.
+### Step 4.3: Hamburger Menu
+Tap the ☰ icon in the header.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Overlay | Full-screen overlay | ☐ |
+| Backdrop blur | `backdrop-blur-xl` visible | ☐ |
+| Typography | Uppercase Space Mono | ☐ |
+| Close | Tap X or outside → menu closes | ☐ |
+
+### Step 4.4: Horizontal Feed Swipe
+Swipe left on "Popular on Letterboxd" row.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
 | Snap | Snaps to next item (scroll-snap) | ☐ |
-| Arrows | Hidden or non-intrusive on touch | ☐ |
-| Smooth | No jank or stuttering | ☐ |
+| Smooth | No jank | ☐ |
 
 ---
 
-## 🧠 PHASE 4: Algorithm & Logic Verification
+## 🧠 PHASE 5: Algorithm & Feed Verification
 
-> **Goal:** Verify "Trident" engine and "Hidden Gems" filtering logic.
+> **Goal:** Verify the Trident engine, feed sections, and Magic Box work correctly.
 
-### Step 4.1: Hidden Gems Audit
-1. Navigate to Feed.
-2. Locate "Hidden Gems" row.
-3. Click on **any 3 movies** and check their details.
+### Step 5.1: Feed Sections Present
+Log in and navigate to the Feed. Verify all sections are rendered:
 
-**Pass Criteria (ALL must be true for each movie):**
+| Section | Present? |
+|:--------|:--------:|
+| Available Now (Watchlist streaming) | ☐ |
+| Popular on Letterboxd | ☐ |
+| Because you watched [X] | ☐ |
+| Your Taste [Cluster] | ☐ |
+| Hidden Gems | ☐ |
+| Deep Dive | ☐ |
+| Comfort Zone / Wildcard | ☐ |
+| Random Picks | ☐ |
 
-| Metric | Required Value | Movie 1 | Movie 2 | Movie 3 |
-|:-------|:---------------|:-------:|:-------:|:-------:|
+### Step 5.2: Hidden Gems Audit
+Click any 3 movies from the "Hidden Gems" row and verify:
+
+| Metric | Required | Movie 1 | Movie 2 | Movie 3 |
+|:-------|:---------|:-------:|:-------:|:-------:|
 | VectorBox Score | > 75 | ☐ | ☐ | ☐ |
-| Vote Count | 500 - 25,000 | ☐ | ☐ | ☐ |
+| Vote Count | 500–25,000 | ☐ | ☐ | ☐ |
 | TMDB Popularity | < 20 | ☐ | ☐ | ☐ |
 
-> ❌ **FAIL if:** Any mainstream blockbuster (Avengers, Barbie, Oppenheimer) appears in this row.
+> ❌ **FAIL if:** A mainstream blockbuster (Avengers, Barbie, Oppenheimer) appears here.
 
-### Step 4.2: Trident Hybrid Picks Audit
-1. Locate "Hybrid Picks for You" row.
-2. Click any movie and view "Why Recommended".
+### Step 5.3: Trident Signals — "Why Recommended"
+Click any movie → "Why Recommended".
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
 | Signal A (Vector) | Shows similarity to watched movies | ☐ |
 | Signal B (Auteur) | Shows director match (if applicable) | ☐ |
 | Signal C (Crowd) | Shows crowd/popularity signal | ☐ |
 
-### Step 4.3: Magic Box Stress Test
-1. Open Magic Box (Sparkles icon).
-2. Toggle "Deep Analysis" **ON**.
-3. Enter query: `Horror but NOT paranormal`
+### Step 5.4: Magic Box NLP Query
+Open Magic Box. Toggle "Deep Analysis" ON. Enter query: `Horror but NOT paranormal`
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Response Time | < 8 seconds | ☐ |
-| Results | Show slasher/psychological horror | ☐ |
-| Exclusion | NO ghosts, demons, or possession films | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Response time | < 8 seconds | ☐ |
+| Results | Slasher / psychological horror | ☐ |
+| Exclusion | No ghost/demon/possession films | ☐ |
 
-**Additional Query Tests:**
+**Additional query tests:**
 
-| Query | Expected Behavior |
-|:------|:------------------|
-| `80s movies with synth soundtrack` | Returns Drive, Blade Runner, Tron |
-| `French romantic comedies` | Returns Amélie, etc. Filter: Language=FR |
-| `Movies like Interstellar but not space` | Should fail gracefully or interpret as abstract |
+| Query | Expected Response |
+|:------|:-----------------|
+| `80s movies with synth soundtrack` | Drive, Blade Runner, Tron-type results |
+| `French romantic comedies` | Amélie etc., Language filter = FR |
+| `Movies like Interstellar but not space` | Graceful fallback or abstract interpretation |
+
+### Step 5.5: Background Task Enrichment
+After loading the Feed, check backend logs:
+
+```powershell
+docker-compose logs --tail=50 backend
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Enrichment in BG | `Enriching movie [ID]...` appears AFTER feed response | ☐ |
+| Trident Signal Timing | `[TRIDENT] ⏱️ Vibe Signal A...` logs show sub-millisecond execution times | ☐ |
+| Non-blocking | No "blocking" or "event loop" warnings | ☐ |
+
+### Step 5.6: Chaos Monkey Fallback Verification
+Ensure the LLM dual-model cascading fallback is functioning correctly.
+
+```powershell
+docker-compose run --rm backend python scripts/verify_nlp_fallback.py
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Execution | Script runs without unhandled exceptions | ☐ |
+| Output | `✅ FALLBACK CHAIN SUCCESS` is printed | ☐ |
+
+### Step 5.7: Spanish Provider Whitelist
+Ensure the isolated pure function accurately filters out unauthorized streaming providers.
+
+```powershell
+docker-compose run --rm backend python scripts/test_es_whitelist.py
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Execution | Script runs without assertion errors | ☐ |
+| Output | `✅ WHITELIST FILTER SUCCESS` is printed | ☐ |
 
 ---
 
-## 🛡️ PHASE 5: Security & Resilience
+## 🌐 PHASE 6: Internationalization (i18n)
 
-### Step 5.1: Dependency Audit
+> **Goal:** Verify all user-facing strings are localized correctly.
+
+### Step 6.1: Language Switch
+1. In the sidebar or settings, switch language from EN to ES.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| All labels switch | Buttons, section titles, tooltips all in Spanish | ☐ |
+| No raw keys | No `dashboard.system_ready` style raw keys visible | ☐ |
+| Feed section names | "Porque viste…", "Joyas Ocultas", etc. | ☐ |
+
+### Step 6.2: Date Localization
+Check any movie with a recent release date.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Date format | Uses locale-appropriate format (DD/MM for ES, MM/DD for EN) | ☐ |
+| Release warning | Shows "Estreno próximo" / "Coming Soon" correctly | ☐ |
+
+---
+
+## 🛡️ PHASE 7: Security Audit
+
+> **Goal:** Verify all security tooling passes cleanly with no warnings.
+
+### Step 7.1: Backend Dependency Audit (Hash-Verified)
 ```powershell
 docker-compose exec backend python scripts/security_audit.py
 ```
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Audit Runs | Script executes without crash | ☐ |
-| Known Issues | Only `torch` CPU warnings (expected) | ☐ |
-| Exit Code | `0` or advisory-only | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Finds lockfile | Prints `Found requirements.lock. Using hashed dependencies.` | ☐ |
+| No extra warnings | **No** `"Consider using a tool like pip-compile"` warning | ☐ |
+| Torch note | `Suppressed known 'torch+cpu not found on PyPI'` (expected, not an error) | ☐ |
+| Exit code | `Security Audit Passed! No known vulnerabilities found.` | ☐ |
 
-### Step 5.2: Session Persistence Test
-1. Log in as `QA_Tester`.
-2. Navigate to Feed.
-3. Open DevTools → Application → Cookies.
-4. **Delete `vectorbox_token` cookie.**
-5. Refresh page.
+> ℹ️ The torch CPU-wheel note is expected — torch is served from the PyTorch wheel index, not PyPI, so PyPI's vulnerability DB cannot look it up. This is not a vulnerability.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
+### Step 7.2: Frontend Dependency Audit
+```powershell
+cd frontend && pnpm audit
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Result | `No known vulnerabilities found` | ☐ |
+| No high/critical | Zero high or critical severity items | ☐ |
+
+### Step 7.3: Frontend Install Clean
+```powershell
+cd frontend && pnpm install
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Zero peer dep warnings | No `WARN unmet peer` lines | ☐ |
+| ESLint version | `eslint@9.x` installed | ☐ |
+
+> ℹ️ ESLint is pinned to `9.x`. Do NOT upgrade to ESLint 10 until all plugins support it.
+
+### Step 7.4: Pre-Commit Hook Dry Run
+```powershell
+git stash
+git commit --allow-empty -m "test: QA dry run"
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| pnpm audit hook | Passes silently | ☐ |
+| Backend audit hook | Passes silently | ☐ |
+| Commit succeeds | No `--no-verify` needed | ☐ |
+
+```powershell
+git reset HEAD~1  # clean up test commit
+```
+
+### Step 7.5: Session Security
+1. Log in as `QA_Tester`. Navigate to Feed.
+2. DevTools → Application → Cookies → **Delete `vectorbox_token`**.
+3. Refresh page.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
 | Logout | Immediately redirects to `/login` | ☐ |
-| localStorage | `vectorbox_user` is cleared | ☐ |
+| localStorage cleared | `vectorbox_user` wiped | ☐ |
 
-### Step 5.3: localStorage Fallacy Test
-1. Log in as `QA_Tester`.
-2. Open DevTools → Application → Local Storage.
-3. **Delete `vectorbox_user` entry** (keep cookie).
-4. Refresh page.
+**Reverse (localStorage deleted, cookie kept):**
+1. Log in. DevTools → Application → Local Storage → **Delete `vectorbox_user`**.
+2. Refresh.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Still Logged In | Remains on Feed (cookie is truth) | ☐ |
-| Data Restored | `vectorbox_user` re-populated from API | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Still logged in | Stays on Feed (cookie is truth) | ☐ |
+| Data restored | `vectorbox_user` re-populated from API | ☐ |
 
-### Step 5.4: API Resilience
+### Step 7.6: API Resilience
 ```powershell
 docker-compose stop backend
 ```
-1. Refresh frontend.
+Refresh frontend.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Graceful Failure | Shows skeleton loaders or "System Offline" | ☐ |
-| No Crash | No white screen of death | ☐ |
-| Retry Button | Appears after timeout | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Graceful failure | `<AcidError />` component renders with "DATA_STREAM_INTERRUPTED" | ☐ |
+| Custom styling | Acid design glitch text is applied | ☐ |
+| No white screen | No unhandled React crash | ☐ |
 
 ```powershell
 docker-compose start backend
 ```
 
----
+### Step 7.7: HTTP Security Headers
+```powershell
+curl -I http://localhost:3000
+```
 
-## 💾 PHASE 6: Disaster Recovery Test
-
-> **Goal:** Verify the "Smart Backup System" creates valid artifacts and persists them to the host.
-
-### Step 6.1: Execute Backup
-1. **Windows:** Run `./backup.ps1`
-2. **Mac/Linux:** Run `./backup.sh`
-
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Execution | Script runs without error code | ☐ |
-| Logs | "Backup Pipeline Completed Successfully!" | ☐ |
-
-### Step 6.2: Host Persistence Verification
-1. Open file explorer on your Host machine.
-2. Navigate to the project root -> `backups/`.
-
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Folder Exists | `backups/` directory exists | ☐ |
-| Zip File | A file named `vectorbox_backup_{timestamp}.zip` exists | ☐ |
-| Non-Empty | File size > 0 KB (likely > 1MB) | ☐ |
-| Clean Repo | Run `git status` -> `backups/` is IGNORED (not shown) | ☐ |
+| Header | Expected Value | Pass? |
+|:-------|:--------------|:-----:|
+| `X-Frame-Options` | `DENY` | ☐ |
+| `X-Content-Type-Options` | `nosniff` | ☐ |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | ☐ |
 
 ---
 
-## 🔭 PHASE 7: Observability Verification (Jaeger)
+## 🔭 PHASE 8: Observability (Jaeger)
 
-> **Goal:** Confirm distributed traces are flowing from the backend to Jaeger.
+> **Goal:** Confirm distributed traces flow correctly from backend to Jaeger.
 
-### Step 7.1: Open Jaeger UI
-1. Navigate to `http://localhost:16686` in your browser.
+### Step 8.1: Jaeger UI
+Navigate to `http://localhost:16686`.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| UI Loads | Jaeger search page is visible | ☐ |
-| Service Listed | `vectorbox-backend` appears in the "Service" dropdown | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| UI loads | Jaeger search page visible | ☐ |
+| Service listed | `vectorbox-backend` in Service dropdown | ☐ |
 
-### Step 7.2: Trigger a Traced Request
-1. Log in and navigate to the Feed (triggers recommendation engine).
-2. In Jaeger, select service `vectorbox-backend` and click **"Find Traces"**.
+### Step 8.2: Trigger & Find a Trace
+1. Log in and load the Feed (triggers recommendation engine).
+2. In Jaeger: select `vectorbox-backend` → click "Find Traces".
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Traces Appear | At least 1 trace visible in the list | ☐ |
-| HTTP Span | Root span shows `GET /api/recommendations/feed` | ☐ |
-| DB Spans | Child spans show SQL queries (SQLAlchemy) | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Traces found | ≥ 1 trace in list | ☐ |
+| HTTP span | Root span shows `GET /api/recommendations/feed` | ☐ |
+| DB spans | Child spans show SQLAlchemy queries | ☐ |
+| Cache spans | Redis spans visible | ☐ |
 
-### Step 7.3: Trident Signal Visibility
-1. Click on a feed trace to expand the nested timeline.
+### Step 8.3: Trident Signal Spans
+Click a feed trace to expand the nested timeline.
 
-| Check | Expected Result | Pass? |
-|:------|:----------------|:-----:|
-| Signal A Span | `trident.signal_a.because_you_watched` visible | ☐ |
-| Signal B Span | `trident.signal_b.your_taste` visible | ☐ |
-| Signal C Span | `trident.signal_c.hidden_gems` visible | ☐ |
-| Attributes | Each span shows `user_id` and `result_count` | ☐ |
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Signal A span | `trident.signal_a.because_you_watched` visible | ☐ |
+| Signal B span | `trident.signal_b.your_taste` visible | ☐ |
+| Signal C span | `trident.signal_c.hidden_gems` visible | ☐ |
+| Attributes | Each span has `user_id` + `result_count` | ☐ |
 
-### Step 7.4: Background Task Verification
-1.  Check backend logs after loading the feed.
-2.  Look for `Enriching movie [ID]...` messages appearing *after* the feed has apparently loaded.
-3.  Confirm no "Blocking" warnings in logs.
-
-> ❌ **FAIL if:** No traces appear after 30 seconds, or Trident spans are missing.
+> ❌ **FAIL if:** No traces appear after 30 seconds, or Trident custom spans are missing.
 
 ---
 
-## ✅ PHASE 8: Final Certification
+## 💾 PHASE 9: Disaster Recovery
 
-| Phase | Status |
-|:------|:------:|
-| Phase 1: Infrastructure | ☐ |
-| Phase 2: Auth Guard | ☐ |
-| Phase 2.5: Magic UI | ☐ |
-| Phase 3: Mobile UX | ☐ |
-| Phase 4: Algorithm Logic | ☐ |
-| Phase 5: Security | ☐ |
-| Phase 6: Disaster Recovery | ☐ |
-| Phase 7: Observability | ☐ |
+> **Goal:** Verify the Smart Backup System creates valid, host-persisted artifacts.
+
+### Step 9.1: Execute Backup
+**Windows:**
+```powershell
+./backup.ps1
+```
+**Linux/Mac:**
+```bash
+./backup.sh
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Execution | Completes without error | ☐ |
+| Log | "Backup Pipeline Completed Successfully!" | ☐ |
+
+### Step 9.2: Verify Host Persistence
+Navigate to `./backups/` in project root.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Folder exists | `backups/` directory present | ☐ |
+| ZIP exists | `vectorbox_backup_{timestamp}.zip` | ☐ |
+| Non-empty | File size > 1 MB | ☐ |
+| Git ignored | `git status` shows `backups/` NOT tracked | ☐ |
+
+---
+
+## 🤖 PHASE 10: Automated E2E Suite
+
+> **Goal:** Playwright automation confirms all core flows pass.
+
+```powershell
+docker-compose exec backend playwright install chromium
+python tests/qa_automation.py
+```
+
+| Test Suite | Expected | Pass? |
+|:-----------|:---------|:-----:|
+| Auth flow | PASS | ☐ |
+| Registration | PASS | ☐ |
+| Feed rendering | PASS | ☐ |
+| Mobile UX (iPhone SE viewport) | PASS | ☐ |
+| 404 error page | PASS | ☐ |
+| 500 error page | PASS | ☐ |
+
+> ❌ **FAIL if:** Any Playwright test reports `FAIL` or `ERROR`.
+
+---
+
+## 🗄️ PHASE 11: Database & Lockfile Integrity
+
+> **Goal:** Ensure Postgres migrations, Qdrant indexes, and the hashed lockfile are correct.
+
+### Step 11.1: Postgres Schema Check
+```powershell
+docker-compose exec postgres psql -U $POSTGRES_USER -d $POSTGRES_DB -c "\dt"
+```
+
+| Table | Exists? |
+|:------|:-------:|
+| `users` | ☐ |
+| `movies` | ☐ |
+| `user_ratings` | ☐ |
+| `user_clusters` | ☐ |
+
+### Step 11.2: Qdrant Collection Check
+```powershell
+curl http://localhost:6333/collections
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Collection exists | `movies` collection listed | ☐ |
+| Vectors > 0 | `vectors_count` > 0 | ☐ |
+
+### Step 11.3: Hashed Lockfile Freshness
+```powershell
+git log --oneline -- backend/requirements.txt backend/requirements.lock
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| In sync | `requirements.lock` was committed in the same commit as any `requirements.txt` change | ☐ |
+| File exists | `backend/requirements.lock` exists on disk | ☐ |
+
+> ⚠️ **IMPORTANT:** Any time `requirements.txt` is changed, the lockfile MUST be regenerated:
+> ```powershell
+> docker-compose exec backend pip-compile --generate-hashes \
+>   --extra-index-url https://download.pytorch.org/whl/cpu \
+>   requirements.txt --output-file requirements.lock
+> ```
+> Then commit both files together.
+
+---
+
+## 🎨 PHASE 12: Web Quality Audit (Addy Osmani)
+
+> **Goal:** Ensure Frontend meets Core Web Vitals, Accessibility, and Best Practices.
+
+### Step 12.1: Core Web Vitals (Performance)
+1. Open DevTools (`F12`) → Network tab. Set throttling to **Fast 3G**.
+2. Refresh the Feed page.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| LCP Priority | The first row of movie posters loads immediately without delays | ☐ |
+| No Layout Shifts | `Space Mono` font loads without jumping the UI (CLS) | ☐ |
+
+### Step 12.2: Accessibility (Keyboard & Contrast)
+1. Tab through the movie feed.
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Keyboard Traps | Pressing `Enter` on `<button>` descendants (Flip, Why) does NOT trigger the parent link | ☐ |
+| Screen Reader | Search bar announces "Loading" and "Results found" via `aria-live` | ☐ |
+| Contrast | All small text (`text-[10px]`) is at least `zinc-400` on black backgrounds | ☐ |
+
+---
+
+## ✅ PHASE 13: Final Certification
+
+Complete this scorecard only after all phases above pass.
+
+| Phase | Description | Status |
+|:------|:-----------|:------:|
+| Phase 1 | Infrastructure & Health | ☐ |
+| Phase 2 | Auth Guard & IDOR | ☐ |
+| Phase 3 | Magic UI & Micro-interactions | ☐ |
+| Phase 4 | Mobile UX | ☐ |
+| Phase 5 | Algorithm & Feed | ☐ |
+| Phase 6 | Internationalization | ☐ |
+| Phase 7 | Security Audit (Backend + Frontend) | ☐ |
+| Phase 8 | Observability / Jaeger | ☐ |
+| Phase 9 | Disaster Recovery | ☐ |
+| Phase 10 | Automated E2E Suite | ☐ |
+| Phase 11 | DB & Lockfile Integrity | ☐ |
+| Phase 12 | Web Quality Audit (Addy Osmani) | ☐ |
 
 **Certification Decision:**
 
-- [ ] **APPROVED** – All phases pass. Ready for `git tag v1.2.0`.
-- [ ] **BLOCKED** – Critical failures documented. Requires fix and re-test.
+- [ ] **✅ APPROVED** — All phases pass. Ready for `git tag`.
+- [ ] **❌ BLOCKED** — Critical failures documented below. Requires fix and re-test.
+
+**Failures (if any):**
+
+| Phase | Step | Description |
+|:------|:-----|:-----------|
+| | | |
 
 ---
 
-**Signed:** ________________________  
-**Date:** ________________________
+**Signed:** _______________________
+**Date:** _______________________
 
 ---
-*End of QA Testing Protocol*
+*End of QA Testing Protocol — VectorBox v1.2*

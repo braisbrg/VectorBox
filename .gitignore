@@ -88,3 +88,7 @@ test_scratch.py
 verify_*.py
 !backend/scripts/verify_*.py
 
+# AI Agent Configuration & Skills
+.agent/
+.agents/
+skills-lock.json

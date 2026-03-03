@@ -2,6 +2,7 @@ from typing import AsyncGenerator, Optional
 from services.tmdb_client import TMDBClient
 from services.omdb_client import OMDbClient
 from services.qdrant_service import QdrantService
+from services.embedding_service import EmbeddingService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -10,6 +11,7 @@ logger = logging.getLogger(__name__)
 _tmdb_client: Optional[TMDBClient] = None
 _omdb_client: Optional[OMDbClient] = None
 _qdrant_service: Optional[QdrantService] = None
+_embedding_service: Optional[EmbeddingService] = None
 
 async def get_tmdb_client() -> TMDBClient:
     """Singleton TMDB Client"""
@@ -34,6 +36,14 @@ async def get_qdrant_service() -> QdrantService:
         logger.info("Initializing QdrantService Singleton")
         _qdrant_service = QdrantService()
     return _qdrant_service
+
+async def get_embedding_service() -> EmbeddingService:
+    """Singleton Embedding Service"""
+    global _embedding_service
+    if _embedding_service is None:
+        logger.info("Initializing EmbeddingService Singleton")
+        _embedding_service = EmbeddingService()
+    return _embedding_service
 
 async def close_services():
     """Cleanup all singleton connections"""

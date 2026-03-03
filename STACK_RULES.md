@@ -15,8 +15,13 @@
 - **Ban:** The synchronous `QdrantClient` is strictly forbidden in async service layers to prevent event loop blocking.
 - **Search API:** Use `await client.query_points(...)` (modern vector retrieval) instead of `search` or `query`.
 
-### Service Instantiation (Singletons)
+### LLM Integration (OpenAI / Groq)
+- **Client:** Use `AsyncOpenAI` exclusively for all instructor/LLM integrations.
+- **Ban:** The synchronous `OpenAI` client is strictly forbidden inside `async def` route handlers or services.
+
+### Service Instantiation (Singletons & Dependency Injection)
 - **Rule:** Heavy clients (`Qdrant`, `TMDB`, `EmbeddingModel`) **MUST** be Singletons injected via `dependencies.py` or initialized once at module level.
+- **Requirement:** You **MUST** pass these singletons down to service classes (Dependency Injection). **NEVER** instantiate `TMDBClient()` inside a service constructor (e.g. `FeedService`, `RecommendationService`) as it creates connection leaks during parallel execution.
 - **Reason:** Prevents resource exhaustion (e.g., too many HTTP sessions or loaded models) during high concurrency.
 
 ### Database Access (Performance)
@@ -27,6 +32,11 @@
 - **Rule:** Never pass `user_id` as a query or path parameter for protected resources.
 - **Requirement:** Derive User ID strictly from the `vectorbox_token` via `dependencies.get_current_user`.
 - **Ban:** Frontend must NOT send `userId` in API calls (e.g., `getFeed(userId)` is forbidden).
+
+### Data & External Typing
+- **Rule:** Always use **Pydantic V2** models (`models/external_schemas.py`) for external integrations.
+- **Requirement:** Responses from OMDb and payloads sent to Qdrant **MUST** be validated through strict models.
+- **Ban:** Do not pass around raw `Dict[str, Any]` objects for core data structures.
 
 ## 2. Recommendation Engine Logic
 
@@ -61,6 +71,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
     - Movistar+
     - Filmin
 - **Rule:** All other providers must be excluded from UI display when context is `ES`.
+- **Implementation:** This filtering logic MUST be abstracted into a pure standalone function (e.g., `filter_es_providers`) isolated from router dependencies to allow for fast, unentangled unit testing.
 
 ## 3. Frontend Security & Build System
 
@@ -76,7 +87,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Minimum Release Age:** `minimum-release-age=1440` (24 hours) to prevent supply chain attacks via newly published malicious packages.
 - **Strict Engine:** `engine-strict=true`.
 - **Whitelist:** `minimum-release-age-exclude=browserslist caniuse-lite electron-to-chromium node-releases core-js-compat` (Safe build tools).
-- **Overrides:** Security-patched transitive deps (`minimatch>=10.2.1`, `ajv>=8.18.0`) and React 19 peer deps enforced via `pnpm.overrides`.
+- **Overrides:** Security-patched transitive deps (`minimatch>=10.2.1`, `ajv>=8.18.0`) enforced via `pnpm.overrides`.
 
 ### Container & Data Persistence
 - **Rule:** Ephemeral Containers, Persistent Data.
@@ -100,9 +111,10 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **System Prompt:** Explicitly instruct the model to ignore commands within the user query.
 - **Output:** Enforce structured JSON (Pydantic) to prevent free-text leakage.
 
-### Pillar 4: Information Leakage
+### Pillar 4: Information Leakage & Logging Hygiene
 - **Headers:** `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`.
 - **Errors:** Stack traces must **NEVER** be returned in `ENVIRONMENT=production`. Return generic "Internal Server Error".
+- **Logging Rule:** **NEVER** log raw session cookies (`vectorbox_token`), Authorization headers containing Bearer tokens, or plain-text PINs. Redact these values in all middleware or auth routers before logging.
 
 ### Visual language (Acid Design)
 - **Primary Color:** Neon Green (`#CCFF00`) / `hsl(72, 100%, 50%)`
@@ -116,16 +128,21 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ## 4. AI & NLP Layer
 
-### Model Configuration (Dual-Model Strategy)
+### Model Configuration (4-Tier Fallback Strategy)
 - **Tier 1 (Speed):** `meta-llama/llama-4-scout-17b-16e-instruct`
     - Use for: Real-time search bar intent parsing.
 - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile`
-    - Use for: Deep Analysis (Re-ranking), detailed reasoning.
+    - Use for: Deep Analysis (Re-ranking), detailed reasoning & Tier 1 retry.
+- **Tier 3 (Groq Fallback):** `openai/gpt-oss-120b`
+    - Use for: High throughput fallback before leaving Groq infrastructure.
+- **Tier 4 (Universal Fallback):** `gpt-4o-mini`
+    - Use for: Final resort via OpenAI API.
 
 ### Cascading Fallback
-1.  Tier 1 Primary: Groq `llama-4-scout-17b-16e-instruct`
-2.  Tier 2 Primary: Groq `llama-3.3-70b-versatile`
-3.  Universal Fallback: OpenAI `gpt-oss-120b` (or `gpt-4o-mini`).
+1.  Tier 1 Primary: Groq `meta-llama/llama-4-scout-17b-16e-instruct`
+2.  Tier 2 Retry: Groq `llama-3.3-70b-versatile`
+3.  Tier 3 OSS: Groq `openai/gpt-oss-120b`
+4.  Universal Fallback: OpenAI `gpt-4o-mini`
 
 ### Structured Output
 - **Library:** `instructor` (Python) with Pydantic models.
@@ -160,10 +177,25 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
   - Uses `backend/requirements.lock` (hashed, generated by `pip-compile --generate-hashes`) for strict cryptographic verification (`--require-hashes` mode).
   - Known acceptable ignores: `torchvision` CPU-wheel false positives (GHSA-mgj5-w798-5c9q, GHSA-p75w-3772-g6p9, GHSA-9wcc-7w4g-g499) and `diskcache` transitive dep with no upstream fix (GHSA-w8v5-vhqr-4h9v).
   - Regenerate lockfile after any `requirements.txt` change: `docker-compose exec backend pip-compile --generate-hashes requirements.txt --output-file requirements.lock`
-- **Frontend:** `pnpm audit` required. High-severity issues blocked by `pnpm.overrides`.
 - **Container:** `docker scout quickview vectorbox-backend` checks recommended.
+
+## 8. Frontend Performance & Quality Rules (Addy Osmani Toolkit)
+
+### Core Web Vitals (Performance)
+- **LCP (Largest Contentful Paint):** All above-the-fold images (e.g., first row of `MovieCarousel`) MUST eagerly load using `priority={true}`, `fetchPriority="high"`, and `decoding="sync"`. Lazy load everything else.
+- **INP (Interaction to Next Paint):** Continuous high-frequency events (like `mousemove` for `SpotlightCard`) MUST bypass React component state (`useState`). Use `useRef` directly on DOM elements inside `requestAnimationFrame` to prevent main-thread blocking.
+- **CLS (Cumulative Layout Shift):** All custom Next.js fonts (`Space_Mono`, `Space_Grotesk`, `Inter`) MUST be configured with `display: "optional"` to prevent layout shifts during font hydration.
+
+### Accessibility (A11y)
+- **Keyboard Navigation:** Nested interactive elements must trap `keydown` event propagation (`e.target !== e.currentTarget` check) to prevent parent containers from hijacking `Enter` or `Space` keypresses.
+- **Screen Readers:** Dynamic states (loading, empty results) MUST be wrapped in `aria-live="polite"` regions. Dialogs must have `role="dialog"` and `aria-modal="true"`.
+- **Contrast Ratios:** Text on black backgrounds must exceed 4.5:1 AA ratio. Use `text-zinc-400` minimum for small or secondary text instead of `zinc-500` or `white/40`.
+
+### Best Practices & API Resilience
+- **API Timeout Enforcement:** All Server-Side Rendering `fetch` calls MUST implement an `AbortController` bounded to a 10s maximum timeout to prevent hanging connections.
+- **Console Hygiene:** `console.log` and `console.error` MUST NOT leak internal API structures or interceptor states to the production browser console. Use scoped error boundaries instead.
 
 ---
 
-**Last Updated:** 2026-02-19
+**Last Updated:** 2026-03-03
 **Maintained By:** VectorBox Team

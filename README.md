@@ -94,3 +94,8 @@ VectorBox/
 *   **Qdrant** for vector search.
 
 **v1.1 Gold Master Request**
+
+## License
+**© 2026 VectorBox Team.**
+All Rights Reserved. Proprietary & Confidential.
+Unauthorized copying of this file, via any medium, is strictly prohibited.

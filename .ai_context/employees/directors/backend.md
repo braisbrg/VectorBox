@@ -2,7 +2,7 @@
 
 > **Role:** Backend Technical Lead
 > **Domain:** API Design, Database, Async Patterns, Authentication
-> **Last Updated:** 2026-01-13
+> **Last Updated:** 2026-03-03
 
 This file contains all backend-specific rules, database patterns, and API guidelines for the VectorBox project.
 
@@ -25,13 +25,15 @@ This file contains all backend-specific rules, database patterns, and API guidel
 | **asyncpg** | Latest | Non-blocking Postgres driver |
 
 ### AI/ML Layer
-| Technology | Model/Version | Purpose |
-| :--- | :--- | :--- |
 | **Groq** | Provider | LLM inference |
 | **Llama 4 Scout** | `17b-16e-instruct` | Fast search intent parsing |
 | **Llama 3.3** | `70b-versatile` | Deep analysis, re-ranking |
+| **GPT-OSS** | `120b` | Groq fallback |
+| **GPT-4o-mini** | `gpt-4o-mini` | Universal fallback (OpenAI API) |
 | **Instructor** | Latest | Structured JSON output from LLMs |
 | **Sentence-Transformers** | `all-MiniLM-L6-v2` | Local embedding generation (CPU) |
+
+> **Note:** All LLM / Instructor code **MUST** use the `AsyncOpenAI` client (from `openai import AsyncOpenAI`). The synchronous `OpenAI` client is strictly forbidden inside async functions to prevent event loop blocking.
 
 ---
 
@@ -102,7 +104,7 @@ The following indexes are critical for performance:
 
 ## 4. Service Architecture
 
-### Singleton Pattern (Mandatory)
+### Singleton & Dependency Injection (Mandatory)
 Heavy clients **MUST** be Singletons to prevent resource exhaustion:
 
 | Service | Reason |
@@ -112,6 +114,7 @@ Heavy clients **MUST** be Singletons to prevent resource exhaustion:
 | `EmbeddingModel` | ML model loaded once in memory |
 
 **Implementation:** Inject via `dependencies.py` or initialize at module level.
+**Injection:** **MUST** be passed down to downstream business logic. **DO NOT** instantiate `TMDBClient()` directly inside `FeedService` or `RecommendationService` or any parallel tasks, as this creates rampant connection leaks.
 
 ### Directory Structure
 ```
@@ -122,12 +125,15 @@ backend/
 │   └── auth.py
 ├── services/      # Business logic
 │   ├── feed_service.py      # Home feed orchestration
+│   ├── recommendation_engine.py # Algorithms for feed sections
+│   ├── movie_factory.py     # Centralized ingestion pipeline
 │   ├── clustering_service.py # K-Means, MMR
 │   ├── nlp_search.py        # "Magic Box" LLM logic
 │   └── rss_service.py       # Letterboxd sync
 ├── models/        # Data models
 │   ├── database.py          # SQLAlchemy models
-│   └── schemas.py           # Pydantic schemas
+│   ├── schemas.py           # API Pydantic schemas
+│   └── external_schemas.py  # Types for OMDb/Qdrant
 └── scripts/       # Maintenance tasks
 ```
 
@@ -145,9 +151,16 @@ backend/
 - **Storage:** HTTP-only cookies
 - **Lifetime:** Extended (no frequent re-auth)
 
+### Logging Hygiene
+- **Rule:** **NEVER** log raw session cookies (`vectorbox_token`), raw Authorization headers containing Bearer tokens, or plain-text PINs. Redact these values in all middleware or auth routers before logging.
+
 ### Letterboxd Linking
 - **Decoupled:** VectorBox username ≠ Letterboxd username
 - **Flow:** Users link their Letterboxd profile separately via settings
+
+### IDOR Protection (v1.2)
+- **Identity Derivation:** Never pass `user_id` as a client argument (query/path) for protected resources.
+- **Enforcement:** Use `dependencies.get_current_user` and `dependencies.verify_user_ownership`.
 
 ---
 
@@ -172,12 +185,14 @@ Invalidate user-specific caches when:
 ## 7. LLM Integration (Cascading Fallback)
 
 ### Priority Order
-1. **Tier 1 (Speed):** Groq `llama-4-scout-17b-16e-instruct`
+1. **Tier 1 (Speed):** Groq `meta-llama/llama-4-scout-17b-16e-instruct`
    - Use for: Real-time search bar intent parsing
 2. **Tier 2 (Intelligence):** Groq `llama-3.3-70b-versatile`
-   - Use for: Deep analysis, detailed reasoning
-3. **Universal Fallback:** OpenAI `gpt-4o-mini`
-   - Use when: Groq unavailable
+   - Use for: Deep analysis, detailed reasoning & Tier 1 retry
+3. **Tier 3 (Groq Fallback):** Groq `openai/gpt-oss-120b`
+   - Use for: High throughput fallback before leaving Groq
+4. **Tier 4 (Universal Fallback):** OpenAI `gpt-4o-mini`
+   - Use when: Groq ecosystem is entirely unavailable
 
 ### Structured Output
 - **Library:** `instructor` with Pydantic models
