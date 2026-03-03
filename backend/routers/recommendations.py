@@ -23,8 +23,9 @@ from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from services.feed_service import FeedService
 from services.provider_service import ProviderService
-from dependencies import get_tmdb_client, get_qdrant_service, get_current_user
+from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_embedding_service
 from models.schemas import TokenResponse
+from services.embedding_service import EmbeddingService
 
 router = APIRouter(
     tags=["recommendations"]
@@ -148,7 +149,8 @@ async def get_general_recommendations(
     request: RecommendationRequest,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client)
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service)
 ):
     """
     Get general movie recommendations based on user's taste profile
@@ -157,7 +159,7 @@ async def get_general_recommendations(
         # IDOR Protection
         request.user_id = current_user.user_id
         
-        clustering = ClusteringService()
+        clustering = ClusteringService(qdrant=qdrant)
         
         # Build filters
         filters = {}
@@ -266,7 +268,8 @@ async def get_recommendations_by_mood(
     request: RecommendationRequest,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client)
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service)
 ):
     """
     Get movie recommendations for a specific mood (cluster)
@@ -278,7 +281,7 @@ async def get_recommendations_by_mood(
     request.user_id = current_user.user_id
 
     try:
-        clustering = ClusteringService()
+        clustering = ClusteringService(qdrant=qdrant)
         
         # Build filters
         filters = {}
@@ -329,7 +332,8 @@ async def get_random_recommendation(
     request: RecommendationRequest,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client)
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service)
 ):
     """
     Get a single random movie recommendation
@@ -339,7 +343,7 @@ async def get_random_recommendation(
         request.user_id = current_user.user_id
         
         # Reuse general recommendations logic but pick one
-        clustering = ClusteringService()
+        clustering = ClusteringService(qdrant=qdrant)
         filters = {}
         # ... (simplified filter building)
         if request.genres: filters["include_genres"] = request.genres
@@ -372,7 +376,8 @@ async def get_group_recommendations(
     request: GroupRecommendationRequest,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client)
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service)
 ):
     """
     Get recommendations for a group of users.
@@ -415,7 +420,7 @@ async def get_group_recommendations(
         # 2. Fallback
         if len(recommendations) < 5:
             remaining_limit = request.limit - len(recommendations)
-            clustering = ClusteringService()
+            clustering = ClusteringService(qdrant=qdrant)
             general_results = await clustering.get_item_based_recommendations(
                 user_id=request.user_ids[0],
                 db=db,
@@ -453,6 +458,7 @@ async def get_feed(
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding: EmbeddingService = Depends(get_embedding_service),
     background_tasks: BackgroundTasks = None
 ):
     """
@@ -477,7 +483,7 @@ async def get_feed(
             return FeedResponse(feed=[], status="incomplete")
 
         # Services are now injected
-        feed_service = FeedService()
+        feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
         
         if scope == "watchlist":
             return await feed_service.get_watchlist_feed(user_id, db, tmdb, country_code, provider_ids)
@@ -515,120 +521,101 @@ async def get_watchlist(
     min_rating: Optional[float] = None,
     streaming_providers: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client)
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding: EmbeddingService = Depends(get_embedding_service)
 ):
     """
     Get filtered watchlist items for grid view.
     """
     user_id = current_user.user_id
     
-    feed_service = FeedService()
-    try:
-        stmt = (
-            select(Movie)
-            .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(
-                UserRating.user_id == user_id,
-                UserRating.is_watchlist.is_(True),
-                UserRating.is_watched.is_(False)
-            )
+    feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
+
+    stmt = (
+        select(Movie)
+        .join(UserRating, Movie.id == UserRating.movie_id)
+        .where(
+            UserRating.user_id == user_id,
+            UserRating.is_watchlist.is_(True),
+            UserRating.is_watched.is_(False)
         )
+    )
 
-        if runtime_min: stmt = stmt.where(Movie.runtime >= runtime_min)
-        if runtime_max: stmt = stmt.where(Movie.runtime <= runtime_max)
-        if year_min: stmt = stmt.where(Movie.year >= year_min)
-        if year_max: stmt = stmt.where(Movie.year <= year_max)
-        if min_rating: stmt = stmt.where(Movie.vectorbox_score >= min_rating)
-        
-        # Fetch all candidates first (for memory filtering)
-        # Note: If no memory filters, we could paginate here.
-        # But for consistency, we fetch all matching DB filters.
-        result = await db.execute(stmt)
-        movies = result.scalars().all()
-        
-        filtered_movies = []
-        provider_ids = []
-        if streaming_providers:
-            provider_ids = [int(x) for x in streaming_providers.split(",") if x.strip()]
+    if runtime_min: stmt = stmt.where(Movie.runtime >= runtime_min)
+    if runtime_max: stmt = stmt.where(Movie.runtime <= runtime_max)
+    if year_min: stmt = stmt.where(Movie.year >= year_min)
+    if year_max: stmt = stmt.where(Movie.year <= year_max)
+    if min_rating: stmt = stmt.where(Movie.vectorbox_score >= min_rating)
+    
+    result = await db.execute(stmt)
+    movies = result.scalars().all()
+    
+    filtered_movies = []
+    provider_ids = []
+    if streaming_providers:
+        provider_ids = [int(x) for x in streaming_providers.split(",") if x.strip()]
 
-        for movie in movies:
-            if genres:
-                movie_genres = [g.lower() for g in movie.genres] if movie.genres else []
-                if not any(g.lower() in movie_genres for g in genres.split(",")):
-                    continue
-            filtered_movies.append(movie)
+    for movie in movies:
+        if genres:
+            movie_genres = [g.lower() for g in movie.genres] if movie.genres else []
+            if not any(g.lower() in movie_genres for g in genres.split(",")):
+                continue
+        filtered_movies.append(movie)
 
-        # Streaming Filter & Pagination
-        final_items = []
+    final_items = []
+    start = (page - 1) * limit
+    end = start + limit
+    
+    provider_service = ProviderService(db, tmdb)
+    
+    if provider_ids:
+        candidates = filtered_movies[:500] 
+        movie_ids = [m.id for m in candidates]
+        providers_map = await provider_service.get_providers_batch(movie_ids, country_code)
         
-        # Calculate pagination slice
-        start = (page - 1) * limit
-        end = start + limit
-        
-        # We need to filter by streaming providers BEFORE pagination if requested
-        # This is expensive as we need to fetch providers for ALL candidates
-        # Optimization: Only fetch providers for the current page IF no streaming filter?
-        # But if streaming filter is ON, we MUST check all.
-        
-        provider_service = ProviderService(db, tmdb)
-        
-        if provider_ids:
-            # Hard case: Must check availability for all candidates to find the ones for this page
-            # Limit to first 500 to avoid timeout
-            candidates = filtered_movies[:500] 
-            movie_ids = [m.id for m in candidates]
-            providers_map = await provider_service.get_providers_batch(movie_ids, country_code)
-            
-            available_movies = []
-            for movie in candidates:
-                movie_providers = providers_map.get(movie.id, [])
-                has_provider = False
-                for p in movie_providers:
-                    if p["provider_id"] in provider_ids:
-                        has_provider = True
-                        break
-                if has_provider:
-                    flat_providers = [p["provider_name"] for p in movie_providers]
-                    available_movies.append((movie, flat_providers))
-            
-            # Sort
-            if sort_by == "date_added": available_movies.sort(key=lambda x: x[0].id, reverse=True)
-            elif sort_by == "title": available_movies.sort(key=lambda x: x[0].title)
-            elif sort_by == "rating": available_movies.sort(key=lambda x: x[0].vectorbox_score or 0, reverse=True)
-            
-            total_items = len(available_movies)
-            
-            # Paginate
-            paginated = available_movies[start:end]
-            
-            for movie, providers in paginated:
-                item = await feed_service.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=providers)
-                final_items.append(item)
-            
-        else:
-            # Easy case: Sort then Paginate then Fetch Providers for just the page
-            if sort_by == "date_added": filtered_movies.sort(key=lambda x: x.id, reverse=True)
-            elif sort_by == "title": filtered_movies.sort(key=lambda x: x.title)
-            elif sort_by == "rating": filtered_movies.sort(key=lambda x: x.vectorbox_score or 0, reverse=True)
-            
-            total_items = len(filtered_movies)
-            
-            paginated_movies = filtered_movies[start:end]
-            
-            # Fetch providers for just this page
-            movie_ids = [m.id for m in paginated_movies]
-            providers_map = await provider_service.get_providers_batch(movie_ids, country_code)
-            
-            for movie in paginated_movies:
-                movie_providers = providers_map.get(movie.id, [])
+        available_movies = []
+        for movie in candidates:
+            movie_providers = providers_map.get(movie.id, [])
+            has_provider = False
+            for p in movie_providers:
+                if p["provider_id"] in provider_ids:
+                    has_provider = True
+                    break
+            if has_provider:
                 flat_providers = [p["provider_name"] for p in movie_providers]
-                item = await feed_service.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=flat_providers)
-                final_items.append(item)
+                available_movies.append((movie, flat_providers))
+        
+        if sort_by == "date_added": available_movies.sort(key=lambda x: x[0].id, reverse=True)
+        elif sort_by == "title": available_movies.sort(key=lambda x: x[0].title)
+        elif sort_by == "rating": available_movies.sort(key=lambda x: x[0].vectorbox_score or 0, reverse=True)
+        
+        total_items = len(available_movies)
+        paginated = available_movies[start:end]
+        
+        for movie, providers in paginated:
+            item = await feed_service.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=providers)
+            final_items.append(item)
+        
+    else:
+        if sort_by == "date_added": filtered_movies.sort(key=lambda x: x.id, reverse=True)
+        elif sort_by == "title": filtered_movies.sort(key=lambda x: x.title)
+        elif sort_by == "rating": filtered_movies.sort(key=lambda x: x.vectorbox_score or 0, reverse=True)
+        
+        total_items = len(filtered_movies)
+        paginated_movies = filtered_movies[start:end]
+        
+        movie_ids = [m.id for m in paginated_movies]
+        providers_map = await provider_service.get_providers_batch(movie_ids, country_code)
+        
+        for movie in paginated_movies:
+            movie_providers = providers_map.get(movie.id, [])
+            flat_providers = [p["provider_name"] for p in movie_providers]
+            item = await feed_service.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=flat_providers)
+            final_items.append(item)
 
-        return {"items": final_items, "total": total_items, "page": page, "limit": limit}
+    return {"items": final_items, "total": total_items, "page": page, "limit": limit}
 
-    finally:
-        await tmdb.close()
 
 
 @router.get("/random-row", response_model=FeedSection)
@@ -637,14 +624,16 @@ async def get_random_row(
     country_code: str = "ES",
     scope: str = "global",
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client)
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding: EmbeddingService = Depends(get_embedding_service)
 ):
     """
     Get a fresh set of random recommendations (Reroll functionality).
     """
     user_id = current_user.user_id
     
-    feed_service = FeedService()
+    feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
     try:
         if scope == "watchlist":
             stmt = (
@@ -704,17 +693,20 @@ async def get_random_row(
 
 @router.get("/hidden-gems", response_model=FeedSection)
 async def get_hidden_gems_row(
-    user_id: int,
+    current_user: TokenResponse = Depends(get_current_user),
     country_code: str = "ES",
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client)
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding: EmbeddingService = Depends(get_embedding_service)
 ):
     """
     Get a fresh set of hidden gems (Reroll functionality).
     """
-    feed_service = FeedService()
+    user_id = current_user.user_id
+    feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
     try:
-        clustering = ClusteringService()
+        clustering = ClusteringService(qdrant=qdrant)
         results = await clustering.get_user_centric_recommendations(
             user_id=user_id,
             db=db,

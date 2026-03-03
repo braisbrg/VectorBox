@@ -133,7 +133,7 @@ export default function LoginPage() {
                         VECTOR<span className="text-primary">BOX</span>
                     </h1>
                     <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest">
-                        v1.1 {t("auth.welcome")}
+                        v1.2 {t("auth.welcome")}
                     </p>
                 </div>
 

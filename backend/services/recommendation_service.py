@@ -31,9 +31,9 @@ class RecommendationService:
 
     def __init__(self, db: AsyncSession, tmdb: TMDBClient = None, qdrant: QdrantService = None):
         self.db = db
-        self.tmdb = tmdb or TMDBClient()
-        self.qdrant = qdrant or QdrantService()
-        self.clustering = ClusteringService()
+        self.tmdb = tmdb
+        self.qdrant = qdrant
+        self.clustering = ClusteringService(qdrant=qdrant)
         self.movie_service = MovieService(db)
 
     @safe_execution(fallback_return=FeedSection(id="hybrid_picks", title="Hybrid Picks (Signal Lost)", items=[]))
@@ -198,6 +198,10 @@ class RecommendationService:
         Signal C: The Crowd Expert (Collaborative Filtering via TMDB)
         "People who liked X also liked Y"
         """
+        if not self.tmdb:
+            logger.warning("[Signal C] No TMDBClient injected, skipping crowd signal.")
+            return []
+        
         # 1. Get 3 most recent 5-star movies
         stmt = select(Movie).join(UserRating, Movie.id == UserRating.movie_id)\
             .where(UserRating.user_id == user_id, UserRating.rating == 5.0)\
@@ -377,21 +381,33 @@ class RecommendationService:
         return feed_items
 
     @safe_execution(fallback_return=FeedSection(id="auteur_picks", title="From Your Favorite Directors", items=[]))
-    async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int]) -> FeedSection:
+    async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
         """
         Signal B Only Row: "From Your Favorite Directors"
         """
         candidates = await self.get_signal_b_auteur(user_id, seen_ids)
         
+        # Batch fetch providers (no N+1)
+        if provider_service and candidates:
+            candidate_ids = [m.id for m in candidates]
+            providers_map = await provider_service.get_providers_batch(
+                candidate_ids, country
+            )
+        else:
+            providers_map = {}
+        
         items = []
         for m in candidates:
+             p_data = providers_map.get(m.id, [])
+             flat_providers = [p["provider_name"] for p in p_data]
+             
              # Basic FeedItem creation
              items.append(FeedItem(
                 id=m.tmdb_id,
                 title=m.title,
                 poster_url=m.poster_path,
                 match_score=90,
-                streaming_providers=[],
+                streaming_providers=flat_providers,
                 year=m.year,
                 overview=m.overview,
                 vectorbox_score=m.vectorbox_score

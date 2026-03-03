@@ -12,14 +12,15 @@ from services.qdrant_service import QdrantService
 from services.provider_service import ProviderService
 from services.recommendation_service import RecommendationService
 from services.recommendation_engine import RecommendationEngine
+from services.embedding_service import EmbeddingService
 
 from utils.decorators import safe_execution
 
 logger = logging.getLogger(__name__)
 
 class FeedService:
-    def __init__(self):
-        self.engine = RecommendationEngine()
+    def __init__(self, qdrant: QdrantService = None, embedding_service: EmbeddingService = None):
+        self.engine = RecommendationEngine(qdrant=qdrant, embedding_service=embedding_service)
 
     @safe_execution(fallback_return=FeedSection(id="because_you_watched", title="Recommended for You", items=[]))
     async def get_because_you_watched_section(
@@ -168,13 +169,9 @@ class FeedService:
         recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
         return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service, background_tasks=background_tasks)
 
-    async def get_auteur_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int]) -> Optional[FeedSection]:
-        # This one doesn't even take provider_service in signature here.
-        # We should probably instantiate a lightweight client or rely on the default if we can't pass it.
-        # But wait, we can change the signature if we update the call site.
-        recommender = RecommendationService(db) 
-        # We will fix the call site to pass tmdb if possible, or accept this one is less frequent (once per feed).
-        return await recommender.get_auteur_section(user_id, country, seen_ids)
+    async def get_auteur_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None) -> Optional[FeedSection]:
+        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
+        return await recommender.get_auteur_section(user_id, country, seen_ids, provider_service=provider_service)
 
     async def get_main_feed(
         self,
@@ -273,9 +270,14 @@ class FeedService:
         async def task_auteur():
             try:
                 async with AsyncSessionLocal() as session:
-                    # We should pass tmdb here too
-                    recommender = RecommendationService(session, tmdb=tmdb)
-                    return await recommender.get_auteur_section(user_id, country_code, set())
+                    local_provider = ProviderService(session, tmdb)
+                    recommender = RecommendationService(
+                        session, tmdb=tmdb, qdrant=qdrant
+                    )
+                    return await recommender.get_auteur_section(
+                        user_id, country_code, set(),
+                        provider_service=local_provider
+                    )
             except Exception as e:
                 logger.error(f"Feed Task Failed [Auteur]: {e}")
                 return None

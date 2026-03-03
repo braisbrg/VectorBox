@@ -11,13 +11,18 @@ interface AcidErrorProps {
 
 export function AcidError({ message = "SYSTEM_FAILURE", onRetry, className }: AcidErrorProps) {
     return (
-        <div className={cn(
-            "flex flex-col items-center justify-center p-8 min-h-[400px] w-full",
-            "bg-black border border-[#CCFF00]/20 rounded-xl",
-            "font-[family-name:var(--font-mono-acid)] text-[#CCFF00]",
-            "relative overflow-hidden",
-            className
-        )}>
+        <div
+            role="alert"
+            aria-live="assertive"
+            aria-atomic="true"
+            className={cn(
+                "flex flex-col items-center justify-center p-8 min-h-[400px] w-full",
+                "bg-black border border-[#CCFF00]/20 rounded-xl",
+                "font-[family-name:var(--font-mono-acid)] text-[#CCFF00]",
+                "relative overflow-hidden",
+                className
+            )}
+        >
             {/* Background Glitch Effect */}
             <div className="absolute inset-0 bg-[url('/noise.svg')] opacity-10 pointer-events-none" />
             <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#CCFF00]/5 to-transparent pointer-events-none animate-pulse" />
@@ -41,6 +46,7 @@ export function AcidError({ message = "SYSTEM_FAILURE", onRetry, className }: Ac
             {onRetry && (
                 <button
                     onClick={onRetry}
+                    aria-label="Retry loading"
                     className="group relative px-8 py-3 bg-transparent border border-[#CCFF00] overflow-hidden transition-all hover:bg-[#CCFF00]/10"
                 >
                     <div className="absolute inset-0 bg-[#CCFF00]/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />

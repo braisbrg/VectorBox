@@ -26,8 +26,11 @@ class RecommendationEngine:
     Decoupled from the FeedService orchestration layer.
     """
 
-    def __init__(self):
-        self.clustering = ClusteringService()
+    def __init__(self, qdrant: QdrantService = None, embedding_service: EmbeddingService = None):
+        self.clustering = ClusteringService(qdrant=qdrant)
+        self.embedding_service = embedding_service
+        if self.embedding_service is None:
+            logger.warning("EmbeddingService not injected into RecommendationEngine.")
 
     async def create_feed_item(self, movie: Movie, score: float, country: str, tmdb: TMDBClient, include_rating: bool = False, contributors: List[dict] = None, provider_service: ProviderService = None, streaming_providers: List[str] = None) -> FeedItem:
         """Helper to create a FeedItem from a Movie (DB Object)"""
@@ -113,15 +116,18 @@ class RecommendationEngine:
             for row in candidates:
                 user_rating, anchor_movie = row
                 
-                embedding_service = EmbeddingService()
-                keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
-                
-                anchor_vector = embedding_service.generate_embedding({
-                    "title": anchor_movie.title, 
-                    "overview": anchor_movie.overview or "",
-                    "genres": anchor_movie.genres or [],
-                    "keywords": keywords
-                }, include_title=False).tolist()
+                if not self.embedding_service:
+                    # No embedding service — fall back to stored vector
+                    anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
+                else:
+                    keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
+                    
+                    anchor_vector = self.embedding_service.generate_embedding({
+                        "title": anchor_movie.title, 
+                        "overview": anchor_movie.overview or "",
+                        "genres": anchor_movie.genres or [],
+                        "keywords": keywords
+                    }, include_title=False).tolist()
                 
                 if not anchor_vector:
                      anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)

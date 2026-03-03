@@ -6,7 +6,7 @@ import { useSettings } from "@/lib/hooks";
 
 import { getRecommendationsByMood, getGeneralRecommendations, getGroupRecommendations, getTMDBImageUrl, RecommendationResponse } from "@/lib/api";
 import { motion, AnimatePresence } from "framer-motion";
-import { Loader2, Star, Filter, X, Clock, Globe, Tv } from "lucide-react";
+import { Star, Filter, X, Clock, Globe, Tv } from "lucide-react";
 import Image from "next/image";
 import { STREAMING_PROVIDERS, COUNTRIES } from "@/lib/constants";
 import { MovieCard } from "@/components/ui/movie-card";
@@ -322,8 +322,30 @@ export function RecommendationGrid({
 
             {
                 isLoading ? (
-                    <div className="flex items-center justify-center py-12">
-                        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                    <div
+                        className="grid grid-cols-1 min-[400px]:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 md:gap-6"
+                        role="status"
+                        aria-label="Loading recommendations"
+                        aria-live="polite"
+                    >
+                        {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+                            <div
+                                key={i}
+                                className="relative h-[340px] bg-[oklch(0.08_0_0)] border border-[oklch(0.18_0_0)] overflow-hidden"
+                            >
+                                {/* shimmer sweep */}
+                                <div
+                                    className="absolute inset-0 bg-gradient-to-r from-transparent via-[oklch(0.9_0.4_110/0.03)] to-transparent animate-shimmer"
+                                    style={{ "--shimmer-duration": "1.8s" } as React.CSSProperties}
+                                />
+                                {/* bottom info area */}
+                                <div className="absolute bottom-0 left-0 right-0 p-3 space-y-2">
+                                    <div className="h-3 w-3/4 bg-[oklch(0.14_0_0)]" />
+                                    <div className="h-2 w-1/2 bg-[oklch(0.12_0_0)]" />
+                                    <div className="h-2 w-1/3 bg-[oklch(0.10_0_0)]" />
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 ) : error ? (
                     <div className="p-6 bg-destructive/10 border border-destructive/20 rounded-lg">

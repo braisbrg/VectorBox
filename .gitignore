@@ -50,6 +50,7 @@ dist/
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
+*.tsbuildinfo
 
 # Docker Persistence (Do not commit production data)
 postgres_data/
@@ -81,6 +82,7 @@ tests/artifacts/
 test-results/
 *.png
 python_procs.txt
+backend/tests/fixtures/*.zip
 
 # Scripts (Allowlist approach: Ignore temporary debug scripts)
 debug_*.py
@@ -91,4 +93,5 @@ verify_*.py
 # AI Agent Configuration & Skills
 .agent/
 .agents/
+.gemini/
 skills-lock.json
