@@ -152,6 +152,9 @@ Located in `backend/scripts/`. Run via Docker execution.
 | **`verify_nlp_fallback.py`** | **Chaos Monkey.** Mocks failures in 1st/2nd tier LLM clients to guarantee the application cascades correctly without crashing. | `docker-compose run --rm backend python scripts/verify_nlp_fallback.py` |
 | **`test_es_whitelist.py`** | **QA Whitelist.** Unit tests the pure standalone function `filter_es_providers` to guarantee disallowed streaming services are blocked. | `docker-compose run --rm backend python scripts/test_es_whitelist.py` |
 | **`security_audit.py`** | **Security Audit.** Runs `pip-audit --require-hashes` against `requirements.lock` for strict hash-verified CVE scanning. Ignores known false positives (torchvision CPU builds, diskcache). | `docker-compose exec backend python scripts/security_audit.py` |
+| **`verify_feed_parallelism.py`** | **QA Certification (Phase 2).** Confirms `asyncio.gather` executes 9 feed tasks concurrently (< 400ms) with session isolation. | `docker-compose exec backend python scripts/verify_feed_parallelism.py` |
+| **`test_idor_hidden_gems.py`** | **QA Certification (Phase 3).** Verifies `/hidden-gems` returns 401 for unauthenticated and forged `user_id` requests. | `docker-compose exec backend python scripts/test_idor_hidden_gems.py` |
+| **`test_trident_math.py`** | **QA Certification (Phase 4).** Validates sigmoid curve and RRF fusion math against expected formulas. | `docker-compose exec backend python scripts/test_trident_math.py` |
 | **`wait_for_db.py`** | **Infrastructure.** Blocks boot until Postgres is ready. Used automatically in Docker entrypoint. | *(Internal use only)* |
 
 ### 📦 Frontend Utility Scripts

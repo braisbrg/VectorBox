@@ -380,6 +380,45 @@ docker-compose run --rm backend python scripts/test_es_whitelist.py
 | Execution | Script runs without assertion errors | ☐ |
 | Output | `✅ WHITELIST FILTER SUCCESS` is printed | ☐ |
 
+### Step 5.8: Feed Parallelism Verification (Automated)
+Verify that the 9 feed tasks execute concurrently via `asyncio.gather`.
+
+```powershell
+docker-compose exec backend python scripts/verify_feed_parallelism.py
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Execution | Script runs without errors | ☐ |
+| Concurrency | `✅ FEED PARALLELISM VERIFIED` — total time < 0.4s | ☐ |
+| Session Isolation | 9 unique sessions (no sharing) | ☐ |
+
+### Step 5.9: IDOR Automated Security Test
+Verify `/hidden-gems` endpoint rejects unauthenticated and forged requests.
+
+```powershell
+docker-compose exec backend python scripts/test_idor_hidden_gems.py
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Unauthenticated | Returns 401 (Not Authenticated) | ☐ |
+| Forged user_id | Returns 401 (user_id query param ignored) | ☐ |
+| Output | `✅ IDOR PROTECTION VERIFIED` | ☐ |
+
+### Step 5.10: Trident Math Verification
+Verify sigmoid curve and RRF fusion calculations match expected formulas.
+
+```powershell
+docker-compose exec backend python scripts/test_trident_math.py
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Sigmoid | score=50→~0.09, score=65→0.50, score=80→~0.91 | ☐ |
+| RRF | Movie in 3 lists scores higher than movie in 1 list | ☐ |
+| Output | `✅ TRIDENT MATH VERIFIED` | ☐ |
+
 ---
 
 ## 🌐 PHASE 6: Internationalization (i18n)

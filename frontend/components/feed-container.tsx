@@ -3,7 +3,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { MovieCarousel } from "./movie-carousel";
 import { UploadZone } from "@/components/upload-zone";
-import { Skeleton } from "@/components/ui/skeleton";
 import { AcidError } from "@/components/ui/acid-error";
 import { InfoTooltip } from "./info-tooltip";
 import { useLanguage } from "@/components/language-provider";
@@ -54,15 +53,34 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
 
     if (isLoading) {
         return (
-            <div className="space-y-12">
+            <div
+                className="space-y-12"
+                role="status"
+                aria-label="Loading recommendations"
+                aria-live="polite"
+            >
                 {[1, 2, 3, 4].map((i) => (
                     <div key={i} className="space-y-4">
                         <div className="flex items-center gap-2 px-1">
-                            <Skeleton className="h-6 w-48 bg-muted/60" />
+                            <div className="h-5 w-40 bg-[oklch(0.14_0_0)]" />
                         </div>
                         <div className="flex gap-4 overflow-hidden px-1">
                             {[1, 2, 3, 4, 5, 6].map((j) => (
-                                <Skeleton key={j} className="h-[280px] w-[200px] rounded-lg flex-shrink-0 bg-muted/40" />
+                                <div
+                                    key={j}
+                                    className="relative h-[280px] w-[185px] flex-shrink-0 bg-[oklch(0.08_0_0)] border border-[oklch(0.18_0_0)] overflow-hidden"
+                                >
+                                    {/* shimmer sweep */}
+                                    <div
+                                        className="absolute inset-0 bg-gradient-to-r from-transparent via-[oklch(0.9_0.4_110/0.03)] to-transparent animate-shimmer"
+                                        style={{ "--shimmer-duration": "1.8s" } as React.CSSProperties}
+                                    />
+                                    {/* bottom info area */}
+                                    <div className="absolute bottom-0 left-0 right-0 p-3 space-y-2">
+                                        <div className="h-3 w-3/4 bg-[oklch(0.14_0_0)]" />
+                                        <div className="h-2 w-1/2 bg-[oklch(0.12_0_0)]" />
+                                    </div>
+                                </div>
                             ))}
                         </div>
                     </div>

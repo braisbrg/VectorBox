@@ -259,7 +259,7 @@ The frontend (`next.config.js`) enforces:
   - `nlp_search.py`: "Magic Box" LLM logic using Groq+Instructor.
   - `rss_service.py`: Sync logic for Letterboxd RSS feeds.
 - **`models/`**: SQLAlchemy (`database.py`) and Pydantic (`schemas.py`, `external_schemas.py`) definitions.
-- **`scripts/`**: Maintenance tasks (`seed_db.py`, `enrich_vectors.py`, `popular_scraper.py`, `reset_profiles.py`, `test_magic_box.py`).
+- **`scripts/`**: Maintenance tasks (`seed_db.py`, `enrich_vectors.py`, `popular_scraper.py`, `reset_profiles.py`, `test_magic_box.py`, `verify_feed_parallelism.py`, `test_idor_hidden_gems.py`, `test_trident_math.py`).
 
 ### Frontend (`/frontend`)
 - **`app/`**: Next.js App Router pages (`page.tsx` for feed).

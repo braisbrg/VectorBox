@@ -26,8 +26,8 @@ logger = logging.getLogger(__name__)
 class ClusteringService:
     """Create and manage user taste clusters"""
     
-    def __init__(self):
-        self.qdrant = QdrantService()
+    def __init__(self, qdrant: QdrantService = None):
+        self.qdrant = qdrant or QdrantService()
     
     @staticmethod
     def calculate_optimal_clusters(n_movies: int) -> int:
@@ -302,13 +302,11 @@ class ClusteringService:
         )
         all_ratings = result.all()
         
-        # Retrieve vectors and compute cluster center
-        cluster_vectors = []
-        for rating, movie in all_ratings:
-            if movie.id in (cluster.sample_movie_ids or []):
-                vector = await self.qdrant.get_vector(movie.id)
-                if vector:
-                    cluster_vectors.append(vector)
+        # Retrieve vectors and compute cluster center (batch, no N+1)
+        sample_ids = cluster.sample_movie_ids or []
+        sample_tmdb_ids = [movie.tmdb_id for _, movie in all_ratings if movie.id in sample_ids]
+        vectors_map = await self.qdrant.get_vectors_batch(sample_tmdb_ids)
+        cluster_vectors = list(vectors_map.values())
         
         if not cluster_vectors:
             raise ValueError("No vectors found for cluster samples")
@@ -450,7 +448,8 @@ class ClusteringService:
         limit: int = 20,
         include_low_quality: bool = False,
         page: int = 1,
-        background_tasks = None
+        background_tasks = None,
+        tmdb: 'TMDBClient' = None
     ) -> List[Dict]:
         """
         Get recommendations using Weighted Item-Item Collaborative Filtering.
@@ -671,17 +670,12 @@ class ClusteringService:
             id_map = {row.id: row.tmdb_id for row in tmdb_map_result.all()}
             
             from services.provider_service import ProviderService
-            from services.tmdb_client import TMDBClient
             
-            # We need a temporary TMDB client if not provided (ProviderService needs it)
-            # Service inside service is tricky, but we instantiate it here
-            temp_tmdb = TMDBClient()
-            provider_service = ProviderService(db, temp_tmdb)
-            
-            try:
-                # Batch fetch using internal IDs (ProviderService handles translation)
-                # Ensure we pass the IDs correctly. ProviderService expects internal IDs usually?
-                # improved_implementation checks cache by internal_id.
+            if not tmdb:
+                logger.warning("Streaming filter skipped: no TMDBClient injected.")
+            else:
+                provider_service = ProviderService(db, tmdb)
+                
                 providers_map = await provider_service.get_providers_batch(candidate_ids, country_code)
                 
                 filtered_pool = []
@@ -701,9 +695,6 @@ class ClusteringService:
                 
                 logger.info(f"Streaming Filter: {len(filtered_pool)} candidates available out of {len(candidates_pool)} checked.")
                 valid_candidates = filtered_pool
-                
-            finally:
-                await temp_tmdb.close()
         
         # 6. MMR Reranking
         # Now we run MMR on the VALID candidates
