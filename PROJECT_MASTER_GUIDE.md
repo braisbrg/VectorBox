@@ -3,7 +3,7 @@
 > **Role:** Lead Software Architect Handover
 > **Target Audience:** CTO / Senior Developers
 > **Version:** 1.2.0 (Gold Master)
-> **Last Updated:** 2026-02-18
+> **Last Updated:** 2026-03-03
 
 This document serves as the absolute source of truth for the **VectorBox** (internal codename: *LetterboxRecommender* / *CineMatch*) project. It documents the existing state of the codebase, detailing architecture, algorithms, and logical flows.
 
@@ -56,14 +56,23 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Runtime:** **Python 3.11-slim**.
 - **Server:** **Uvicorn** (Standard Worker).
 - **ORM:** **SQLAlchemy 2.0.44 (Async)**. Uses `asyncpg` + `psycopg` drivers.
-- **Validation:** **Pydantic V2**. Strongly typed data models for all inputs/outputs.
+- **Validation:** **Pydantic V2**. Strongly typed data models for all inputs/outputs, including external responses (OMDb, Qdrant) via `external_schemas.py`.
 - **Scraper:** **curl_cffi 0.7.4**. Impersonates Chrome 120 for evasion.
 - **AI/ML Layer:**
   - **Groq:** Primary Provider.
-    - **Tier 1 (Speed):** `llama-4-scout-17b-16e-instruct` (Search Bar).
-    - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile` ("Deep Analysis").
-  - **Instructor:** Python library to force structured JSON outputs from LLMs.
+    - **Tier 1 (Speed):** `meta-llama/llama-4-scout-17b-16e-instruct` (Search Bar).
+    - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile` ("Deep Analysis" & Retry).
+    - **Tier 3 (Fallback):** `openai/gpt-oss-120b` (Groq fallback).
+  - **OpenAI:** Secondary Provider.
+    - **Tier 4 (Universal Fallback):** `gpt-4o-mini` (Final resort).
+  - **Instructor:** Python library to force structured JSON outputs from LLMs. (Strictly utilizes `AsyncOpenAI` clients to prevent event loop blocking).
   - **Sentence-Transformers:** Local inference using `all-MiniLM-L6-v2` (**CPU Optimized**) for embedding generation. Singleton Pattern enforced.
+
+### Service Instantiation (Dependency Injection)
+- **Rule:** Heavy clients (`Qdrant`, `TMDB`, `EmbeddingModel`) **MUST** be Singletons injected via `dependencies.py` (e.g., `Depends(get_tmdb_client)`).
+- **Requirement:** When instantiating service classes (like `RecommendationService`) within endpoints or parallel tasks, you **MUST** pass the injected dependencies down the chain (Dependency Injection).
+- **Ban:** Do NOT instantiate new instances of `TMDBClient()` or `QdrantService()` inside service class `__init__` methods. This creates catastrophic HTTPX connection leaks during parallel execution (like `asyncio.gather`).
+- **Reason:** Prevents resource exhaustion (e.g., too many HTTP sessions or loaded models) during high concurrency.
 
 ### Data Layer
 - **Relational DB:** **PostgreSQL 15-alpine**. Stores User profiles, Ratings, Watchlists, Movie metadata, and Clusters.
@@ -84,11 +93,13 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
   - **Custom Spans:** Trident Engine signals (A, B, C) each produce named spans with `user_id` and `result_count` attributes.
   - **Jaeger UI:** `http://localhost:16686` — search by service `vectorbox-backend`.
 - **Security Tools:**
-  - **Husky & Lint-Staged:** Pre-commit hooks for code quality (ESLint v10).
-  - **pip-audit:** Scans Python dependencies for CVEs during build.
+  - **Husky & Lint-Staged:** Pre-commit hooks for code quality (ESLint v9 pinned).
+  - **pip-audit:** Scans Python dependencies for CVEs during build using hash-verified `requirements.lock`.
   - **pnpm audit:** Scans JS dependencies.
-- **Validation:**
+- **Validation & QA:**
   - **Automated E2E Suite:** Playwright-based QA script (`tests/qa_automation.py`) checking Auth, Mobile UX, and Error States.
+  - **Chaos Monkey & Whitelist Testing:** `verify_nlp_fallback.py` and `test_es_whitelist.py` ensure LLM failovers trigger correctly and strict ES provider filtering passes.
+  - **Frontend Quality Audit:** Strictly adheres to Addy Osmani standards for Core Web Vitals (LCP/INP/CLS), WCAG 2.1 AA Accessibility, and Modern Best Practices.
 
 ### Authentication (v1.1)
 - **Model:** Netflix-style profiles with **Username + 4-digit PIN**.
@@ -115,9 +126,9 @@ The feed is composed of multiple "Sections", generated largely in parallel by `F
 | **Random Picks** | Random selection from top 500 "VectorBox Scored" movies in DB. |
 
 ### B. The "Magic Box" (NLP Search)
-A natural language search interface powered by `nlp_search.py` with Dual-Model Architecture.
+A natural language search interface powered by `nlp_search.py` with a 4-Tier Cascading Fallback Architecture.
 1.  **Input:** User types "gangster movies from the 90s that are dark".
-2.  **Interpretation (LLM):** Groq (Llama 4 Scout) via `Instructor` parses this into a `MovieSearchIntent` object:
+2.  **Interpretation (LLM):** The robust LLM pipeline (Llama 4 Scout -> 70B -> 120B -> GPT-4o-mini) via `Instructor` parses this into a `MovieSearchIntent` object:
     -   `semantic_query`: "organized crime, mafia, noir, crime drama, 1990s" (Expanded synonyms).
     -   `year_min`: 1990, `year_max`: 1999.
     -   `include_genres`: ["Crime", "Drama"].
@@ -228,6 +239,12 @@ The frontend (`next.config.js`) enforces:
 - `X-Content-Type-Options: nosniff`
 - `Referrer-Policy: strict-origin-when-cross-origin`
 
+### Frontend Performance & Hardening
+- **Core Web Vitals:** Strict LCP priority loading, direct DOM mutation for continuous interactions (INP), and `display: "optional"` for Custom Fonts (CLS).
+- **Accessibility:** Keyboard event trapping, ARIA Live regions for dynamic search, and strict contrast ratios (`text-zinc-400` on black).
+- **Resilience:** `AbortController` timeouts on all SSR fetch calls.
+- **Error Boundaries:** The custom `<AcidError />` component intercepts API failures (like `503` from Deep Health Checks or `DATA_STREAM_INTERRUPTED`) providing a highly styled, user-friendly recovery UI instead of crashing the React tree.
+
 ---
 
 ## 6. Directory Structure
@@ -235,11 +252,13 @@ The frontend (`next.config.js`) enforces:
 ### Backend (`/backend`)
 - **`routers/`**: API Endpoints (`recommendations.py`, `search.py`, `auth.py`).
 - **`services/`**: Business Logic.
-  - `feed_service.py`: Orchestrates the Home Feed, responsible for parallel fetching of sections.
+  - `feed_service.py`: Orchestrates the Home Feed, handling parallel execution.
+  - `recommendation_engine.py`: Defines the strategies and algorithms (Hidden Gems, etc.) used by the Feed.
+  - `movie_factory.py`: Centralizes ingestion pipeline (TMDB, OMDb, Qdrant payload generation).
   - `clustering_service.py`: Core logic for K-Means, MMR, and recommendation rankings.
   - `nlp_search.py`: "Magic Box" LLM logic using Groq+Instructor.
   - `rss_service.py`: Sync logic for Letterboxd RSS feeds.
-- **`models/`**: SQLAlchemy (`database.py`) and Pydantic (`schemas.py`) definitions.
+- **`models/`**: SQLAlchemy (`database.py`) and Pydantic (`schemas.py`, `external_schemas.py`) definitions.
 - **`scripts/`**: Maintenance tasks (`seed_db.py`, `enrich_vectors.py`, `popular_scraper.py`, `reset_profiles.py`, `test_magic_box.py`).
 
 ### Frontend (`/frontend`)
@@ -267,7 +286,7 @@ We implement a "Snapshot & Rotation" strategy to ensure data resilience:
 
 ---
 
-## 8. Observability & Tracing
+### 8. Observability & Tracing
 
 ### Architecture
 VectorBox uses **OpenTelemetry SDK** with a **Jaeger All-in-One** backend for distributed tracing. Every request produces a nested timeline visible in the Jaeger UI.
@@ -282,6 +301,11 @@ VectorBox uses **OpenTelemetry SDK** with a **Jaeger All-in-One** backend for di
 | **Trident B** | Custom (`telemetry.py`) | `trident.signal_b.your_taste` |
 | **Trident C** | Custom (`telemetry.py`) | `trident.signal_c.hidden_gems` |
 
+### Deep Observability (v1.2+)
+- **Signal Timing:** The `RecommendationService` logs sub-millisecond execution times for each Trident signal with the `[TRIDENT]` prefix.
+- **Circuit Breakers:** `TMDBClient` utilizes circuit breakers for rate limit protection, logging `CRITICAL` alerts if the breaker trips.
+- **Deep Health Checks:** `/health` endpoint performs active ping checks on Postgres, Redis, and Qdrant, returning `503 Service Unavailable` with specific failure details if any dependency is down.
+
 ### Span Attributes
 All Trident spans include: `user_id`, `country`, `result_count`. Signal A also includes `anchor_movie`. Signal B includes `cluster_id`.
 
@@ -292,4 +316,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**End of Project Master Guide**
+**Last Updated:** 2026-03-03
+**Maintained By:** VectorBox Team

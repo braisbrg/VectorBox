@@ -5,9 +5,9 @@ import { Providers } from "./providers";
 import { LanguageProvider } from "@/components/language-provider";
 import { MobileNavProvider } from "@/components/mobile-nav-context";
 
-const inter = Inter({ subsets: ["latin"] });
-const spaceGrotesk = Space_Grotesk({ subsets: ["latin"], variable: "--font-space" });
-const spaceMono = Space_Mono({ weight: ["400", "700"], subsets: ["latin"], variable: "--font-mono-acid" });
+const inter = Inter({ subsets: ["latin"], display: "optional" });
+const spaceGrotesk = Space_Grotesk({ subsets: ["latin"], variable: "--font-space", display: "optional" });
+const spaceMono = Space_Mono({ weight: ["400", "700"], subsets: ["latin"], variable: "--font-mono-acid", display: "optional" });
 
 export const metadata: Metadata = {
     title: "VectorBox",

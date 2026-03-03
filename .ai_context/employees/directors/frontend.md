@@ -2,7 +2,7 @@
 
 > **Role:** Frontend Technical Lead
 > **Domain:** React, Next.js, Styling, Animation, Mobile UX
-> **Last Updated:** 2026-02-18
+> **Last Updated:** 2026-03-03
 
 This file contains all frontend-specific rules, design system specifications, and mobile guidelines for the VectorBox project.
 
@@ -146,8 +146,12 @@ engine-strict=true
 minimum-release-age-exclude=browserslist caniuse-lite electron-to-chromium node-releases core-js-compat
 ```
 
-### React 19 Peer Dependencies
-Handle peer dependency warnings via `pnpm.overrides` in `package.json` to accept Next.js 16.1.6 patches.
+### Package Management
+*   **pnpm** is strictly enforced.
+*   Enforce `minimum-release-age=1440` (24h) via `.npmrc` to prevent supply chain injection for newly published packages (except safe build-tools).
+
+### API Client Security (v1.2)
+- **No User IDs:** Do not pass `userId` to API client methods. The backend derives identity strictly from the secure `vectorbox_token` cookie to prevent IDOR vulnerabilities.
 
 ---
 
@@ -160,6 +164,7 @@ Handle peer dependency warnings via `pnpm.overrides` in `package.json` to accept
 | `feed-container.tsx` | `components/` | Main scrollable feed |
 | `recommendation-grid.tsx` | `components/` | Movie card grid |
 | `ProgressModal` | `components/` | Real-time task progress display |
+| `AcidError` | `components/ui/` | Graceful, styled error boundary interceptor |
 
 ### Directory Structure
 ```
@@ -170,6 +175,25 @@ frontend/
 ├── lib/           # Utilities and helpers
 └── messages/      # i18n translation files (en.json, es.json)
 ```
+
+---
+
+## 7. Web Quality Standards (Addy Osmani Toolkit)
+
+> [!WARNING]
+> All new frontend code MUST pass the Web Quality Baseline (Performance, Accessibility, Best Practices).
+
+1. **Performance (Core Web Vitals):**
+   - **LCP:** Eagerly load above-the-fold images (`priority`, `fetchPriority="high"`).
+   - **INP:** Never use `useState` for high-frequency continuous events (like `mousemove`). Mutate DOM directly via `useRef` inside `requestAnimationFrame`.
+   - **CLS:** Apply `display: "optional"` to all `next/font` imports.
+2. **Accessibility:**
+   - **Keyboard traps:** Use `e.target !== e.currentTarget` to prevent programmatic button events from bubbling up to parent containers.
+   - **ARIA:** Wrap dynamic loading/empty states in `aria-live="polite"`. Add `role="dialog"` to modals.
+   - **Contrast:** `text-zinc-400` is the absolute minimum lightness on a black background for small text.
+3. **Best Practices:**
+   - **Resilience:** All Next.js Server-Side fetch calls MUST wrap an `AbortController` with a strictly enforced timeout (e.g., 10s) to prevent hanging the internal worker threads.
+   - **Hygiene:** Strip development `console.log` from interceptors and production error paths.
 
 ---
 

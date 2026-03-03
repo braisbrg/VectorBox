@@ -242,6 +242,8 @@ export function MovieCard({
                     className={`object-cover transition-transform duration-300 ease-out group-hover/card:scale-110 group-hover/card:grayscale group-hover/card:contrast-125 ${isFlipped ? 'opacity-10' : 'opacity-100'}`}
                     sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
                     priority={priority}
+                    decoding={priority ? "sync" : "async"}
+                    fetchPriority={priority ? "high" : "auto"}
                     onError={() => setImageError(true)}
                 />
             ) : (
@@ -378,9 +380,9 @@ export function MovieCard({
                         {displayTitle}
                     </h4>
 
-                    <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-500 mb-3">
-                        {year && <span className="bg-zinc-900 px-1 py-0.5 text-zinc-400">{year}</span>}
-                        {runtime && <span className="text-zinc-500">{runtime}m</span>}
+                    <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-400 mb-3">
+                        {year && <span className="bg-zinc-900 px-1 py-0.5 text-zinc-300">{year}</span>}
+                        {runtime && <span className="text-zinc-400">{runtime}m</span>}
                     </div>
 
                     {displayOverview && (
@@ -438,6 +440,7 @@ export function MovieCard({
                 role="link"
                 tabIndex={0}
                 onKeyDown={(e) => {
+                    if (e.target !== e.currentTarget) return; // Prevent children (buttons) from triggering parent's click on Enter
                     if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         router.push(href);

@@ -5,9 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 
 from config import get_db
+from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service
 from services.nlp_search import parse_user_intent, search_with_reasoning
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
+from services.tmdb_client import TMDBClient
 from models.database import UserRating, Movie
 from sqlalchemy import select, or_
 
@@ -23,7 +25,10 @@ class SearchResponse(BaseModel):
     results: List[dict]
     intent: dict
 
-
+def filter_es_providers(all_providers: List[str]) -> List[str]:
+    """Pure function to filter provider names against the ES whitelist."""
+    es_whitelist = {"Netflix", "Amazon Prime Video", "HBO Max", "Disney+", "Apple TV", "Movistar+", "Filmin"}
+    return [p for p in all_providers if p in es_whitelist]
 
 # Re-implementing with proper decorator injection
 from slowapi import Limiter
@@ -35,7 +40,10 @@ limiter = Limiter(key_func=get_remote_address)
 async def natural_language_search(
     request: Request, # Request object is required for slowapi
     search_req: SearchRequest, # Renamed to avoid conflict
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding_service: EmbeddingService = Depends(get_embedding_service)
 ):
     """
     Advanced natural language search with semantic expansion and vibe filtering.
@@ -44,9 +52,6 @@ async def natural_language_search(
     """
     try:
         # 0. Check if query is a specific movie title (Item-to-Item Search)
-        from services.tmdb_client import TMDBClient
-        tmdb = TMDBClient()
-        
         potential_movie_id = None
         potential_movie_title = None
         
@@ -75,7 +80,6 @@ async def natural_language_search(
         if potential_movie_id:
             logger.info(f"Switching to Item-to-Item search based on movie: {potential_movie_title}")
             
-            qdrant = QdrantService()
             # Try to get vector for this movie
             vector = await qdrant.get_vector(potential_movie_id)
             
@@ -117,7 +121,6 @@ async def natural_language_search(
                         "vote_average": metadata.get("vote_average")
                     })
                 
-                await tmdb.close()
                 return SearchResponse(
                     results=results,
                     intent={
@@ -162,7 +165,6 @@ async def natural_language_search(
         if potential_movie_id:
             logger.info(f"Performing Item-to-Item search for: {potential_movie_title}")
             
-            qdrant = QdrantService()
             # Try to get vector for this movie
             vector = await qdrant.get_vector(potential_movie_id)
             
@@ -192,7 +194,6 @@ async def natural_language_search(
                         "vote_average": metadata.get("vote_average")
                     })
                 
-                await tmdb.close()
                 return SearchResponse(
                     results=results,
                     intent={
@@ -202,7 +203,6 @@ async def natural_language_search(
                 )
         
         # 2. Generate Embedding for the EXPANDED semantic query
-        embedding_service = EmbeddingService()
         query_vector = embedding_service.generate_embedding({
             "title": intent.semantic_query,
             "overview": intent.semantic_query,
@@ -255,7 +255,6 @@ async def natural_language_search(
             qdrant_filters["exclude_tmdb_ids"] = watched_tmdb_ids
             
         # 4. Search Qdrant with Advanced Filters
-        qdrant = QdrantService()
         raw_results = await qdrant.search_similar(
             query_vector=query_vector,
             limit=20,
@@ -284,6 +283,22 @@ async def natural_language_search(
             for m in db_res.scalars().all():
                 db_movies[m.tmdb_id] = m
 
+        import asyncio
+        missing_details_ids = []
+        for r in raw_results:
+            metadata = r.get("metadata", {})
+            tmdb_id = metadata.get("tmdb_id") or r["movie_id"]
+            if (not metadata.get("poster_path") or not metadata.get("overview")) and tmdb_id:
+                missing_details_ids.append(tmdb_id)
+            
+        tmdb_details_map = {}
+        if missing_details_ids:
+            tasks = [tmdb.get_movie_details(mid) for mid in missing_details_ids]
+            results_details = await asyncio.gather(*tasks, return_exceptions=True)
+            for tmdb_id, res in zip(missing_details_ids, results_details):
+                if not isinstance(res, Exception) and res:
+                    tmdb_details_map[tmdb_id] = res
+
         for r in raw_results:
             metadata = r.get("metadata", {})
             tmdb_id = metadata.get("tmdb_id") or r["movie_id"]
@@ -294,16 +309,12 @@ async def natural_language_search(
 
             # Fix missing details (poster or overview)
             if (not poster_path or not metadata.get("overview")) and tmdb_id:
-                try:
-                    # Try to get details (cached)
-                    details = await tmdb.get_movie_details(tmdb_id)
-                    if details:
-                        if not poster_path:
-                            poster_path = details.get("poster_path")
-                        if not metadata.get("overview"):
-                            metadata["overview"] = details.get("overview", "")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch details for {tmdb_id}: {e}")
+                details = tmdb_details_map.get(tmdb_id)
+                if details:
+                    if not poster_path:
+                        poster_path = details.get("poster_path")
+                    if not metadata.get("overview"):
+                        metadata["overview"] = details.get("overview", "")
 
             # Normalize score
             min_sim = 0.2
@@ -354,14 +365,10 @@ async def natural_language_search(
             }
             results.append(result)
         
-        await tmdb.close()
-            
         # 6. Fetch Streaming Providers
         try:
             from services.provider_service import ProviderService
-            # Ensure TMDB client is available
-            tmdb_for_providers = TMDBClient()
-            provider_service = ProviderService(db, tmdb_for_providers)
+            provider_service = ProviderService(db, tmdb)
             
             # Get IDs
             result_ids = [r["movie_id"] for r in results if r["movie_id"]]
@@ -369,16 +376,18 @@ async def natural_language_search(
             # Fetch batch (Default to ES for now as per user context)
             providers_map = await provider_service.get_providers_batch(result_ids, "ES")
             
+            es_whitelist = {"Netflix", "Amazon Prime Video", "HBO Max", "Disney+", "Apple TV", "Movistar+", "Filmin"}
+            
             # Attach to results
             for r in results:
                 mid = r["movie_id"]
                 if mid in providers_map:
                     # Extract provider names
-                    r["streaming_providers"] = [p["provider_name"] for p in providers_map[mid]]
+                    all_providers = [p["provider_name"] for p in providers_map[mid]]
+                    r["streaming_providers"] = filter_es_providers(all_providers)
                 else:
                     r["streaming_providers"] = []
                     
-            await tmdb_for_providers.close()
             
         except Exception as e:
             logger.error(f"Failed to fetch providers for search results: {e}")
@@ -425,7 +434,10 @@ async def natural_language_search(
 @router.get("/movies", response_model=SearchResponse)
 async def search_movies(
     query: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding_service: EmbeddingService = Depends(get_embedding_service)
 ):
     """
     Hybrid search:
@@ -434,8 +446,6 @@ async def search_movies(
     3. Auto-populate Qdrant with new TMDB discoveries
     """
     try:
-        qdrant = QdrantService()
-        embedding_service = EmbeddingService()
         
         # 1. Generate query vector
         query_vector = embedding_service.generate_embedding({
@@ -516,31 +526,33 @@ async def search_movies(
         # 3. Fallback to TMDB if few results
         if len(results) < 5:
             logger.info(f"Few local results ({len(results)}), searching TMDB for: {query}")
-            from services.tmdb_client import TMDBClient
-            tmdb = TMDBClient()
             
             try:
                 # Search TMDB
                 tmdb_results = await tmdb._make_request("/search/movie", {"query": query})
                 
                 if tmdb_results and tmdb_results.get("results"):
-                    for tmdb_movie in tmdb_results["results"][:5]: # Process top 5 matches
-                        tmdb_id = tmdb_movie["id"]
+                    import asyncio
+                    unseen_ids = [m["id"] for m in tmdb_results["results"][:5] if int(m["id"]) not in seen_ids]
+                    
+                    if unseen_ids:
+                        detail_tasks = [tmdb.get_movie_details(mid) for mid in unseen_ids]
+                        kw_tasks = [tmdb.get_movie_keywords(mid) for mid in unseen_ids]
                         
-                        if int(tmdb_id) in seen_ids:
-                            continue
+                        details_results = await asyncio.gather(*detail_tasks, return_exceptions=True)
+                        kw_results = await asyncio.gather(*kw_tasks, return_exceptions=True)
+                        
+                        for tmdb_id, details, keywords_res in zip(unseen_ids, details_results, kw_results):
+                            if isinstance(details, Exception) or not details:
+                                continue
                             
-                        # Fetch full details for embedding
-                        details = await tmdb.get_movie_details(tmdb_id)
-                        if not details:
-                            continue
+                            keywords = keywords_res if not isinstance(keywords_res, Exception) else []
                             
-                        # Extract metadata
-                        title = details.get("title")
-                        overview = details.get("overview", "")
-                        year = int(details["release_date"][:4]) if details.get("release_date") else None
-                        genres = [g["name"] for g in details.get("genres", [])]
-                        keywords = await tmdb.get_movie_keywords(tmdb_id)
+                            # Extract metadata
+                            title = details.get("title")
+                            overview = details.get("overview", "")
+                            year = int(details["release_date"][:4]) if details.get("release_date") else None
+                            genres = [g["name"] for g in details.get("genres", [])]
                         
                         # Generate embedding
                         vector = embedding_service.generate_embedding({
@@ -583,8 +595,6 @@ async def search_movies(
                         
             except Exception as e:
                 logger.error(f"TMDB fallback failed: {e}")
-            finally:
-                await tmdb.close()
         
         return SearchResponse(
             results=results,
