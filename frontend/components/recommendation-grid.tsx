@@ -216,13 +216,24 @@ export function RecommendationGrid({
                                         >
                                             <option value="">{t("grid.all_genres")}</option>
                                             <option value="Action">Action</option>
+                                            <option value="Adventure">Adventure</option>
+                                            <option value="Animation">Animation</option>
                                             <option value="Comedy">Comedy</option>
-                                            <option value="Drama">Drama</option>
-                                            <option value="Horror">Horror</option>
-                                            <option value="Sci-Fi">Sci-Fi</option>
-                                            <option value="Thriller">Thriller</option>
-                                            <option value="Romance">Romance</option>
+                                            <option value="Crime">Crime</option>
                                             <option value="Documentary">Documentary</option>
+                                            <option value="Drama">Drama</option>
+                                            <option value="Family">Family</option>
+                                            <option value="Fantasy">Fantasy</option>
+                                            <option value="History">History</option>
+                                            <option value="Horror">Horror</option>
+                                            <option value="Music">Music</option>
+                                            <option value="Mystery">Mystery</option>
+                                            <option value="Romance">Romance</option>
+                                            <option value="Science Fiction">Science Fiction</option>
+                                            <option value="Thriller">Thriller</option>
+                                            <option value="TV Movie">TV Movie</option>
+                                            <option value="War">War</option>
+                                            <option value="Western">Western</option>
                                         </select>
                                         <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
                                             <svg className="w-4 h-4 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">

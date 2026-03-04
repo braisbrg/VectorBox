@@ -90,7 +90,7 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Observability:** **OpenTelemetry + Jaeger**. Full distributed tracing across all services.
   - **Exporter:** OTLP/gRPC → Jaeger All-in-One (`jaegertracing/all-in-one`).
   - **Auto-Instrumented:** FastAPI (HTTP spans), SQLAlchemy (DB query spans), Redis (cache spans).
-  - **Custom Spans:** Trident Engine signals (A, B, C) each produce named spans with `user_id` and `result_count` attributes.
+  - **Custom Spans:** Trident Engine signals (A, Auteur, C) each produce named spans with `user_id` and `result_count` attributes.
   - **Jaeger UI:** `http://localhost:16686` — search by service `vectorbox-backend`.
 - **Security Tools:**
   - **Husky & Lint-Staged:** Pre-commit hooks for code quality (ESLint v9 pinned).
@@ -118,10 +118,10 @@ The feed is composed of multiple "Sections", generated largely in parallel by `F
 | :--- | :--- |
 | **Available Now** | **Priority Row.** Fetches user's *unwatched* Watchlist items that are currently streaming on their active providers (Netflix, etc.). |
 | **Popular on Letterboxd** | Fetches trending movies from TMDB/Letterboxd (cached via `ThreadingService`). |
-| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated movie from user history, generates a *content-only* vector (ignoring title), and finds similar vectors in Qdrant. |
+| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated or liked movie from user history, generates a *content-only* vector (ignoring title), and finds similar vectors in Qdrant. Deduplicated into a single `_item_to_item_search()` helper in `search.py`. |
 | **Your Taste ([Cluster])** | **Centroid Search.** Picks one of the user's "Taste Clusters" (e.g., "80s Sci-Fi"), computes the centroid of that cluster, and searches Qdrant. |
-| **Hidden Gems** | **Score-to-Hype Filtering (v1.1).** Searches Qdrant near user's global profile centroid with strict filters: `vectorbox_score > 75` (Quality Floor), `tmdb_popularity < 20` (Hype Ceiling), `vote_count > 500` (Validity Floor). Identifies critically acclaimed but underexposed films. |
-| **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic (see Algorithms) to find movies similar to the user's favorites. |
+| **Hidden Gems** | **Score-to-Hype Filtering (v1.2).** Searches Qdrant near user's global profile centroid with **dynamic thresholds** based on user's movie count: Cold start (<30 movies) uses `score > 60, popularity < 40, votes > 200`; Growing (30–99) uses `score > 65, popularity < 30, votes > 300`; Rich (100+) uses `score > 75, popularity < 20, votes > 500`. Identifies critically acclaimed but underexposed films. |
+| **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic (see Algorithms) to find movies similar to the user's favorites. Runs SEQUENTIALLY after the parallel phase because it consumes `seen_ids`. |
 | **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. |
 | **Random Picks** | Random selection from top 500 "VectorBox Scored" movies in DB. |
 
@@ -149,6 +149,7 @@ A natural language search interface powered by `nlp_search.py` with a 4-Tier Cas
 - **Endpoints:** `POST /upload/export` returns `task_id`, `GET /tasks/{task_id}` polls progress.
 - **Frontend:** `ProgressModal` component polls and displays real-time progress with step descriptions ("Enriching", "Clustering"). Replaces static success messages.
 - **Enrichment (v1.2):** `enrich_movie` self-healing logic now runs as a **Background Task** (FastAPI) to prevent blocking the main thread during recommendation generation.
+  - **Rule:** Background tasks MUST own their own `AsyncSession`. NEVER reuse the request-scoped `db` session, as it is torn down when the HTTP response returns (causing `MissingGreenlet` errors).
 
 ---
 
@@ -156,9 +157,9 @@ A natural language search interface powered by `nlp_search.py` with a 4-Tier Cas
 
 ### The "Trident" Hybrid System (Fully Operational)
 VectorBox generates recommendations using three distinct engines fused via **Reciprocal Rank Fusion (RRF)**:
-1.  **Signal A: Vector (Vibe):** Qdrant search using dense embeddings. Captures "Vibe" and plot similarity.
-2.  **Signal B: Auteur (Directors):** Boosts movies by directors the user loves (explicit check against user's high-rated history).
-3.  **Signal C: Crowd (TMDB):** Collaborates filtering from TMDB's vast user data ("People who liked X also liked Y") to ground recommendations in general popularity.
+1.  **Signal A: Vector (Vibe):** Qdrant search using dense embeddings. Captures "Vibe" and plot similarity. Seeds from movies rated 4+ stars **or** explicitly liked (`is_liked`).
+2.  **Signal Auteur (Directors):** Boosts movies by directors the user loves (explicit check against user's high-rated history).
+3.  **Signal C: Hidden Gems:** Score-to-Hype ratio filtering with **dynamic thresholds** that adapt to user's movie count (see Feed section table). Identifies critically acclaimed but underexposed films.
 
 ### The Scoring Formula
 Every recommendation gets a final score (0-100%) derived from:
@@ -193,9 +194,14 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
     -   **Postgres:** Stores metadata in `movies` table.
     -   **Qdrant:** Stores vector with payload (TMDB ID, Genres, Year).
 
-### Schema Key Points
+### Schema & ID Type Key Points
+- **Rule of Thumb:** VectorBox uses TWO different movie ID spaces. Mixing them causes silent deduplication failures.
+  - `internal_id` → `Movie.id` (PostgreSQL auto-increment)
+  - `tmdb_id` → `Movie.tmdb_id` (TMDB API identifier)
+  - `seen_ids` set (feed deduplication) MUST use `tmdb_id`.
+  - `watched_ids` set MUST use `internal_id`.
 - **`movies` table:** Stores `vectorbox_score`, extensive ratings (IMDb, RT, Metacritic), and localized `overview_es`.
-- **`user_ratings` table:** Links Users to Movies. Contains `is_watched`, `is_watchlist`, `rating`, `watched_date`.
+- **`user_ratings` table:** Links Users to Movies. Contains `is_watched`, `is_watchlist`, `rating`, `watched_date`. `movie_id` is an FK to `Movie.id` (internal).
 - **`user_clusters` table:** Stores the computed K-Means centroids and labels for each user.
 
 ### Caching Strategy
@@ -219,7 +225,8 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **HttpOnly:** Prevents XSS token theft.
 
 ### Supply Chain Security
-- **`minimum-release-age`:** Configured in `frontend/.npmrc` to block packages published < 24 hours ago.
+- **Release Age Policy:** Differentiated cooldown rules applied via `.github/dependabot.yml` and `backend/pip.conf` (global pip minimum-release-age: 720h / 30 days).
+- **Frontend Safety:** `frontend/.npmrc` enforces `frozen-lockfile=true` and `audit=true` to prevent unauthorized package mutations. Local installs must use `pnpm install --no-frozen-lockfile`.
 - **Audits:**
   - `audit_backend.ps1` runs `pip-audit --strict`.
   - Frontend `package.json` runs `pnpm audit`.
@@ -316,5 +323,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-03-04
+**Last Updated:** 2026-03-04 (Post Search & Feed Fixes)
 **Maintained By:** VectorBox Team

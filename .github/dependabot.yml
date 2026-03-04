@@ -1,31 +1,126 @@
 version: 2
 updates:
-  # 1. Docker - Check for base image updates (postgres, python-slim)
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
 
-  # 2. Frontend - NPM ecosystem (handles pnpm-lock.yaml)
-  - package-ecosystem: "npm"
-    directory: "/frontend"
-    schedule:
-      interval: "weekly"
-    # Group non-security updates to avoid noise
-    groups:
-      dependencies:
-        patterns:
-          - "*"
-    open-pull-requests-limit: 10
-
-  # 3. Backend - PIP ecosystem (handles requirements.txt)
   - package-ecosystem: "pip"
     directory: "/backend"
     schedule:
       interval: "weekly"
     groups:
-      dependencies:
+      infrastructure-critical:
         patterns:
-          - "*"
-    open-pull-requests-limit: 10
+          - "fastapi"
+          - "sqlalchemy"
+          - "redis"
+          - "psycopg"
+          - "psycopg2-binary"
+          - "alembic"
+          - "bcrypt"
+          - "cryptography"
+          - "pyjwt"
+          - "sentence-transformers"
+          - "scikit-learn"
+          - "qdrant-client"
+          - "opentelemetry-*"
+        update-types:
+          - "minor"
+          - "patch"
+        cooldown:
+          semver-patch: "30 days"
+          semver-minor: "60 days"
+      security-deps:
+        patterns:
+          - "bcrypt"
+          - "cryptography"
+          - "pyjwt"
+          - "pip-audit"
+        update-types:
+          - "minor"
+          - "patch"
+        cooldown:
+          semver-patch: "7 days"
+          semver-minor: "21 days"
+      dev-tools:
+        patterns:
+          - "pytest"
+          - "pytest-asyncio"
+          - "pip-audit"
+          - "tqdm"
+        update-types:
+          - "minor"
+          - "patch"
+        cooldown:
+          semver-patch: "7 days"
+          semver-minor: "14 days"
+    ignore:
+      - dependency-name: "fastapi"
+        versions: [">=1"]
+      - dependency-name: "fastapi[all]"
+        versions: [">=1"]
+      - dependency-name: "pandas"
+        versions: [">=3"]
+      - dependency-name: "sentence-transformers"
+        versions: [">=4"]
+      - dependency-name: "redis"
+        versions: [">=5"]
+      - dependency-name: "bcrypt"
+        versions: [">=5"]
+      - dependency-name: "groq"
+        versions: [">=1"]
+      - dependency-name: "openai"
+        versions: [">=3"]
+      - dependency-name: "curl-cffi"
+        versions: [">=1"]
+
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    groups:
+      frontend-ui:
+        patterns:
+          - "lucide-react"
+          - "tailwindcss"
+          - "tailwind-merge"
+          - "@tailwindcss/postcss"
+          - "postcss"
+          - "framer-motion"
+        update-types:
+          - "minor"
+          - "patch"
+        cooldown:
+          semver-patch: "7 days"
+          semver-minor: "14 days"
+      frontend-core:
+        patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+          - "axios"
+          - "@tanstack/react-query"
+          - "typescript"
+          - "@types/*"
+        update-types:
+          - "minor"
+          - "patch"
+        cooldown:
+          semver-patch: "14 days"
+          semver-minor: "30 days"
+      frontend-devtools:
+        patterns:
+          - "eslint"
+          - "lint-staged"
+          - "prettier"
+        update-types:
+          - "minor"
+          - "patch"
+        cooldown:
+          semver-patch: "7 days"
+          semver-minor: "14 days"
+    ignore:
+      - dependency-name: "eslint"
+        versions: [">=10"]

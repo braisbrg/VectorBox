@@ -2,7 +2,7 @@
 
 > **Role:** Data Science & ML Lead
 > **Domain:** Recommendation Algorithms, Vector Search, Scoring Math
-> **Last Updated:** 2026-03-03
+> **Last Updated:** 2026-03-04
 
 This file contains all data science logic, mathematical formulas, and Qdrant configuration for the VectorBox recommendation engine.
 
@@ -14,9 +14,9 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Signal A      │    │   Signal B      │    │   Signal C      │
-│   VECTOR        │    │   AUTEUR        │    │   CROWD         │
-│   (Vibe)        │    │   (Directors)   │    │   (TMDB)        │
+│   Signal A      │    │ Signal Auteur   │    │   Signal C      │
+│   VECTOR        │    │   DIRECTORS     │    │   HIDDEN GEMS   │
+│   (Vibe)        │    │   (Directors)   │    │   (Score/Hype)  │
 └────────┬────────┘    └────────┬────────┘    └────────┬────────┘
          │                      │                      │
          └──────────────────────┼──────────────────────┘
@@ -36,19 +36,29 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 - **Source:** Qdrant dense embeddings (384-dimensional)
 - **Purpose:** Captures plot similarity, thematic "vibe", and genre alignment
 - **Model:** `all-MiniLM-L6-v2` via Sentence-Transformers
+- **Seeding:** Movies rated 4+ stars **OR** explicitly liked (`is_liked`)
 
-### Signal B: Auteur (Directors)
+### Signal Auteur (Directors)
 - **Source:** User's high-rated history
 - **Purpose:** Boosts movies by directors the user loves
 - **Logic:** Explicit check: "Has this director made a movie the user rated 4+ stars?"
+- **Note:** Renamed from "Signal B" in `recommendation_service.py` logs to avoid collision with Signal B (K-Means centroid) in `recommendation_engine.py`.
 
-### Signal C: Crowd (TMDB)
-- **Source:** TMDB collaborative data
-- **Purpose:** "People who liked X also liked Y"
-- **Logic:** Grounds recommendations in general popularity patterns
+### Signal C: Hidden Gems
+- **Source:** Score-to-Hype ratio filtering
+- **Purpose:** Identifies critically acclaimed but underexposed films
+- **Logic:** Uses **dynamic thresholds** based on user's movie count:
+
+| Profile | Movies | Min Score | Max Popularity | Min Votes |
+| :--- | :--- | :---: | :---: | :---: |
+| Cold Start | < 30 | 60 | 40 | 200 |
+| Growing | 30–99 | 65 | 30 | 300 |
+| Rich | 100+ | 75 | 20 | 500 |
+
+- **Implementation:** `_get_signal_c_thresholds()` in `recommendation_engine.py`
 
 ### Observability Logs (The `[TRIDENT]` Prefix)
-- **Requirement:** All Trident signal execution times (A, B, C) MUST be logged using the `[TRIDENT]` prefix to track sub-millisecond performance of each individual engine phase.
+- **Requirement:** All Trident signal execution times (A, Auteur, C) MUST be logged using the `[TRIDENT]` prefix to track performance of each individual engine phase.
 
 ### Reciprocal Rank Fusion (RRF)
 ```python
@@ -123,7 +133,7 @@ An aggregated quality score from multiple review sources:
 ### Scale
 - **Range:** 0-100
 - **Sweet Spot:** 65+ (sigmoid midpoint)
-- **Quality Floor:** 75+ for "Hidden Gems" section
+- **Quality Floor:** Dynamic (60–75+) for "Hidden Gems" section (depends on user profile size)
 
 ---
 
@@ -232,7 +242,7 @@ docker-compose exec backend python scripts/create_qdrant_indexes.py
 | :--- | :--- | :--- |
 | **Because you watched [X]** | Item-Item CF | Content-only vector (ignores title) |
 | **Your Taste ([Cluster])** | Centroid Search | User's taste cluster centroid |
-| **Hidden Gems** | Score-to-Hype Filter | `score > 75`, `popularity < 20`, `votes > 500` |
+| **Hidden Gems** | Score-to-Hype Filter | Dynamic: Cold `60/40/200`, Growing `65/30/300`, Rich `75/20/500` |
 | **Deep Dive** | Super Seed | Weighted favorites |
 | **Comfort Zone** | Anti-Recommendation | Non-overlapping genres |
 

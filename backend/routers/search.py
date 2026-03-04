@@ -3,6 +3,8 @@ from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
+import asyncio
+from difflib import SequenceMatcher
 
 from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service
@@ -10,6 +12,7 @@ from services.nlp_search import parse_user_intent, search_with_reasoning
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
+from services.provider_service import ProviderService
 from models.database import UserRating, Movie
 from sqlalchemy import select, or_
 
@@ -20,6 +23,7 @@ class SearchRequest(BaseModel):
     query: str
     user_id: int
     use_deep_analysis: Optional[bool] = False
+    country_code: Optional[str] = "ES"
 
 class SearchResponse(BaseModel):
     results: List[dict]
@@ -29,6 +33,55 @@ def filter_es_providers(all_providers: List[str]) -> List[str]:
     """Pure function to filter provider names against the ES whitelist."""
     es_whitelist = {"Netflix", "Amazon Prime Video", "HBO Max", "Disney+", "Apple TV", "Movistar+", "Filmin"}
     return [p for p in all_providers if p in es_whitelist]
+
+
+async def _item_to_item_search(
+    movie_id: int,
+    movie_title: str,
+    qdrant: QdrantService,
+    tmdb: TMDBClient,
+) -> Optional[SearchResponse]:
+    """Shared helper for Item-to-Item recommendation (deduplicated)."""
+    vector = await qdrant.get_vector(movie_id)
+    if not vector:
+        return None
+    raw_results = await qdrant.search_similar(
+        query_vector=vector,
+        limit=20,
+        score_threshold=0.4,
+        filters={"exclude_tmdb_ids": [movie_id]}
+    )
+    results = []
+    for r in raw_results:
+        metadata = r.get("metadata", {})
+        # Normalized scoring (same formula as Tier 1 semantic search)
+        min_sim, max_sim = 0.2, 0.7
+        raw_score = r["score"]
+        if raw_score > max_sim:
+            final_score = min(99, 90 + ((raw_score - max_sim) * 100))
+        else:
+            normalized = max(0.0, min(1.0,
+                (raw_score - min_sim) / (max_sim - min_sim)))
+            final_score = 60 + (normalized * 30)
+        results.append({
+            "movie_id": metadata.get("tmdb_id") or r["movie_id"],
+            "title": metadata.get("title", "Unknown"),
+            "overview": metadata.get("overview", ""),
+            "poster_path": metadata.get("poster_path"),
+            "score": round(final_score, 0),
+            "year": metadata.get("year"),
+            "runtime": metadata.get("runtime"),
+            "genres": metadata.get("genres", []),
+            "vote_average": metadata.get("vote_average"),
+        })
+    return SearchResponse(
+        results=results,
+        intent={
+            "semantic_query": f"Movies like {movie_title}",
+            "reasoning": f"Showing movies similar to '{movie_title}'."
+        }
+    )
+
 
 # Re-implementing with proper decorator injection
 from slowapi import Limiter
@@ -79,55 +132,11 @@ async def natural_language_search(
         # If we found a specific movie, perform Item-to-Item recommendation
         if potential_movie_id:
             logger.info(f"Switching to Item-to-Item search based on movie: {potential_movie_title}")
-            
-            # Try to get vector for this movie
-            vector = await qdrant.get_vector(potential_movie_id)
-            
-            if vector:
-                # Search similar movies
-                raw_results = await qdrant.search_similar(
-                    query_vector=vector,
-                    limit=20,
-                    score_threshold=0.4,
-                    filters={"exclude_tmdb_ids": [potential_movie_id]} # Exclude the seed movie
-                )
-                
-                # Transform and return
-                results = []
-                for r in raw_results:
-                    metadata = r.get("metadata", {})
-                    # Normalize score
-                    min_sim = 0.2
-                    max_sim = 0.7
-                    raw_score = r["score"]
-                    
-                    if raw_score > max_sim:
-                        final_score = 90 + ((raw_score - max_sim) * 100)
-                        final_score = min(99, final_score)
-                    else:
-                        normalized = (raw_score - min_sim) / (max_sim - min_sim)
-                        normalized = max(0.0, min(1.0, normalized))
-                        final_score = 60 + (normalized * 30)
-
-                    results.append({
-                        "movie_id": metadata.get("tmdb_id") or r["movie_id"],
-                        "title": metadata.get("title", "Unknown"),
-                        "overview": metadata.get("overview", ""),
-                        "poster_path": metadata.get("poster_path"),
-                        "score": round(final_score, 0),
-                        "year": metadata.get("year"),
-                        "runtime": metadata.get("runtime"),
-                        "genres": metadata.get("genres", []),
-                        "vote_average": metadata.get("vote_average")
-                    })
-                
-                return SearchResponse(
-                    results=results,
-                    intent={
-                        "semantic_query": f"Movies like {potential_movie_title}",
-                        "reasoning": f"Detected exact movie title match: '{potential_movie_title}'. Showing similar movies."
-                    }
-                )
+            result = await _item_to_item_search(
+                potential_movie_id, potential_movie_title, qdrant, tmdb
+            )
+            if result:
+                return result
 
         # 1. Parse Intent with Advanced LLM (Fallback to Semantic Search)
         intent = await parse_user_intent(search_req.query)
@@ -154,53 +163,12 @@ async def natural_language_search(
                     potential_movie_title = tmdb_ref["title"]
                     
             if potential_movie_id:
-                logger.info(f"Switching to Item-to-Item search based on reference: {potential_movie_title}")
-                # ... (reuse the item-to-item logic below or refactor)
-                # Since we are inside the function, we can just set the variables and let the existing block handle it?
-                # No, the existing block is above. We need to duplicate or restructure.
-                # Let's restructure slightly.
-                pass # Fall through to logic below
-
-        # If we found a specific movie (either via exact match or intent reference), perform Item-to-Item recommendation
-        if potential_movie_id:
-            logger.info(f"Performing Item-to-Item search for: {potential_movie_title}")
-            
-            # Try to get vector for this movie
-            vector = await qdrant.get_vector(potential_movie_id)
-            
-            if vector:
-                # Search similar movies
-                # IMPORTANT: Exclude the seed movie itself
-                raw_results = await qdrant.search_similar(
-                    query_vector=vector,
-                    limit=20,
-                    score_threshold=0.4,
-                    filters={"exclude_tmdb_ids": [potential_movie_id]} 
+                logger.info(f"Performing Item-to-Item search for reference: {potential_movie_title}")
+                result = await _item_to_item_search(
+                    potential_movie_id, potential_movie_title, qdrant, tmdb
                 )
-                
-                # Transform and return
-                results = []
-                for r in raw_results:
-                    metadata = r.get("metadata", {})
-                    results.append({
-                        "movie_id": metadata.get("tmdb_id") or r["movie_id"],
-                        "title": metadata.get("title", "Unknown"),
-                        "overview": metadata.get("overview", ""),
-                        "poster_path": metadata.get("poster_path"),
-                        "score": min(round(r["score"] * 100), 100),
-                        "year": metadata.get("year"),
-                        "runtime": metadata.get("runtime"),
-                        "genres": metadata.get("genres", []),
-                        "vote_average": metadata.get("vote_average")
-                    })
-                
-                return SearchResponse(
-                    results=results,
-                    intent={
-                        "semantic_query": f"Movies like {potential_movie_title}",
-                        "reasoning": f"Detected reference to '{potential_movie_title}'. Showing similar movies."
-                    }
-                )
+                if result:
+                    return result
         
         # 2. Generate Embedding for the EXPANDED semantic query
         query_vector = embedding_service.generate_embedding({
@@ -283,7 +251,6 @@ async def natural_language_search(
             for m in db_res.scalars().all():
                 db_movies[m.tmdb_id] = m
 
-        import asyncio
         missing_details_ids = []
         for r in raw_results:
             metadata = r.get("metadata", {})
@@ -331,7 +298,6 @@ async def natural_language_search(
 
             # Title Match Boost (Weighted Average)
             # If query is very similar to title, blend the scores
-            from difflib import SequenceMatcher
             
             # Check similarity
             title_sim = SequenceMatcher(None, search_req.query.lower(), metadata.get("title", "").lower()).ratio()
@@ -367,14 +333,15 @@ async def natural_language_search(
         
         # 6. Fetch Streaming Providers
         try:
-            from services.provider_service import ProviderService
             provider_service = ProviderService(db, tmdb)
             
             # Get IDs
             result_ids = [r["movie_id"] for r in results if r["movie_id"]]
             
-            # Fetch batch (Default to ES for now as per user context)
-            providers_map = await provider_service.get_providers_batch(result_ids, "ES")
+            # Fetch batch (use country_code from request, fallback to ES)
+            providers_map = await provider_service.get_providers_batch(
+                result_ids, search_req.country_code or "ES"
+            )
             
             es_whitelist = {"Netflix", "Amazon Prime Video", "HBO Max", "Disney+", "Apple TV", "Movistar+", "Filmin"}
             
@@ -495,7 +462,6 @@ async def search_movies(
             db_movie = db_movies.get(int(movie_id)) if movie_id else None
 
             # Title Match Boost (Weighted Average)
-            from difflib import SequenceMatcher
             title_sim = SequenceMatcher(None, query.lower(), metadata.get("title", "").lower()).ratio()
             
             final_score = min(round(r["score"] * 100), 100)
@@ -532,7 +498,6 @@ async def search_movies(
                 tmdb_results = await tmdb._make_request("/search/movie", {"query": query})
                 
                 if tmdb_results and tmdb_results.get("results"):
-                    import asyncio
                     unseen_ids = [m["id"] for m in tmdb_results["results"][:5] if int(m["id"]) not in seen_ids]
                     
                     if unseen_ids:
@@ -548,50 +513,50 @@ async def search_movies(
                             
                             keywords = keywords_res if not isinstance(keywords_res, Exception) else []
                             
-                            # Extract metadata
+                            # Extract metadata (FIX 3: now inside the for loop)
                             title = details.get("title")
                             overview = details.get("overview", "")
                             year = int(details["release_date"][:4]) if details.get("release_date") else None
                             genres = [g["name"] for g in details.get("genres", [])]
                         
-                        # Generate embedding
-                        vector = embedding_service.generate_embedding({
-                            "title": title,
-                            "overview": overview,
-                            "genres": genres,
-                            "keywords": keywords
-                        }).tolist()
-                        
-                        # Prepare metadata for Qdrant
-                        payload = {
-                            "title": title,
-                            "overview": overview,
-                            "year": year,
-                            "runtime": details.get("runtime"),
-                            "genres": genres,
-                            "poster_path": details.get("poster_path"),
-                            "vote_average": details.get("vote_average"),
-                            "vote_count": details.get("vote_count"),
-                            "tmdb_id": tmdb_id
-                        }
-                        
-                        # Upsert to Qdrant (Fire & Forget / Async)
-                        # Note: In production, consider background task
-                        await qdrant.upsert_movie_vector(tmdb_id, vector, payload)
-                        logger.info(f"Auto-populated movie: {title} ({tmdb_id})")
-                        
-                        # Add to results
-                        results.append({
-                            "movie_id": tmdb_id,
-                            "title": title,
-                            "overview": overview,
-                            "poster_path": payload["poster_path"],
-                            "score": 100 if query.lower() in title.lower() else 80, # Artificial score for exact matches
-                            "year": year,
-                            "runtime": payload["runtime"],
-                            "genres": genres,
-                            "vote_average": payload["vote_average"]
-                        })
+                            # Generate embedding
+                            vector = embedding_service.generate_embedding({
+                                "title": title,
+                                "overview": overview,
+                                "genres": genres,
+                                "keywords": keywords
+                            }).tolist()
+                            
+                            # Prepare metadata for Qdrant
+                            payload = {
+                                "title": title,
+                                "overview": overview,
+                                "year": year,
+                                "runtime": details.get("runtime"),
+                                "genres": genres,
+                                "poster_path": details.get("poster_path"),
+                                "vote_average": details.get("vote_average"),
+                                "vote_count": details.get("vote_count"),
+                                "tmdb_id": tmdb_id
+                            }
+                            
+                            # Upsert to Qdrant (Fire & Forget / Async)
+                            # Note: In production, consider background task
+                            await qdrant.upsert_movie_vector(tmdb_id, vector, payload)
+                            logger.info(f"Auto-populated movie: {title} ({tmdb_id})")
+                            
+                            # Add to results
+                            results.append({
+                                "movie_id": tmdb_id,
+                                "title": title,
+                                "overview": overview,
+                                "poster_path": payload["poster_path"],
+                                "score": 100 if query.lower() in title.lower() else 80, # Artificial score for exact matches
+                                "year": year,
+                                "runtime": payload["runtime"],
+                                "genres": genres,
+                                "vote_average": payload["vote_average"]
+                            })
                         
             except Exception as e:
                 logger.error(f"TMDB fallback failed: {e}")

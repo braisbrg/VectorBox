@@ -27,9 +27,9 @@ Commands defined in `frontend/package.json`. Run these from the host machine ins
 
 | Network | Command | Description |
 | :--- | :--- | :--- |
-| **Security** | `npm run audit:backend` | Triggers a `pip-audit` scan inside the running backend container to check Python dependencies for CVEs. |
-| **Security** | `npm run audit:container` | Runs `docker scout quickview` to analyze image vulnerabilities. |
-| **Security** | `npm run security-check` | Runs `npm audit` with high severity level. |
+| **Security** | `pnpm run audit:backend` | Triggers a `pip-audit` scan inside the running backend container to check Python dependencies for CVEs. |
+| **Security** | `pnpm run audit:container` | Runs `docker scout quickview` to analyze image vulnerabilities. |
+| **Security** | `pnpm run security-check` | Runs `pnpm audit` with high severity level. |
 | **Dev** | `pnpm dev` | Starts Next.js dev server (Host only). |
 | **Linting** | `pnpm lint` | Runs ESLint analysis. |
 
@@ -55,9 +55,7 @@ Standard auditing protocols for this project.
 
 2.  **Regenerate Lockfile** (after `requirements.txt` changes):
     ```bash
-    docker-compose exec backend pip-compile --generate-hashes \
-      --extra-index-url https://download.pytorch.org/whl/cpu \
-      requirements.txt --output-file requirements.lock
+    docker-compose exec backend pip-compile requirements.txt --generate-hashes -o requirements.lock
     ```
     *Must be committed alongside any `requirements.txt` change.*
 

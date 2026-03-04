@@ -58,7 +58,8 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                 body: JSON.stringify({
                     query: text,
                     user_id: userId,
-                    use_deep_analysis: isDeepAnalysis
+                    use_deep_analysis: isDeepAnalysis,
+                    country_code: "ES",
                 }),
             });
             if (!res.ok) throw new Error(t("search.error"));
