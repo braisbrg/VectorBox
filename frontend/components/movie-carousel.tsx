@@ -41,6 +41,7 @@ interface MovieCarouselProps {
 
 export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore, priority = false }: MovieCarouselProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const isMounted = useRef(true);
     const [localItems, setLocalItems] = useState<FeedItem[]>(items);
     const [localTitle, setLocalTitle] = useState<string>(title);
     const [isRerolling, setIsRerolling] = useState(false);
@@ -51,6 +52,13 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
         setLocalItems(items);
         setLocalTitle(title);
     }, [items, title]);
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            isMounted.current = false;
+        };
+    }, []);
 
     if (localItems.length === 0) return null;
 
@@ -73,14 +81,16 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                 newSection = await getHiddenGemsRecommendation();
             }
 
-            if (newSection) {
+            if (newSection && isMounted.current) {
                 setLocalItems(newSection.items);
                 setLocalTitle(newSection.title);
             }
         } catch (error) {
             console.error("Failed to reroll:", error);
         } finally {
-            setIsRerolling(false);
+            if (isMounted.current) {
+                setIsRerolling(false);
+            }
         }
     };
 

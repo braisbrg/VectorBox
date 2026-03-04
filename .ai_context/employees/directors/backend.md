@@ -139,7 +139,7 @@ backend/
 
 ---
 
-## 5. Authentication Model (v1.1)
+## 5. Authentication Model (v1.2)
 
 ### Netflix-Style Profiles
 - **Username:** User-chosen display name
