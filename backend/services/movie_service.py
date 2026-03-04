@@ -14,9 +14,10 @@ from services.movie_factory import MovieFactory
 logger = logging.getLogger(__name__)
 
 class MovieService:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, tmdb: TMDBClient = None):
         self.db = db
-        self.tmdb = TMDBClient()
+        self._owns_tmdb = tmdb is None
+        self.tmdb = tmdb or TMDBClient()
         self.omdb = OMDbClient()
         self.qdrant = QdrantService()
         self.embedding_service = EmbeddingService()
@@ -143,6 +144,7 @@ class MovieService:
         """
         try:
             changed = False
+            details = None
             
             # 1. Check OMDb / VectorBox Score
             # Re-fetch if missing (None) or if it's 0 (invalid/empty initial fetch)
@@ -248,5 +250,6 @@ class MovieService:
             return False
 
     async def close(self):
-        await self.tmdb.aclose()
+        if self._owns_tmdb:
+            await self.tmdb.aclose()
         await self.omdb.aclose()

@@ -546,7 +546,7 @@ class RecommendationEngine:
         
         watched_result = await db.execute(
             select(UserRating.movie_id)
-            .where(UserRating.user_id == user_id, UserRating.is_watched == True)
+            .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
         )
         watched_ids = set(watched_result.scalars().all())
         
@@ -612,11 +612,11 @@ class RecommendationEngine:
         
         watched_result = await db.execute(
             select(UserRating.movie_id)
-            .where(UserRating.user_id == user_id, UserRating.is_watched == True)
+            .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
         )
         watched_ids = set(watched_result.scalars().all())
         
-        unseen_candidates = [m for m in candidates if m.id not in seen_ids and m.id not in watched_ids]
+        unseen_candidates = [m for m in candidates if m.tmdb_id not in seen_ids and m.id not in watched_ids]
         
         if not unseen_candidates:
             return None

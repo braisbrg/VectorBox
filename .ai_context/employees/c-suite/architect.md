@@ -2,7 +2,7 @@
 
 > **Role:** Chief Software Architect
 > **Authority:** Final say on technology choices, forbidden patterns, and async discipline.
-> **Last Updated:** 2026-03-03
+> **Last Updated:** 2026-03-04
 
 This file serves as the **strict enforcement layer** for the VectorBox project. All code modifications must comply with these rules.
 
@@ -58,6 +58,17 @@ async def bad_process(db: AsyncSession, item_ids: list[int]):
     await asyncio.gather(*[
         do_work(db, id) for id in item_ids  # RACE CONDITION!
     ])
+```
+
+### Background Task Session Ownership
+> [!CAUTION]
+> Background tasks registered via `background_tasks.add_task()` **MUST NOT** receive the request-scoped `db: AsyncSession`. The session is torn down when the response is sent → `MissingGreenlet`.
+
+**Pattern:** Background tasks create their own session:
+```python
+async def enrich_background(movie_ids: list[int]):
+    async with AsyncSessionLocal() as db:  # Task owns this session
+        # ... serial DB work here
 ```
 
 ### Qdrant Vector Database

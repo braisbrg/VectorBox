@@ -101,7 +101,7 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
   - **Chaos Monkey & Whitelist Testing:** `verify_nlp_fallback.py` and `test_es_whitelist.py` ensure LLM failovers trigger correctly and strict ES provider filtering passes.
   - **Frontend Quality Audit:** Strictly adheres to Addy Osmani standards for Core Web Vitals (LCP/INP/CLS), WCAG 2.1 AA Accessibility, and Modern Best Practices.
 
-### Authentication (v1.1)
+### Authentication (v1.2)
 - **Model:** Netflix-style profiles with **Username + 4-digit PIN**.
 - **Hashing:** **passlib[bcrypt]** for PIN hashing.
 - **Sessions:** Long-lived **secret_token (UUID)** stored in cookies.
@@ -243,7 +243,7 @@ The frontend (`next.config.js`) enforces:
 - **Core Web Vitals:** Strict LCP priority loading, direct DOM mutation for continuous interactions (INP), and `display: "optional"` for Custom Fonts (CLS).
 - **Accessibility:** Keyboard event trapping, ARIA Live regions for dynamic search, and strict contrast ratios (`text-zinc-400` on black).
 - **Resilience:** `AbortController` timeouts on all SSR fetch calls.
-- **Error Boundaries:** The custom `<AcidError />` component intercepts API failures (like `503` from Deep Health Checks or `DATA_STREAM_INTERRUPTED`) providing a highly styled, user-friendly recovery UI instead of crashing the React tree.
+- **Error Boundaries:** The custom `<AcidError />` component intercepts API failures (like `503` from Deep Health Checks or `DATA_STREAM_INTERRUPTED`) providing a highly styled, user-friendly recovery UI instead of crashing the React tree. Fully accessible with `role="alert"`, `aria-live="assertive"`, and `aria-atomic="true"`. Includes a `glitch` keyframe animation defined in `globals.css`.
 
 ---
 
@@ -266,7 +266,7 @@ The frontend (`next.config.js`) enforces:
 - **`components/`**: React components.
   - `magic-search.tsx`: The UI for the NLP search bar.
   - `feed-container.tsx`: The main scrollable feed.
-  - `recommendation-grid.tsx`: Dispalys movie cards.
+  - `recommendation-grid.tsx`: Displays movie cards.
 - **`ui/`**: Reusable primitives settings (buttons, dialogs).
 
 ---
@@ -316,5 +316,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-03-03
+**Last Updated:** 2026-03-04
 **Maintained By:** VectorBox Team

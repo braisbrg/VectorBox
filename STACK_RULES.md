@@ -28,6 +28,11 @@
 - **Rule:** Always use **batch fetching** (e.g., `await session.execute(select(Movie).where(Movie.id.in_(ids)))`) for list endpoints.
 - **Ban:** Never fetch related entities (streaming providers, movie details) inside a loop (`for movie in items: await get_providers(movie.id)`). This causes N+1 query explosions.
 
+### Background Task Session Ownership
+- **Rule:** Background tasks registered via `background_tasks.add_task()` **MUST** create their own `AsyncSessionLocal()` session. They **MUST NOT** receive or reuse the request-scoped `db: AsyncSession`.
+- **Reason:** The request-scoped session is torn down when the HTTP response is sent. Any background task using it will trigger `MissingGreenlet`.
+- **Parallel tasks:** When using `asyncio.gather` inside a background task, each concurrent sub-task **MUST** create its own isolated `AsyncSessionLocal()` session. Sharing a single session across `gather` tasks triggers `concurrent operations not permitted`.
+
 ### Identity Derivation (API Rule 1.3)
 - **Rule:** Never pass `user_id` as a query or path parameter for protected resources.
 - **Requirement:** Derive User ID strictly from the `vectorbox_token` via `dependencies.get_current_user`.
@@ -197,5 +202,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-03-03
+**Last Updated:** 2026-03-04
 **Maintained By:** VectorBox Team
