@@ -29,9 +29,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-        cooldown:
-          semver-patch: "30 days"
-          semver-minor: "60 days"
       security-deps:
         patterns:
           - "bcrypt"
@@ -41,9 +38,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-        cooldown:
-          semver-patch: "7 days"
-          semver-minor: "21 days"
       dev-tools:
         patterns:
           - "pytest"
@@ -53,9 +47,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-        cooldown:
-          semver-patch: "7 days"
-          semver-minor: "14 days"
     ignore:
       - dependency-name: "fastapi"
         versions: [">=1"]
@@ -92,9 +83,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-        cooldown:
-          semver-patch: "7 days"
-          semver-minor: "14 days"
       frontend-core:
         patterns:
           - "next"
@@ -107,9 +95,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-        cooldown:
-          semver-patch: "14 days"
-          semver-minor: "30 days"
       frontend-devtools:
         patterns:
           - "eslint"
@@ -118,9 +103,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-        cooldown:
-          semver-patch: "7 days"
-          semver-minor: "14 days"
     ignore:
       - dependency-name: "eslint"
         versions: [">=10"]
