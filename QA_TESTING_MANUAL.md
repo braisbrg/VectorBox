@@ -2,7 +2,7 @@
 
 > **Role:** QA Lead / Release Certification
 > **Version:** 1.2.0 (Post-Security Hardening & Web Quality Audit)
-> **Last Updated:** 2026-03-03
+> **Last Updated:** 2026-03-04
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
@@ -309,7 +309,9 @@ Log in and navigate to the Feed. Verify all sections are rendered:
 ### Step 5.2: Hidden Gems Audit
 Click any 3 movies from the "Hidden Gems" row and verify:
 
-| Metric | Required | Movie 1 | Movie 2 | Movie 3 |
+> **Note:** Thresholds are now **dynamic** based on user's movie count. The table below shows defaults for a **rich profile (100+ movies)**. Cold start profiles (<30 movies) use more permissive thresholds (`score > 60`, `popularity < 40`, `votes > 200`).
+
+| Metric | Required (Rich Profile) | Movie 1 | Movie 2 | Movie 3 |
 |:-------|:---------|:-------:|:-------:|:-------:|
 | VectorBox Score | > 75 | ☐ | ☐ | ☐ |
 | Vote Count | 500–25,000 | ☐ | ☐ | ☐ |
@@ -323,7 +325,7 @@ Click any movie → "Why Recommended".
 | Check | Expected | Pass? |
 |:------|:---------|:-----:|
 | Signal A (Vector) | Shows similarity to watched movies | ☐ |
-| Signal B (Auteur) | Shows director match (if applicable) | ☐ |
+| Signal Auteur | Shows director match (if applicable) | ☐ |
 | Signal C (Crowd) | Shows crowd/popularity signal | ☐ |
 
 ### Step 5.4: Magic Box NLP Query
@@ -353,7 +355,7 @@ docker-compose logs --tail=50 backend
 | Check | Expected | Pass? |
 |:------|:---------|:-----:|
 | Enrichment in BG | `Enriching movie [ID]...` appears AFTER feed response | ☐ |
-| Trident Signal Timing | `[TRIDENT] ⏱️ Vibe Signal A...` logs show sub-millisecond execution times | ☐ |
+| Trident Signal Timing | `[TRIDENT] Signal A/Auteur/C took Xms` logs visible | ☐ |
 | Non-blocking | No "blocking" or "event loop" warnings | ☐ |
 
 ### Step 5.6: Chaos Monkey Fallback Verification
@@ -676,9 +678,7 @@ git log --oneline -- backend/requirements.txt backend/requirements.lock
 
 > ⚠️ **IMPORTANT:** Any time `requirements.txt` is changed, the lockfile MUST be regenerated:
 > ```powershell
-> docker-compose exec backend pip-compile --generate-hashes \
->   --extra-index-url https://download.pytorch.org/whl/cpu \
->   requirements.txt --output-file requirements.lock
+> docker-compose exec backend pip-compile requirements.txt --generate-hashes -o requirements.lock
 > ```
 > Then commit both files together.
 

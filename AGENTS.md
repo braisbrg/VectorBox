@@ -1,0 +1,260 @@
+---
+# Agent Instructions — VectorBox
+
+## Package Manager
+- Frontend uses **pnpm**, NOT npm and NOT yarn
+- Always use `pnpm install`, `pnpm add`, `pnpm run`
+- Never use `npm install` or `npm run`
+- pnpm lockfile: `frontend/pnpm-lock.yaml`
+- Local installs only: `pnpm install --no-frozen-lockfile`
+- CI/container installs use frozen lockfile (enforced in .npmrc)
+
+## Stack
+- Backend: FastAPI (Python 3.11), Docker via docker-compose
+- Frontend: Next.js 16, Tailwind CSS v4, TypeScript
+- DB: PostgreSQL 15 + Qdrant + Redis 7
+- Package install inside containers:
+  always use --break-system-packages flag for pip
+
+## Docker
+- Always use `docker-compose exec backend ...` for backend commands
+- Never install packages directly on host for backend
+- Backend lock file is hash-verified: backend/requirements.lock
+- Regenerate lock file with:
+    pip-compile requirements.txt --generate-hashes -o requirements.lock
+
+## Python
+- pip install always needs --break-system-packages flag
+- Lock file: backend/requirements.lock (hash-verified)
+- pip.conf location: backend/pip.conf (mounted as /app/pip.conf)
+- pip config injected via PIP_CONFIG_FILE=/app/pip.conf in docker-compose.yml
+- Global pip minimum-release-age: 720h (30 days)
+- Per-category release ages enforced via Dependabot cooldown
+  (see .github/dependabot.yml groups)
+
+---
+
+## Architecture — Trident Engine
+
+VectorBox uses a 3-signal hybrid recommendation engine (Trident):
+- Signal A `because_you_watched` — Item-Item Collaborative Filtering
+  via EmbeddingService + Qdrant nearest-neighbor search.
+  Seeds from movies rated 4+ stars OR explicitly liked (is_liked).
+- Signal B `your_taste` — K-Means cluster centroid search
+- Signal Auteur `get_signal_b_auteur` — Director analysis
+  (renamed from "Signal B" in recommendation_service.py logs
+  to avoid collision with Signal B in recommendation_engine.py)
+- Signal C `hidden_gems` — Score-to-Hype ratio filtering
+  with DYNAMIC thresholds based on user's movie count:
+    Cold start (<30 movies): score>60, popularity<40, votes>200
+    Growing (30-99):         score>65, popularity<30, votes>300
+    Rich (100+):             score>75, popularity<20, votes>500
+  Implemented via `_get_signal_c_thresholds()` helper.
+
+Results fused via RRF (Reciprocal Rank Fusion) +
+Sigmoid quality weighting on VectorBox Score (0–100).
+
+Feed orchestration: `FeedService.get_main_feed()` runs 9 tasks
+in parallel via `asyncio.gather()`. Each task opens its own
+isolated `AsyncSessionLocal()` session — they NEVER share sessions.
+
+Deep Dive runs SEQUENTIALLY after the parallel phase because it
+consumes `seen_ids` populated during parallel execution.
+
+---
+
+## Architecture — Dependency Injection
+
+All services must be injected, never instantiated inside handlers.
+
+Singletons registered in `backend/dependencies.py`:
+  get_tmdb_client()        → TMDBClient
+  get_qdrant_service()     → QdrantService
+  get_embedding_service()  → EmbeddingService
+
+Router endpoints receive services via Depends():
+  db:     AsyncSession  = Depends(get_db)
+  tmdb:   TMDBClient    = Depends(get_tmdb_client)
+  qdrant: QdrantService = Depends(get_qdrant_service)
+
+FeedService and RecommendationEngine are instantiated
+per-request but receive injected clients as constructor params.
+
+ProviderService always requires BOTH db AND tmdb:
+  local_provider = ProviderService(session, tmdb)
+
+ClusteringService accepts optional qdrant:
+  clustering = ClusteringService(qdrant=qdrant)
+
+---
+
+## Background Tasks — Correct Pattern
+
+Background tasks MUST own their own AsyncSession.
+NEVER reuse the request-scoped db session — it is torn
+down when the HTTP response returns (MissingGreenlet error).
+
+CORRECT pattern:
+  async def my_background_task(user_id: int, data: list):
+      from config import AsyncSessionLocal
+      async with AsyncSessionLocal() as session:
+          service = MyService(session)
+          try:
+              await service.do_work(data)
+              await session.commit()
+          except Exception as e:
+              logger.error(f"Task failed: {e}")
+              # Never re-raise — background tasks must not crash
+
+CORRECT registration:
+  background_tasks.add_task(my_background_task, user_id, data)
+  # NOT: background_tasks.add_task(my_background_task(user_id, data))
+
+If a background task spawns concurrent subtasks via
+asyncio.gather(), each subtask MUST open its own separate
+AsyncSessionLocal() — never share one session across gather().
+
+Shared HTTP clients (TMDBClient) CAN be passed into subtasks —
+they are HTTP-safe. DB sessions cannot.
+
+---
+
+## Code Conventions — Async & SQLAlchemy
+
+- ALL database calls use async SQLAlchemy (await db.execute(...))
+- ALL boolean column comparisons use .is_() not ==:
+    ✅  UserRating.is_watched.is_(True)
+    ❌  UserRating.is_watched == True
+
+- ALL HTTP clients must be explicitly closed after use:
+    ✅  await tmdb.aclose()
+    ❌  letting them go out of scope silently
+
+- EmbeddingService loads SentenceTransformer on init (expensive).
+  NEVER instantiate inside a loop or per-request.
+  Use the singleton: get_embedding_service() via Depends().
+
+- Qdrant vector fetches must use batch methods:
+    ✅  await qdrant.get_vectors_batch(tmdb_ids)
+    ❌  await qdrant.get_vector(id) inside a for loop (N+1)
+
+- Provider fetches must use batch methods:
+    ✅  await provider_service.get_providers_batch(ids, country)
+    ❌  await provider_service.get_providers(id, country) in loop
+
+- CPU-bound work (KMeans, MMR reranking) must be offloaded:
+    ✅  await loop.run_in_executor(None, cpu_bound_func, args)
+    ❌  calling blocking CPU functions directly in async context
+
+---
+
+## Code Conventions — ID Types
+
+VectorBox uses TWO different movie ID spaces. Mixing them
+causes silent deduplication failures.
+
+  internal_id  →  Movie.id        PostgreSQL auto-increment
+  tmdb_id      →  Movie.tmdb_id   TMDB API identifier
+
+Rules:
+  seen_ids set (feed deduplication) → stores tmdb_id
+  watched_ids set                   → stores internal id
+  UserRating.movie_id               → FK to Movie.id (internal)
+  Qdrant vectors indexed by         → tmdb_id
+
+When comparing against seen_ids:    always use m.tmdb_id
+When comparing against watched_ids: always use m.id
+
+---
+
+## Anti-Patterns — Never Do These
+
+All of these have been found and fixed. Do not reintroduce.
+
+1. SINGLETON BYPASS
+   ❌  TMDBClient() / QdrantService() / EmbeddingService()
+       instantiated inside a route handler or loop
+   ✅  Always use Depends() or receive via constructor param
+
+2. SESSION SHARING IN PARALLEL TASKS
+   ❌  asyncio.gather(task(db), task(db)) — shared session
+   ✅  Each task: async with AsyncSessionLocal() as session
+
+3. SINGLETON CLOSE IN REQUEST SCOPE
+   ❌  await qdrant.close() in a finally block inside a route
+       (kills the singleton for all subsequent requests)
+   ✅  Never close injected singletons
+
+4. N+1 QUERIES
+   ❌  for movie in movies: await qdrant.get_vector(movie.id)
+   ❌  for movie in movies: await provider_service.get_providers(...)
+   ✅  Always use batch methods before the loop
+
+5. BACKGROUND TASK REUSING REQUEST SESSION
+   ❌  background_tasks.add_task(enrich, db=db)
+       where db is the request-scoped AsyncSession
+   ✅  Background task creates its own AsyncSessionLocal()
+
+6. IDOR VULNERABILITY
+   ❌  Accepting user_id from query params without auth check
+   ✅  Always derive identity from token:
+       current_user = Depends(get_current_user)
+
+7. BLOCKING CALLS IN ASYNC CONTEXT
+   ❌  client = OpenAI()      (sync client)
+   ✅  client = AsyncOpenAI() (async client)
+
+8. ID TYPE CONFUSION IN seen_ids
+   ❌  if m.id not in seen_ids  (internal id vs tmdb set)
+   ✅  if m.tmdb_id not in seen_ids
+
+9. REROLL WITHOUT UNMOUNT GUARD (React)
+   ❌  setState after async call with no isMounted check
+   ✅  Use isMounted ref + cleanup useEffect
+
+10. SHARED SESSION IN TRIDENT / SIGNAL GATHER
+    ❌  asyncio.gather(signal_a(db), signal_b(db), signal_c(db))
+        where db is a single shared AsyncSession
+    ✅  Each signal task wraps its own AsyncSessionLocal():
+        async def measure_signal(fn):
+            async with AsyncSessionLocal() as session:
+                return await fn(session)
+        asyncio.gather(
+            measure_signal(signal_a),
+            measure_signal(signal_b),
+            measure_signal(signal_c)
+        )
+    Note: HTTP clients (TMDBClient, QdrantService) ARE safe
+    to share across gather tasks. Only DB sessions are not.
+
+---
+
+## Security Rules
+
+- Security headers required on all responses:
+    X-Frame-Options: DENY
+    X-Content-Type-Options: nosniff
+    Referrer-Policy: strict-origin-when-cross-origin
+
+- Backend dependencies hash-verified via requirements.lock
+  Regenerate: pip-compile requirements.txt
+              --generate-hashes -o requirements.lock
+
+- Never accept user_id from request body/query on protected
+  endpoints — always extract from JWT via get_current_user()
+
+- Release age policy:
+
+  Category              | Patch  | Minor  | Major
+  ----------------------|--------|--------|-------
+  Infrastructure/ML     | 30d    | 60d    | never
+  Security deps         |  7d    | 21d    | never
+  Dev tools             |  7d    | 14d    | never
+  Frontend UI           |  7d    | 14d    | never
+  Frontend core (Next)  | 14d    | 30d    | never
+
+- Deferred major bumps (post-deployment only):
+    fastapi, pandas, sentence-transformers, redis,
+    bcrypt, groq, openai, curl-cffi, eslint
+
+---

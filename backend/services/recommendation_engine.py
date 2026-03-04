@@ -2,7 +2,7 @@ import logging
 import random
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc, func, or_
 
 from models.database import UserRating, Movie, UserCluster
 from models.schemas import FeedSection, FeedItem
@@ -19,6 +19,31 @@ from telemetry import get_tracer
 
 logger = logging.getLogger(__name__)
 _tracer = get_tracer("recommendation_engine")
+
+
+def _get_signal_c_thresholds(user_movie_count: int) -> dict:
+    """Return dynamic thresholds for Signal C based on user's rated/liked movie count."""
+    if user_movie_count < 30:
+        # Cold start — very permissive
+        return {
+            "min_score": 60,
+            "max_popularity": 40,
+            "min_votes": 200,
+        }
+    elif user_movie_count < 100:
+        # Growing profile — balanced
+        return {
+            "min_score": 65,
+            "max_popularity": 30,
+            "min_votes": 300,
+        }
+    else:
+        # Rich profile — full fidelity
+        return {
+            "min_score": 75,
+            "max_popularity": 20,
+            "min_votes": 500,
+        }
 
 class RecommendationEngine:
     """
@@ -100,7 +125,10 @@ class RecommendationEngine:
                 .join(Movie, UserRating.movie_id == Movie.id)
                 .where(
                     UserRating.user_id == user_id,
-                    UserRating.rating >= 4.0
+                    or_(
+                        UserRating.rating >= 4.0,
+                        UserRating.is_liked.is_(True)
+                    )
                 )
                 .order_by(
                     desc(func.coalesce(UserRating.watched_date, UserRating.created_at))
@@ -323,13 +351,28 @@ class RecommendationEngine:
             span.set_attribute("user_id", user_id)
             span.set_attribute("country", country)
 
+            # Dynamic thresholds based on user's movie count
+            user_count_result = await db.execute(
+                select(func.count(UserRating.id))
+                .where(UserRating.user_id == user_id)
+                .where(
+                    or_(
+                        UserRating.rating.isnot(None),
+                        UserRating.is_liked.is_(True)
+                    )
+                )
+            )
+            user_movie_count = user_count_result.scalar() or 0
+            thresholds = _get_signal_c_thresholds(user_movie_count)
+            logger.info(f"[Signal C] User {user_id} has {user_movie_count} movies, using thresholds: {thresholds}")
+
             results = await self.clustering.get_user_centric_recommendations(
                 user_id=user_id,
                 db=db,
                 filters={
-                    "min_vectorbox_score": 75,
-                    "max_popularity": 20,
-                    "min_vote_count": 500
+                    "min_vectorbox_score": thresholds["min_score"],
+                    "max_popularity": thresholds["max_popularity"],
+                    "min_vote_count": thresholds["min_votes"]
                 },
                 limit=500,
                 background_tasks=background_tasks
@@ -358,7 +401,7 @@ class RecommendationEngine:
                     continue
                 
                 movie = movie_map.get(movie_id)
-                if movie and movie.vectorbox_score and movie.vectorbox_score > 75:
+                if movie and movie.vectorbox_score and movie.vectorbox_score > thresholds["min_score"]:
                     p_data = providers_map.get(movie.id, [])
                     s_providers = [p["provider_name"] for p in p_data]
                     

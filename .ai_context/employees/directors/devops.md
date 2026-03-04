@@ -102,18 +102,16 @@ USER vectorbox
 | Tool | Command | Purpose |
 | :--- | :--- | :--- |
 | **pnpm audit** | `pnpm audit` | Scan for CVEs |
-| **minimum-release-age** | `.npmrc` config | Block new packages |
+| **frozen-lockfile** | `.npmrc` config | Block unverified mutations |
 
 ### Package Publishing Protection
 Location: `frontend/.npmrc`
 
 ```ini
 # .npmrc
-minimum-release-age=1440  # 24 hours
 engine-strict=true
-
-# Safe exceptions
-minimum-release-age-exclude=browserslist caniuse-lite electron-to-chromium node-releases core-js-compat
+frozen-lockfile=true
+audit=true
 ```
 
 ---
@@ -163,9 +161,9 @@ Defined in `frontend/package.json`. Run from host machine in `frontend/` directo
 
 | Category | Command | Description |
 | :--- | :--- | :--- |
-| **Security** | `npm run audit:backend` | Triggers `pip-audit` scan inside backend container |
-| **Security** | `npm run audit:container` | Runs `docker scout quickview` for image vulnerabilities |
-| **Security** | `npm run security-check` | Runs `npm audit` with high severity level |
+| **Security** | `pnpm run audit:backend` | Triggers `pip-audit` scan inside backend container |
+| **Security** | `pnpm run audit:container` | Runs `docker scout quickview` for image vulnerabilities |
+| **Security** | `pnpm run security-check` | Runs `pnpm audit` with high severity level |
 | **Dev** | `pnpm dev` | Starts Next.js dev server |
 | **Linting** | `pnpm lint` | Runs ESLint analysis |
 
@@ -179,9 +177,7 @@ docker-compose exec backend python scripts/security_audit.py
 
 #### Lockfile Regeneration
 ```bash
-docker-compose exec backend pip-compile --generate-hashes \
-  --extra-index-url https://download.pytorch.org/whl/cpu \
-  requirements.txt --output-file requirements.lock
+docker-compose exec backend pip-compile requirements.txt --generate-hashes -o requirements.lock
 ```
 *Required after any `requirements.txt` modification.*
 

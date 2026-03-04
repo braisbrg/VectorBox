@@ -65,6 +65,21 @@ async def bad_process(db: AsyncSession, item_ids: list[int]):
     ])
 ```
 
+### Background Task Session Ownership
+> [!CAUTION]
+> Background tasks MUST own their own `AsyncSession`. NEVER reuse the request-scoped `db` session, as it is torn down when the HTTP response returns (causing `MissingGreenlet` errors).
+
+```python
+# ✅ CORRECT: Background task creates its own session
+async def my_bg_task(user_id: int):
+    from config import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        # DB logic here
+
+# ❌ FORBIDDEN
+background_tasks.add_task(my_bg_task, db=db) 
+```
+
 ---
 
 ## 3. Database Access Patterns
@@ -99,6 +114,18 @@ The following indexes are critical for performance:
 - `vectorbox_score` (filtering quality)
 - `popularity` (sorting)
 - `vote_count` (validity filtering)
+
+### Code Conventions — ID Types
+VectorBox uses TWO different movie ID spaces. Mixing them causes silent deduplication failures.
+- `internal_id` → `Movie.id` (PostgreSQL auto-increment). Used for `watched_ids` and `UserRating.movie_id`.
+- `tmdb_id` → `Movie.tmdb_id` (TMDB API identifier). Used for `seen_ids` and Qdrant indexing.
+- **Rule:** When comparing against `seen_ids`: always use `m.tmdb_id`.
+
+### Code Conventions — Async & SQLAlchemy
+- **Rule:** ALL boolean column comparisons use `.is_()` not `==`. 
+  - ✅ `UserRating.is_watched.is_(True)` | ❌ `UserRating.is_watched == True`
+- **Rule:** ALL HTTP clients must be explicitly closed after use (e.g., `await tmdb.aclose()`). Never let them go out of scope silently.
+- **Rule:** CPU-bound work (KMeans, MMR reranking) must be offloaded using `await loop.run_in_executor(None, cpu_bound_func, args)`. Calling blocking CPU functions directly in an async context is strictly forbidden.
 
 ---
 
@@ -198,6 +225,17 @@ Invalidate user-specific caches when:
 - **Library:** `instructor` with Pydantic models
 - **Schema:** `MovieSearchIntent` for query parsing
 - **Logic:** "Broad Search" - LLM expands keywords into synonyms
+
+---
+
+## 8. Package Management
+
+### Dependencies (pip)
+- **Global Config:** `pip.conf` is mapped to `/app/pip.conf` (via `PIP_CONFIG_FILE` in `docker-compose.yml`) and enforces a Minimum Release Age of 720h (30 days).
+- **Dependabot:** Configures per-category release ages in `.github/dependabot.yml`.
+- **Installs:** `pip install` **MUST ALWAYS** use `--break-system-packages` flag inside containers.
+- **Lockfile Regeneration:** After changing `requirements.txt`, strictly run:
+  `docker-compose exec backend pip-compile requirements.txt --generate-hashes -o requirements.lock`
 
 ---
 

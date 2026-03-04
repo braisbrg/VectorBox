@@ -138,17 +138,16 @@ pnpm build
 Location: `frontend/.npmrc`
 
 ```ini
-# Block newly published packages (24h minimum age)
-minimum-release-age=1440
 engine-strict=true
-
-# Safe exceptions (build tools)
-minimum-release-age-exclude=browserslist caniuse-lite electron-to-chromium node-releases core-js-compat
+frozen-lockfile=true
+audit=true
+ignore-scripts=false
+save-exact=false
 ```
 
 ### Package Management
-*   **pnpm** is strictly enforced.
-*   Enforce `minimum-release-age=1440` (24h) via `.npmrc` to prevent supply chain injection for newly published packages (except safe build-tools).
+*   **pnpm** is strictly enforced. No `npm` or `yarn`.
+*   Enforce safety via `.npmrc`. Dependabot handles release-age policies at the repository level. Local installs use `--no-frozen-lockfile`.
 
 ### API Client Security (v1.2)
 - **No User IDs:** Do not pass `userId` to API client methods. The backend derives identity strictly from the secure `vectorbox_token` cookie to prevent IDOR vulnerabilities.

@@ -84,6 +84,12 @@ test-results/
 python_procs.txt
 backend/tests/fixtures/*.zip
 
+# Diagnostic temp files
+[0-9].txt
+*_logs.txt
+*_health.txt
+*_locks.txt
+
 # Scripts (Allowlist approach: Ignore temporary debug scripts)
 debug_*.py
 test_scratch.py

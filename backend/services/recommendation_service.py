@@ -25,7 +25,7 @@ class RecommendationService:
     The "Trident" Hybrid Recommender System.
     Merges 3 distinct signals:
     - Signal A: Vibe (Vector Embeddings)
-    - Signal B: Auteur (Director Analysis)
+    - Signal Auteur: Director Analysis
     - Signal C: Crowd (TMDB Collaborative Filtering)
     """
 
@@ -34,7 +34,7 @@ class RecommendationService:
         self.tmdb = tmdb
         self.qdrant = qdrant
         self.clustering = ClusteringService(qdrant=qdrant)
-        self.movie_service = MovieService(db)
+        self.movie_service = MovieService(db, tmdb=tmdb)
 
     @safe_execution(fallback_return=FeedSection(id="hybrid_picks", title="Hybrid Picks (Signal Lost)", items=[]))
     async def get_hybrid_picks_section(
@@ -54,17 +54,22 @@ class RecommendationService:
         import time
         start_time = time.time()
         
-        # Define wrappers to measure individual signal time
-        async def measure_signal(name, task):
+        # Define wrappers to measure individual signal time and provide an isolated DB session
+        async def measure_signal(name, method_name, *args, **kwargs):
             t0 = time.time()
-            res = await task
+            from config import AsyncSessionLocal
+            async with AsyncSessionLocal() as session:
+                # Create an isolated service instance for this task to avoid concurrent session errors
+                isolated_service = RecommendationService(db=session, tmdb=self.tmdb, qdrant=self.qdrant)
+                method = getattr(isolated_service, method_name)
+                res = await method(*args, **kwargs)
             duration = (time.time() - t0) * 1000
-            logger.info(f"[TRIDENT] Signal {name} took {duration:.2f}ms")
+            logger.info(f"[TRIDENT] Signal {name} took {duration:.0f}ms")
             return res
 
-        signal_a_task = measure_signal("A (Vibe)", self.get_signal_a_vibe(user_id, exclude_ids=seen_ids, background_tasks=background_tasks))
-        signal_b_task = measure_signal("B (Auteur)", self.get_signal_b_auteur(user_id, exclude_ids=seen_ids))
-        signal_c_task = measure_signal("C (Crowd)", self.get_signal_c_crowd(user_id, exclude_ids=seen_ids))
+        signal_a_task = measure_signal("A (Vibe)", "get_signal_a_vibe", user_id, exclude_ids=seen_ids, background_tasks=background_tasks)
+        signal_b_task = measure_signal("Auteur", "get_signal_b_auteur", user_id, exclude_ids=seen_ids)
+        signal_c_task = measure_signal("C (Crowd)", "get_signal_c_crowd", user_id, exclude_ids=seen_ids)
         
         results = await asyncio.gather(signal_a_task, signal_b_task, signal_c_task, return_exceptions=True)
         
@@ -75,14 +80,14 @@ class RecommendationService:
         candidates_lists = []
         for i, res in enumerate(results):
             if isinstance(res, Exception):
-                logger.error(f"Signal {['A', 'B', 'C'][i]} failed: {res}")
+                logger.error(f"Signal {['A', 'Auteur', 'C'][i]} failed: {res}")
                 candidates_lists.append([])
             else:
                 candidates_lists.append(res)
                 
         signal_a, signal_b, signal_c = candidates_lists
         
-        logger.info(f"[TRIDENT] Signal Counts -> A: {len(signal_a)}, B: {len(signal_b)}, C: {len(signal_c)}")
+        logger.info(f"[TRIDENT] Signal Counts -> A: {len(signal_a)}, Auteur: {len(signal_b)}, C: {len(signal_c)}")
         
         # 2. Fusion (RRF)
         # We assume candidates are Movie objects (or dicts representing them)
@@ -138,7 +143,7 @@ class RecommendationService:
 
     async def get_signal_b_auteur(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
         """
-        Signal B: The Auteur Expert (Metadata Graph)
+        Signal Auteur: The Auteur Expert (Metadata Graph)
         Finds user's top directors and recommends their high-quality unwatched movies.
         """
         # 1. Analyze Top Directors
@@ -383,7 +388,7 @@ class RecommendationService:
     @safe_execution(fallback_return=FeedSection(id="auteur_picks", title="From Your Favorite Directors", items=[]))
     async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
         """
-        Signal B Only Row: "From Your Favorite Directors"
+        Signal Auteur Only Row: "From Your Favorite Directors"
         """
         candidates = await self.get_signal_b_auteur(user_id, seen_ids)
         
