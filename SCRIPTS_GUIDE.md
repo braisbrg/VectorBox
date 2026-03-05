@@ -20,6 +20,7 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 | **`test_idor_hidden_gems.py`** | **QA Certification (Phase 3).** Calls `/api/recommendations/hidden-gems` without auth cookie, verifies 401 response. Also tests forged `user_id` query param is ignored. | `docker-compose exec backend python scripts/test_idor_hidden_gems.py` |
 | **`test_trident_math.py`** | **QA Certification (Phase 4).** Verifies sigmoid curve outputs at score=50/65/80 against expected weights, and tests RRF correctness by asserting movies in multiple lists score higher than single-list entries. | `docker-compose exec backend python scripts/test_trident_math.py` |
 | **`wait_for_db.py`** | **Infrastructure.** Blocks boot until Postgres is ready using `socket` check. Used automatically in Docker entrypoint. | *(Internal use only)* |
+| **`seed_qa_user.py`** | **QA Preparation.** Creates the synthetic `qa_vecbox` user profile with predefined movie ratings and runs forced vector clustering. Used to achieve a deterministic state before running the QA3 verification protocol. | `docker-compose exec backend python scripts/seed_qa_user.py` |
 | **`backup_manager.py`** | **Disaster Recovery.** Creates a comprehensive snapshot of Postgres (Schema + Data) and Qdrant (Shards), zips them, and rotates old backups (Max 5). | `docker-compose exec backend python scripts/backup_manager.py` |
 
 ## 📦 Frontend Utility Scripts

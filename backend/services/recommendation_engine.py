@@ -696,7 +696,7 @@ class RecommendationEngine:
     ) -> Optional[FeedSection]:
         """Popular on Letterboxd"""
         trending_service = TrendingService(db)
-        popular_ids = trending_service.get_popular_movie_ids()
+        popular_ids = await trending_service.get_popular_movie_ids()
         
         if not popular_ids:
             return None

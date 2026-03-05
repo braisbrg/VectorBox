@@ -269,33 +269,7 @@ class TMDBClient:
             
         return []
     
-    async def get_movie_watch_providers(self, tmdb_id: int, country_code: str = "ES") -> Optional[Dict]:
-        """
-        Get streaming availability (JustWatch data via TMDB)
-        Cache: 24 hours (availability changes frequently)
-        Security: Validate country code format
-        """
-        # Security: Validate country code (2-letter ISO)
-        if not country_code or len(country_code) != 2 or not country_code.isalpha():
-            country_code = "ES"
-        country_code = country_code.upper()
-        
-        cache_key = f"tmdb:providers:{tmdb_id}:{country_code}"
-        r = await self._get_redis()
-        
-        cached = await r.get(cache_key)
-        if cached:
-            return orjson.loads(cached)
-        
-        data = await self._make_request(f"/movie/{tmdb_id}/watch/providers")
-        
-        if data and data.get("results"):
-            # Extract country-specific providers
-            country_data = data["results"].get(country_code, {})
-            await r.setex(cache_key, timedelta(hours=24), orjson.dumps(country_data))
-            return country_data
-        
-        return None
+
 
     async def get_watch_providers(self, tmdb_id: int, country: str = "ES") -> Optional[Dict]:
         """

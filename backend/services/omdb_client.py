@@ -116,44 +116,51 @@ class OMDbClient:
              # Redistribute tmdb weight effectively
              pass 
 
-        # 1. Extract and Normalize Scores
-        
-        # IMDb (De-inflate)
-        if omdb_data and omdb_data.imdbRating and omdb_data.imdbRating != "N/A":
+        # 1. Extract and Normalize Scores — all sources to 0-100
+
+        # IMDb: scale 0-10, useful range 4-10
+        # Linear stretch: 4.0 → 0, 10.0 → 100
+        if omdb_data and omdb_data.imdbRating \
+                and omdb_data.imdbRating != "N/A":
             try:
-                imdb_rating = float(omdb_data.imdbRating)
-                raw_scores["imdb"] = imdb_rating
-                scores["imdb"] = max(0, (imdb_rating - 5) * 20)  # De-inflation formula
-                weights["imdb"] = 0.25
+                imdb_raw = float(omdb_data.imdbRating)
+                raw_scores["imdb"] = imdb_raw
+                scores["imdb"] = max(0.0, min(100.0,
+                    (imdb_raw - 4.0) / 6.0 * 100
+                ))
+                weights["imdb"] = 0.30
             except (ValueError, TypeError):
                 pass
-            
-        # TMDB (De-inflate)
+
+        # TMDB: same scale as IMDb, same normalization
         if tmdb_vote_average is not None:
             raw_scores["tmdb"] = tmdb_vote_average
-            scores["tmdb"] = max(0, (tmdb_vote_average - 5) * 20)  # De-inflation formula
-            weights["tmdb"] = 0.25
-            
-        # Rotten Tomatoes (Raw 0-100)
+            scores["tmdb"] = max(0.0, min(100.0,
+                (tmdb_vote_average - 4.0) / 6.0 * 100
+            ))
+            weights["tmdb"] = 0.20
+
+        # Rotten Tomatoes: already 0-100, no normalization needed
         if omdb_data and omdb_data.Ratings:
             for rating in omdb_data.Ratings:
                 if rating.Source == "Rotten Tomatoes":
                     try:
                         rt_val = int(rating.Value.replace("%", ""))
                         raw_scores["rt"] = rt_val
-                        scores["rt"] = rt_val  # Already 0-100
-                        weights["rt"] = 0.25
+                        scores["rt"] = float(rt_val)
+                        weights["rt"] = 0.30
                     except (ValueError, TypeError):
                         pass
                     break
-                
-        # Metacritic (Raw 0-100)
-        if omdb_data and omdb_data.Metascore and omdb_data.Metascore != "N/A":
+
+        # Metacritic: already 0-100, no normalization needed
+        if omdb_data and omdb_data.Metascore \
+                and omdb_data.Metascore != "N/A":
             try:
                 meta_val = int(omdb_data.Metascore)
                 raw_scores["meta"] = meta_val
-                scores["meta"] = meta_val  # Already 0-100
-                weights["meta"] = 0.25
+                scores["meta"] = float(meta_val)
+                weights["meta"] = 0.20
             except (ValueError, TypeError):
                 pass
 

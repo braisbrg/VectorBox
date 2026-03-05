@@ -292,6 +292,17 @@ Swipe left on "Popular on Letterboxd" row.
 
 > **Goal:** Verify the Trident engine, feed sections, and Magic Box work correctly.
 
+### Step 5.0: QA Data Preparation (Deterministic Seed)
+Before testing the algorithms, inject the controlled QA user profile to ensure deterministic feed populations.
+
+```powershell
+docker-compose exec backend python scripts/seed_qa_user.py
+```
+
+Log out of any existing sessions and **log in** using:
+- **Username:** `qa_vecbox`
+- **PIN:** `1234`
+
 ### Step 5.1: Feed Sections Present
 Log in and navigate to the Feed. Verify all sections are rendered:
 
