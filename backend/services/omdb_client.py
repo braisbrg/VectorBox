@@ -8,8 +8,8 @@ from models.external_schemas import OMDbResponse, VectorBoxScore, VectorBoxBreak
 logger = logging.getLogger(__name__)
 
 class OMDbClient:
-    def __init__(self, api_key: str, client: httpx.AsyncClient = None):
-        self.api_key = api_key
+    def __init__(self, api_key: Optional[str] = None, client: httpx.AsyncClient = None):
+        self.api_key = api_key or os.getenv("OMDB_API_KEY")
         self.base_url = "http://www.omdbapi.com/"
         self._external_client = client
         self.client = client if client else httpx.AsyncClient(timeout=10.0)
@@ -52,7 +52,7 @@ class OMDbClient:
                 "r": "json"
             }
             
-            response = await self.client.get("/", params=params)
+            response = await self.client.get(self.base_url, params=params)
             
             if response.status_code == 200:
                 # Success - Reset Circuit Breaker
@@ -93,8 +93,10 @@ class OMDbClient:
 
     def calculate_vectorbox_score(self, omdb_data: Optional[OMDbResponse], tmdb_vote_average: float) -> VectorBoxScore:
         """
-        Calculate the Weighted VectorBox Score using FiveThirtyEight-style normalization.
-        Return strictly typed VectorBoxScore.
+        Calculates VectorBox score from three sources:
+        IMDb (40%), Metacritic (35%), TMDB (25%).
+        Rotten Tomatoes excluded — binary consensus metric,
+        prone to review bombing, not a quality signal.
         """
         scores = {}
         weights = {}
@@ -117,7 +119,7 @@ class OMDbClient:
                 scores["imdb"] = max(0.0, min(100.0,
                     (imdb_raw - 4.0) / 6.0 * 100
                 ))
-                weights["imdb"] = 0.30
+                weights["imdb"] = 0.40
             except (ValueError, TypeError):
                 pass
 
@@ -127,20 +129,7 @@ class OMDbClient:
             scores["tmdb"] = max(0.0, min(100.0,
                 (tmdb_vote_average - 4.0) / 6.0 * 100
             ))
-            weights["tmdb"] = 0.20
-
-        # Rotten Tomatoes: already 0-100, no normalization needed
-        if omdb_data and omdb_data.Ratings:
-            for rating in omdb_data.Ratings:
-                if rating.Source == "Rotten Tomatoes":
-                    try:
-                        rt_val = int(rating.Value.replace("%", ""))
-                        raw_scores["rt"] = rt_val
-                        scores["rt"] = float(rt_val)
-                        weights["rt"] = 0.30
-                    except (ValueError, TypeError):
-                        pass
-                    break
+            weights["tmdb"] = 0.25
 
         # Metacritic: already 0-100, no normalization needed
         if omdb_data and omdb_data.Metascore \
@@ -149,7 +138,7 @@ class OMDbClient:
                 meta_val = int(omdb_data.Metascore)
                 raw_scores["meta"] = meta_val
                 scores["meta"] = float(meta_val)
-                weights["meta"] = 0.20
+                weights["meta"] = 0.35
             except (ValueError, TypeError):
                 pass
 
@@ -159,7 +148,6 @@ class OMDbClient:
         # Populate Breakdown
         breakdown = VectorBoxBreakdown(
             imdb=raw_scores.get("imdb"),
-            rt=raw_scores.get("rt"),
             meta=raw_scores.get("meta"),
             tmdb=raw_scores.get("tmdb")
         )

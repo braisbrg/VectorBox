@@ -137,7 +137,6 @@ class MovieService:
                     "vectorbox_score": movie.vectorbox_score,
                     "imdb_rating": movie.imdb_rating,
                     "metacritic_rating": movie.metacritic_rating,
-                    "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
                     "title_es": movie.title_es,
                     "overview_es": movie.overview_es
                 }
@@ -170,7 +169,6 @@ class MovieService:
                     movie.vectorbox_score = vb_score_obj.score
                     movie.imdb_rating = vb_score_obj.breakdown.imdb
                     movie.metacritic_rating = vb_score_obj.breakdown.meta
-                    movie.rotten_tomatoes_rating = vb_score_obj.breakdown.rt
                     
                     changed = True
             
@@ -241,7 +239,6 @@ class MovieService:
                         vectorbox_score=movie.vectorbox_score,
                         imdb_rating=movie.imdb_rating,
                         metacritic_rating=movie.metacritic_rating,
-                        rotten_tomatoes_rating=movie.rotten_tomatoes_rating,
                         title_es=movie.title_es,
                         overview_es=movie.overview_es,
                         keywords=movie.keywords or []
