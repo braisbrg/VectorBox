@@ -396,7 +396,7 @@ async def get_group_recommendations(
         for user_id in request.user_ids:
             result = await db.execute(
                 select(UserRating.movie_id)
-                .where((UserRating.user_id == user_id) & (UserRating.is_watchlist == True))
+                .where((UserRating.user_id == user_id) & (UserRating.is_watchlist.is_(True)))
             )
             user_watchlist = set(result.scalars().all())
             for movie_id in user_watchlist:
