@@ -22,7 +22,6 @@ class OMDbResponse(BaseModel):
 
 class VectorBoxBreakdown(BaseModel):
     imdb: Optional[float] = None
-    rt: Optional[int] = None
     meta: Optional[int] = None
     tmdb: Optional[float] = None
 
@@ -49,7 +48,6 @@ class QdrantPayload(BaseModel):
     vectorbox_score: Optional[float] = None
     imdb_rating: Optional[float] = None
     metacritic_rating: Optional[int] = None
-    rotten_tomatoes_rating: Optional[int] = None
     
     # Spanish Metadata
     title_es: Optional[str] = None
