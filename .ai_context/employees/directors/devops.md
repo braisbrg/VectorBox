@@ -2,7 +2,7 @@
 
 > **Role:** DevOps & Infrastructure Lead
 > **Domain:** Containerization, Security, Maintenance Scripts
-> **Last Updated:** 2026-03-03
+> **Last Updated:** 2026-03-05
 
 This file contains all DevOps rules, security protocols, Docker configuration, and the complete scripts inventory for the VectorBox project.
 
@@ -77,11 +77,8 @@ USER vectorbox
 ```
 
 ### Network Isolation policies
-> [!IMPORTANT]
-> Database ports usage differs between Development and Production.
-
-- **Development:** Ports 5432 (Postgres) and 6333 (Qdrant) are **exposed** to the host for convenience (debugging tools).
-- **Production:** These ports **MUST** be commented out or protected by firewall. Only `backend` container should reach them via internal Docker network.
+- **Development:** Ports 5432 (Postgres), 6333 (Qdrant), 6379 (Redis), and 16686 (Jaeger) are strictly bound to `127.0.0.1` locally via `docker-compose.yml`.
+- **Production:** `docker-compose.prod.yml` enforces fail-fast `ENVIRONMENT=production` checks on boot to panic if critical secrets like `POSTGRES_PASSWORD` are missing.
 
 ### Active Health Monitoring (Deep Checks)
 - **Endpoint:** `/health`
@@ -154,6 +151,8 @@ Located in `backend/scripts/`. Run via Docker execution.
 | **`test_idor_hidden_gems.py`** | **QA Certification (Phase 3).** Verifies `/hidden-gems` returns 401 for unauthenticated and forged `user_id` requests. | `docker-compose exec backend python scripts/test_idor_hidden_gems.py` |
 | **`test_trident_math.py`** | **QA Certification (Phase 4).** Validates sigmoid curve and RRF fusion math against expected formulas. | `docker-compose exec backend python scripts/test_trident_math.py` |
 | **`wait_for_db.py`** | **Infrastructure.** Blocks boot until Postgres is ready. Used automatically in Docker entrypoint. | *(Internal use only)* |
+| **`backup_manager.py`** | **Disaster Recovery.** Creates snapshot of Postgres, Qdrant, and Redis, zips them, and implements 5-file rotation. | `docker-compose exec backend python scripts/backup_manager.py` |
+| **`restore_manager.py`** | **Disaster Recovery.** Previews (`--dry-run`) or securely executes automated teardown and recreation of the database layer from archived ZIPs. | `docker-compose exec backend python scripts/restore_manager.py /app/backups/[file].zip` |
 
 ### 📦 Frontend Utility Scripts
 

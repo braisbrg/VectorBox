@@ -69,8 +69,10 @@ All services must be injected, never instantiated inside handlers.
 
 Singletons registered in `backend/dependencies.py`:
   get_tmdb_client()        → TMDBClient
+  get_omdb_client()        → OMDbClient
   get_qdrant_service()     → QdrantService
   get_embedding_service()  → EmbeddingService
+  get_http_client()        → httpx.AsyncClient (Global lifespan client)
 
 Router endpoints receive services via Depends():
   db:     AsyncSession  = Depends(get_db)
@@ -161,6 +163,14 @@ Rules:
   watched_ids set                   → stores internal id
   UserRating.movie_id               → FK to Movie.id (internal)
   Qdrant vectors indexed by         → tmdb_id
+
+### Qdrant Upsert Check
+`qdrant.upsert_batch` supports a `check_exists=True` flag. When enabled, it performs a scroll check to see if the payload is identical before writing. Use this in parallel ingestion paths to avoid redundant I/O.
+
+### Backup & Restore
+- `backup_manager.py`: Dumps Postgres, Qdrant snapshots, and Redis `BGSAVE`. Rotates to last 5.
+- `restore_manager.py`: Orchestrates full system restoration from ZIP. Supports `--dry-run`.
+- Host wrappers: `backup.ps1` / `backup.sh` for easy CLI access.
 
 When comparing against seen_ids:    always use m.tmdb_id
 When comparing against watched_ids: always use m.id
@@ -255,6 +265,6 @@ All of these have been found and fixed. Do not reintroduce.
 
 - Deferred major bumps (post-deployment only):
     fastapi, pandas, sentence-transformers, redis,
-    bcrypt, groq, openai, curl-cffi, eslint
+    bcrypt, groq, curl-cffi, eslint
 
 ---

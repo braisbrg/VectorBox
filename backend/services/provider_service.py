@@ -48,6 +48,9 @@ class ProviderService:
         movie_res = await self.db.execute(movie_stmt)
         movie = movie_res.scalar_one_or_none()
         
+        # Release implicit read transaction locks before HTTP call
+        await self.db.commit()
+        
         if not movie:
             logger.warning(f"Movie {movie_id} not found in DB")
             return []
@@ -82,7 +85,12 @@ class ProviderService:
             )
             self.db.add(new_availability)
             
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"DB commit failed in get_providers: {e}")
+            raise
         
         return final_providers
 
@@ -122,6 +130,9 @@ class ProviderService:
         movie_stmt = select(Movie).where(Movie.id.in_(missing_ids))
         movie_res = await self.db.execute(movie_stmt)
         movies = movie_res.scalars().all()
+        
+        # Release implicit read transaction locks before HTTP batch call
+        await self.db.commit()
         
         # Concurrent Fetching
         tasks = [self.tmdb.get_watch_providers(movie.tmdb_id, country_code) for movie in movies]
@@ -169,7 +180,12 @@ class ProviderService:
                 )
                 self.db.add(new_avail)
         
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception as e:
+            await self.db.rollback()
+            logger.error(f"DB commit failed in get_providers_batch: {e}")
+            raise
         
         return final_results
 
@@ -191,24 +207,17 @@ class ProviderService:
         final_providers = list(unique_providers)
 
         # Upsert into DB
-        stmt = select(MovieAvailability).where(
-            MovieAvailability.movie_id == movie_id,
-            MovieAvailability.country_code == country_code
+        stmt = insert(MovieAvailability).values(
+            movie_id=movie_id,
+            country_code=country_code,
+            providers=final_providers,
+            last_updated=datetime.utcnow()
+        ).on_conflict_do_update(
+            index_elements=["movie_id", "country_code"],
+            set_={"providers": final_providers, "last_updated": datetime.utcnow()}
         )
-        result = await self.db.execute(stmt)
-        availability = result.scalar_one_or_none()
-
-        if availability:
-            availability.providers = final_providers
-            availability.last_updated = datetime.utcnow()
-        else:
-            new_availability = MovieAvailability(
-                movie_id=movie_id,
-                country_code=country_code,
-                providers=final_providers,
-                last_updated=datetime.utcnow()
-            )
-            self.db.add(new_availability)
-        
-        # Note: We rely on caller to commit to support bulk operations
-
+        try:
+            await self.db.execute(stmt)
+        except Exception as e:
+            logger.error(f"Failed to save providers via upsert: {e}")
+            raise

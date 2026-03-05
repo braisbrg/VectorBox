@@ -2,7 +2,7 @@
 
 > **Role:** QA Lead / Release Certification
 > **Version:** 1.2.0 (Post-Security Hardening & Web Quality Audit)
-> **Last Updated:** 2026-03-04
+> **Last Updated:** 2026-03-05
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
@@ -31,7 +31,6 @@ QDRANT_HOST, QDRANT_PORT
 TMDB_API_KEY
 OMDB_API_KEY
 GROQ_API_KEY
-OPENAI_API_KEY          # Fallback LLM provider
 SECRET_KEY              # Session token signing
 OTEL_EXPORTER_OTLP_ENDPOINT   # e.g. http://jaeger:4317
 OTEL_SERVICE_NAME       # e.g. vectorbox-backend
@@ -64,6 +63,8 @@ docker-compose down -v
 ```bash
 chmod +x setup.sh && ./setup.sh
 ```
+
+> **Note:** The setup scripts automatically detect `ENVIRONMENT=production` in your `.env` file and will append `-f docker-compose.prod.yml` to all internal database commands to enforce security parameters like `POSTGRES_PASSWORD`.
 
 Wait for the full sequence. Verify each checkpoint in the logs:
 
@@ -370,7 +371,7 @@ docker-compose logs --tail=50 backend
 | Non-blocking | No "blocking" or "event loop" warnings | ☐ |
 
 ### Step 5.6: Chaos Monkey Fallback Verification
-Ensure the LLM dual-model cascading fallback is functioning correctly.
+Ensure the LLM dual-model cascading fallback is functioning correctly and successfully triggers an explicit failure block if all Groq connections drop.
 
 ```powershell
 docker-compose run --rm backend python scripts/verify_nlp_fallback.py
@@ -627,6 +628,19 @@ Navigate to `./backups/` in project root.
 | Non-empty | File size > 1 MB | ☐ |
 | Git ignored | `git status` shows `backups/` NOT tracked | ☐ |
 
+### Step 9.3: Verify Restoration (Dry Run)
+Use the filename found in Step 9.2 to perform a dry run of the restoration script.
+
+```powershell
+docker-compose exec backend python scripts/restore_manager.py /app/backups/vectorbox_backup_{timestamp}.zip --dry-run
+```
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Execution | Completes without error | ☐ |
+| Preview Logs | Output properly previews destructive actions without executing them | ☐ |
+| Status | Postgres, Qdrant, and Redis report `[DRY-RUN]` operations | ☐ |
+
 ---
 
 ## 🤖 PHASE 10: Automated E2E Suite
@@ -634,7 +648,7 @@ Navigate to `./backups/` in project root.
 > **Goal:** Playwright automation confirms all core flows pass.
 
 ```powershell
-docker-compose exec backend playwright install chromium
+playwright install chromium
 python tests/qa_automation.py
 ```
 

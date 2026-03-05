@@ -1,14 +1,15 @@
-
 import logging
 import asyncio
-from typing import List, Dict, Set, Optional
+from typing import List, Dict, Set, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_, func, text
 from collections import Counter
 import random
 import math
+import json
+import redis.asyncio as redis
 
-from models.database import UserRating, Movie, UserCluster
+from models.database import UserRating, Movie, UserCluster, User
 from models.schemas import FeedSection, FeedItem
 from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
@@ -29,10 +30,11 @@ class RecommendationService:
     - Signal C: Crowd (TMDB Collaborative Filtering)
     """
 
-    def __init__(self, db: AsyncSession, tmdb: TMDBClient = None, qdrant: QdrantService = None):
+    def __init__(self, db: AsyncSession, tmdb: TMDBClient = None, qdrant: QdrantService = None, redis_client: redis.Redis = None):
         self.db = db
         self.tmdb = tmdb
         self.qdrant = qdrant
+        self.redis = redis_client
         self.clustering = ClusteringService(qdrant=qdrant)
         self.movie_service = MovieService(db, tmdb=tmdb)
 
@@ -60,7 +62,7 @@ class RecommendationService:
             from config import AsyncSessionLocal
             async with AsyncSessionLocal() as session:
                 # Create an isolated service instance for this task to avoid concurrent session errors
-                isolated_service = RecommendationService(db=session, tmdb=self.tmdb, qdrant=self.qdrant)
+                isolated_service = RecommendationService(db=session, tmdb=self.tmdb, qdrant=self.qdrant, redis_client=self.redis)
                 method = getattr(isolated_service, method_name)
                 res = await method(*args, **kwargs)
             duration = (time.time() - t0) * 1000
@@ -108,12 +110,111 @@ class RecommendationService:
             items=final_items
         )
 
+    async def _get_signal_with_cache_and_lock(self, user: User, signal_type: str, params: Dict[str, Any], compute_method) -> List[Movie]:
+        """
+        Fetches a signal, utilizing Redis cache with a SETNX-based locking mechanism
+        to prevent cache stampedes.
+        """
+        if not self.redis:
+            logger.warning(f"Redis client not available for {signal_type} signal. Computing without cache/lock.")
+            return await compute_method(user.id, **params)
+
+        cache_key = f"signal_cache:{user.id}:{signal_type}:{json.dumps(params, sort_keys=True)}"
+        
+        # Try to get from cache first
+        cached = await self.redis.get(cache_key)
+        if cached:
+            logger.info(f"Cache hit for {signal_type} signal for user {user.id}")
+            data = json.loads(cached)
+            # Assuming data is a list of movie IDs, fetch Movie objects
+            movie_ids = [item["movie_id"] for item in data]
+            if not movie_ids:
+                return []
+            stmt = select(Movie).where(Movie.id.in_(movie_ids))
+            result = await self.db.execute(stmt)
+            movies = result.scalars().all()
+            # Re-sort based on cached order
+            movies_map = {m.id: m for m in movies}
+            ordered_movies = [movies_map[mid] for mid in movie_ids if mid in movies_map]
+            return ordered_movies
+
+        # Cache Miss - Recompute with Lock to prevent cache stampedes (Fix 2.3/4.1)
+        lock_key = f"lock:{cache_key}"
+        lock_acquired = await self.redis.setnx(lock_key, "locked")
+        
+        if lock_acquired:
+            # We got the lock! We must compute, set the cache, and release the lock.
+            try:
+                # Set a short expiration on the lock itself as a safety net
+                await self.redis.expire(lock_key, 30) # 30 seconds expiration
+                
+                # Signal Generation
+                result = await compute_method(user.id, **params)
+
+                # Cache Result
+                signal_data = [
+                    {"movie_id": s.id, "score": 1.0} # Simplified score for caching, actual score is in RRF
+                    for s in result
+                ]
+                await self.redis.setex(
+                    cache_key,
+                    86400, # 24h TTL
+                    json.dumps(signal_data)
+                )
+                
+            finally:
+                # Always release the lock
+                await self.redis.delete(lock_key)
+                
+            return result
+            
+        else:
+            # Did not get the lock - another worker is computing it. Wait and poll.
+            logger.info(f"Cache lock held for {cache_key}. Waiting...")
+            retries = 30 # Up to 3 seconds wait
+            while retries > 0:
+                await asyncio.sleep(0.1)
+                cached = await self.redis.get(cache_key)
+                if cached:
+                    logger.info(f"Cache miss resolved by another worker for: {cache_key}")
+                    data = json.loads(cached)
+                    movie_ids = [item["movie_id"] for item in data]
+                    if not movie_ids:
+                        return []
+                    stmt = select(Movie).where(Movie.id.in_(movie_ids))
+                    result = await self.db.execute(stmt)
+                    movies = result.scalars().all()
+                    movies_map = {m.id: m for m in movies}
+                    ordered_movies = [movies_map[mid] for mid in movie_ids if mid in movies_map]
+                    return ordered_movies
+                retries -= 1
+            
+            # If we timeout waiting, fallback to computing it anyway
+            logger.warning(f"Timeout waiting for lock {lock_key}. Computing fallback.")
+            return await compute_method(user.id, **params)
+
     async def get_signal_a_vibe(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
         """
         Signal A: The Vibe Expert (Vectors)
         Uses Qdrant via ClusteringService logic.
         """
-        # We reuse the logic from Hidden Gems / User Centric but without strict filters
+        # Fetch user object for _get_signal_with_cache_and_lock
+        user_obj = await self.db.get(User, user_id)
+        if not user_obj:
+            logger.warning(f"User {user_id} not found for Vibe signal.")
+            return []
+
+        return await self._get_signal_with_cache_and_lock(
+            user=user_obj,
+            signal_type="vibe",
+            params={"exclude_ids": list(exclude_ids), "background_tasks": background_tasks},
+            compute_method=self._compute_vibe_signal_raw
+        )
+
+    async def _compute_vibe_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
+        """
+        Raw computation for Signal A: The Vibe Expert (Vectors)
+        """
         raw_recs = await self.clustering.get_user_centric_recommendations(
             user_id=user_id,
             db=self.db,
@@ -145,6 +246,22 @@ class RecommendationService:
         """
         Signal Auteur: The Auteur Expert (Metadata Graph)
         Finds user's top directors and recommends their high-quality unwatched movies.
+        """
+        user_obj = await self.db.get(User, user_id)
+        if not user_obj:
+            logger.warning(f"User {user_id} not found for Auteur signal.")
+            return []
+
+        return await self._get_signal_with_cache_and_lock(
+            user=user_obj,
+            signal_type="auteur",
+            params={"exclude_ids": list(exclude_ids)},
+            compute_method=self._compute_auteur_signal_raw
+        )
+
+    async def _compute_auteur_signal_raw(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
+        """
+        Raw computation for Signal Auteur: The Auteur Expert (Metadata Graph)
         """
         # 1. Analyze Top Directors
         # Get highly rated movies
@@ -208,6 +325,25 @@ class RecommendationService:
         """
         Signal C: The Crowd Expert (Collaborative Filtering via TMDB)
         "People who liked X also liked Y"
+        """
+        user_obj = await self.db.get(User, user_id)
+        if not user_obj:
+            logger.warning(f"User {user_id} not found for Crowd signal.")
+            return []
+
+        # For crowd signal, we might need a cluster_id if it's part of the logic
+        # For now, we'll pass a dummy or derive it if needed.
+        # Assuming no cluster_id is needed for this specific crowd signal implementation.
+        return await self._get_signal_with_cache_and_lock(
+            user=user_obj,
+            signal_type="crowd",
+            params={"exclude_ids": list(exclude_ids)},
+            compute_method=self._compute_crowd_signal_raw
+        )
+
+    async def _compute_crowd_signal_raw(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
+        """
+        Raw computation for Signal C: The Crowd Expert (Collaborative Filtering via TMDB)
         """
         if not self.tmdb:
             logger.warning("[Signal C] No TMDBClient injected, skipping crowd signal.")

@@ -91,21 +91,58 @@ class QdrantService:
             logger.error(f"Failed to upsert vector for movie {movie_id}: {e}")
             raise
 
-    async def upsert_batch(self, points: List[PointStruct]):
+    async def upsert_batch(self, points: List[PointStruct], check_exists: bool = False):
         """
-        Batch upsert generic points
+        Upsert a batch of points to Qdrant.
+        If check_exists is True, it will first retrieve existing points to skip redundant writes.
         """
         if not points:
             return
-            
+
+        collection_name = self.COLLECTION_NAME
+
+        if check_exists:
+            try:
+                # Extract IDs to check
+                point_ids = [p.id for p in points]
+                from qdrant_client.http import models as rest
+                
+                existing, _ = await self.client.scroll(
+                    collection_name=collection_name,
+                    scroll_filter=rest.Filter(
+                        must=[rest.HasIdCondition(has_id=point_ids)]
+                    ),
+                    limit=len(point_ids),
+                    with_payload=True,
+                    with_vectors=True
+                )
+                
+                existing_map = {p.id: p for p in existing}
+                
+                # Filter points: Keep if not exists, or if payload/vector changed
+                # (For simplicity here, we assume if it exists we skip, since we're just avoiding redundant initial upserts.
+                # If full diffing is needed, we'd compare vectors/payloads, but skipping existing is a big win for concurrent paths.)
+                filtered_points = []
+                for p in points:
+                    if p.id not in existing_map:
+                        filtered_points.append(p)
+                        
+                points = filtered_points
+                if not points:
+                    logger.debug(f"All {len(point_ids)} points already exist in Qdrant {collection_name}. Skipping upsert.")
+                    return
+                
+            except Exception as e:
+                logger.warning(f"Failed to check existing points in Qdrant: {e}. Proceeding with full upsert.")
+        
         try:
             await self.client.upsert(
-                collection_name=self.COLLECTION_NAME,
+                collection_name=collection_name,
                 points=points
             )
-            logger.info(f"Successfully upserted batch of {len(points)} vectors")
+            logger.info(f"Upserted {len(points)} points to {collection_name}")
         except Exception as e:
-            logger.error(f"Failed to upsert batch: {e}")
+            logger.error(f"Failed to upsert batch to Qdrant: {e}")
             raise
     
     async def search_similar(

@@ -22,10 +22,27 @@ QDRANT_HOST = os.getenv("QDRANT_HOST", "vectorbox-qdrant")
 QDRANT_URL = f"http://{QDRANT_HOST}:6333"
 COLLECTION_NAME = "movies"
 
+db_url = os.getenv("DATABASE_URL", "")
 PG_HOST = os.getenv("POSTGRES_HOST", "vectorbox-postgres")
 PG_USER = os.getenv("POSTGRES_USER", "postgres")
 PG_DB = os.getenv("POSTGRES_DB", "vectorbox")
+
+if db_url and "://" in db_url:
+    try:
+        # postgresql+asyncpg://user:pass@host:port/db
+        auth_host_db = db_url.split("://")[1]
+        auth_part = auth_host_db.split("@")[0]
+        host_db_part = auth_host_db.split("@")[1]
+        
+        PG_USER = auth_part.split(":")[0]
+        PG_HOST = host_db_part.split(":")[0]
+        PG_DB = host_db_part.split("/")[1].split("?")[0]
+    except Exception:
+        pass
 # Password should be in env `PGPASSWORD` for pg_dump
+
+REDIS_HOST = os.getenv("REDIS_HOST", "vectorbox-redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 
 def ensure_dirs():
     if not BACKUP_DIR.exists():
@@ -76,8 +93,14 @@ def backup_postgres():
     
     # Ensure PGPASSWORD is set
     env = os.environ.copy()
-    if "POSTGRES_PASSWORD" in env and "PGPASSWORD" not in env:
-        env["PGPASSWORD"] = env["POSTGRES_PASSWORD"]
+    if "PGPASSWORD" not in env:
+        if "POSTGRES_PASSWORD" in env:
+            env["PGPASSWORD"] = env["POSTGRES_PASSWORD"]
+        elif "DATABASE_URL" in env:
+            try:
+                env["PGPASSWORD"] = env["DATABASE_URL"].split("://")[1].split("@")[0].split(":")[1]
+            except Exception:
+                pass
     
     cmd = [
         "pg_dump",
@@ -88,11 +111,11 @@ def backup_postgres():
     ]
     
     try:
-        subprocess.run(cmd, env=env, check=True)
+        res = subprocess.run(cmd, env=env, check=True, capture_output=True, text=True)
         logger.info(f"Postgres dump created: {dump_path.name}")
         return dump_path
     except subprocess.CalledProcessError as e:
-        logger.error(f"Failed to dump Postgres: {e}")
+        logger.error(f"Failed to dump Postgres: {e.stderr}")
         # Explicitly check for tool existence
         try:
             subprocess.run(["pg_dump", "--version"], check=True, capture_output=True)
@@ -100,9 +123,36 @@ def backup_postgres():
              logger.error("CRITICAL: pg_dump utility not found. Install postgresql-client in Dockerfile.")
         raise
 
+def backup_redis():
+    """Trigger Redis BGSAVE and copy the dump.rdb file"""
+    logger.info("Step C: Backing up Redis...")
+    try:
+        import redis
+        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False)
+        # Trigger background save
+        r.bgsave()
+        import time
+        time.sleep(2)  # Wait for BGSAVE to complete
+
+        # Copy dump.rdb from Redis container
+        dump_path = TEMP_DIR / f"redis_dump_{TIMESTAMP}.rdb"
+        # Use redis DEBUG RELOAD to get current state
+        # then copy via docker exec
+        subprocess.run([
+            "docker", "cp",
+            "vectorbox-redis:/data/dump.rdb",
+            str(dump_path)
+        ], check=True)
+
+        logger.info(f"Redis dump saved: {dump_path.name}")
+        return dump_path
+    except Exception as e:
+        logger.warning(f"Redis backup skipped: {e}")
+        return None  # Non-fatal — Redis is regenerable
+
 def create_archive(files):
     """Zip files together"""
-    logger.info("Step C: Creating Final Archive...")
+    logger.info("Step D: Creating Final Archive...")
     
     zip_name = f"vectorbox_backup_{TIMESTAMP}.zip"
     zip_path = BACKUP_DIR / zip_name
@@ -116,7 +166,7 @@ def create_archive(files):
 
 def rotate_backups():
     """Keep only last 5 backups"""
-    logger.info("Step D: Rotating Backups...")
+    logger.info("Step E: Rotating Backups...")
     
     # Get all backups, sort by modification time (newest first)
     backups = sorted(BACKUP_DIR.glob("vectorbox_backup_*.zip"), key=os.path.getmtime, reverse=True)
@@ -137,8 +187,13 @@ def main():
     try:
         qdrant_file = backup_qdrant()
         pg_file = backup_postgres()
+        redis_file = backup_redis()
         
-        create_archive([qdrant_file, pg_file])
+        files = [qdrant_file, pg_file]
+        if redis_file:
+            files.append(redis_file)
+            
+        create_archive(files)
         
         rotate_backups()
         

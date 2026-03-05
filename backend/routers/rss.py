@@ -142,7 +142,12 @@ async def sync_user_data(
                         watchlist_added += 1
                         logger.info(f"Added new watchlist item: {movie.title}")
         
-        await db.commit()
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"DB commit failed during sync_user_data: {e}")
+            raise
         await tmdb.close()
         
         return {
@@ -224,8 +229,13 @@ async def get_group_recommendations(
                     original_language=details.get('original_language')
                 )
                 db.add(new_movie)
-                await db.commit()
-                await db.refresh(new_movie)
+                try:
+                    await db.commit()
+                    await db.refresh(new_movie)
+                except Exception as e:
+                    await db.rollback()
+                    logger.error(f"DB commit failed during missing movie ingestion: {e}")
+                    raise
                 movie = new_movie
                 logger.info(f"Ingested missing movie: {new_movie.title}")
                 

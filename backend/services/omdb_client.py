@@ -8,24 +8,12 @@ from models.external_schemas import OMDbResponse, VectorBoxScore, VectorBoxBreak
 logger = logging.getLogger(__name__)
 
 class OMDbClient:
-    def __init__(self):
-        self.api_key = os.getenv("OMDB_API_KEY")
+    def __init__(self, api_key: str, client: httpx.AsyncClient = None):
+        self.api_key = api_key
         self.base_url = "http://www.omdbapi.com/"
+        self._external_client = client
+        self.client = client if client else httpx.AsyncClient(timeout=10.0)
         
-        if not self.api_key:
-            logger.warning("OMDB_API_KEY not found. VectorBox Score will be unavailable.")
-
-        # [INFRASTRUCTURE RESILIENCE]
-        limits = httpx.Limits(max_keepalive_connections=10, max_connections=20)
-        timeout = httpx.Timeout(10.0, connect=3.0)
-        
-        self.client = httpx.AsyncClient(
-            base_url=self.base_url,
-            limits=limits,
-            timeout=timeout,
-            http2=True
-        )
-
         # [RESILIENCE] Circuit Breaker
         self.cb_state = "CLOSED" 
         self.cb_failure_count = 0
@@ -33,8 +21,9 @@ class OMDbClient:
         self.cb_reset_timeout = 60
         self.cb_last_failure_time = 0
 
-    async def aclose(self):
-        await self.client.aclose()
+    async def close(self):
+        if not self._external_client:
+            await self.client.aclose()
 
     async def fetch_movie_data(self, imdb_id: str) -> Optional[OMDbResponse]:
         """

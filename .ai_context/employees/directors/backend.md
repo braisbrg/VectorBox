@@ -2,7 +2,7 @@
 
 > **Role:** Backend Technical Lead
 > **Domain:** API Design, Database, Async Patterns, Authentication
-> **Last Updated:** 2026-03-03
+> **Last Updated:** 2026-03-05
 
 This file contains all backend-specific rules, database patterns, and API guidelines for the VectorBox project.
 
@@ -29,7 +29,6 @@ This file contains all backend-specific rules, database patterns, and API guidel
 | **Llama 4 Scout** | `17b-16e-instruct` | Fast search intent parsing |
 | **Llama 3.3** | `70b-versatile` | Deep analysis, re-ranking |
 | **GPT-OSS** | `120b` | Groq fallback |
-| **GPT-4o-mini** | `gpt-4o-mini` | Universal fallback (OpenAI API) |
 | **Instructor** | Latest | Structured JSON output from LLMs |
 | **Sentence-Transformers** | `all-MiniLM-L6-v2` | Local embedding generation (CPU) |
 
@@ -137,8 +136,10 @@ Heavy clients **MUST** be Singletons to prevent resource exhaustion:
 | Service | Reason |
 | :--- | :--- |
 | `QdrantClient` | Connection pool management |
-| `TMDBClient` | HTTP session reuse |
+| `TMDBClient` | HTTP session reuse and rate limit backoff |
+| `OMDbClient` | HTTP session reuse |
 | `EmbeddingModel` | ML model loaded once in memory |
+| `httpx.AsyncClient` | Global connection pooling (via lifespan state) |
 
 **Implementation:** Inject via `dependencies.py` or initialize at module level.
 **Injection:** **MUST** be passed down to downstream business logic. **DO NOT** instantiate `TMDBClient()` directly inside `FeedService` or `RecommendationService` or any parallel tasks, as this creates rampant connection leaks.
@@ -217,9 +218,7 @@ Invalidate user-specific caches when:
 2. **Tier 2 (Intelligence):** Groq `llama-3.3-70b-versatile`
    - Use for: Deep analysis, detailed reasoning & Tier 1 retry
 3. **Tier 3 (Groq Fallback):** Groq `openai/gpt-oss-120b`
-   - Use for: High throughput fallback before leaving Groq
-4. **Tier 4 (Universal Fallback):** OpenAI `gpt-4o-mini`
-   - Use when: Groq ecosystem is entirely unavailable
+   - Use for: High throughput fallback before leaving Groq completely
 
 ### Structured Output
 - **Library:** `instructor` with Pydantic models
