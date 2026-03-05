@@ -149,7 +149,13 @@ class RecommendationService:
         # 1. Analyze Top Directors
         # Get highly rated movies
         stmt = select(Movie.directors).join(UserRating, Movie.id == UserRating.movie_id)\
-            .where(UserRating.user_id == user_id, UserRating.rating >= 4.0)
+        .where(
+            UserRating.user_id == user_id,
+            or_(
+                UserRating.rating >= 4.0,
+                UserRating.is_liked.is_(True)
+            )
+        )
             
         result = await self.db.execute(stmt)
         all_directors = []

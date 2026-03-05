@@ -362,11 +362,11 @@ async def natural_language_search(
                 r["streaming_providers"] = []
 
         # 7. Deep Analysis (Optional RAG Step)
-        if request.use_deep_analysis and results:
+        if search_req.use_deep_analysis and results:
             logger.info("Deep Analysis requested. Calling Tier 2 Intelligence...")
             try:
                 # Pass results to Llama 70B
-                reasoned_picks = await search_with_reasoning(request.query, results)
+                reasoned_picks = await search_with_reasoning(search_req.query, results)
                 
                 if reasoned_picks:
                     # Re-rank: Keep only selected, map reasons

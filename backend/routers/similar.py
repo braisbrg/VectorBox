@@ -254,7 +254,7 @@ async def get_similar_movies(
         import asyncio
         
         async def fetch_providers(movie):
-            providers = await tmdb.get_movie_watch_providers(movie["movie_id"], country_code="ES") # Default to ES or pass from request
+            providers = await tmdb.get_watch_providers(movie["movie_id"], country="ES") # Default to ES or pass from request
             if providers:
                 movie["streaming_providers"] = [p["provider_name"] for p in providers.get("flatrate", [])][:3]
             else:

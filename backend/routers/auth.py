@@ -46,8 +46,11 @@ async def register(
     Returns a session token for authentication.
     """
     try:
+        # Normalize username
+        username = user_request.username.lower().strip()
+
         # Check if username already exists
-        result = await db.execute(select(User).where(User.username == user_request.username))
+        result = await db.execute(select(User).where(User.username == username))
         if result.scalar_one_or_none():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -57,7 +60,7 @@ async def register(
         # Create user with hashed PIN and session token
         secret_token = uuid.uuid4()
         new_user = User(
-            username=user_request.username,
+            username=username,
             pin_hash=hash_pin(user_request.pin),
             secret_token=secret_token,
             country_code=user_request.country_code.upper()
@@ -115,8 +118,11 @@ async def login(
     Returns existing or new session token.
     """
     try:
+        # Normalize username
+        username = user_request.username.lower().strip()
+
         # Find user by username
-        result = await db.execute(select(User).where(User.username == user_request.username))
+        result = await db.execute(select(User).where(User.username == username))
         user = result.scalar_one_or_none()
         
         if not user:
