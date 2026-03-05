@@ -22,14 +22,17 @@ class ScraperService:
         logger.info(f"Scraping watchlist for {username}: {url}")
         
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(url, headers=self.headers)
-                
-            if response.status_code != 200:
-                logger.error(f"Failed to fetch watchlist: {response.status_code}")
-                return []
-                
-            soup = BeautifulSoup(response.text, "html.parser")
+            if self.client:
+                response = await self.client.get(url, headers=self.headers, follow_redirects=True)
+                response.raise_for_status()
+                html = response.text
+            else:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(url, headers=self.headers, follow_redirects=True)
+                    response.raise_for_status()
+                    html = response.text
+                    
+            soup = BeautifulSoup(html, 'html.parser')
             
             # Find the grid of posters (React components)
             poster_containers = soup.find_all("div", attrs={"data-component-class": "LazyPoster"})

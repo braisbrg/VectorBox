@@ -52,11 +52,6 @@ def get_intelligence_client():
     """Tier 2: Intelligence (Llama 3.3 70B)"""
     return get_scout_client() # Same client, different model ID usage
 
-def get_fallback_client():
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key: return None
-    client = AsyncOpenAI(api_key=api_key)
-    return instructor.from_openai(client, mode=instructor.Mode.TOOLS)
 
 # 3. Core Functions
 
@@ -114,20 +109,11 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
                     temperature=0.1,
                 )
             except Exception as e3:
-                logger.warning(f"Tier 3 (OSS-120B) failed: {e3}. Triggering Universal Fallback.")
-                fallback_client = get_fallback_client()
-                if fallback_client:
-                    try:
-                        return await fallback_client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            response_model=MovieSearchIntent,
-                            messages=messages,
-                            temperature=0.1,
-                        )
-                    except Exception as e4:
-                        logger.error(f"Universal Fallback failed: {e4}")
-                        return MovieSearchIntent(semantic_query=user_query, reasoning=f"All models failed: {e4}")
-                return MovieSearchIntent(semantic_query=user_query, reasoning=f"LLM Error, no fallback client: {e3}")
+                logger.warning(f"Tier 3 (OSS-120B) failed: {e3}.")
+                return MovieSearchIntent(
+                    semantic_query=user_query,
+                    reasoning=f"All Groq models failed: {e3}"
+                )
 
 async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List[ReasonedMovie]:
     """

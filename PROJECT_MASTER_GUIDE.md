@@ -3,7 +3,7 @@
 > **Role:** Lead Software Architect Handover
 > **Target Audience:** CTO / Senior Developers
 > **Version:** 1.2.0 (Gold Master)
-> **Last Updated:** 2026-03-03
+> **Last Updated:** 2026-03-05
 
 This document serves as the absolute source of truth for the **VectorBox** (internal codename: *LetterboxRecommender* / *CineMatch*) project. It documents the existing state of the codebase, detailing architecture, algorithms, and logical flows.
 
@@ -59,20 +59,19 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Validation:** **Pydantic V2**. Strongly typed data models for all inputs/outputs, including external responses (OMDb, Qdrant) via `external_schemas.py`.
 - **Scraper:** **curl_cffi 0.7.4**. Impersonates Chrome 120 for evasion.
 - **AI/ML Layer:**
-  - **Groq:** Primary Provider.
+  - **Groq:** Primary and only Provider.
     - **Tier 1 (Speed):** `meta-llama/llama-4-scout-17b-16e-instruct` (Search Bar).
     - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile` ("Deep Analysis" & Retry).
     - **Tier 3 (Fallback):** `openai/gpt-oss-120b` (Groq fallback).
-  - **OpenAI:** Secondary Provider.
-    - **Tier 4 (Universal Fallback):** `gpt-4o-mini` (Final resort).
   - **Instructor:** Python library to force structured JSON outputs from LLMs. (Strictly utilizes `AsyncOpenAI` clients to prevent event loop blocking).
   - **Sentence-Transformers:** Local inference using `all-MiniLM-L6-v2` (**CPU Optimized**) for embedding generation. Singleton Pattern enforced.
 
 ### Service Instantiation (Dependency Injection)
-- **Rule:** Heavy clients (`Qdrant`, `TMDB`, `EmbeddingModel`) **MUST** be Singletons injected via `dependencies.py` (e.g., `Depends(get_tmdb_client)`).
-- **Requirement:** When instantiating service classes (like `RecommendationService`) within endpoints or parallel tasks, you **MUST** pass the injected dependencies down the chain (Dependency Injection).
-- **Ban:** Do NOT instantiate new instances of `TMDBClient()` or `QdrantService()` inside service class `__init__` methods. This creates catastrophic HTTPX connection leaks during parallel execution (like `asyncio.gather`).
-- **Reason:** Prevents resource exhaustion (e.g., too many HTTP sessions or loaded models) during high concurrency.
+- **Global HTTP Client:** The FastAPI `lifespan` initializes a single global `httpx.AsyncClient` attached to `app.state` to leverage connection pooling effectively across all external requests.
+- **Rule:** Heavy clients (`Qdrant`, `TMDB`, `EmbeddingModel`, `OMDbClient`) **MUST** be Singletons injected via `dependencies.py` (e.g., `Depends(get_tmdb_client)`).
+- **Requirement:** When instantiating service classes (like `RecommendationService`) within endpoints or parallel tasks, you **MUST** pass the injected dependencies down the chain.
+- **Ban:** Do NOT instantiate new instances of `TMDBClient()`, `OMDbClient()`, or `httpx.AsyncClient()` inside service class `__init__` methods. This creates catastrophic HTTPX connection leaks during parallel execution (like `asyncio.gather`).
+- **Resilience:** `TMDBClient` implements Exponential Backoff retries for 429 Rate Limit errors.
 
 ### Data Layer
 - **Relational DB:** **PostgreSQL 15-alpine**. Stores User profiles, Ratings, Watchlists, Movie metadata, and Clusters.
@@ -98,7 +97,8 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
   - **pnpm audit:** Scans JS dependencies.
 - **Validation & QA:**
   - **Automated E2E Suite:** Playwright-based QA script (`tests/qa_automation.py`) checking Auth, Mobile UX, and Error States.
-  - **Chaos Monkey & Whitelist Testing:** `verify_nlp_fallback.py` and `test_es_whitelist.py` ensure LLM failovers trigger correctly and strict ES provider filtering passes.
+  - **Chaos Monkey & Whitelist Testing:** `verify_nlp_fallback.py` and `test_es_whitelist.py` ensure LLM failovers trigger correctly.
+  - **QA Certification protocol:** The full E2E run is certified in `docs/QA_RUNBOOK.md`.
   - **Frontend Quality Audit:** Strictly adheres to Addy Osmani standards for Core Web Vitals (LCP/INP/CLS), WCAG 2.1 AA Accessibility, and Modern Best Practices.
 
 ### Authentication (v1.2)
@@ -126,9 +126,9 @@ The feed is composed of multiple "Sections", generated largely in parallel by `F
 | **Random Picks** | Random selection from top 500 "VectorBox Scored" movies in DB. |
 
 ### B. The "Magic Box" (NLP Search)
-A natural language search interface powered by `nlp_search.py` with a 4-Tier Cascading Fallback Architecture.
+A natural language search interface powered by `nlp_search.py` with a 3-Tier Cascading Fallback Architecture.
 1.  **Input:** User types "gangster movies from the 90s that are dark".
-2.  **Interpretation (LLM):** The robust LLM pipeline (Llama 4 Scout -> 70B -> 120B -> GPT-4o-mini) via `Instructor` parses this into a `MovieSearchIntent` object:
+2.  **Interpretation (LLM):** The robust LLM pipeline (Llama 4 Scout -> 70B -> 120B) via `Instructor` parses this into a `MovieSearchIntent` object:
     -   `semantic_query`: "organized crime, mafia, noir, crime drama, 1990s" (Expanded synonyms).
     -   `year_min`: 1990, `year_max`: 1999.
     -   `include_genres`: ["Crime", "Drama"].
@@ -191,8 +191,8 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 2.  **TMDB API:** `TMDBClient` fetches metadata, credits, keywords, and release dates. **Singleton Instance** prevents connection exhaustion.
 3.  **Vector Generation:** `EmbeddingService` creates a synthetic text chunk: `Title + Overview + Genres + Keywords`. This chunk is embedded locally via `SentenceTransformer`.
 4.  **Storage:**
-    -   **Postgres:** Stores metadata in `movies` table.
-    -   **Qdrant:** Stores vector with payload (TMDB ID, Genres, Year).
+    -   **Postgres:** Stores metadata in `movies` table. Uses atomic `ON CONFLICT DO UPDATE` UPSERTs to prevent Time-Of-Check-To-Time-Of-Use (TOCTOU) race conditions.
+    -   **Qdrant:** Stores vector with payload (TMDB ID, Genres, Year). Batch upserts check for existing payload differences via a quick `scroll` operation to skip redundant I/O writes.
 
 ### Schema & ID Type Key Points
 - **Rule of Thumb:** VectorBox uses TWO different movie ID spaces. Mixing them causes silent deduplication failures.
@@ -236,9 +236,8 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ### Container Hardening
 - **User:** Backend container runs as non-root user `vectorbox` (UID 1000).
-- **Network Ports (Development vs Production):**
-    - **Development:** Database ports (5432, 6333) are **EXPOSED** in `docker-compose.yml` for convenience (debugging/GUI tools).
-    - **Production:** These ports **MUST** be commented out or protected by firewall to prevent external access. Only the internal Docker network should access them.
+- **Network Ports:** Databases (Postgres 5432, Qdrant 6333, Redis 6379, Jaeger 16686) are strictly bound to `127.0.0.1` locally via `docker-compose.yml` to prevent public internet access.
+- **Production Overrides:** `docker-compose.prod.yml` enforces fail-fast checking of required environment variables for production security.
 
 ### HTTP Security Headers
 The frontend (`next.config.js`) enforces:
@@ -279,13 +278,18 @@ The frontend (`next.config.js`) enforces:
 ---
 ## 7. Disaster Recovery & Maintenance
 
-### Snapshot & Rotation Strategy
+### Snapshot & Backup Strategy
 We implement a "Snapshot & Rotation" strategy to ensure data resilience:
 - **Frequency:** Ad-hoc (Manual trigger via wrappers) or scheduled via host cron.
 - **Components:**
-  1.  **Qdrant:** Uses the Snapshot API (`PUT /collections/{name}/snapshots`) to capture vector shards.
+  1.  **Qdrant:** Uses the Snapshot API (`POST /collections/{name}/snapshots`) to capture vector shards.
   2.  **Postgres:** Uses `pg_dump` to capture relational schema and data.
-- **Rotation:** The `backup_manager.py` script automatically enforces a policy to keep only the **last 5 backups**, deleting older ones to save disk space on resource-constrained hosts (Raspberry Pi).
+  3.  **Redis:** Triggers a `BGSAVE` to asynchronously dump session and cached keys to `dump.rdb`.
+- **Rotation:** The `backup_manager.py` script automatically enforces a policy to keep only the **last 5 backups** to save disk space on resource-constrained hosts.
+
+### Restoration
+- **Script:** `restore_manager.py` takes an archived ZIP and automatically orchestrates the destructive restoration process (terminates Postgres connections, drops Qdrant collections, restarts Redis).
+- **Dry-Run:** Supports `--dry-run` to preview operations before execution.
 
 ### Persistence Architecture
 - **Volume Mapping:** To prevent data loss during container recreation, backups are written to `/app/backups` inside the container but mapped to the Host machine at `./backups`.
@@ -323,5 +327,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-03-04 (Post Search & Feed Fixes)
+**Last Updated:** 2026-03-05 (Gold Master / QA Certified)
 **Maintained By:** VectorBox Team

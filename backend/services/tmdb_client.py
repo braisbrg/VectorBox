@@ -21,10 +21,9 @@ logger = logging.getLogger(__name__)
 class TMDBClient:
     """TMDB API wrapper with intelligent caching, rate limiting, and connection pooling"""
     
-    BASE_URL = "https://api.themoviedb.org/3"
     RATE_LIMIT_DELAY = 0.25  # 4 requests/second
     
-    def __init__(self):
+    def __init__(self, client: Optional[httpx.AsyncClient] = None):
         self.api_key = os.getenv("TMDB_API_KEY")
         self.read_token = os.getenv("TMDB_READ_TOKEN")
         self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -38,30 +37,41 @@ class TMDBClient:
         self.cb_reset_timeout = 60 # seconds
         self.cb_last_failure_time = 0
         
-        # Security: Validate API credentials exist
-        if not self.api_key or not self.read_token:
-            raise ValueError("TMDB API credentials not configured")
-
+        self.base_url = "https://api.themoviedb.org/3"
+        
+        self.headers = {
+            "accept": "application/json",
+            "User-Agent": "VectorBox/1.0" # Keep User-Agent
+        }
+        
+        if self.read_token:
+            self.headers["Authorization"] = f"Bearer {self.read_token}"
+        elif self.api_key:
+            # Fallback to query param if needed, but modern TMDB prefers Bearer
+            pass
+        else:
+            logger.warning("No TMDB API Key or Read Token found in environment!")
+            
+        self._external_client = client
+        
         # [INFRASTRUCTURE RESILIENCE] Connection Pooling
         limits = httpx.Limits(max_keepalive_connections=20, max_connections=40)
         timeout = httpx.Timeout(20.0, connect=5.0)
 
-        # [STRICT HEADER ISOLATION] Global Headers
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "VectorBox/1.0"
-        }
-        if self.read_token:
-            headers["Authorization"] = f"Bearer {self.read_token}"
-
-        self.client = httpx.AsyncClient(
-            base_url=self.BASE_URL,
-            headers=headers,
+        self.client = client if client else httpx.AsyncClient(
+            base_url=self.base_url, # Use self.base_url
+            headers=self.headers,
             limits=limits,
             timeout=timeout,
             http2=True,
             verify=True
         )
+        self._lock = asyncio.Lock() # Added lock
+    
+    async def close(self):
+        """Close the httpx client if it was created internally."""
+        if not self._external_client and self.client:
+            await self.client.aclose()
     
     async def _get_redis(self) -> redis.Redis:
         """Get or create Redis connection"""
@@ -84,7 +94,7 @@ class TMDBClient:
         self.last_request_time = asyncio.get_event_loop().time()
     
     async def _make_request(self, endpoint: str, params: Dict = None) -> Optional[Dict]:
-        """Make HTTP request with error handling and rate limiting"""
+        """Make HTTP request with error handling and rate limiting and retry logic"""
         # [RESILIENCE] Circuit Breaker Check
         current_time = asyncio.get_event_loop().time()
         if self.cb_state == "OPEN":
@@ -93,23 +103,28 @@ class TMDBClient:
                 self.cb_state = "HALF-OPEN"
             else:
                 # Fail fast
+                logger.warning(f"TMDB Circuit Breaker OPEN, failing fast for {endpoint}")
                 return None
 
         await self._rate_limit()
         
         # [ZERO-LEAK] params passed per-request. Headers already set in __init__.
-        # We don't set Authorization header here to prevent duplication/leakage if reused.
-        # But wait, __init__ set it. So we are good.
         
-        try:
-            # Usage: self.client already has base_url. Endpoint should be relative.
-            # However, original code used full URL in `url` var.
-            # `self.client.get(endpoint)` will append to base_url.
-            # Important: `endpoint` coming in might be `/movie/123`.
-            
-            response = await self.client.get(endpoint, params=params)
-            
-            if response.status_code == 200:
+        retries = 3
+        base_delay = 1.0 # seconds
+        
+        for attempt in range(retries):
+            try:
+                response = await self.client.get(endpoint, params=params)
+                
+                if response.status_code == 429: # Rate limited
+                    delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning(f"TMDB Rate limit hit for {endpoint}. Retrying in {delay:.2f}s... (Attempt {attempt+1}/{retries})")
+                    await asyncio.sleep(delay)
+                    continue # Try again
+                
+                response.raise_for_status() # Raise for other HTTP errors (4xx, 5xx)
+                
                 # Success - Reset Circuit Breaker
                 if self.cb_state != "CLOSED":
                     logger.info("TMDB Circuit Breaker recovered (CLOSED).")
@@ -118,25 +133,23 @@ class TMDBClient:
                 
                 # [PERFORMANCE] orjson Parsing
                 return orjson.loads(response.content)
-            else:
-                response.raise_for_status()
                 
-        except httpx.HTTPStatusError as e:
-            logger.error(f"TMDB API error {e.response.status_code}: {endpoint}")
-            if e.response.status_code == 429:  # Rate limited
-                logger.warning("TMDB rate limit hit, backing off...")
-                await asyncio.sleep(2)
-            elif e.response.status_code >= 500:
-                 # Server error - Trip Circuit Breaker
-                 self._record_failure()
-            return None
-        except orjson.JSONDecodeError as e:
-            logger.error(f"JSON Parse Error: {e}")
-            return None
-        except Exception as e:
-            logger.error(f"TMDB request failed: {e}")
-            self._record_failure()
-            return None
+            except httpx.HTTPStatusError as e:
+                logger.error(f"TMDB API error {e.response.status_code}: {endpoint}")
+                if e.response.status_code == 429:  # Rate limited
+                    logger.warning("TMDB rate limit hit, backing off...")
+                    await asyncio.sleep(2)
+                elif e.response.status_code >= 500:
+                     # Server error - Trip Circuit Breaker
+                     self._record_failure()
+                return None
+            except orjson.JSONDecodeError as e:
+                logger.error(f"JSON Parse Error: {e}")
+                return None
+            except Exception as e:
+                logger.error(f"TMDB request failed: {e}")
+                self._record_failure()
+                return None
 
     def _record_failure(self):
         """Record a failure and potentially trip the circuit breaker"""
@@ -411,5 +424,5 @@ class TMDBClient:
             await self.redis_client.close()
             self.redis_client = None
         
-        await self.client.aclose()
+        await self.close()
         logger.info("TMDB client closed")

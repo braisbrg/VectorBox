@@ -37,7 +37,12 @@ class MovieService:
             # Update URI if provided and missing
             if letterboxd_uri and not movie.letterboxd_uri:
                 movie.letterboxd_uri = letterboxd_uri
-                await self.db.commit()
+                try:
+                    await self.db.commit()
+                except Exception as e:
+                    await self.db.rollback()
+                    logger.error(f"DB commit failed updating letterboxd_uri: {e}")
+                    raise
             return movie
 
         # 2. Ingest if missing
@@ -60,8 +65,13 @@ class MovieService:
 
             # B. Save to SQL
             self.db.add(movie)
-            await self.db.commit()
-            await self.db.refresh(movie)
+            try:
+                await self.db.commit()
+                await self.db.refresh(movie)
+            except Exception as e:
+                await self.db.rollback()
+                logger.error(f"DB commit failed ingesting new movie: {e}")
+                raise
             logger.info(f"Created movie: {movie.title} (VB Score: {movie.vectorbox_score})")
 
             # C. Upsert to Qdrant (if not skipped)
@@ -204,8 +214,12 @@ class MovieService:
                          changed = True
             
             if changed:
-                await self.db.commit()
-                # Force vector regeneration
+                try:
+                    await self.db.commit()
+                except Exception as e:
+                    await self.db.rollback()
+                    logger.error(f"DB commit failed enriching movie: {e}")
+                    raise                # Force vector regeneration
                 vector = self.embedding_service.generate_embedding({
                     "title": movie.title,
                     "overview": movie.overview,

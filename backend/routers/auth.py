@@ -67,8 +67,14 @@ async def register(
         )
         
         db.add(new_user)
-        await db.commit()
-        await db.refresh(new_user)
+        db.add(new_user)
+        try:
+            await db.commit()
+            await db.refresh(new_user)
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"DB commit failed during registration: {e}")
+            raise
         
         logger.info(f"Registered new user: {new_user.username} (ID: {new_user.id})")
         
@@ -138,11 +144,15 @@ async def login(
                 detail="Invalid username or PIN"
             )
         
-        # Generate new token if none exists
         if not user.secret_token:
             user.secret_token = uuid.uuid4()
-            await db.commit()
-            await db.refresh(user)
+            try:
+                await db.commit()
+                await db.refresh(user)
+            except Exception as e:
+                await db.rollback()
+                logger.error(f"DB commit failed during token generation: {e}")
+                raise
         
         # v1.1: Check if user has data (Onboarding Jail)
         from sqlalchemy import func
@@ -155,8 +165,13 @@ async def login(
         
         # Security: Rotate session token on login to prevent session fixation
         user.secret_token = uuid.uuid4()
-        await db.commit()
-        await db.refresh(user)
+        try:
+            await db.commit()
+            await db.refresh(user)
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"DB commit failed during session rotation: {e}")
+            raise
         
         logger.info(f"User logged in: {user.username} (ID: {user.id}, Data: {has_data})")
         

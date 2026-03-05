@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy import select, delete, cast, Date
+from sqlalchemy.dialects.postgresql import insert, delete, cast, Date
 import numpy as np
 
 from models.database import User, Movie, UserRating
@@ -116,8 +116,12 @@ class RSSService:
                         # Update URI if missing
                         if not movie.letterboxd_uri:
                             movie.letterboxd_uri = item['uri']
-                            await self.db.commit()
-                            
+                            try:
+                                await self.db.commit()
+                            except Exception as e:
+                                await self.db.rollback()
+                                logger.error(f"DB commit failed updating letterboxd_uri: {e}")
+                                raise
                     if movie:
                         await self.movie_service.enrich_movie(movie)        
                 
@@ -144,7 +148,12 @@ class RSSService:
                         # Update URI if missing
                         if not movie.letterboxd_uri:
                             movie.letterboxd_uri = item['uri']
-                            await self.db.commit()
+                            try:
+                                await self.db.commit()
+                            except Exception as e:
+                                await self.db.rollback()
+                                logger.error(f"DB commit failed updating letterboxd_uri: {e}")
+                                raise
                         await self.movie_service.enrich_movie(movie)
                 
                 # 4. If movie doesn't exist, fetch from TMDB and create it
@@ -185,42 +194,39 @@ class RSSService:
                     else:
                         stats["errors"] += 1
                         continue
-                
-                # 3. Create/Update UserRating
-                stmt = select(UserRating).where(
-                    UserRating.user_id == user_id,
-                    UserRating.movie_id == movie.id
+                # 7. Upsert rating safely
+                stmt = insert(UserRating).values(
+                    user_id=user_id,
+                    movie_id=movie.id,
+                    rating=item.get('rating'),
+                    is_watched=True, # Always True for RSS items
+                    liked=item.get('liked', False),
+                    watched_date=item.get('watched_date'),
+                    review=item.get('review')
+                ).on_conflict_do_update(
+                    index_elements=["user_id", "movie_id"],
+                    set_={
+                        "rating": getattr(insert(UserRating).excluded, "rating"),
+                        "is_watched": True, # Ensure it's marked as watched
+                        "liked": getattr(insert(UserRating).excluded, "liked"),
+                        "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
+                        "review": getattr(insert(UserRating).excluded, "review"),
+                    }
                 )
-                result = await self.db.execute(stmt)
-                rating = result.scalar_one_or_none()
                 
-                if not rating:
-                    rating = UserRating(
-                        user_id=user_id,
-                        movie_id=movie.id,
-                        rating=item['rating'],
-                        is_watched=True,
-                        watched_date=item['watched_date']
-                    )
-                    self.db.add(rating)
-                    stats["new_ratings"] += 1
-                else:
-                    # Update existing rating if needed
-                    updated = False
-                    if item['rating'] and rating.rating != item['rating']:
-                        rating.rating = item['rating']
-                        updated = True
-                    
-                    if item['watched_date'] and (not rating.watched_date or item['watched_date'] > rating.watched_date):
-                        rating.watched_date = item['watched_date']
-                        updated = True
-                        
-                    if not rating.is_watched:
-                        rating.is_watched = True
-                        updated = True
-                        
-                    if updated:
-                        stats["updated_ratings"] += 1
+                try:
+                    result = await self.db.execute(stmt)
+                    # Check if a row was inserted or updated
+                    if result.rowcount > 0:
+                        if result.is_insert: # This attribute might not be directly available on result for asyncpg
+                            stats["new_ratings"] += 1
+                        else:
+                            stats["updated_ratings"] += 1
+                    await self.db.commit()
+                except Exception as e:
+                    await self.db.rollback()
+                    logger.error(f"DB commit failed syncing rss item: {e}")
+                    raise
 
                 
                 # CLEANUP: Check for "Phantom Movies" (Same date, different movie, NOT in RSS)
@@ -247,8 +253,12 @@ class RSSService:
                             await self.db.delete(conflict)
                             stats["processed"] += 1 # Count as an action
 
-                await self.db.commit()
-                
+                try:
+                    await self.db.commit()
+                except Exception as e:
+                    await self.db.rollback()
+                    logger.error(f"DB commit failed syncing rss item: {e}")
+                    raise
             except Exception as e:
                 logger.error(f"Error processing item {item.get('title')}: {e}")
                 stats["errors"] += 1

@@ -262,7 +262,12 @@ class ClusteringService:
             
             # logger.info(f"Cluster {cluster_id}: {label} ({len(cluster_movies)} movies, avg rating: {avg_rating:.2f})")
         
-        await db.commit()
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"DB commit failed during user cluster creation: {e}")
+            raise
         
         return cluster_objects
     

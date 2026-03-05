@@ -26,6 +26,7 @@ from routers import upload, recommendations, tools, users, search, rss, auth, ta
 from routers.similar import router as similar_router
 from services.qdrant_service import QdrantService
 from models.schemas import HealthResponse, RootResponse
+from models.database import engine, Base
 from dependencies import close_services
 from scheduler import start_scheduler
 
@@ -48,18 +49,33 @@ from fastapi_cache.backends.redis import RedisBackend
 from redis import asyncio as aioredis
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator:
+async def lifespan(app: FastAPI):
     """Application lifespan events"""
     # Startup
-    logger.info("Initializing VectorBox...")
+    logger.info("Initializing VectorBox Backend...")
 
     # Observability: Initialize OTel tracer before anything else
     setup_telemetry()
     SQLAlchemyInstrumentor().instrument()
     RedisInstrumentor().instrument()
 
-    await init_db()
-    
+    # Initialize global HTTP client
+    app.state.http_client = httpx.AsyncClient(
+        timeout=15.0,
+        limits=httpx.Limits(max_keepalive_connections=50, max_connections=100)
+    )
+
+    # Check DB Connection
+    try:
+        async with engine.begin() as conn:
+            # We don't auto-create tables anymore to let Alembic handle migrations
+            # If you want auto-creation back, uncomment:
+            # await conn.run_sync(Base.metadata.create_all)
+            pass
+        logger.info("Database connection established.")
+    except Exception as e:
+        logger.error(f"Database connection failed: {e}")
+        
     # Initialize Redis Cache
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
     redis = aioredis.from_url(redis_url, encoding="utf8", decode_responses=True)
@@ -73,22 +89,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # Start Scheduler
     start_scheduler()
     
-    logger.info("Application started successfully")
+    logger.info("VectorBox Backend initialized.")
     yield
     
     # Shutdown
-    logger.info("Shutting down VectorBox...")
+    logger.info("Shutting down VectorBox Backend...")
+    if hasattr(app.state, 'http_client'):
+        await app.state.http_client.aclose()
     await close_services()
 
+
+IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
 
 app = FastAPI(
     title="VectorBox",
     description="Advanced movie recommendation system with semantic search",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url="/api/docs",  # Restrict docs to /api path
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json"
+    docs_url=None if IS_PRODUCTION else "/api/docs",  # Restrict docs to /api path
+    redoc_url=None if IS_PRODUCTION else "/api/redoc",
+    openapi_url=None if IS_PRODUCTION else "/api/openapi.json"
 )
 
 # Observability: Auto-instrument all FastAPI routes (adds HTTP spans to every request)

@@ -7,6 +7,7 @@ from fastapi import APIRouter, UploadFile, File, Depends, BackgroundTasks, HTTPE
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 import logging
@@ -166,42 +167,42 @@ async def enrich_movies_background(
                         movie_data = chunk[idx]
 
                         try:
-                            result = await db.execute(
-                                select(UserRating).where(
-                                    UserRating.user_id == user_id,
-                                    UserRating.movie_id == movie_id
-                                )
+                            # 3. UPSERT Rating Safely
+                            stmt = insert(UserRating).values(
+                                user_id=user_id,
+                                movie_id=movie_id,
+                                rating=movie_data.get("rating"),
+                                is_watchlist=movie_data.get("is_watchlist", False),
+                                is_liked=movie_data.get("is_liked", False),
+                                is_watched=movie_data.get("is_watched", False),
+                                watched_date=movie_data.get("watched_date"),
+                                review=movie_data.get("review")
+                            ).on_conflict_do_update(
+                                index_elements=["user_id", "movie_id"],
+                                set_={
+                                    "rating": getattr(insert(UserRating).excluded, "rating"),
+                                    "is_watchlist": getattr(insert(UserRating).excluded, "is_watchlist"),
+                                    "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
+                                    "is_watched": getattr(insert(UserRating).excluded, "is_watched"),
+                                    "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
+                                    "review": getattr(insert(UserRating).excluded, "review")
+                                }
                             )
-                            existing_rating = result.scalar_one_or_none()
-
-                            if existing_rating:
-                                 if movie_data.get("rating"): existing_rating.rating = movie_data["rating"]
-                                 if movie_data.get("is_watchlist"): existing_rating.is_watchlist = True
-                                 if movie_data.get("is_liked"): existing_rating.is_liked = True
-                                 if movie_data.get("is_watched"): existing_rating.is_watched = True
-                                 if movie_data.get("watched_date"): existing_rating.watched_date = movie_data["watched_date"]
-                                 if movie_data.get("review"): existing_rating.review = movie_data["review"]
-                            else:
-                                rating = UserRating(
-                                    user_id=user_id,
-                                    movie_id=movie_id,
-                                    rating=movie_data.get("rating"),
-                                    is_watchlist=movie_data.get("is_watchlist", False),
-                                    is_liked=movie_data.get("is_liked", False),
-                                    is_watched=movie_data.get("is_watched", False),
-                                    watched_date=movie_data.get("watched_date"),
-                                    review=movie_data.get("review")
-                                )
-                                db.add(rating)
+                            await db.execute(stmt)
 
                             if needs_vector:
                                 movies_to_vectorize_ids.append(movie_id)
 
                         except Exception as e:
-                            logger.error(f"Rating update failed for movie_id {movie_id}: {e}")
+                            logger.error(f"Rating upsert failed for movie_id {movie_id}: {e}")
 
                     # Commit batch DB changes
-                    await db.commit()
+                    try:
+                        await db.commit()
+                    except Exception as e:
+                        await db.rollback()
+                        logger.error(f"DB commit failed during movie batch update: {e}")
+                        raise
 
                     # 3. Batch Vectorize & Upsert (Qdrant Phase)
                     if movies_to_vectorize_ids:
@@ -223,6 +224,19 @@ async def enrich_movies_background(
                                     "genres": m.genres,
                                     "keywords": m.keywords or []
                                 })
+                            target_movies = target_movies_res.scalars().all()
+
+                            logger.info(f"Generating vectors for {len(target_movies)} movies in batch...")
+
+                            # Prepare data dicts for embedding service
+                            data_for_embedding = []
+                            for m in target_movies:
+                                data_for_embedding.append({
+                                    "title": m.title,
+                                    "overview": m.overview,
+                                    "genres": m.genres,
+                                    "keywords": m.keywords or []
+                                })
 
                             # Generate Batch Embeddings (Fast)
                             vectors = embedding_service.generate_batch_embeddings(data_for_embedding)
@@ -230,7 +244,7 @@ async def enrich_movies_background(
                             # Prepare Qdrant Points
                             from qdrant_client.models import PointStruct
                             points = []
-                            for idx, m in enumerate(movies_to_vectorize):
+                            for idx, m in enumerate(target_movies):
                                 points.append(PointStruct(
                                     id=m.tmdb_id,
                                     vector=vectors[idx].tolist(),
@@ -379,7 +393,12 @@ async def upload_export(
             # Create default user
             user = User(id=user_id, username=f"user_{user_id}")
             db.add(user)
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.error(f"DB commit failed creating default user: {e}")
+                raise
         
         # v1.1: Strict Onboarding - Require linked Letterboxd username
         if not user.letterboxd_username:

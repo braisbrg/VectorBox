@@ -15,8 +15,8 @@
 - **Ban:** The synchronous `QdrantClient` is strictly forbidden in async service layers to prevent event loop blocking.
 - **Search API:** Use `await client.query_points(...)` (modern vector retrieval) instead of `search` or `query`.
 
-### LLM Integration (OpenAI / Groq)
-- **Client:** Use `AsyncOpenAI` exclusively for all instructor/LLM integrations.
+### LLM Integration (Groq)
+- **Client:** Use `AsyncOpenAI` exclusively for all instructor/LLM integrations (pointing to Groq's endpoint).
 - **Ban:** The synchronous `OpenAI` client is strictly forbidden inside `async def` route handlers or services.
 
 ### Service Instantiation (Singletons & Dependency Injection)
@@ -109,10 +109,11 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ### Container & Data Persistence
 - **Rule:** Ephemeral Containers, Persistent Data.
-- **Requirement:** All production data (Postgres/Qdrant volumes) and critical artifacts (Backups) **MUST** be mapped to Host Volumes.
+- **Requirement:** All production data (Postgres/Qdrant/Redis volumes) and critical artifacts (Backups) **MUST** be mapped to Host Volumes.
+- **Backups:** Use `backup_manager.py` (which dumps Postgres, Qdrant snapshots, and Redis `BGSAVE`) and `restore_manager.py` for automated disaster recovery.
 - **Ban:** Never save critical state solely inside the container's writable layer. It will be lost on `docker-compose down`.
 
-## 7. Security Standards (OWASP Hardening)
+## 4. Security Standards (OWASP Hardening)
 
 ### Pillar 1: Input Validation & Sanitization (XSS)
 - **Frontend:** `dangerouslySetInnerHTML` is strictly FORBIDDEN. Use `dompurify` if absolutely necessary.
@@ -144,30 +145,27 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
     - Animations defined as pure CSS keyframes in `globals.css`.
 - **Internationalization:** All user-facing strings must be localized via `next-intl` (en/es).
 
-## 4. AI & NLP Layer
+## 5. AI & NLP Layer
 
-### Model Configuration (4-Tier Fallback Strategy)
+### Model Configuration (3-Tier Fallback Strategy)
 - **Tier 1 (Speed):** `meta-llama/llama-4-scout-17b-16e-instruct`
     - Use for: Real-time search bar intent parsing.
 - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile`
     - Use for: Deep Analysis (Re-ranking), detailed reasoning & Tier 1 retry.
 - **Tier 3 (Groq Fallback):** `openai/gpt-oss-120b`
-    - Use for: High throughput fallback before leaving Groq infrastructure.
-- **Tier 4 (Universal Fallback):** `gpt-4o-mini`
-    - Use for: Final resort via OpenAI API.
+    - Use for: High throughput fallback before failing completely.
 
 ### Cascading Fallback
 1.  Tier 1 Primary: Groq `meta-llama/llama-4-scout-17b-16e-instruct`
 2.  Tier 2 Retry: Groq `llama-3.3-70b-versatile`
 3.  Tier 3 OSS: Groq `openai/gpt-oss-120b`
-4.  Universal Fallback: OpenAI `gpt-4o-mini`
 
 ### Structured Output
 - **Library:** `instructor` (Python) with Pydantic models.
 - **Schema:** `MovieSearchIntent` must be used to filter database queries (years, genres, popularity vibe).
 - **Logic:** "Broad Search" - The LLM must expand user keywords into synonyms (e.g., "gangsters" -> "mafia, crime drama, noir") before vector embedding.
 
-## 5. Data Ingestion strategy
+## 6. Data Ingestion strategy
 
 ### Hybrid Sync
 1.  **CSV Import:** For bulk historical data.
@@ -180,7 +178,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
     -   **Purpose:** Fetching "Popular on Letterboxd" identifiers without full browser automation.
 4.  **Trending Cache:** Redis-cached "Popular on Letterboxd" identifiers.
 
-## 6. Validation & Quality Assurance (v1.2)
+## 7. Validation & Quality Assurance (v1.2)
 
 ### Automated QA
 - **Tool:** Playwright (Python).
@@ -216,5 +214,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-03-04
+**Last Updated:** 2026-03-05
 **Maintained By:** VectorBox Team
