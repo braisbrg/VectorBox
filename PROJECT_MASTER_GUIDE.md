@@ -200,7 +200,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
   - `tmdb_id` → `Movie.tmdb_id` (TMDB API identifier)
   - `seen_ids` set (feed deduplication) MUST use `tmdb_id`.
   - `watched_ids` set MUST use `internal_id`.
-- **`movies` table:** Stores `vectorbox_score`, extensive ratings (IMDb, RT, Metacritic), and localized `overview_es`.
+- **`movies` table:** Stores `vectorbox_score`, extensive ratings (IMDb, RT, Metacritic, TMDB), and localized `overview_es`.
 - **`user_ratings` table:** Links Users to Movies. Contains `is_watched`, `is_watchlist`, `rating`, `watched_date`. `movie_id` is an FK to `Movie.id` (internal).
 - **`user_clusters` table:** Stores the computed K-Means centroids and labels for each user.
 

@@ -64,8 +64,8 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 ```
 
 ### VectorBox Score (Quality Metric)
-- **Source:** Aggregated ratings from OMDb (IMDb, Metacritic, Rotten Tomatoes) + Letterboxd.
-- **Scale:** 0-100.
+- **Source:** Aggregated ratings from OMDb (IMDb, Metacritic, Rotten Tomatoes) + TMDB.
+- **Scale:** 0-100 (linearly normalized).
 
 ### Sigmoid Quality Curve
 - **Purpose:** Non-linear boosting of high-quality movies.

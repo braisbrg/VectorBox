@@ -121,14 +121,14 @@ def sigmoid_weight(score: float, midpoint: float = 65, steepness: float = 0.15) 
 ## 3. VectorBox Score (Quality Metric)
 
 ### Definition
-An aggregated quality score from multiple review sources:
+An aggregated quality score from multiple review sources, all linearly normalized to a 0-100 scale:
 
 | Source | Weight | Notes |
 | :--- | :--- | :--- |
-| **IMDb** | High | Normalized from 1-10 scale |
-| **Metacritic** | Medium | Professional critics |
-| **Rotten Tomatoes** | Medium | Critic + Audience |
-| **Letterboxd** | High | Cinephile community |
+| **IMDb** | 30% | Normalized from 0-10 scale (linear stretch 4-10) |
+| **Rotten Tomatoes** | 30% | Professional critics (already 0-100) |
+| **TMDB** | 20% | Community votes, adds coverage |
+| **Metacritic** | 20% | Professional critics (already 0-100) |
 
 ### Scale
 - **Range:** 0-100
