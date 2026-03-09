@@ -43,6 +43,7 @@
   - ✅ `UserRating.is_watched.is_(True)` | ❌ `UserRating.is_watched == True`
 - **Rule:** ALL HTTP clients must be explicitly closed after use (e.g., `await tmdb.aclose()`). Never let them go out of scope silently.
 - **Rule:** CPU-bound work (KMeans, MMR reranking) must be offloaded using `await loop.run_in_executor(None, cpu_bound_func, args)`. Calling blocking CPU functions directly in an async context is strictly forbidden.
+- **Rule:** Strict Null Checks for Collections. When checking if an array or JSON column (like `keywords` or `release_dates`) needs enrichment, ALWAYS use `if movie.keywords is None:`. NEVER use `if not movie.keywords:`, because TMDB often returns legitimate empty arrays `
 
 ### Code Conventions — ID Types
 - **Rule:** VectorBox uses TWO different movie ID spaces. Mixing them causes silent deduplication failures.
