@@ -3,6 +3,7 @@ CineMatch AI - FastAPI Backend (Refactored to VectorBox)
 """
 import logging
 import os
+import httpx
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -26,7 +27,7 @@ from routers import upload, recommendations, tools, users, search, rss, auth, ta
 from routers.similar import router as similar_router
 from services.qdrant_service import QdrantService
 from models.schemas import HealthResponse, RootResponse
-from models.database import engine, Base
+from database import engine, Base
 from dependencies import close_services
 from scheduler import start_scheduler
 

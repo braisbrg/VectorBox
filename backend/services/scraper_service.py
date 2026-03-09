@@ -1,4 +1,3 @@
-
 import httpx
 from bs4 import BeautifulSoup
 import logging
@@ -12,6 +11,8 @@ class ScraperService:
         self.headers = {
             "User-Agent": "VectorBox-Student-Project/1.0 (Educational Purpose)"
         }
+        # No self.client — cada método crea su propio AsyncClient
+        # (correcto para uso en contexto async, evita estado compartido)
 
     async def scrape_watchlist_recent(self, username: str) -> List[dict]:
         """
@@ -22,15 +23,10 @@ class ScraperService:
         logger.info(f"Scraping watchlist for {username}: {url}")
         
         try:
-            if self.client:
-                response = await self.client.get(url, headers=self.headers, follow_redirects=True)
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, headers=self.headers, follow_redirects=True)
                 response.raise_for_status()
                 html = response.text
-            else:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    response = await client.get(url, headers=self.headers, follow_redirects=True)
-                    response.raise_for_status()
-                    html = response.text
                     
             soup = BeautifulSoup(html, 'html.parser')
             

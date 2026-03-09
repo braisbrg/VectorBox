@@ -67,8 +67,9 @@ async def sync_user_data(
         scraper = ScraperService()
         import asyncio
         loop = asyncio.get_running_loop()
-        watchlist_items = await loop.run_in_executor(None, scraper.scrape_watchlist_recent, letterboxd_profile)
         
+        watchlist_items = await scraper.scrape_watchlist_recent(letterboxd_profile)
+
         tmdb = TMDBClient()
         movie_service = MovieService(db)
         
@@ -81,7 +82,7 @@ async def sync_user_data(
             
             # 1. Try to get authoritative TMDB ID from Letterboxd page
             # Run in executor because it uses requests.get (blocking)
-            tmdb_id = await loop.run_in_executor(None, scraper.get_tmdb_id, film_slug)
+            tmdb_id = await scraper.get_tmdb_id(film_slug)
             
             if tmdb_id:
                 logger.info(f"Found authoritative TMDB ID {tmdb_id} for {film_slug}")
@@ -108,7 +109,7 @@ async def sync_user_data(
 
                 # Strict Year Check (Only if we did a fuzzy search)
                 # If we got the ID from Letterboxd directly, we trust it 100%
-                scraped_id = await loop.run_in_executor(None, scraper.get_tmdb_id, film_slug)
+                scraped_id = await scraper.get_tmdb_id(film_slug)
                 if not scraped_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
                     logger.warning(f"Year mismatch for {film_slug}: Scraped {film_year} vs DB {movie.year}. Skipping.")
                     continue
@@ -148,7 +149,7 @@ async def sync_user_data(
             await db.rollback()
             logger.error(f"DB commit failed during sync_user_data: {e}")
             raise
-        await tmdb.close()
+        await tmdb.aclose()
         
         return {
             "status": "success",

@@ -7,7 +7,7 @@ import axios, { AxiosError } from "axios";
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 // Create axios instance with defaults
-const api = axios.create({
+export const api = axios.create({
     baseURL: typeof window === "undefined" ? API_URL : undefined, // Proxy on client, Direct on server
     timeout: 60000, // 60 seconds
     headers: {

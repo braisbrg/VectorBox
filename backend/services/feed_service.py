@@ -1,5 +1,7 @@
 import logging
 import asyncio
+import os
+import redis.asyncio as aioredis
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
@@ -72,8 +74,6 @@ class FeedService:
     async def get_random_watchlist_section(self, user_id: int, db: AsyncSession, tmdb: TMDBClient, country: str, provider_service: ProviderService = None) -> Optional[FeedSection]:
         return await self.engine.get_random_watchlist_section(user_id, db, tmdb, country, provider_service)
 
-
-
     async def get_watchlist_feed(
         self,
         user_id: int,
@@ -86,10 +86,8 @@ class FeedService:
         """
         Generate a feed based ONLY on the user's watchlist.
         """
-        # 1. Available Now (Watchlist)
         available_section = await self.get_available_now_section(user_id, db, tmdb, set(), country, streaming_providers)
         
-        # 2. Top Rated in Watchlist
         top_rated_result = await db.execute(
             select(Movie)
             .join(UserRating, Movie.id == UserRating.movie_id)
@@ -103,14 +101,13 @@ class FeedService:
         )
         top_rated_movies = top_rated_result.scalars().all()
         
-        # Batch fetch providers for top rated
         start_provider = ProviderService(db, tmdb)
-        tr_ids = [m.id for m in top_rated_movies]
+        tr_ids =[m.id for m in top_rated_movies]
         tr_providers_map = await start_provider.get_providers_batch(tr_ids, country)
         
-        top_rated_items = []
+        top_rated_items =[]
         for movie in top_rated_movies:
-            movie_providers = tr_providers_map.get(movie.id, [])
+            movie_providers = tr_providers_map.get(movie.id,[])
             flat_providers = [p["provider_name"] for p in movie_providers]
             item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, include_rating=True, streaming_providers=flat_providers)
             top_rated_items.append(item)
@@ -121,7 +118,6 @@ class FeedService:
             items=top_rated_items
         )
         
-        # 3. Short & Sweet (Runtime < 100m)
         short_result = await db.execute(
             select(Movie)
             .join(UserRating, Movie.id == UserRating.movie_id)
@@ -137,7 +133,7 @@ class FeedService:
         short_movies = short_result.scalars().all()
         short_items = []
         if short_movies:
-            short_ids = [m.id for m in short_movies]
+            short_ids =[m.id for m in short_movies]
             short_providers_map = await start_provider.get_providers_batch(short_ids, country)
         else:
             short_providers_map = {}
@@ -147,18 +143,15 @@ class FeedService:
             item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, include_rating=True, streaming_providers=flat_providers)
             short_items.append(item)
 
-            
         short_section = FeedSection(
             id="watchlist_short",
             title="Short & Sweet (Watchlist)",
             items=short_items
         )
 
-        # 4. Random Shuffle
         local_provider_for_watchlist = ProviderService(db, tmdb)
         random_section = await self.get_random_watchlist_section(user_id, db, tmdb, country, local_provider_for_watchlist)
 
-        
         sections = [available_section, top_rated_section, short_section, random_section]
         feed = [s for s in sections if s and s.items]
         
@@ -184,11 +177,26 @@ class FeedService:
         background_tasks = None
     ) -> FeedResponse:
         """
-        Generate the main feed using PARALLEL EXECUTION.
+        Generate the main feed using FULLY PARALLEL EXECUTION.
+        Includes high-level Redis caching for blazing fast loads.
         """
-        
-        # 1. Define Parallel Tasks with Session Isolation
-        
+        # --- CACHE INTERCEPT BLOCK ---
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        r = None
+        try:
+            r = await aioredis.from_url(redis_url, decode_responses=True)
+            prov_str = ",".join(map(str, sorted(streaming_providers)))
+            cache_key = f"feed:{user_id}:{country_code}:global:{include_low_quality}:{prov_str}"
+            
+            cached = await r.get(cache_key)
+            if cached:
+                logger.info(f"Feed Cache HIT for User {user_id} (0.05s response)")
+                await r.close()
+                return FeedResponse.model_validate_json(cached)
+        except Exception as e:
+            logger.warning(f"Redis feed cache read failed: {e}")
+        # --- END CACHE INTERCEPT ---
+
         async def task_popular():
             try:
                 async with AsyncSessionLocal() as session:
@@ -255,13 +263,6 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    # We need to pass tmdb/qdrant to get_hybrid_picks_section
-                    # But get_hybrid_picks_section signature doesn't take qdrant explicitly. 
-                    # We updated RecommendationService to take them in init. 
-                    # We need to update get_hybrid_picks_section to take them or handle it.
-                    # The previous edit updated get_hybrid_picks_section to extract tmdb from provider_service.
-                    # Qdrant is still a leak in hybrid picks if we don't pass it.
-                    # Let's update get_hybrid_picks_section signature in a moment. For now, calling as is.
                     return await self.get_hybrid_picks_section(user_id, session, country_code, set(), local_provider, qdrant=qdrant, background_tasks=background_tasks)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hybrid]: {e}")
@@ -271,76 +272,102 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    recommender = RecommendationService(
-                        session, tmdb=tmdb, qdrant=qdrant
-                    )
-                    return await recommender.get_auteur_section(
-                        user_id, country_code, set(),
-                        provider_service=local_provider
-                    )
+                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant)
+                    return await recommender.get_auteur_section(user_id, country_code, set(), provider_service=local_provider)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Auteur]: {e}")
                 return None
-        
-        # 2. Execute Parallel Tasks
-        tasks = [
+
+        async def task_deep_dive():
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await self.get_deep_dive_section(
+                        user_id, session, tmdb, set(), country_code,
+                        local_provider, include_low_quality=include_low_quality,
+                        background_tasks=background_tasks
+                    )
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Deep Dive]: {e}")
+                return None
+
+        tasks =[
             task_popular(),
-            task_hybrid(), # Trident
+            task_hybrid(),
             task_watched(),
             task_taste(),
             task_wildcard(),
             task_random(),
             task_hidden(),
-            task_auteur(), # Signal B separate row
-            task_available()
+            task_auteur(),
+            task_available(),
+            task_deep_dive(),
         ]
         
         results = await asyncio.gather(*tasks)
-        
-        # Unpack results
-        section_popular, section_hybrid, section_a, section_b, section_wildcard, section_random, section_c, section_auteur, section_d = results
-        
-        # 3. Deduplicate and Aggregate
-        seen_ids = set()
-        final_sections = []
-        
-        ordered_results = [
-            section_hybrid, 
-            section_popular, 
-            section_a, 
-            section_b, 
+
+        (
+            section_popular,
+            section_hybrid,
+            section_a,
+            section_b,
+            section_wildcard,
+            section_random,
+            section_c,
             section_auteur,
-            section_wildcard, 
-            section_random, 
-            section_c, 
-            section_d
+            section_d,
+            section_deep_dive,
+        ) = results
+
+        # Deduplicate and assemble in display order
+        seen_ids: Set[int] = set()
+        final_sections = []
+
+        ordered_results =[
+            section_hybrid,
+            section_popular,
+            section_a,
+            section_b,
+            section_auteur,
+            section_wildcard,
+            section_random,
+            section_c,
+            section_d,
         ]
-        
+
         for section in ordered_results:
             if not section or not section.items:
                 continue
-            
-            unique_items = []
+            unique_items =[]
             for item in section.items:
                 if item.id not in seen_ids:
                     unique_items.append(item)
                     seen_ids.add(item.id)
-            
             if unique_items:
                 section.items = unique_items
                 final_sections.append(section)
-        
-        # 4. Deep Dive (Sequential)
-        try:
-            async with AsyncSessionLocal() as session:
-                local_provider = ProviderService(session, tmdb)
-                section_deep_dive = await self.get_deep_dive_section(
-                    user_id, session, tmdb, seen_ids, country_code, local_provider, include_low_quality=include_low_quality, background_tasks=background_tasks
-                )
-                if section_deep_dive and section_deep_dive.items:
-                    insert_pos = min(len(final_sections), 5)
-                    final_sections.insert(insert_pos, section_deep_dive)
-        except Exception as e:
-            logger.error(f"Feed Task Failed [Deep Dive]: {e}")
-        
-        return FeedResponse(feed=final_sections, status="ok")
+
+        if section_deep_dive and section_deep_dive.items:
+            unique_items =[item for item in section_deep_dive.items if item.id not in seen_ids]
+            for item in unique_items:
+                seen_ids.add(item.id)
+            if unique_items:
+                section_deep_dive.items = unique_items
+                insert_pos = min(len(final_sections), 5)
+                final_sections.insert(insert_pos, section_deep_dive)
+
+        final_resp = FeedResponse(feed=final_sections, status="ok")
+
+        # --- CACHE SAVE BLOCK ---
+        if r:
+            try:
+                # Cache for 1 hour (3600 seconds)
+                await r.setex(cache_key, 3600, final_resp.model_dump_json())
+                logger.info(f"Feed Cache MISS. Computed and saved for User {user_id}")
+            except Exception as e:
+                logger.warning(f"Redis feed cache write failed: {e}")
+            finally:
+                await r.close()
+        # --- END CACHE SAVE ---
+
+        return final_resp

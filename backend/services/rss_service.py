@@ -7,7 +7,8 @@ import re
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
-from sqlalchemy.dialects.postgresql import insert, delete, cast, Date
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy import delete, cast, select, Date
 import numpy as np
 
 from models.database import User, Movie, UserRating
@@ -200,7 +201,7 @@ class RSSService:
                     movie_id=movie.id,
                     rating=item.get('rating'),
                     is_watched=True, # Always True for RSS items
-                    liked=item.get('liked', False),
+                    is_liked=item.get('is_liked', False),
                     watched_date=item.get('watched_date'),
                     review=item.get('review')
                 ).on_conflict_do_update(
@@ -208,7 +209,7 @@ class RSSService:
                     set_={
                         "rating": getattr(insert(UserRating).excluded, "rating"),
                         "is_watched": True, # Ensure it's marked as watched
-                        "liked": getattr(insert(UserRating).excluded, "liked"),
+                        "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
                         "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
                         "review": getattr(insert(UserRating).excluded, "review"),
                     }

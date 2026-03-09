@@ -12,6 +12,7 @@ from services.provider_service import ProviderService
 from services.movie_factory import MovieFactory
 
 logger = logging.getLogger(__name__)
+_enriching_now: set[int] = set()
 
 class MovieService:
     def __init__(self, db: AsyncSession, tmdb: TMDBClient = None):
@@ -57,7 +58,6 @@ class MovieService:
             logger.info(f"Ingesting movie TMDB ID: {tmdb_id}")
             
             # A. Build Movie & Point using Factory
-            # This replaces the entire manual fetch -> build -> score -> vector pipeline
             movie, point, providers_raw = await self.factory.build_movie(tmdb_id, letterboxd_uri)
             
             if not movie:
@@ -76,18 +76,10 @@ class MovieService:
 
             # C. Upsert to Qdrant (if not skipped)
             if not skip_qdrant and point:
-                # Factory returns a generic point, we upsert it using service helper
-                # Note: upsert_movie_vector helper expects explicit args, but we have a PointStruct.
-                # Use batch upsert for single point to reuse the struct directly?
-                # Or just map the fields? 
-                # Converting PointStruct back to args for `upsert_movie_vector` is redundant.
-                # Let's use `upsert_batch` for single point efficiency or `upsert_movie_vector` if we want to keep that method alive.
-                # Actually, `QdrantService.upsert_batch` takes a list of `PointStruct`.
                 await self.qdrant.upsert_batch([point])
 
             # D. Save Providers (if available)
             if providers_raw:
-                # Flatten providers logic (same as original)
                 providers_list = []
                 for p_type in ["flatrate", "free"]:
                     if p_type in providers_raw:
@@ -107,14 +99,12 @@ class MovieService:
         idempotently ensures a vector exists for the movie in Qdrant.
         """
         try:
-            # Check if vector exists
             exists = await self.qdrant.get_vector(movie.tmdb_id)
             if exists:
                 return True
                 
             logger.warning(f"Vector missing for {movie.title} ({movie.tmdb_id}). Regenerating...")
             
-            # Generate Metadata
             keywords = await self.tmdb.get_movie_keywords(movie.tmdb_id)
             vector = self.embedding_service.generate_embedding({
                 "title": movie.title,
@@ -151,87 +141,86 @@ class MovieService:
         Ensures movie has keywords, OMDb data (VB Score), and a valid vector.
         Self-heals missing data.
         """
+        if movie.tmdb_id in _enriching_now:
+            logger.debug(f"Skipping enrich for {movie.title} — already in progress")
+            return False
+
+        _enriching_now.add(movie.tmdb_id)
+
         try:
             changed = False
             details = None
-            
-            # 1. Check OMDb / VectorBox Score
-            # Re-fetch if missing (None) or if it's 0 (invalid/empty initial fetch)
-            if movie.vectorbox_score is None or movie.vectorbox_score == 0:
-                logger.info(f"Enriching OMDb data for {movie.title} (Current Score: {movie.vectorbox_score})...")
+
+            # 1. Check OMDb / VectorBox Score (FIX: Solo reintenta si es None)
+            if movie.vectorbox_score is None:
+                logger.info(f"Enriching OMDb data for {movie.title}...")
                 details = await self.tmdb.get_movie_details(movie.tmdb_id)
                 if details and details.get("imdb_id"):
                     imdb_id = details.get("imdb_id")
                     omdb_data = await self.omdb.fetch_movie_data(imdb_id)
                     vb_score_obj = self.omdb.calculate_vectorbox_score(omdb_data, details.get("vote_average"))
-                    
+
                     movie.imdb_id = imdb_id
                     movie.vectorbox_score = vb_score_obj.score
                     movie.imdb_rating = vb_score_obj.breakdown.imdb
                     movie.metacritic_rating = vb_score_obj.breakdown.meta
-                    
                     changed = True
-            
-            # 2. Check/Fetch Keywords
-            if not movie.keywords:
+
+            # 2. Check/Fetch Keywords (FIX: Si no tiene, guarda un array vacío para no volver a buscar)
+            if movie.keywords is None:
                 logger.info(f"Enriching keywords for {movie.title} ({movie.tmdb_id})...")
                 keywords = await self.tmdb.get_movie_keywords(movie.tmdb_id)
-                if keywords:
-                    movie.keywords = keywords
-                    changed = True
-            
-            # 3. Check/Fetch Release Dates (New)
-            if not movie.release_dates:
-                 logger.info(f"Enriching release dates for {movie.title}...")
-                 # We need full details again if we didn't fetch them above
-                 # Optimization: reuse details if we fetched them for OMDb
-                 if not details: 
-                     details = await self.tmdb.get_movie_details(movie.tmdb_id)
-                 
-                 release_dates_map = {}
-                 if details and "release_dates" in details and "results" in details["release_dates"]:
-                     for country in details["release_dates"]["results"]:
-                         iso = country["iso_3166_1"]
-                         # Find theatrical release (type 3) or digital (4)
-                         # Priority: 3 > 4 > anything
-                         best_date = None
-                         for date_entry in country["release_dates"]:
-                             if date_entry["type"] == 3: # Theatrical
-                                 best_date = date_entry["release_date"]
-                                 break # Found best
-                             elif date_entry["type"] == 4 and not best_date:
-                                 best_date = date_entry["release_date"]
-                             elif not best_date:
-                                 best_date = date_entry["release_date"]
-                         
-                         if best_date:
-                             release_dates_map[iso] = best_date.split("T")[0]
-                     
-                     if release_dates_map:
-                         movie.release_dates = release_dates_map
-                         changed = True
-            
+                movie.keywords = keywords if keywords else[]
+                changed = True
+
+            # 3. Check/Fetch Release Dates (FIX: Guarda un diccionario vacío si no hay datos)
+            if movie.release_dates is None:
+                logger.info(f"Enriching release dates for {movie.title}...")
+                if not details:
+                    details = await self.tmdb.get_movie_details(movie.tmdb_id)
+
+                release_dates_map = {}
+                if details and "release_dates" in details and "results" in details["release_dates"]:
+                    for country in details["release_dates"]["results"]:
+                        iso = country["iso_3166_1"]
+                        best_date = None
+                        for date_entry in country["release_dates"]:
+                            if date_entry["type"] == 3:  # Theatrical
+                                best_date = date_entry["release_date"]
+                                break
+                            elif date_entry["type"] == 4 and not best_date:
+                                best_date = date_entry["release_date"]
+                            elif not best_date:
+                                best_date = date_entry["release_date"]
+
+                        if best_date:
+                            release_dates_map[iso] = best_date.split("T")[0]
+
+                movie.release_dates = release_dates_map if release_dates_map else {}
+                changed = True
+
             if changed:
                 try:
                     await self.db.commit()
                 except Exception as e:
                     await self.db.rollback()
                     logger.error(f"DB commit failed enriching movie: {e}")
-                    raise                # Force vector regeneration
+                    raise
+
                 vector = self.embedding_service.generate_embedding({
                     "title": movie.title,
                     "overview": movie.overview,
                     "genres": movie.genres,
-                    "keywords": movie.keywords or []
+                    "keywords": movie.keywords or[]
                 })
-                
+
                 if not skip_qdrant:
                     from models.external_schemas import QdrantPayload
                     payload = QdrantPayload(
                         tmdb_id=movie.tmdb_id,
                         title=movie.title,
                         year=movie.year,
-                        genres=movie.genres or [],
+                        genres=movie.genres or[],
                         rating=movie.vote_average,
                         vote_count=movie.vote_count,
                         runtime=movie.runtime,
@@ -241,26 +230,28 @@ class MovieService:
                         metacritic_rating=movie.metacritic_rating,
                         title_es=movie.title_es,
                         overview_es=movie.overview_es,
-                        keywords=movie.keywords or []
+                        keywords=movie.keywords or[]
                     )
-                    
+
                     await self.qdrant.upsert_movie_vector(
                         movie_id=movie.tmdb_id,
                         vector=vector.tolist(),
                         metadata=payload
                     )
                 return True
-            
-            # 3. Even if nothing changed, ensure vector exists (unless skipping)
+
             if not skip_qdrant:
                 return await self.ensure_vector_exists(movie)
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to enrich movie {movie.title}: {e}")
             return False
 
+        finally:
+            _enriching_now.discard(movie.tmdb_id)
+
     async def close(self):
         if self._owns_tmdb:
             await self.tmdb.aclose()
-        await self.omdb.aclose()
+        await self.omdb.close()
