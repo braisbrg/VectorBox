@@ -54,7 +54,6 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
         queryKey: ["watchlist", userId, debouncedFilters, countryCode, page],
         queryFn: async () => {
             const params = new URLSearchParams({
-                user_id: userId.toString(),
                 country_code: countryCode,
                 sort_by: debouncedFilters.sortBy,
                 page: page.toString(),

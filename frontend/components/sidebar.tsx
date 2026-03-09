@@ -5,22 +5,18 @@ import {
     LayoutList,
     Grid3x3,
     Calendar,
-    Heart,
     Users,
     Settings,
     ChevronLeft,
     ChevronRight,
     Film,
     Sparkles,
-    User as UserIcon,
-    LogOut
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { AppTooltip } from "@/components/info-tooltip";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
 import { VectorboxUser } from "@/lib/api";
-import { useQuery } from "@tanstack/react-query";
 
 interface SidebarProps {
     currentView: string;
@@ -86,23 +82,6 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
         }
     ];
 
-    // Upload Progress Polling
-    const { data: uploadStatus } = useQuery({
-        queryKey: ["uploadStatus", currentUserId],
-        queryFn: async () => {
-            if (!currentUserId) return null;
-            const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-            const res = await fetch(`${apiUrl}/api/upload/status/${currentUserId}`);
-            if (!res.ok) return null;
-            return res.json();
-        },
-        refetchInterval: (query: any) => {
-            // Poll every 1s if processing, otherwise stop (or slow down)
-            return query.state.data?.status === "processing" ? 1000 : false;
-        },
-        enabled: !!currentUserId
-    });
-
     return (
         <motion.aside
             initial={false}
@@ -139,40 +118,6 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                 </button>
             </div>
 
-            {/* Upload Progress Indicator */}
-            <AnimatePresence>
-                {uploadStatus?.status === "processing" && (
-                    <motion.div
-                        initial={{ height: 0, opacity: 0 }}
-                        animate={{ height: "auto", opacity: 1 }}
-                        exit={{ height: 0, opacity: 0 }}
-                        className="bg-zinc-900 border-b border-zinc-800 overflow-hidden"
-                    >
-                        <div className={`p-4 ${isCollapsed ? "flex justify-center" : ""}`}>
-                            {isCollapsed ? (
-                                <div className="w-4 h-4 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                            ) : (
-                                <div className="space-y-2">
-                                    <div className="flex justify-between text-xs font-mono text-zinc-400">
-                                        <span>UPLOADING...</span>
-                                        <span>{uploadStatus.progress}%</span>
-                                    </div>
-                                    <div className="h-1 bg-zinc-800 w-full overflow-hidden">
-                                        <motion.div
-                                            className="h-full bg-primary"
-                                            initial={{ width: 0 }}
-                                            animate={{ width: `${uploadStatus.progress}%` }}
-                                            transition={{ duration: 0.5 }}
-                                        />
-                                    </div>
-                                    <p className="text-[10px] text-zinc-500 truncate">{uploadStatus.message}</p>
-                                </div>
-                            )}
-                        </div>
-                    </motion.div>
-                )}
-            </AnimatePresence>
-
             {/* Main Menu */}
             <nav className="flex-1 overflow-y-auto py-6 px-3 space-y-1 custom-scrollbar">
                 {menuItems.map((item) => {
@@ -201,7 +146,6 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                                 </span>
                             )}
 
-                            {/* Glitch effect overlay on hover */}
                             <div className="absolute inset-0 bg-primary/5 translate-x-[-100%] group-hover:translate-x-0 transition-transform duration-300 pointer-events-none" />
                         </button>
                     );
@@ -211,7 +155,6 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
             {/* Bottom Section */}
             <div className="border-t border-zinc-800 bg-black p-3 space-y-4">
 
-                {/* User Info (Read Only) */}
                 {!isCollapsed && users && currentUserId && (
                     <div className="px-3 py-2 bg-zinc-900 border border-zinc-800 mb-2">
                         <div className="flex items-center gap-2">
@@ -223,7 +166,6 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                     </div>
                 )}
 
-                {/* Bottom Menu Items */}
                 <div className="space-y-1">
                     {bottomItems.map((item) => {
                         const Icon = item.icon;
@@ -249,7 +191,6 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                     })}
                 </div>
 
-                {/* Footer Controls */}
                 <div className={`flex items-center ${isCollapsed ? "flex-col gap-4" : "justify-between"} pt-2 border-t border-zinc-900`}>
                     <LanguageToggle isCollapsed={isCollapsed} />
                     <AppTooltip isCollapsed={isCollapsed} />

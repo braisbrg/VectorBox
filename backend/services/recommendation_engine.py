@@ -148,8 +148,8 @@ class RecommendationEngine:
                     # No embedding service — fall back to stored vector
                     anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
                 else:
-                    keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
-                    
+                    if anchor_movie.keywords is None:
+                        keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
                     anchor_vector = self.embedding_service.generate_embedding({
                         "title": anchor_movie.title, 
                         "overview": anchor_movie.overview or "",

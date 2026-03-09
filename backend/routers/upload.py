@@ -224,19 +224,6 @@ async def enrich_movies_background(
                                     "genres": m.genres,
                                     "keywords": m.keywords or []
                                 })
-                            target_movies = target_movies_res.scalars().all()
-
-                            logger.info(f"Generating vectors for {len(target_movies)} movies in batch...")
-
-                            # Prepare data dicts for embedding service
-                            data_for_embedding = []
-                            for m in target_movies:
-                                data_for_embedding.append({
-                                    "title": m.title,
-                                    "overview": m.overview,
-                                    "genres": m.genres,
-                                    "keywords": m.keywords or []
-                                })
 
                             # Generate Batch Embeddings (Fast)
                             vectors = embedding_service.generate_batch_embeddings(data_for_embedding)
@@ -244,7 +231,7 @@ async def enrich_movies_background(
                             # Prepare Qdrant Points
                             from qdrant_client.models import PointStruct
                             points = []
-                            for idx, m in enumerate(target_movies):
+                            for idx, m in enumerate(movies_to_vectorize):
                                 points.append(PointStruct(
                                     id=m.tmdb_id,
                                     vector=vectors[idx].tolist(),
