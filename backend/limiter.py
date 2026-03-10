@@ -11,7 +11,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 # Initialize Limiter with Redis storage
 # Auto-disable in Testing Mode
-is_testing = os.getenv("TESTING_MODE", "False") == "True"
+is_testing = os.getenv("TESTING_MODE", "False").lower() in ("true", "1", "yes")
 
 limiter = Limiter(
     key_func=get_remote_address,

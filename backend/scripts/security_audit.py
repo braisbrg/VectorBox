@@ -65,7 +65,7 @@ def main():
     exit_code = 0
     try:
         audit_cmd = [
-            "pip-audit",
+            sys.executable, "-m", "pip_audit",
             "-r", target_file,
             "--strict",
             "--progress-spinner", "off",

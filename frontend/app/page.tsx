@@ -23,9 +23,13 @@ export default async function HomePage() {
     const cookieStore = await cookies();
     const token = cookieStore.get('vectorbox_token');
 
-    // 2. Client-Side Fallback (Relaxed Gatekeeping)
-    // If no cookie, we don't redirect here. We let the client component (Dashboard) 
-    // handle the auth check using localStorage if available.
+    // TODO Sprint 1 (Clerk): reactivar este guard cuando Clerk gestione la
+    // sesión server-side. Actualmente desactivado porque el middleware.ts de
+    // Next.js aún no existe y la app usa localStorage como fallback de auth
+    // en cliente. Con localStorage activo, borrar solo la cookie no cierra
+    // la sesión en Chromium — el Dashboard sigue renderizando.
+    // DEUDA: auth dual (cookie + localStorage) es un riesgo de seguridad.
+    // Al migrar a Clerk, localStorage.vectorbox_user debe eliminarse.
     // if (!token) {
     //     redirect('/login');
     // }

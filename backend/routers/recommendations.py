@@ -442,9 +442,7 @@ async def get_group_recommendations(
         raise HTTPException(status_code=500, detail="Failed to generate group recommendations")
 
 
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-limiter = Limiter(key_func=get_remote_address)
+from limiter import limiter
 
 @router.get("/feed", response_model=FeedResponse)
 @limiter.limit("20/minute")

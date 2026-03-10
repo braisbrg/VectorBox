@@ -131,7 +131,8 @@ export default function RegisterPage() {
                                     minLength={3}
                                     maxLength={20}
                                     pattern="^[a-zA-Z0-9_-]+$"
-                                    autoComplete="username"
+                                    inputMode="text"
+                                    data-testid="register-username"
                                 />
                                 <p className="text-[10px] text-zinc-600">Lowercase, numbers, dashes only.</p>
                             </div>
@@ -170,6 +171,7 @@ export default function RegisterPage() {
                                         pattern="[0-9]{4}"
                                         maxLength={4}
                                         autoComplete="new-password"
+                                        data-testid="register-pin"
                                     />
                                 </div>
                                 <div className="space-y-2">
@@ -188,6 +190,7 @@ export default function RegisterPage() {
                                         pattern="[0-9]{4}"
                                         maxLength={4}
                                         autoComplete="new-password"
+                                        data-testid="register-confirm-pin"
                                     />
                                 </div>
                             </div>
@@ -196,6 +199,7 @@ export default function RegisterPage() {
                                 type="submit"
                                 disabled={loading || !username || !pinMatch}
                                 className="w-full py-4 rounded-lg mt-4 !bg-purple-600 !border-purple-600 !text-white hover:!bg-purple-500"
+                                data-testid="register-submit"
                             >
                                 {loading ? (
                                     <Loader2 className="animate-spin" />

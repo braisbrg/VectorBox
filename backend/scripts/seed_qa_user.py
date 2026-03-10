@@ -48,7 +48,6 @@ RATINGS = [
     # 2-3 star — negative signal for wildcard exclusion
     {"tmdb_id": 1858,   "rating": 2.0},   # Transformers
     {"tmdb_id": 168259, "rating": 2.5},   # Fast & Furious 7
-    {"tmdb_id": 339535, "rating": 2.0},   # Baywatch
 
     # watchlist — tests available_now + random_watchlist
     {"tmdb_id": 771443,  "rating": None, "is_watchlist": True},  # Tár
