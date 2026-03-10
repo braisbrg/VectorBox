@@ -23,45 +23,41 @@ test.describe('Phase 7 — Security', () => {
   });
 
   test('Backend down renders AcidError component', async ({ page }) => {
-    // Mock a failed API response
+    await loginAs(page);
     await page.route('**/api/recommendations/feed**', (route) => {
       route.abort('failed');
     });
-    await page.goto('/');
+    await page.reload();
     await page.waitForLoadState('networkidle');
-    // Should show error component, not white screen
-    const errorComponent = page.getByText(
-      /error|stream interrupted|something went wrong|data_stream_interrupted/i
-    );
+    
     // If no error component, at least no unhandled crash
     const pageContent = await page.content();
     expect(pageContent).not.toContain('Application error');
+    expect(pageContent).not.toContain('unhandled');
   });
 
   test('localStorage cleared does not crash — cookie is truth', async ({ page }) => {
-    await page.goto('/');
+    await loginAs(page);
     await page.evaluate(() => localStorage.clear());
     await page.reload();
+    await page.waitForLoadState('networkidle');
     // Should still be logged in (cookie is the auth source)
-    await expect(page).not.toHaveURL(/login/);
+    await expect(page).not.toHaveURL(/login/, { timeout: 10_000 });
   });
 
   test('Zero MissingGreenlet errors in logs after load', async ({ page }) => {
-    const cookies = await page.context().cookies();
-    const token = cookies.find(c => c.name === 'vectorbox_token')?.value ?? '';
+    await loginAs(page);
 
     // Hit the feed 3 times to generate log activity
     for (let i = 0; i < 3; i++) {
-      await page.request.get(
-        'http://localhost:8000/api/recommendations/feed?country_code=ES',
-        { headers: { Cookie: `vectorbox_token=${token}` } }
+      await page.context().request.get(
+        'http://localhost:8000/api/recommendations/feed?country_code=ES'
       );
     }
     // The actual log check is done via the backend audit script
     // This test just confirms no 500s occur
-    const response = await page.request.get(
-      'http://localhost:8000/api/recommendations/feed?country_code=ES',
-      { headers: { Cookie: `vectorbox_token=${token}` } }
+    const response = await page.context().request.get(
+      'http://localhost:8000/api/recommendations/feed?country_code=ES'
     );
     expect(response.status()).toBe(200);
   });

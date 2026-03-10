@@ -1,8 +1,8 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.2.0 (Post-Security Hardening & Web Quality Audit)
-> **Last Updated:** 2026-03-05
+> **Version:** 1.2.1 (Post-Test-Suite Stabilization)
+> **Last Updated:** 2026-03-11
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
@@ -649,6 +649,13 @@ docker-compose exec backend python scripts/restore_manager.py /app/backups/vecto
 
 Prerequisites: App running via docker-compose up -d
 
+> **Architecture:** The Playwright config uses a 3-stage project pipeline:
+> 1. **Base projects** (3 browsers) run Phase 1, 2, 7 — no `storageState`
+> 2. **Setup** runs `auth.setup.ts` → logs in as `qa_vecbox` → saves fresh `user.json`
+> 3. **Authed projects** (3 browsers) run Phase 3, 4, 5, 12 — use `storageState`
+>
+> The `auth.setup.ts` must run AFTER Phase 7 (which rotates the token via `loginAs()`).
+
 ### Run full suite (all browsers):
   cd frontend && npx playwright test
 
@@ -674,6 +681,8 @@ Prerequisites: App running via docker-compose up -d
 | Phase 12 Web Quality  | playwright test phase12           | PASS     |
 | All (Desktop)         | playwright test --project=Desktop | PASS     |
 | All (Mobile)          | playwright test --project=Mobile  | PASS     |
+
+**Expected Totals:** 109 tests (106 pass, 3 skipped), ~3 min runtime.
 
 > ❌ **FAIL if:** Any Playwright test reports `FAIL` or `ERROR`.
 

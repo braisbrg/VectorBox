@@ -96,7 +96,7 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
   - **pip-audit:** Scans Python dependencies for CVEs during build using hash-verified `requirements.lock`.
   - **pnpm audit:** Scans JS dependencies.
 - **Validation & QA:**
-  - **Automated E2E Suite:** Playwright-based QA suite (`frontend/e2e/`) checking Auth, Mobile UX, and Error States.
+  - **Automated E2E Suite:** Playwright-based QA suite (`frontend/e2e/`) covering Auth, Feed/NLP Search, Mobile UX, Security, and Web Quality across 3 browser configurations (109 tests).
   - **Chaos Monkey & Whitelist Testing:** `verify_nlp_fallback.py` and `test_es_whitelist.py` ensure LLM failovers trigger correctly.
   - **QA Certification protocol:** The full E2E run is certified in `docs/QA_RUNBOOK.md`.
   - **Frontend Quality Audit:** Strictly adheres to Addy Osmani standards for Core Web Vitals (LCP/INP/CLS), WCAG 2.1 AA Accessibility, and Modern Best Practices.
@@ -327,5 +327,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-03-05 (Gold Master / QA Certified)
+**Last Updated:** 2026-03-11 (Gold Master / QA Certified)
 **Maintained By:** VectorBox Team

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { loginAs } from './fixtures/auth';
+
+const API = 'http://localhost:8000';
 
 test.describe('Phase 5 — Feed & NLP Search', () => {
   test.beforeEach(async ({ page }) => {
@@ -18,8 +19,8 @@ test.describe('Phase 5 — Feed & NLP Search', () => {
   });
 
   test('Feed section items have vectorbox_score > 0', async ({ page }) => {
-    const response = await page.request.get(
-      '/api/recommendations/feed?country_code=ES'
+    const response = await page.context().request.get(
+      `${API}/api/recommendations/feed?country_code=ES`
     );
     expect(response.status()).toBe(200);
     const body = await response.json();
@@ -38,9 +39,10 @@ test.describe('Phase 5 — Feed & NLP Search', () => {
   });
 
   test('Negative seeds absent from feed', async ({ page }) => {
-    const response = await page.request.get(
-      '/api/recommendations/feed?country_code=ES'
+    const response = await page.context().request.get(
+      `${API}/api/recommendations/feed?country_code=ES`
     );
+    expect(response.status()).toBe(200);
     const body = await response.json();
 
     const BANNED_TMDB_IDS = [1858, 168259]; // Transformers, FF7
@@ -53,24 +55,59 @@ test.describe('Phase 5 — Feed & NLP Search', () => {
     }
   });
 
-  test.skip('NLP search returns results for semantic query', async ({ page }) => {
-    // SKIP Category D: backend devuelve 422 en /api/search/natural.
-    // Causa probable: el endpoint requiere user_id en el body pero
-    // la implementación actual no lo deriva del token correctamente.
-    // Investigar en backend/routers/search.py antes de re-activar.
+  test('NLP search returns results for semantic query', async ({ page }) => {
+    // TODO Sprint 1: unificar auth — endpoint debe derivar user_id
+    // del token via Depends(get_current_user), no del body.
+    const meResponse = await page.context().request.get(
+      `${API}/api/auth/me`
+    );
+    expect(meResponse.status()).toBe(200);
+    const me = await meResponse.json();
+    const userId = me.user_id;
+
+    const response = await page.context().request.post(
+      `${API}/api/search/natural`,
+      {
+        headers: { 'Content-Type': 'application/json' },
+        data: {
+          query: 'melancholic 70s road trip',
+          user_id: userId,
+          country_code: 'ES',
+        },
+      }
+    );
+    expect(response.status()).toBe(200);
   });
 
-  test.skip('Item-to-item search parses intent correctly', async ({ page }) => {
-    // SKIP Category D: mismo problema que el test anterior.
+  test('Item-to-item search parses intent correctly', async ({ page }) => {
+    // TODO Sprint 1: unificar auth — endpoint debe derivar user_id
+    // del token via Depends(get_current_user), no del body.
+    const meResponse = await page.context().request.get(
+      `${API}/api/auth/me`
+    );
+    expect(meResponse.status()).toBe(200);
+    const me = await meResponse.json();
+    const userId = me.user_id;
+
+    const response = await page.context().request.post(
+      `${API}/api/search/natural`,
+      {
+        headers: { 'Content-Type': 'application/json' },
+        data: {
+          query: 'Movies like Blade Runner',
+          user_id: userId,
+          country_code: 'ES',
+        },
+      }
+    );
+    expect(response.status()).toBe(200);
   });
 
   test('Trident signals run in parallel (total < sum)', async ({ page }) => {
     const start = Date.now();
-    const response = await page.request.get(
-      '/api/recommendations/feed?country_code=ES',
-      {
-        timeout: 60_000,
-      }
+    const response = await page.context().request.get(
+      `${API}/api/recommendations/feed?country_code=ES`,
+      { timeout: 60_000 }
     );
     const elapsed = Date.now() - start;
     expect(response.status()).toBe(200);

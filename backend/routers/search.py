@@ -84,9 +84,7 @@ async def _item_to_item_search(
 
 
 # Re-implementing with proper decorator injection
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-limiter = Limiter(key_func=get_remote_address)
+from limiter import limiter
 
 @router.post("/natural", response_model=SearchResponse)
 @limiter.limit("5/minute")

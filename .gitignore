@@ -97,6 +97,7 @@ frontend/test-results/
 *_health.txt
 *_locks.txt
 playwright*.txt
+pw_run*.txt
 test_output*.txt
 phase2-*.txt
 
