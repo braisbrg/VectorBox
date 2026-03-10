@@ -1,3 +1,6 @@
+# ARCHIVED — Migrated to TypeScript Playwright
+# See frontend/e2e/ for current test suite
+# Kept for reference only — do not run
 import re
 import time
 from datetime import datetime

@@ -84,6 +84,12 @@ test-results/
 python_procs.txt
 backend/tests/fixtures/*.zip
 
+# Playwright
+frontend/e2e/reports/
+frontend/e2e/test-results/
+frontend/playwright-report/
+frontend/test-results/
+
 # Diagnostic temp files
 [0-9].txt
 *_logs.txt

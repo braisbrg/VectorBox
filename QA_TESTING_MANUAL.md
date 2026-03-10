@@ -647,19 +647,33 @@ docker-compose exec backend python scripts/restore_manager.py /app/backups/vecto
 
 > **Goal:** Playwright automation confirms all core flows pass.
 
-```powershell
-playwright install chromium
-python tests/qa_automation.py
-```
+Prerequisites: App running via docker-compose up -d
 
-| Test Suite | Expected | Pass? |
-|:-----------|:---------|:-----:|
-| Auth flow | PASS | ☐ |
-| Registration | PASS | ☐ |
-| Feed rendering | PASS | ☐ |
-| Mobile UX (iPhone SE viewport) | PASS | ☐ |
-| 404 error page | PASS | ☐ |
-| 500 error page | PASS | ☐ |
+### Run full suite (all browsers):
+  cd frontend && npx playwright test
+
+### Run specific phase:
+  cd frontend && npx playwright test phase2-auth
+  cd frontend && npx playwright test phase5-feed
+  cd frontend && npx playwright test --project="Mobile Safari"
+
+### Run with UI (interactive):
+  cd frontend && npx playwright test --ui
+
+### View report:
+  cd frontend && npx playwright show-report e2e/reports
+
+| Test Suite            | Command                           | Expected |
+|:----------------------|:----------------------------------|:---------|
+| Phase 1 Infrastructure| playwright test phase1            | PASS     |
+| Phase 2 Auth & IDOR   | playwright test phase2            | PASS     |
+| Phase 3 Magic UI      | playwright test phase3            | PASS     |
+| Phase 4 Mobile UX     | playwright test phase4            | PASS     |
+| Phase 5 Feed & Search | playwright test phase5            | PASS     |
+| Phase 7 Security      | playwright test phase7            | PASS     |
+| Phase 12 Web Quality  | playwright test phase12           | PASS     |
+| All (Desktop)         | playwright test --project=Desktop | PASS     |
+| All (Mobile)          | playwright test --project=Mobile  | PASS     |
 
 > ❌ **FAIL if:** Any Playwright test reports `FAIL` or `ERROR`.
 
