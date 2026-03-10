@@ -184,8 +184,15 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 ### Automated QA
 - **Tool:** Playwright (TypeScript/Node.js).
 - **Directory:** `frontend/e2e/`.
+- **Config:** `frontend/playwright.config.ts`.
+- **Project Architecture:**
+    1. **Base projects** (Desktop Chrome, Mobile Safari, Mobile Chrome): Run Phase 1 (Infra), Phase 2 (Auth), Phase 7 (Security) — no `storageState` needed.
+    2. **Setup project**: Runs `auth.setup.ts` which logs in as `qa_vecbox` and saves `storageState` to `e2e/.auth/user.json`. Depends on base projects.
+    3. **Authed projects** (Desktop/Mobile + `(authed)` suffix): Run Phase 3 (UI), Phase 4 (Mobile), Phase 5 (Feed/NLP), Phase 12 (Web Quality). Use `storageState` from setup.
+- **Critical:** `auth.setup.ts` must run AFTER Phase 7 (which calls `loginAs()` and rotates the session token), so the setup project saves a fresh, valid token for authed tests.
+- **Test Count:** 109 total (106 passed, 3 skipped) across 3 browser configurations.
 - **Requirements:**
-    - **Critical Paths:** Auth, Registration, and Feed Rendering must be covered.
+    - **Critical Paths:** Auth, Registration, Feed Rendering, NLP Search, and Security must be covered.
     - **Mobile:** All features must be verifiable on iPhone SE viewport (375px).
     - **Error States:** Custom Acid Design 404/500 pages must be verified.
 
@@ -215,5 +222,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-03-05
+**Last Updated:** 2026-03-11
 **Maintained By:** VectorBox Team

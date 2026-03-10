@@ -28,17 +28,17 @@ export default defineConfig({
     {
       name: 'Desktop Chrome',
       use: { ...devices['Desktop Chrome'] },
-      testMatch: /phase(1|2)-.*\.spec\.ts/,
+      testMatch: /phase(1|2|7)-.*\.spec\.ts/,
     },
     {
       name: 'Mobile Safari',
       use: { ...devices['iPhone SE'] },
-      testMatch: /phase(1|2)-.*\.spec\.ts/,
+      testMatch: /phase(1|2|7)-.*\.spec\.ts/,
     },
     {
       name: 'Mobile Chrome',
       use: { ...devices['Pixel 5'] },
-      testMatch: /phase(1|2)-.*\.spec\.ts/,
+      testMatch: /phase(1|2|7)-.*\.spec\.ts/,
     },
 
     // 3. Authenticated projects (for Phases 3, 4, 5, 12)
