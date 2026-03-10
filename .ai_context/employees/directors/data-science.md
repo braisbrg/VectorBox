@@ -125,10 +125,9 @@ An aggregated quality score from multiple review sources, all linearly normalize
 
 | Source | Weight | Notes |
 | :--- | :--- | :--- |
-| **IMDb** | 30% | Normalized from 0-10 scale (linear stretch 4-10) |
-| **Rotten Tomatoes** | 30% | Professional critics (already 0-100) |
-| **TMDB** | 20% | Community votes, adds coverage |
-| **Metacritic** | 20% | Professional critics (already 0-100) |
+| **IMDb** | 40% | Normalized from 0-10 scale (linear stretch 4-10) |
+| **Metacritic** | 35% | Professional critics (already 0-100) |
+| **TMDB** | 25% | Community votes, adds coverage |
 
 ### Scale
 - **Range:** 0-100

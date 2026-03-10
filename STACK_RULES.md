@@ -65,7 +65,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 ```
 
 ### VectorBox Score (Quality Metric)
-- **Source:** Aggregated ratings from OMDb (IMDb, Metacritic, Rotten Tomatoes) + TMDB.
+- **Source:** Aggregated ratings from OMDb (IMDb, Metacritic) + TMDB. (Rotten Tomatoes was removed due to binary consensus scaling issues).
 - **Scale:** 0-100 (linearly normalized).
 
 ### Sigmoid Quality Curve
