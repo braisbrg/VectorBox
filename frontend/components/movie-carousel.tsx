@@ -115,7 +115,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
     ) ? "rating" : (sectionId === "popular_letterboxd" ? "letterboxd" : "match");
 
     return (
-        <div className="space-y-4 mb-8">
+        <div className="space-y-4 mb-8" data-testid="feed-carousel">
             <div className="flex items-center justify-between px-4 md:px-8">
                 <div className="flex items-center gap-3">
                     {titlePrefix}

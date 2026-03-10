@@ -27,7 +27,6 @@ test.describe('Phase 7 — Security', () => {
     await page.route('**/api/recommendations/feed**', (route) => {
       route.abort('failed');
     });
-    await loginAs(page);
     await page.goto('/');
     await page.waitForLoadState('networkidle');
     // Should show error component, not white screen
@@ -40,7 +39,7 @@ test.describe('Phase 7 — Security', () => {
   });
 
   test('localStorage cleared does not crash — cookie is truth', async ({ page }) => {
-    await loginAs(page);
+    await page.goto('/');
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     // Should still be logged in (cookie is the auth source)
@@ -48,11 +47,8 @@ test.describe('Phase 7 — Security', () => {
   });
 
   test('Zero MissingGreenlet errors in logs after load', async ({ page }) => {
-    const token = await page.evaluate(() => {
-      const cookies = document.cookie.split(';');
-      const tokenCookie = cookies.find((c) => c.trim().startsWith('vectorbox_token='));
-      return tokenCookie?.split('=')[1] ?? '';
-    });
+    const cookies = await page.context().cookies();
+    const token = cookies.find(c => c.name === 'vectorbox_token')?.value ?? '';
 
     // Hit the feed 3 times to generate log activity
     for (let i = 0; i < 3; i++) {

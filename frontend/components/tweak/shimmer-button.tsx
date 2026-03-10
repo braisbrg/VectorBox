@@ -3,15 +3,12 @@
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
 
-interface ShimmerButtonProps {
+interface ShimmerButtonProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'onAnimationStart' | 'onDragStart' | 'onDragEnd' | 'onDrag' | 'style'> {
     children: React.ReactNode;
     className?: string;
     shimmerColor?: string;
     shimmerSize?: string;
     shimmerDuration?: string;
-    disabled?: boolean;
-    type?: "button" | "submit" | "reset";
-    onClick?: () => void;
 }
 
 /**
@@ -29,12 +26,14 @@ export function ShimmerButton({
     disabled = false,
     type = "button",
     onClick,
+    ...rest
 }: ShimmerButtonProps) {
     return (
         <motion.button
             type={type}
             disabled={disabled}
             onClick={onClick}
+            {...rest}
             whileHover={{ scale: disabled ? 1 : 1.02 }}
             whileTap={{ scale: disabled ? 1 : 0.98 }}
             className={cn(

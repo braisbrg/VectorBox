@@ -163,6 +163,7 @@ export default function LoginPage() {
                                 required
                                 autoFocus
                                 disabled={cooldown > 0}
+                                data-testid="login-username"
                             />
                         </div>
 
@@ -184,6 +185,7 @@ export default function LoginPage() {
                                 maxLength={4}
                                 autoComplete="current-password"
                                 disabled={cooldown > 0}
+                                data-testid="login-pin"
                             />
                         </div>
 
@@ -192,6 +194,7 @@ export default function LoginPage() {
                             disabled={loading || !username || pin.length < 4 || cooldown > 0}
                             className={`w-full py-4 rounded-lg flex items-center justify-center gap-2 group shadow-[0_0_30px_-5px_rgba(204,255,0,0.4)] ${cooldown > 0 ? "!bg-red-900/50 !text-red-200 !border-red-500 !shadow-[0_0_20px_-5px_rgba(239,68,68,0.4)]" : ""
                                 }`}
+                            data-testid="login-submit"
                         >
                             {loading ? (
                                 <Loader2 className="animate-spin" />

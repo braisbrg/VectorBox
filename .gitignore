@@ -87,6 +87,7 @@ backend/tests/fixtures/*.zip
 # Playwright
 frontend/e2e/reports/
 frontend/e2e/test-results/
+frontend/e2e/.auth/
 frontend/playwright-report/
 frontend/test-results/
 
@@ -95,6 +96,9 @@ frontend/test-results/
 *_logs.txt
 *_health.txt
 *_locks.txt
+playwright*.txt
+test_output*.txt
+phase2-*.txt
 
 # Scripts (Allowlist approach: Ignore temporary debug scripts)
 debug_*.py

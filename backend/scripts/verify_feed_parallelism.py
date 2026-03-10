@@ -16,7 +16,7 @@ async def main():
     print("  PHASE 2: Feed Parallelism Verification")
     print("=" * 60)
 
-    TASK_COUNT = 9
+    TASK_COUNT = 10
     SIMULATED_LATENCY = 0.2  # 200ms per task
     MAX_ALLOWED_TOTAL = 0.4  # 400ms — proves concurrency
 
@@ -35,7 +35,8 @@ async def main():
     task_names = [
         "task_popular", "task_hybrid", "task_watched",
         "task_taste", "task_wildcard", "task_random",
-        "task_hidden", "task_auteur", "task_available"
+        "task_hidden", "task_auteur", "task_available",
+        "task_deep_dive"
     ]
 
     tasks = [mock_task(name) for name in task_names]
