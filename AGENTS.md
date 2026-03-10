@@ -58,8 +58,7 @@ Feed orchestration: `FeedService.get_main_feed()` runs 9 tasks
 in parallel via `asyncio.gather()`. Each task opens its own
 isolated `AsyncSessionLocal()` session — they NEVER share sessions.
 
-Deep Dive runs SEQUENTIALLY after the parallel phase because it
-consumes `seen_ids` populated during parallel execution.
+Deep Dive now runs FULLY IN PARALLEL with the other feed tasks, dropping its strict dependency on `seen_ids` for a massive performance boost.
 
 ---
 

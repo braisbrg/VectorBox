@@ -79,7 +79,7 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Vector DB:** **Qdrant** (Latest Docker Image). Stores 384-dimensional dense vectors for semantic search.
   - **Optimization:** Payload Indexes on `genres`, `year`, and `score` for fast filtering.
 - **Cache:** **Redis 7-alpine**. Used for:
-  - Caching computed feed sections (`feed_service`).
+  - Caching the entire Master Feed JSON response (`FeedResponse`) for 1 hour to provide sub-100ms load times.
   - Caching TMDB/Provider API responses (`provider_service`, `tmdb_client`).
   - Session/Rate limiting.
 
@@ -121,7 +121,7 @@ The feed is composed of multiple "Sections", generated largely in parallel by `F
 | **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated or liked movie from user history, generates a *content-only* vector (ignoring title), and finds similar vectors in Qdrant. Deduplicated into a single `_item_to_item_search()` helper in `search.py`. |
 | **Your Taste ([Cluster])** | **Centroid Search.** Picks one of the user's "Taste Clusters" (e.g., "80s Sci-Fi"), computes the centroid of that cluster, and searches Qdrant. |
 | **Hidden Gems** | **Score-to-Hype Filtering (v1.2).** Searches Qdrant near user's global profile centroid with **dynamic thresholds** based on user's movie count: Cold start (<30 movies) uses `score > 60, popularity < 40, votes > 200`; Growing (30–99) uses `score > 65, popularity < 30, votes > 300`; Rich (100+) uses `score > 75, popularity < 20, votes > 500`. Identifies critically acclaimed but underexposed films. |
-| **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic (see Algorithms) to find movies similar to the user's favorites. Runs SEQUENTIALLY after the parallel phase because it consumes `seen_ids`. |
+| **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic (see Algorithms) to find movies similar to the user's favorites. Now runs fully in PARALLEL with the other feed tasks for maximum performance. |
 | **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. |
 | **Random Picks** | Random selection from top 500 "VectorBox Scored" movies in DB. |
 
@@ -205,7 +205,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **`user_clusters` table:** Stores the computed K-Means centroids and labels for each user.
 
 ### Caching Strategy
-- **Redis (FastAPI Cache):** Caches expensive recommendation endpoints (`get_cluster_recommendations`) for 1 hour.
+- **Redis (Master Feed Cache):** Caches the completely assembled Main Feed JSON response for 1 hour per user/region to provide sub-100ms load times.
 - **ProviderService:** Caches availability (Netflix/Prime) to avoid hitting TMDB API limit.
 - **Invalidation:** `reset_profiles.py` and `ClusteringService` have logic to wipe cache keys when user data changes significantly.
 
