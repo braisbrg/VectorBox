@@ -239,7 +239,7 @@ Full i18n support for **English** and **Spanish** via `next-intl` message files 
 
 | Script | Command | Description |
 |--------|---------|-------------|
-| `tests/qa_automation.py` | `python tests/qa_automation.py` | Playwright E2E test suite |
+| `frontend/e2e/` | `cd frontend && npx playwright test` | Playwright E2E test suite |
 
 ---
 
@@ -313,7 +313,7 @@ The backup manager keeps the **last 5 backups** and automatically deletes older 
 ### Playwright E2E Suite
 
 ```bash
-python tests/qa_automation.py
+cd frontend && npx playwright test
 ```
 
 Covers: authentication flows, Letterboxd sync, feed rendering, NLP search, group recommendations.
@@ -400,7 +400,9 @@ VectorBox/
 │   ├── package.json
 │   └── Dockerfile
 ├── tests/
-│   └── qa_automation.py        # Playwright E2E suite
+│   └── archive/                # Legacy python test archive
+├── frontend/
+│   ├── e2e/                    # Playwright E2E suite
 ├── docker-compose.yml
 ├── setup.ps1                   # Bootstrap script (Windows)
 ├── setup.sh                    # Bootstrap script (Linux/macOS)

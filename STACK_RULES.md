@@ -182,8 +182,8 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 ## 7. Validation & Quality Assurance (v1.2)
 
 ### Automated QA
-- **Tool:** Playwright (Python).
-- **Script:** `tests/qa_automation.py`.
+- **Tool:** Playwright (TypeScript/Node.js).
+- **Directory:** `frontend/e2e/`.
 - **Requirements:**
     - **Critical Paths:** Auth, Registration, and Feed Rendering must be covered.
     - **Mobile:** All features must be verifiable on iPhone SE viewport (375px).

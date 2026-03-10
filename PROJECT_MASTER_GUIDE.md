@@ -96,7 +96,7 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
   - **pip-audit:** Scans Python dependencies for CVEs during build using hash-verified `requirements.lock`.
   - **pnpm audit:** Scans JS dependencies.
 - **Validation & QA:**
-  - **Automated E2E Suite:** Playwright-based QA script (`tests/qa_automation.py`) checking Auth, Mobile UX, and Error States.
+  - **Automated E2E Suite:** Playwright-based QA suite (`frontend/e2e/`) checking Auth, Mobile UX, and Error States.
   - **Chaos Monkey & Whitelist Testing:** `verify_nlp_fallback.py` and `test_es_whitelist.py` ensure LLM failovers trigger correctly.
   - **QA Certification protocol:** The full E2E run is certified in `docs/QA_RUNBOOK.md`.
   - **Frontend Quality Audit:** Strictly adheres to Addy Osmani standards for Core Web Vitals (LCP/INP/CLS), WCAG 2.1 AA Accessibility, and Modern Best Practices.
@@ -200,7 +200,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
   - `tmdb_id` → `Movie.tmdb_id` (TMDB API identifier)
   - `seen_ids` set (feed deduplication) MUST use `tmdb_id`.
   - `watched_ids` set MUST use `internal_id`.
-- **`movies` table:** Stores `vectorbox_score`, extensive ratings (IMDb, RT, Metacritic, TMDB), and localized `overview_es`.
+- **`movies` table:** Stores `vectorbox_score`, extensive ratings (IMDb, Metacritic, TMDB), and localized `overview_es`.
 - **`user_ratings` table:** Links Users to Movies. Contains `is_watched`, `is_watchlist`, `rating`, `watched_date`. `movie_id` is an FK to `Movie.id` (internal).
 - **`user_clusters` table:** Stores the computed K-Means centroids and labels for each user.
 

@@ -44,7 +44,7 @@ Run these from the root directory of the project on your host machine.
 | **`setup.sh`** | **Linux/Mac.** Master setup script. Automatically uses `docker-compose.prod.yml` if `ENVIRONMENT=production` is in `.env`. Use `./setup.sh --clean` for a deep system wipe. |
 | **`backup.ps1`** | **Windows.** Wrapper to execute the backup manager. |
 | **`backup.sh`** | **Linux/Mac.** Wrapper to execute the backup manager. |
-| **`python tests/qa_automation.py`** | **QA Suite.** Runs Playwright automation to verify core flows (Auth, Mobile, 404). |
+| **`cd frontend && npx playwright test`** | **QA Suite.** Runs Playwright automation to verify core flows (Auth, Mobile, etc). |
 
 ## 🕵️ Security & Audit
 Standard auditing protocols for this project.
