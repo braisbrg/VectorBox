@@ -287,6 +287,49 @@ jobs:
       - name: Seed QA user
         run: docker compose exec -T backend python scripts/seed_qa_user.py
 
+      - name: Flush Redis
+        # Clear any partial prefetches/SSR cache that might have leaked before seed
+        run: docker compose exec -T redis redis-cli flushall
+
+      - name: Warm up feed cache (Smoke Test)
+        # Polling the feed until it returns >= 3 sections.
+        # This ensures the recommendation model is "hot" and serves as a smoke test.
+        run: |
+          echo "Warming up feed for qa_vecbox..."
+          docker compose exec -T backend python - <<'EOF'
+          import httpx, time, sys
+
+          USER_ID = 47 # Hardcoded in seed_qa_user.py creator logic
+          URL = "http://localhost:8000/api/v1/feed"
+          
+          # Login to get session
+          client = httpx.Client()
+          login_resp = client.post(
+              "http://localhost:8000/api/v1/auth/login",
+              data={"username": "qa_vecbox", "pin": "1234"}
+          )
+          if login_resp.status_code != 200:
+              print(f"ERROR: Login failed ({login_resp.status_code})")
+              sys.exit(1)
+
+          # Polling loop
+          for i in range(24): # 2 mins max (5s * 24)
+              resp = client.get(URL)
+              if resp.status_code == 200:
+                  data = resp.json()
+                  sections = len(data.get("feed", []))
+                  print(f"Warmup check {i+1}/24: {sections} sections found")
+                  if sections >= 3:
+                      print("SUCCESS: Feed is hot and caching guard passed.")
+                      sys.exit(0)
+              else:
+                  print(f"Warmup status: {resp.status_code}")
+              time.sleep(5)
+
+          print("ERROR: Feed never reached richness threshold (>=3 sections).")
+          sys.exit(1)
+          EOF
+
       - name: Run Playwright suite
         working-directory: frontend
         run: pnpm exec playwright test --reporter=list --timeout=60000
