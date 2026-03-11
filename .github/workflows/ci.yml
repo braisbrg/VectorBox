@@ -163,6 +163,7 @@ jobs:
           POSTGRES_USER=vectorbox_user
           POSTGRES_PASSWORD=ci_password
           POSTGRES_DB=vectorbox
+          DATABASE_URL=postgresql+asyncpg://vectorbox_user:ci_password@postgres:5432/vectorbox
           REDIS_URL=redis://redis:6379
           QDRANT_HOST=qdrant
           QDRANT_PORT=6333
@@ -219,7 +220,9 @@ jobs:
           docker compose exec -T backend alembic upgrade head
 
       - name: Seed QA user
-        run: docker compose exec -T backend python scripts/seed_qa_user.py
+        run: |
+          docker compose exec -T backend python -c "import asyncio; from config import AsyncSessionLocal; from models.database import User; from passlib.context import CryptContext; pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto'); async def create_qa(): async with AsyncSessionLocal() as db: user = User(username='qa_vecbox', email='qa@vecbox.local', pin_hash=pwd_context.hash('qa_password123')); db.add(user); await db.commit(); asyncio.run(create_qa())"
+          docker compose exec -T backend python scripts/seed_qa_user.py
 
       - name: Run Playwright suite
         working-directory: frontend
