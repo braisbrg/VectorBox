@@ -25,24 +25,57 @@ export default function PrivacyPage() {
 
                 {/* Sections */}
                 <div className="space-y-0">
-                    {/* 1. WHO WE ARE */}
+                    {/* 1. DATA CONTROLLER */}
                     <section className="border-b border-zinc-800 pb-8 mb-8">
                         <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
-                            1. Who We Are
+                            1. Data Controller
                         </h2>
-                        <p className="text-sm text-zinc-400 leading-relaxed">
-                            VectorBox is an AI-powered movie recommendation service. We use
-                            semantic vector embeddings and collaborative filtering to help you
-                            discover films you&apos;ll love. For any privacy-related inquiries,
-                            contact us at{" "}
-                            <span className="text-zinc-300">privacy@vectorbox.app</span>.
+                        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
+                            VectorBox is a personal, non-commercial project developed
+                            and operated by <span className="text-zinc-300">VectorBox
+                            Project</span>, based in Spain.
                         </p>
+                        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
+                            VectorBox is currently in private beta and does not engage
+                            in any commercial activity. No goods or services are sold
+                            through this platform.
+                        </p>
+                        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 text-sm font-[var(--font-mono-acid)] text-zinc-300 space-y-1">
+                            <p><span className="text-zinc-500">Entity:</span> VectorBox Project</p>
+                            <p><span className="text-zinc-500">Country:</span> Spain</p>
+                            <p><span className="text-zinc-500">Contact:</span> legal@vectorbox.app</p>
+                        </div>
                     </section>
 
-                    {/* 2. WHAT DATA WE COLLECT */}
+                    {/* 2. LEGAL BASIS FOR PROCESSING */}
                     <section className="border-b border-zinc-800 pb-8 mb-8">
                         <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
-                            2. What Data We Collect
+                            2. Legal Basis for Processing
+                        </h2>
+                        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+                            We process your personal data under the following legal
+                            bases (Article 6 GDPR):
+                        </p>
+                        <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
+                            <li>
+                                <strong className="text-zinc-300">Performance of a contract</strong> —
+                                Processing your username, PIN, and preferences is
+                                necessary to provide the VectorBox recommendation
+                                service you have registered for.
+                            </li>
+                            <li>
+                                <strong className="text-zinc-300">Explicit consent</strong> —
+                                When you upload a Letterboxd CSV export or link your
+                                RSS feed, you explicitly consent to VectorBox importing
+                                and processing that data to generate recommendations.
+                            </li>
+                        </ul>
+                    </section>
+
+                    {/* 3. WHAT DATA WE COLLECT */}
+                    <section className="border-b border-zinc-800 pb-8 mb-8">
+                        <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
+                            3. What Data We Collect
                         </h2>
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
                             <li>
@@ -67,6 +100,13 @@ export default function PrivacyPage() {
                                 Used to determine regional streaming availability for
                                 recommended titles.
                             </li>
+                            <li>
+                                <strong className="text-zinc-300">Minimum age</strong> —
+                                VectorBox is intended for users aged 14 and over, in
+                                accordance with Spanish data protection law (LOPDGDD
+                                Art. 7). By registering, you confirm that you meet
+                                this requirement.
+                            </li>
                         </ul>
                         <p className="text-sm text-zinc-500 leading-relaxed mt-4 italic">
                             Note: Letterboxd CSV exports may contain an email field. This
@@ -75,10 +115,10 @@ export default function PrivacyPage() {
                         </p>
                     </section>
 
-                    {/* 3. HOW WE USE YOUR DATA */}
+                    {/* 4. HOW WE USE YOUR DATA */}
                     <section className="border-b border-zinc-800 pb-8 mb-8">
                         <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
-                            3. How We Use Your Data
+                            4. How We Use Your Data
                         </h2>
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
                             <li>
@@ -98,10 +138,10 @@ export default function PrivacyPage() {
                         </ul>
                     </section>
 
-                    {/* 4. COOKIES */}
+                    {/* 5. COOKIES */}
                     <section className="border-b border-zinc-800 pb-8 mb-8">
                         <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
-                            4. Cookies
+                            5. Cookies
                         </h2>
                         <p className="text-sm text-zinc-400 leading-relaxed mb-3">
                             VectorBox uses a single, strictly necessary cookie:
@@ -128,27 +168,64 @@ export default function PrivacyPage() {
                             necessary cookie, it is exempt from consent requirements under
                             GDPR Article 5(3) of the ePrivacy Directive.
                         </p>
+                        <p className="text-sm text-zinc-500 leading-relaxed mt-4 italic">
+                            Note: A future update will integrate Clerk for authentication.
+                            Clerk may introduce additional session and security cookies.
+                            This policy will be updated accordingly before that change
+                            is deployed, and a consent mechanism will be added if any
+                            non-essential cookies are introduced.
+                        </p>
                     </section>
 
-                    {/* 5. DATA RETENTION */}
+                    {/* 6. INTERNATIONAL DATA TRANSFERS */}
                     <section className="border-b border-zinc-800 pb-8 mb-8">
                         <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
-                            5. Data Retention
+                            6. International Data Transfers
+                        </h2>
+                        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+                            To provide the Natural Language Search feature, VectorBox
+                            sends anonymised query data to the following third-party
+                            AI providers located outside the European Economic Area:
+                        </p>
+                        <ul className="text-sm text-zinc-400 leading-relaxed space-y-2 list-disc list-inside">
+                            <li>
+                                <strong className="text-zinc-300">Groq, Inc.</strong> (United States)
+                                — Used for LLM-based query parsing.
+                            </li>
+                            <li>
+                                <strong className="text-zinc-300">OpenAI, LLC</strong> (United States)
+                                — Used as fallback LLM provider.
+                            </li>
+                        </ul>
+                        <p className="text-sm text-zinc-500 leading-relaxed mt-4">
+                            These transfers are governed by Standard Contractual
+                            Clauses (SCCs) as established by the European Commission,
+                            and both providers participate in the EU-US Data Privacy
+                            Framework. Only the text of your search query is
+                            transmitted — no personal identifiers, usernames, or
+                            rating history are shared with these providers.
+                        </p>
+                    </section>
+
+                    {/* 7. DATA RETENTION */}
+                    <section className="border-b border-zinc-800 pb-8 mb-8">
+                        <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
+                            7. Data Retention
                         </h2>
                         <p className="text-sm text-zinc-400 leading-relaxed">
                             Your data is retained for as long as your account remains active.
                             You may request complete deletion of your account and all
                             associated data by contacting{" "}
-                            <span className="text-zinc-300">privacy@vectorbox.app</span>.
+                            <span className="text-zinc-300">legal@vectorbox.app</span>.
                             Upon receiving a valid deletion request, we will erase all
                             personal data within 30 days.
                         </p>
                     </section>
 
-                    {/* 6. YOUR RIGHTS (GDPR) */}
+                    {/* 8. YOUR RIGHTS (GDPR) */}
                     <section className="border-b border-zinc-800 pb-8 mb-8">
                         <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
-                            6. Your Rights (GDPR)
+                            8. Your Rights (GDPR)
                         </h2>
                         <p className="text-sm text-zinc-400 leading-relaxed mb-3">
                             Under the General Data Protection Regulation, you have the right
@@ -172,6 +249,11 @@ export default function PrivacyPage() {
                                 Receive your data in a structured, machine-readable format.
                             </li>
                             <li>
+                                <strong className="text-zinc-300">Restriction</strong> —
+                                Request that we restrict the processing of your personal
+                                data under certain circumstances.
+                            </li>
+                            <li>
                                 <strong className="text-zinc-300">Objection</strong> — Object
                                 to the processing of your personal data.
                             </li>
@@ -182,10 +264,10 @@ export default function PrivacyPage() {
                         </p>
                     </section>
 
-                    {/* 7. CHANGES */}
+                    {/* 9. CHANGES */}
                     <section className="pb-8">
                         <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
-                            7. Changes to This Policy
+                            9. Changes to This Policy
                         </h2>
                         <p className="text-sm text-zinc-400 leading-relaxed">
                             We reserve the right to update this privacy policy at any time.
