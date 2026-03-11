@@ -219,6 +219,19 @@ export default function LoginPage() {
                         </Link>
                     </p>
                 </div>
+
+                {/* Legal Links */}
+                <div className="mt-8 text-center">
+                    <p className="text-zinc-600 text-xs font-mono">
+                        <Link href="/privacy" className="hover:text-[#CCFF00] transition-colors">
+                            Privacy Policy
+                        </Link>
+                        <span className="mx-2">·</span>
+                        <Link href="/terms" className="hover:text-[#CCFF00] transition-colors">
+                            Terms of Service
+                        </Link>
+                    </p>
+                </div>
             </motion.div>
         </main>
     );

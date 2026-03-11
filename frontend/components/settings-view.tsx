@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useTheme } from "next-themes";
 import { Moon, Sun, Monitor } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -96,6 +97,23 @@ export function SettingsView() {
                     <p className="text-xs text-muted-foreground mt-2">
                         {t("settings.about.version")}
                     </p>
+                </div>
+
+                {/* Legal Links */}
+                <div className="flex items-center justify-center gap-4 pt-2">
+                    <Link
+                        href="/privacy"
+                        className="text-xs font-mono text-zinc-600 hover:text-[#CCFF00] transition-colors uppercase tracking-wider"
+                    >
+                        Privacy Policy
+                    </Link>
+                    <span className="text-zinc-700">·</span>
+                    <Link
+                        href="/terms"
+                        className="text-xs font-mono text-zinc-600 hover:text-[#CCFF00] transition-colors uppercase tracking-wider"
+                    >
+                        Terms of Service
+                    </Link>
                 </div>
             </div>
         </div>
