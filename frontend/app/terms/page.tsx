@@ -39,7 +39,7 @@ export default function TermsPage() {
                             <p><span className="text-zinc-500">Operator:</span> VectorBox Project</p>
                             <p><span className="text-zinc-500">Nature:</span> Non-commercial personal project</p>
                             <p><span className="text-zinc-500">Country:</span> Spain</p>
-                            <p><span className="text-zinc-500">Contact:</span> legal@vectorbox.app</p>
+                            <p><span className="text-zinc-500">Contact:</span> vectorbox.app@proton.me</p>
                         </div>
                         <p className="text-sm text-zinc-400 leading-relaxed">
                             By accessing or using VectorBox, you agree to be bound
@@ -176,7 +176,7 @@ export default function TermsPage() {
                         </h2>
                         <p className="text-sm text-zinc-400 leading-relaxed">
                             For questions about these terms, contact us at{" "}
-                            <span className="text-zinc-300">legal@vectorbox.app</span>.
+                            <span className="text-zinc-300">vectorbox.app@proton.me</span>.
                         </p>
                         <p className="text-sm text-zinc-500 mt-4 font-[var(--font-mono-acid)]">
                             Last updated: March 11, 2026

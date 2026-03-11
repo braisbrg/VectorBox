@@ -43,7 +43,7 @@ export default function PrivacyPage() {
                         <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 text-sm font-[var(--font-mono-acid)] text-zinc-300 space-y-1">
                             <p><span className="text-zinc-500">Entity:</span> VectorBox Project</p>
                             <p><span className="text-zinc-500">Country:</span> Spain</p>
-                            <p><span className="text-zinc-500">Contact:</span> legal@vectorbox.app</p>
+                            <p><span className="text-zinc-500">Contact:</span> vectorbox.app@proton.me</p>
                         </div>
                     </section>
 
@@ -216,7 +216,7 @@ export default function PrivacyPage() {
                             Your data is retained for as long as your account remains active.
                             You may request complete deletion of your account and all
                             associated data by contacting{" "}
-                            <span className="text-zinc-300">legal@vectorbox.app</span>.
+                            <span className="text-zinc-300">vectorbox.app@proton.me</span>.
                             Upon receiving a valid deletion request, we will erase all
                             personal data within 30 days.
                         </p>
