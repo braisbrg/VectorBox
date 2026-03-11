@@ -25,15 +25,27 @@ export default function TermsPage() {
 
                 {/* Sections */}
                 <div className="space-y-0">
-                    {/* 1. ACCEPTANCE */}
+                    {/* 1. LEGAL NOTICE & ACCEPTANCE */}
                     <section className="border-b border-zinc-800 pb-8 mb-8">
                         <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
-                            1. Acceptance of Terms
+                            1. Legal Notice &amp; Acceptance
                         </h2>
+                        <p className="text-sm text-zinc-400 leading-relaxed mb-4">
+                            In accordance with the Spanish Law on Information Society
+                            Services (LSSI-CE), the following identifies the operator
+                            of this service:
+                        </p>
+                        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 text-sm font-[var(--font-mono-acid)] text-zinc-300 space-y-1 mb-4">
+                            <p><span className="text-zinc-500">Operator:</span> VectorBox Project</p>
+                            <p><span className="text-zinc-500">Nature:</span> Non-commercial personal project</p>
+                            <p><span className="text-zinc-500">Country:</span> Spain</p>
+                            <p><span className="text-zinc-500">Contact:</span> legal@vectorbox.app</p>
+                        </div>
                         <p className="text-sm text-zinc-400 leading-relaxed">
-                            By accessing or using VectorBox, you agree to be bound by these
-                            Terms of Service. If you do not agree to these terms, you must
-                            not use the service.
+                            By accessing or using VectorBox, you agree to be bound
+                            by these Terms of Service. If you do not agree, you must
+                            not use the service. VectorBox is intended for users aged
+                            14 and over.
                         </p>
                     </section>
 
@@ -138,7 +150,10 @@ export default function TermsPage() {
                             the accuracy, relevance, or completeness of any movie
                             recommendations. To the maximum extent permitted by law, VectorBox
                             shall not be liable for any indirect, incidental, or consequential
-                            damages arising from the use of the service.
+                            damages arising from the use of the service. VectorBox also assumes
+                            no liability for service interruptions caused by third-party
+                            infrastructure providers, including but not limited to Groq, OpenAI,
+                            The Movie Database (TMDB), Qdrant, or cloud hosting providers.
                         </p>
                     </section>
 
