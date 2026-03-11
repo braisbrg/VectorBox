@@ -222,36 +222,7 @@ jobs:
           docker compose exec -T backend python -c "from config import engine; from sqlalchemy import text; import asyncio; async def check(): async with engine.connect() as conn: await conn.execute(text('SELECT 1 FROM users LIMIT 1')); asyncio.run(check())" || echo "Warning: users table check failed"
 
       - name: Seed QA user
-        run: |
-          docker compose exec -T backend python << 'EOF'
-import asyncio
-from config import AsyncSessionLocal
-from models.database import User
-from passlib.context import CryptContext
-from sqlalchemy import select
-
-async def create_qa():
-    pwd_context = CryptContext(schemes=['bcrypt'], deprecated='auto')
-    async with AsyncSessionLocal() as db:
-        # Check if exists
-        res = await db.execute(select(User).where(User.username == 'qa_vecbox'))
-        if res.scalar_one_or_none():
-            print("User qa_vecbox already exists.")
-            return
-            
-        user = User(
-            username='qa_vecbox', 
-            email='qa@vecbox.local', 
-            pin_hash=pwd_context.hash('qa_password123')
-        )
-        db.add(user)
-        await db.commit()
-        print("User qa_vecbox created successfully.")
-
-if __name__ == "__main__":
-    asyncio.run(create_qa())
-EOF
-          docker compose exec -T backend python scripts/seed_qa_user.py
+        run: docker compose exec -T backend python scripts/seed_qa_user.py
 
       - name: Run Playwright suite
         working-directory: frontend

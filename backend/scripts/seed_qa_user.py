@@ -65,18 +65,28 @@ async def seed():
     }
 
     async with AsyncSessionLocal() as db:
-        # 1. Find user
+        # 1. Find or Create User
         result = await db.execute(
             select(User).where(User.username == QA_USERNAME)
         )
         user = result.scalar_one_or_none()
+        
         if not user:
-            print(f"ERROR: User '{QA_USERNAME}' not found.")
-            print("Create the user first via the registration endpoint.")
-            return
+            print(f"User '{QA_USERNAME}' not found. Creating synthetic QA user...")
+            from passlib.context import CryptContext
+            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+            user = User(
+                username=QA_USERNAME,
+                email="qa@vecbox.local",
+                pin_hash=pwd_context.hash("qa_password123")
+            )
+            db.add(user)
+            await db.flush() # Get user.id
+            print(f"Created user: {QA_USERNAME} (id={user.id})")
+        else:
+            print(f"Found existing user: {QA_USERNAME} (id={user.id})")
 
         user_id = user.id
-        print(f"Found user: {QA_USERNAME} (id={user_id})")
 
         movie_service = MovieService(db)
 
