@@ -168,22 +168,35 @@ jobs:
 
       - name: Create .env for CI
         run: |
-          echo "ENVIRONMENT=development" > .env
-          echo "DATABASE_URL=postgresql+asyncpg://vectorbox_user:change_me_in_prod@postgres:5432/vectorbox" >> .env
-          echo "REDIS_URL=redis://redis:6379" >> .env
-          echo "QDRANT_URL=http://qdrant:6333" >> .env
-          echo "SECRET_KEY=test_secret_key" >> .env
-          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" >> .env
-          echo "TMDB_READ_TOKEN=${{ secrets.TMDB_READ_TOKEN }}" >> .env
-          echo "OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}" >> .env
-          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
-          
-          # Export for runner context and native inheritance
-          echo "DATABASE_URL=postgresql+asyncpg://vectorbox_user:change_me_in_prod@postgres:5432/vectorbox" >> $GITHUB_ENV
-          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" >> $GITHUB_ENV
+          # ── Credentials ──────────────────────────────────────────────
+          # POSTGRES_PASSWORD must match what docker-compose passes to
+          # the postgres container (default: change_me_in_prod).
+          # We set it explicitly here so there is never any ambiguity.
+          POSTGRES_PASSWORD="change_me_in_prod"
+          DB_URL="postgresql+asyncpg://vectorbox_user:${POSTGRES_PASSWORD}@postgres:5432/vectorbox"
+
+          cat > .env <<EOF
+          ENVIRONMENT=development
+          POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+          DATABASE_URL=${DB_URL}
+          REDIS_URL=redis://redis:6379
+          QDRANT_URL=http://qdrant:6333
+          SECRET_KEY=${{ secrets.SECRET_KEY }}
+          JWT_SECRET=${{ secrets.JWT_SECRET }}
+          TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}
+          TMDB_READ_TOKEN=${{ secrets.TMDB_READ_TOKEN }}
+          OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}
+          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+          EOF
+
+          # Export to runner env so subsequent steps can read them too
+          echo "DATABASE_URL=${DB_URL}"            >> $GITHUB_ENV
+          echo "SECRET_KEY=${{ secrets.SECRET_KEY }}"           >> $GITHUB_ENV
+          echo "JWT_SECRET=${{ secrets.JWT_SECRET }}"           >> $GITHUB_ENV
+          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}"       >> $GITHUB_ENV
           echo "TMDB_READ_TOKEN=${{ secrets.TMDB_READ_TOKEN }}" >> $GITHUB_ENV
-          echo "OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}" >> $GITHUB_ENV
-          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> $GITHUB_ENV
+          echo "OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}"       >> $GITHUB_ENV
+          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}"       >> $GITHUB_ENV
 
       - name: Create auth directory
         run: mkdir -p frontend/e2e/.auth
@@ -194,11 +207,17 @@ jobs:
       - name: Wait for postgres
         run: |
           echo "Waiting for postgres to be ready..."
-          until docker compose exec -T postgres pg_isready -U vectorbox_user; do
-            echo "Waiting... (Postgres not ready)"
-            sleep 2
+          for i in {1..30}; do
+            if docker compose exec -T postgres pg_isready -U vectorbox_user -d vectorbox; then
+              echo "Postgres is READY!"
+              exit 0
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 3
           done
-          echo "Postgres is READY!"
+          echo "ERROR: Postgres never became ready — aborting."
+          docker compose logs postgres
+          exit 1
 
       - name: Wait for backend to be healthy
         run: |
@@ -206,11 +225,14 @@ jobs:
           for i in {1..30}; do
             if curl -sf http://localhost:8000/health > /dev/null; then
               echo "Backend is healthy!"
-              break
+              exit 0
             fi
             echo "Waiting... ($i/30)"
             sleep 5
           done
+          echo "ERROR: Backend never became healthy — dumping logs."
+          docker compose logs backend
+          exit 1
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -233,8 +255,34 @@ jobs:
       - name: Run Alembic migrations
         run: |
           docker compose exec -T backend alembic upgrade head
-          # Verify migrations applied
           docker compose exec -T backend alembic current
+
+      - name: Verify DB tables exist
+        # Guard: if migrations silently did nothing, catch it here
+        # before the seed script fails with a cryptic UndefinedTableError.
+        run: |
+          docker compose exec -T backend python - <<'EOF'
+          import asyncio, sys, os
+          from sqlalchemy.ext.asyncio import create_async_engine
+          from sqlalchemy import text
+
+          async def check():
+              url = os.environ["DATABASE_URL"]
+              engine = create_async_engine(url)
+              async with engine.connect() as conn:
+                  result = await conn.execute(
+                      text("SELECT tablename FROM pg_tables WHERE schemaname='public'")
+                  )
+                  tables = [r[0] for r in result.fetchall()]
+              await engine.dispose()
+              print(f"Tables found: {tables}")
+              if "users" not in tables:
+                  print("ERROR: 'users' table missing — migrations did not apply!")
+                  sys.exit(1)
+              print("OK: required tables are present.")
+
+          asyncio.run(check())
+          EOF
 
       - name: Seed QA user
         run: docker compose exec -T backend python scripts/seed_qa_user.py
@@ -258,6 +306,8 @@ jobs:
         run: docker compose down -v
 
 # Required GitHub Secrets (Settings → Secrets → Actions):
+# - SECRET_KEY
+# - JWT_SECRET
 # - TMDB_API_KEY
 # - TMDB_READ_TOKEN
 # - OMDB_API_KEY
