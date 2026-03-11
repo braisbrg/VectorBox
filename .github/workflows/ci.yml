@@ -159,23 +159,15 @@ jobs:
 
       - name: Create .env for CI
         run: |
-          cat > .env << EOF
-          POSTGRES_USER=vectorbox_user
-          POSTGRES_PASSWORD=ci_password
-          POSTGRES_DB=vectorbox
-          DATABASE_URL=postgresql+asyncpg://vectorbox_user:ci_password@postgres:5432/vectorbox
-          REDIS_URL=redis://redis:6379
-          QDRANT_HOST=qdrant
-          QDRANT_PORT=6333
-          TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}
-          TMDB_READ_TOKEN=${{ secrets.TMDB_READ_TOKEN }}
-          OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}
-          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
-          SECRET_KEY=ci-secret-key-not-for-production
-          OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
-          OTEL_SERVICE_NAME=vectorbox-backend
-          TESTING_MODE=True
-          EOF
+          echo "ENVIRONMENT=development" >> .env
+          echo "DATABASE_URL=postgresql+asyncpg://vectorbox_user:change_me_in_prod@postgres:5432/vectorbox" >> .env
+          echo "REDIS_URL=redis://redis:6379" >> .env
+          echo "QDRANT_URL=http://qdrant:6333" >> .env
+          echo "SECRET_KEY=test_secret_key" >> .env
+          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" >> .env
+          echo "TMDB_READ_TOKEN=${{ secrets.TMDB_READ_TOKEN }}" >> .env
+          echo "OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}" >> .env
+          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
 
       - name: Create auth directory
         run: mkdir -p frontend/e2e/.auth
@@ -186,11 +178,12 @@ jobs:
           echo "Waiting for services to be healthy..."
           sleep 30
 
-      - name: Wait for backend health
+      - name: Wait for backend to be healthy
         run: |
+          echo "Waiting for backend API..."
           for i in {1..30}; do
-            if curl -sf http://localhost:8000/health; then
-              echo "Backend is healthy"
+            if curl -sf http://localhost:8000/health > /dev/null; then
+              echo "Backend is healthy!"
               break
             fi
             echo "Waiting... ($i/30)"
@@ -216,10 +209,7 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium webkit
 
       - name: Run Alembic migrations
-        run: |
-          docker compose exec -T backend alembic upgrade head
-          # Verify tables created
-          docker compose exec -T backend python -c "from config import engine; from sqlalchemy import text; import asyncio; async def check(): async with engine.connect() as conn: await conn.execute(text('SELECT 1 FROM users LIMIT 1')); asyncio.run(check())" || echo "Warning: users table check failed"
+        run: docker compose exec -T backend alembic upgrade head
 
       - name: Seed QA user
         run: docker compose exec -T backend python scripts/seed_qa_user.py
