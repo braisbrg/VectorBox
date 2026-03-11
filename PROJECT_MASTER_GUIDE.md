@@ -2,8 +2,8 @@
 
 > **Role:** Lead Software Architect Handover
 > **Target Audience:** CTO / Senior Developers
-> **Version:** 1.2.0 (Gold Master)
-> **Last Updated:** 2026-03-05
+> **Version:** 1.3.0 (Gold Master)
+> **Last Updated:** 2026-03-11
 
 This document serves as the absolute source of truth for the **VectorBox** (internal codename: *LetterboxRecommender* / *CineMatch*) project. It documents the existing state of the codebase, detailing architecture, algorithms, and logical flows.
 
@@ -79,13 +79,15 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Vector DB:** **Qdrant** (Latest Docker Image). Stores 384-dimensional dense vectors for semantic search.
   - **Optimization:** Payload Indexes on `genres`, `year`, and `score` for fast filtering.
 - **Cache:** **Redis 7-alpine**. Used for:
-  - Caching the entire Master Feed JSON response (`FeedResponse`) for 1 hour to provide sub-100ms load times.
+  - Caching the entire Master Feed JSON response (`FeedResponse`) for 1 hour.
+  - **Cache Guard:** Feeds with < 3 sections are NEVER cached (prevents poisoning from cold starts).
   - Caching TMDB/Provider API responses (`provider_service`, `tmdb_client`).
   - Session/Rate limiting.
 
 ### Infrastructure
-- **Containerization:** **Docker Compose**. Orchestrates `frontend`, `backend`, `postgres`, `qdrant`, `redis`, and `jaeger`.
-- **Optimization:** **Multi-Stage Builds** (Frontend) for minimal image size and **PyTorch CPU-only** (Backend) for reduced memory footprint.
+- **Containerization:** **Docker Compose**.
+  - **Optimization:** **Multi-Stage Builds** (Frontend) for minimal image size and **PyTorch CPU-only** (Backend).
+  - **Persistence**: **Models Cache Volume**. The `models_cache` volume persists SentenceTransformer models across container cycles to prevent re-downloads.
 - **Observability:** **OpenTelemetry + Jaeger**. Full distributed tracing across all services.
   - **Exporter:** OTLP/gRPC → Jaeger All-in-One (`jaegertracing/all-in-one`).
   - **Auto-Instrumented:** FastAPI (HTTP spans), SQLAlchemy (DB query spans), Redis (cache spans).
@@ -96,10 +98,12 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
   - **pip-audit:** Scans Python dependencies for CVEs during build using hash-verified `requirements.lock`.
   - **pnpm audit:** Scans JS dependencies.
 - **Validation & QA:**
-  - **Automated E2E Suite:** Playwright-based QA suite (`frontend/e2e/`) covering Auth, Feed/NLP Search, Mobile UX, Security, and Web Quality across 3 browser configurations (109 tests).
-  - **Chaos Monkey & Whitelist Testing:** `verify_nlp_fallback.py` and `test_es_whitelist.py` ensure LLM failovers trigger correctly.
-  - **QA Certification protocol:** The full E2E run is certified in `docs/QA_RUNBOOK.md`.
-  - **Frontend Quality Audit:** Strictly adheres to Addy Osmani standards for Core Web Vitals (LCP/INP/CLS), WCAG 2.1 AA Accessibility, and Modern Best Practices.
+  - **CI Pipeline (Robust Handshake)**:
+    - **Wait for Postgres**: Dynamic `pg_isready` loop.
+    - **Alembic current**: Verified migration state.
+    - **Redis Flush**: Post-seed cache clearing.
+    - **Feed Warmup**: Smoke test that polls until feed richness ≥ 3 sections.
+  - **Automated E2E Suite**: Playwright-based QA suite covering Auth, Feed, Security (109 tests).
 
 ### Authentication (v1.2)
 - **Model:** Netflix-style profiles with **Username + 4-digit PIN**.

@@ -2,7 +2,7 @@
 
 > **Role:** Data Science & ML Lead
 > **Domain:** Recommendation Algorithms, Vector Search, Scoring Math
-> **Last Updated:** 2026-03-04
+> **Last Updated:** 2026-03-11
 
 This file contains all data science logic, mathematical formulas, and Qdrant configuration for the VectorBox recommendation engine.
 
@@ -55,6 +55,7 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 | Growing | 30–99 | 65 | 30 | 300 |
 | Rich | 100+ | 75 | 20 | 500 |
 
+- **Deep Dive**: Now runs fully in PARALLEL with other signals for peak performance.
 - **Implementation:** `_get_signal_c_thresholds()` in `recommendation_engine.py`
 
 ### Observability Logs (The `[TRIDENT]` Prefix)

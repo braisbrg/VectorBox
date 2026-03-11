@@ -1,4 +1,4 @@
-# VectorBox ![version](https://img.shields.io/badge/version-v1.2-blue) ![Next.js](https://img.shields.io/badge/Next.js-16.1.6-black?logo=next.js) ![FastAPI](https://img.shields.io/badge/FastAPI-0.122.0-009688?logo=fastapi) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?logo=postgresql) ![Qdrant](https://img.shields.io/badge/Qdrant-vector--db-red) ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis) ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker) ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python) ![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-3178C6?logo=typescript)
+# VectorBox ![version](https://img.shields.io/badge/version-v1.3-blue) ![Next.js](https://img.shields.io/badge/Next.js-16.1.6-black?logo=next.js) ![FastAPI](https://img.shields.io/badge/FastAPI-0.122.0-009688?logo=fastapi) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?logo=postgresql) ![Qdrant](https://img.shields.io/badge/Qdrant-vector--db-red) ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis) ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker) ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python) ![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-3178C6?logo=typescript)
 
 > Letterboxd-connected film recommendation engine powered by vector similarity, director-lineage analysis, and crowd signal fusion.
 
@@ -156,14 +156,9 @@ The home feed is composed of eight parallel sections, each powered by a distinct
 
 | Section | Strategy |
 |---------|----------|
-| **Available Now** | Filter by user's streaming services + RRF ranked |
-| **Because you watched…** | Item-item vector similarity from a seed title |
-| **Your Taste** | User profile centroid vector search |
-| **Hidden Gems** | Low-popularity filter + quality gate + MMR reranking |
-| **Deep Dive** | Genre/mood-specific deep vector search |
-| **Wildcard** | Cross-genre exploration with diversity injection |
-| **Random Picks** | Seeded random sample from qualified pool |
-| **Popular on Letterboxd** | Cache-backed trending data from popular_scraper |
+- **Available Now**: Filter by user's streaming services + RRF ranked
+- **Cache Guard**: Smart Redis caching that rejects feeds with < 3 sections.
+- **Internationalization**: Full i18n support for **English** and **Spanish** via `next-intl` message files in `frontend/messages/`.
 
 ### 🔍 Magic Box NLP Search
 
@@ -417,6 +412,7 @@ VectorBox/
 
 ## 📜 License
 
-**Version:** v1.2.0 Gold Master  
-**Last Updated:** 2026-03-03  
+**Version:** v1.3.0 Gold Master  
+**Last Updated:** 2026-03-11  
+**Contact:** vectorbox.app@proton.me
 **License:** Proprietary & Confidential. All rights reserved.

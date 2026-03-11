@@ -1,7 +1,7 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.2.1 (Post-Test-Suite Stabilization)
+> **Version:** 1.3.0 (Post-Test-Suite Stabilization)
 > **Last Updated:** 2026-03-11
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
@@ -70,10 +70,11 @@ Wait for the full sequence. Verify each checkpoint in the logs:
 
 | Checkpoint | Log Message | Pass? |
 |:-----------|:------------|:-----:|
+| Postgres Ready | `until pg_isready ... done` | ☐ |
 | DB Ready | `✅ Database Schema Applied` | ☐ |
 | Seeding | `✅ Database Seeded & Collection Created` | ☐ |
-| Qdrant Indexes | `✅ Qdrant Indexes Created` | ☐ |
-| Trending | `✅ Trending Movies Updated` | ☐ |
+| Redis Flush | `FLUSHALL ASYNC` | ☐ |
+| Feed Warmup | `SUCCESS: Feed is hot and caching guard passed.` | ☐ |
 | Final | `🎉 VectorBox is ready and running!` | ☐ |
 
 ### Step 1.3: Container Health
