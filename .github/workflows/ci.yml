@@ -140,7 +140,7 @@ jobs:
         working-directory: backend
         run: python scripts/test_es_whitelist.py
 
-      # Requires live DB — run manually via docker-compose
+      # Requires live DB — run manually via docker compose
       # - python scripts/test_idor_hidden_gems.py
       # - python scripts/verify_nlp_fallback.py
 
@@ -180,7 +180,7 @@ jobs:
 
       - name: Start services
         run: |
-          docker-compose up -d --build
+          docker compose up -d --build
           echo "Waiting for services to be healthy..."
           sleep 30
 
@@ -217,7 +217,7 @@ jobs:
         run: |
           echo "Waiting for backend to apply migrations..."
           for i in {1..20}; do
-            if docker-compose exec -T backend python -c \
+            if docker compose exec -T backend python -c \
               "import asyncio; from config import engine; \
                from sqlalchemy import text; \
                asyncio.run(engine.connect())" 2>/dev/null; then
@@ -229,7 +229,7 @@ jobs:
           done
 
       - name: Seed QA user
-        run: docker-compose exec -T backend python scripts/seed_qa_user.py
+        run: docker compose exec -T backend python scripts/seed_qa_user.py
 
       - name: Run Playwright suite
         working-directory: frontend
@@ -247,7 +247,7 @@ jobs:
 
       - name: Stop services
         if: always()
-        run: docker-compose down -v
+        run: docker compose down -v
 
 # Required GitHub Secrets (Settings → Secrets → Actions):
 # - TMDB_API_KEY
