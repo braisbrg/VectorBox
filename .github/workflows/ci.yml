@@ -150,19 +150,12 @@ jobs:
   playwright:
     name: Playwright E2E
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.ref == 'refs/heads/master'
     needs: [frontend-quality, backend-scripts]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-
-      - name: Cache Docker layers
-        uses: actions/cache@v4.2.3
-        with:
-          path: /tmp/.buildx-cache
-          key: docker-${{ hashFiles('backend/Dockerfile', 'frontend/Dockerfile') }}
-          restore-keys: docker-
 
       - name: Create .env for CI
         run: |
@@ -181,6 +174,9 @@ jobs:
           OTEL_SERVICE_NAME=vectorbox-backend
           TESTING_MODE=True
           EOF
+
+      - name: Create auth directory
+        run: mkdir -p frontend/e2e/.auth
 
       - name: Start services
         run: |
@@ -217,13 +213,27 @@ jobs:
         working-directory: frontend
         run: pnpm exec playwright install --with-deps chromium webkit
 
-      - name: Create QA user
+      - name: Wait for DB migrations
         run: |
-          docker-compose exec -T backend python scripts/seed_qa_user.py
+          echo "Waiting for backend to apply migrations..."
+          for i in {1..20}; do
+            if docker-compose exec -T backend python -c \
+              "import asyncio; from config import engine; \
+               from sqlalchemy import text; \
+               asyncio.run(engine.connect())" 2>/dev/null; then
+              echo "DB ready"
+              break
+            fi
+            echo "Waiting... ($i/20)"
+            sleep 5
+          done
+
+      - name: Seed QA user
+        run: docker-compose exec -T backend python scripts/seed_qa_user.py
 
       - name: Run Playwright suite
         working-directory: frontend
-        run: pnpm exec playwright test --reporter=list
+        run: pnpm exec playwright test --reporter=list --timeout=60000
         env:
           CI: true
 
