@@ -9,7 +9,7 @@
     "lint": "next lint",
     "security-check": "npm audit --audit-level=high",
     "prepare": "cd .. && husky frontend/.husky",
-    "audit:backend": "cd .. && docker-compose exec -T backend python scripts/security_audit.py",
+    "audit:backend": "cd .. && python backend/scripts/security_audit.py",
     "audit:container": "docker scout quickview",
     "audit:all": "pnpm audit && npm run audit:backend",
     "test:e2e": "playwright test",
