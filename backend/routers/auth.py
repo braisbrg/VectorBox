@@ -67,7 +67,6 @@ async def register(
         )
         
         db.add(new_user)
-        db.add(new_user)
         try:
             await db.commit()
             await db.refresh(new_user)
