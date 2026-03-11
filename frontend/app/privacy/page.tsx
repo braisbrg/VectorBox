@@ -1,0 +1,203 @@
+import type { Metadata } from "next";
+import Link from "next/link";
+
+export const metadata: Metadata = {
+    title: "Privacy Policy — VectorBox",
+    description: "How VectorBox handles your data, cookies, and GDPR rights.",
+};
+
+export default function PrivacyPage() {
+    return (
+        <main className="min-h-screen bg-black text-zinc-300">
+            <div className="max-w-2xl mx-auto px-6 py-16">
+                {/* Back link */}
+                <Link
+                    href="/"
+                    className="text-[#CCFF00] hover:underline font-[var(--font-mono-acid)] text-sm inline-block mb-12"
+                >
+                    ← Back
+                </Link>
+
+                {/* Page title */}
+                <h1 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-3xl sm:text-4xl uppercase tracking-tight mb-12">
+                    Privacy Policy
+                </h1>
+
+                {/* Sections */}
+                <div className="space-y-0">
+                    {/* 1. WHO WE ARE */}
+                    <section className="border-b border-zinc-800 pb-8 mb-8">
+                        <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
+                            1. Who We Are
+                        </h2>
+                        <p className="text-sm text-zinc-400 leading-relaxed">
+                            VectorBox is an AI-powered movie recommendation service. We use
+                            semantic vector embeddings and collaborative filtering to help you
+                            discover films you&apos;ll love. For any privacy-related inquiries,
+                            contact us at{" "}
+                            <span className="text-zinc-300">privacy@vectorbox.app</span>.
+                        </p>
+                    </section>
+
+                    {/* 2. WHAT DATA WE COLLECT */}
+                    <section className="border-b border-zinc-800 pb-8 mb-8">
+                        <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
+                            2. What Data We Collect
+                        </h2>
+                        <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
+                            <li>
+                                <strong className="text-zinc-300">Username and PIN</strong> —
+                                Your PIN is hashed with bcrypt before storage. We never store
+                                or log your PIN in plain text.
+                            </li>
+                            <li>
+                                <strong className="text-zinc-300">Movie ratings</strong> —
+                                Imported from your Letterboxd account via CSV export or RSS
+                                feed. These ratings power your personalized recommendations.
+                            </li>
+                            <li>
+                                <strong className="text-zinc-300">
+                                    Streaming preferences
+                                </strong>{" "}
+                                — Your selected streaming platforms (e.g., Netflix, HBO Max)
+                                used to filter recommendations by availability.
+                            </li>
+                            <li>
+                                <strong className="text-zinc-300">Country code</strong> —
+                                Used to determine regional streaming availability for
+                                recommended titles.
+                            </li>
+                        </ul>
+                        <p className="text-sm text-zinc-500 leading-relaxed mt-4 italic">
+                            Note: Letterboxd CSV exports may contain an email field. This
+                            field is discarded immediately in memory during import and is
+                            never written to our database.
+                        </p>
+                    </section>
+
+                    {/* 3. HOW WE USE YOUR DATA */}
+                    <section className="border-b border-zinc-800 pb-8 mb-8">
+                        <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
+                            3. How We Use Your Data
+                        </h2>
+                        <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
+                            <li>
+                                Generate personalized movie recommendations using semantic
+                                vector embeddings and K-Means clustering over your rating
+                                history.
+                            </li>
+                            <li>
+                                Improve feed relevance through our Trident recommendation
+                                engine, which combines collaborative filtering, taste
+                                profiling, and hidden gem discovery.
+                            </li>
+                            <li>
+                                We do not sell, share, or transfer your personal data to any
+                                third parties.
+                            </li>
+                        </ul>
+                    </section>
+
+                    {/* 4. COOKIES */}
+                    <section className="border-b border-zinc-800 pb-8 mb-8">
+                        <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
+                            4. Cookies
+                        </h2>
+                        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+                            VectorBox uses a single, strictly necessary cookie:
+                        </p>
+                        <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 text-sm font-[var(--font-mono-acid)] text-zinc-300 space-y-1">
+                            <p>
+                                <span className="text-zinc-500">Name:</span> vectorbox_token
+                            </p>
+                            <p>
+                                <span className="text-zinc-500">Type:</span> HttpOnly,
+                                SameSite=Lax, Secure (production)
+                            </p>
+                            <p>
+                                <span className="text-zinc-500">Purpose:</span> Session
+                                authentication
+                            </p>
+                            <p>
+                                <span className="text-zinc-500">Duration:</span> 24 hours
+                            </p>
+                        </div>
+                        <p className="text-sm text-zinc-500 leading-relaxed mt-4">
+                            This cookie is used exclusively to maintain your authenticated
+                            session. It is not a tracking or analytics cookie. As a strictly
+                            necessary cookie, it is exempt from consent requirements under
+                            GDPR Article 5(3) of the ePrivacy Directive.
+                        </p>
+                    </section>
+
+                    {/* 5. DATA RETENTION */}
+                    <section className="border-b border-zinc-800 pb-8 mb-8">
+                        <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
+                            5. Data Retention
+                        </h2>
+                        <p className="text-sm text-zinc-400 leading-relaxed">
+                            Your data is retained for as long as your account remains active.
+                            You may request complete deletion of your account and all
+                            associated data by contacting{" "}
+                            <span className="text-zinc-300">privacy@vectorbox.app</span>.
+                            Upon receiving a valid deletion request, we will erase all
+                            personal data within 30 days.
+                        </p>
+                    </section>
+
+                    {/* 6. YOUR RIGHTS (GDPR) */}
+                    <section className="border-b border-zinc-800 pb-8 mb-8">
+                        <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
+                            6. Your Rights (GDPR)
+                        </h2>
+                        <p className="text-sm text-zinc-400 leading-relaxed mb-3">
+                            Under the General Data Protection Regulation, you have the right
+                            to:
+                        </p>
+                        <ul className="text-sm text-zinc-400 leading-relaxed space-y-2 list-disc list-inside">
+                            <li>
+                                <strong className="text-zinc-300">Access</strong> — Request a
+                                copy of the personal data we hold about you.
+                            </li>
+                            <li>
+                                <strong className="text-zinc-300">Rectification</strong> —
+                                Correct any inaccurate personal data.
+                            </li>
+                            <li>
+                                <strong className="text-zinc-300">Erasure</strong> — Request
+                                deletion of your personal data.
+                            </li>
+                            <li>
+                                <strong className="text-zinc-300">Portability</strong> —
+                                Receive your data in a structured, machine-readable format.
+                            </li>
+                            <li>
+                                <strong className="text-zinc-300">Objection</strong> — Object
+                                to the processing of your personal data.
+                            </li>
+                        </ul>
+                        <p className="text-sm text-zinc-500 leading-relaxed mt-4">
+                            Supervisory authority: Agencia Española de Protección de Datos
+                            (AEPD), Spain.
+                        </p>
+                    </section>
+
+                    {/* 7. CHANGES */}
+                    <section className="pb-8">
+                        <h2 className="font-[var(--font-mono-acid)] text-[#CCFF00] text-sm uppercase tracking-widest mb-4">
+                            7. Changes to This Policy
+                        </h2>
+                        <p className="text-sm text-zinc-400 leading-relaxed">
+                            We reserve the right to update this privacy policy at any time.
+                            Material changes will be communicated through the service. We
+                            encourage you to review this page periodically.
+                        </p>
+                        <p className="text-sm text-zinc-500 mt-4 font-[var(--font-mono-acid)]">
+                            Last updated: March 11, 2026
+                        </p>
+                    </section>
+                </div>
+            </div>
+        </main>
+    );
+}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
     LayoutList,
     Grid3x3,
@@ -195,6 +196,24 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                     <LanguageToggle isCollapsed={isCollapsed} />
                     <AppTooltip isCollapsed={isCollapsed} />
                 </div>
+
+                {!isCollapsed && (
+                    <div className="flex items-center justify-center gap-3 pt-2">
+                        <Link
+                            href="/privacy"
+                            className="text-[10px] font-mono text-zinc-700 hover:text-[#CCFF00] transition-colors uppercase tracking-wider"
+                        >
+                            Privacy
+                        </Link>
+                        <span className="text-zinc-800 text-[10px]">·</span>
+                        <Link
+                            href="/terms"
+                            className="text-[10px] font-mono text-zinc-700 hover:text-[#CCFF00] transition-colors uppercase tracking-wider"
+                        >
+                            Terms
+                        </Link>
+                    </div>
+                )}
             </div>
         </motion.aside>
     );

@@ -30,7 +30,7 @@ export default function RootLayout({
 }>) {
     return (
         <html lang="en" suppressHydrationWarning>
-            <body className={`${inter.className} ${spaceGrotesk.variable} ${spaceMono.variable} antialiased min-h-screen bg-background text-foreground overflow-x-hidden selection:bg-primary selection:text-black`}>
+            <body suppressHydrationWarning className={`${inter.className} ${spaceGrotesk.variable} ${spaceMono.variable} antialiased min-h-screen bg-background text-foreground overflow-x-hidden selection:bg-primary selection:text-black`}>
                 <LanguageProvider>
                     <Providers>
                         <MobileNavProvider>
