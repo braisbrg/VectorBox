@@ -168,7 +168,7 @@ jobs:
 
       - name: Create .env for CI
         run: |
-          echo "ENVIRONMENT=development" >> .env
+          echo "ENVIRONMENT=development" > .env
           echo "DATABASE_URL=postgresql+asyncpg://vectorbox_user:change_me_in_prod@postgres:5432/vectorbox" >> .env
           echo "REDIS_URL=redis://redis:6379" >> .env
           echo "QDRANT_URL=http://qdrant:6333" >> .env
@@ -177,15 +177,28 @@ jobs:
           echo "TMDB_READ_TOKEN=${{ secrets.TMDB_READ_TOKEN }}" >> .env
           echo "OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}" >> .env
           echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> .env
+          
+          # Export for runner context and native inheritance
+          echo "DATABASE_URL=postgresql+asyncpg://vectorbox_user:change_me_in_prod@postgres:5432/vectorbox" >> $GITHUB_ENV
+          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}" >> $GITHUB_ENV
+          echo "TMDB_READ_TOKEN=${{ secrets.TMDB_READ_TOKEN }}" >> $GITHUB_ENV
+          echo "OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}" >> $GITHUB_ENV
+          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}" >> $GITHUB_ENV
 
       - name: Create auth directory
         run: mkdir -p frontend/e2e/.auth
 
       - name: Start services
+        run: docker compose --env-file .env up -d --build
+
+      - name: Wait for postgres
         run: |
-          docker compose up -d --build
-          echo "Waiting for services to be healthy..."
-          sleep 30
+          echo "Waiting for postgres to be ready..."
+          until docker compose exec -T postgres pg_isready -U vectorbox_user; do
+            echo "Waiting... (Postgres not ready)"
+            sleep 2
+          done
+          echo "Postgres is READY!"
 
       - name: Wait for backend to be healthy
         run: |
@@ -218,7 +231,10 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium webkit
 
       - name: Run Alembic migrations
-        run: docker compose exec -T backend alembic upgrade head
+        run: |
+          docker compose exec -T backend alembic upgrade head
+          # Verify migrations applied
+          docker compose exec -T backend alembic current
 
       - name: Seed QA user
         run: docker compose exec -T backend python scripts/seed_qa_user.py
