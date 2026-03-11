@@ -195,6 +195,20 @@ export default function RegisterPage() {
                                 </div>
                             </div>
 
+                            <p className="text-[11px] text-zinc-600 text-center leading-relaxed">
+                                By clicking{" "}
+                                <span className="text-zinc-500">Create Profile</span>
+                                , you agree to our{" "}
+                                <Link href="/terms" className="text-zinc-400 hover:text-[#CCFF00] underline transition-colors">
+                                    Terms of Service
+                                </Link>
+                                {" "}and{" "}
+                                <Link href="/privacy" className="text-zinc-400 hover:text-[#CCFF00] underline transition-colors">
+                                    Privacy Policy
+                                </Link>
+                                . You confirm you are 14 years of age or older.
+                            </p>
+
                             <ShimmerButton
                                 type="submit"
                                 disabled={loading || !username || !pinMatch}
