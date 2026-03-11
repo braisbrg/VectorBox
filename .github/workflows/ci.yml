@@ -137,6 +137,10 @@ jobs:
         working-directory: backend
         run: python scripts/test_es_whitelist.py
 
+      # Requires live DB — run manually via docker-compose
+      # - python scripts/test_idor_hidden_gems.py
+      # - python scripts/verify_nlp_fallback.py
+
   # ─────────────────────────────────────────
   # JOB 3: Playwright E2E (solo PRs a master)
   # ─────────────────────────────────────────
