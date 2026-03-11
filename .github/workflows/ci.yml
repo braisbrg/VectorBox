@@ -150,7 +150,7 @@ jobs:
   playwright:
     name: Playwright E2E
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
+    if: github.event_name == 'pull_request'
     needs: [frontend-quality, backend-scripts]
 
     steps:
