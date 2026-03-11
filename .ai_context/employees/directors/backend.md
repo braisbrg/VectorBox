@@ -2,7 +2,7 @@
 
 > **Role:** Backend Technical Lead
 > **Domain:** API Design, Database, Async Patterns, Authentication
-> **Last Updated:** 2026-03-05
+> **Last Updated:** 2026-03-11
 
 This file contains all backend-specific rules, database patterns, and API guidelines for the VectorBox project.
 
@@ -201,6 +201,9 @@ backend/
 | TMDB responses | 24 hours | `tmdb:{endpoint}:{id}` |
 | Provider availability | 24 hours | `providers:{movie_id}:{region}` |
 | Trending cache | 24 hours | `trending:letterboxd` |
+
+### Cache Guard
+- **Rule**: Never cache feeds with < 3 sections to Redis.
 
 ### Cache Invalidation
 Invalidate user-specific caches when:

@@ -79,6 +79,11 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Diversity:** Implement MMR (Maximal Marginal Relevance) or "Collection Collapsing" to prevent domination by a single franchise.
 
 
+### Redis Caching (Completeness Guard)
+- **Rule**: The Main Feed MUST NOT be cached if the result contains fewer than 3 sections.
+- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds.
+- **Implementation**: Verified in `FeedService.get_main_feed`.
+
 ### Streaming Availability (Spain)
 - **Strict Whitelist:** Filter providers to ONLY include:
     - Netflix
@@ -112,6 +117,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Rule:** Ephemeral Containers, Persistent Data.
 - **Requirement:** All production data (Postgres/Qdrant/Redis volumes) and critical artifacts (Backups) **MUST** be mapped to Host Volumes.
 - **Backups:** Use `backup_manager.py` (which dumps Postgres, Qdrant snapshots, and Redis `BGSAVE`) and `restore_manager.py` for automated disaster recovery.
+- **Models Cache**: The `models_cache` volume MUST be mounted to `/models_cache` in the backend service and declared as a root-level volume to ensure SentenceTransformer models are not redownloaded on every `up --build`.
 - **Ban:** Never save critical state solely inside the container's writable layer. It will be lost on `docker-compose down`.
 
 ## 4. Security Standards (OWASP Hardening)

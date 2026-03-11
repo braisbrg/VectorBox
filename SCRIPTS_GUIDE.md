@@ -71,4 +71,6 @@ Standard auditing protocols for this project.
     ```bash
     docker scout quickview vectorbox-backend
     ```
-    *Checks base images (Postgres, Python Alpine) for system-level CVEs.*
+
+---
+**Last Updated:** 2026-03-11

@@ -2,7 +2,7 @@
 
 > **Role:** DevOps & Infrastructure Lead
 > **Domain:** Containerization, Security, Maintenance Scripts
-> **Last Updated:** 2026-03-05
+> **Last Updated:** 2026-03-11
 
 This file contains all DevOps rules, security protocols, Docker configuration, and the complete scripts inventory for the VectorBox project.
 
@@ -81,8 +81,13 @@ USER vectorbox
 - **Production:** `docker-compose.prod.yml` enforces fail-fast `ENVIRONMENT=production` checks on boot to panic if critical secrets like `POSTGRES_PASSWORD` are missing.
 
 ### Active Health Monitoring (Deep Checks)
-- **Endpoint:** `/health`
 - **Logic:** The Load Balancer/Docker health check should expect HTTP 200 or 503. The backend explicitly pings dependencies (Postgres, Qdrant, Redis) and returns a 503 with specific failed components if any downstream connection drops.
+
+### CI Lifecycle (Robust Handshake)
+- **Wait for DB**: Uses `pg_isready` in a loop before migrations.
+- **Veracity Check**: `alembic current` verify after upgrade.
+- **Cache Purge**: `FLUSHALL` post-seed.
+- **Feed Warmup**: Smoke test polls `/api/recommendations/feed` until section count ≥ 3.
 
 ---
 
@@ -152,6 +157,7 @@ Located in `backend/scripts/`. Run via Docker execution.
 | **`test_trident_math.py`** | **QA Certification (Phase 4).** Validates sigmoid curve and RRF fusion math against expected formulas. | `docker-compose exec backend python scripts/test_trident_math.py` |
 | **`wait_for_db.py`** | **Infrastructure.** Blocks boot until Postgres is ready. Used automatically in Docker entrypoint. | *(Internal use only)* |
 | **`backup_manager.py`** | **Disaster Recovery.** Creates snapshot of Postgres, Qdrant, and Redis, zips them, and implements 5-file rotation. | `docker-compose exec backend python scripts/backup_manager.py` |
+| **`models_cache`** | **Persistence.** Persistent volume for SentenceTransformer models. | `volume: models_cache` |
 | **`restore_manager.py`** | **Disaster Recovery.** Previews (`--dry-run`) or securely executes automated teardown and recreation of the database layer from archived ZIPs. | `docker-compose exec backend python scripts/restore_manager.py /app/backups/[file].zip` |
 
 ### 📦 Frontend Utility Scripts

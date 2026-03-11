@@ -20,6 +20,7 @@
 - Always use `docker-compose exec backend ...` for backend commands
 - Never install packages directly on host for backend
 - Backend lock file is hash-verified: backend/requirements.lock
+- Models Cache: Persistent `models_cache` volume mounted to `/models_cache`
 - Regenerate lock file with:
     pip-compile requirements.txt --generate-hashes -o requirements.lock
 
@@ -57,6 +58,8 @@ Sigmoid quality weighting on VectorBox Score (0–100).
 Feed orchestration: `FeedService.get_main_feed()` runs 9 tasks
 in parallel via `asyncio.gather()`. Each task opens its own
 isolated `AsyncSessionLocal()` session — they NEVER share sessions.
+
+**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis.
 
 Deep Dive now runs FULLY IN PARALLEL with the other feed tasks, dropping its strict dependency on `seen_ids` for a massive performance boost.
 
