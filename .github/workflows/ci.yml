@@ -1,0 +1,241 @@
+name: VectorBox CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  # ─────────────────────────────────────────
+  # JOB 1: Frontend Quality (cada push, ~2min)
+  # ─────────────────────────────────────────
+  frontend-quality:
+    name: Frontend Quality
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Get pnpm store directory
+        id: pnpm-cache
+        run: echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
+
+      - name: Cache pnpm dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+          key: pnpm-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+          restore-keys: pnpm-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: TypeScript check
+        run: pnpm exec tsc --noEmit
+
+      - name: Security audit
+        run: pnpm audit
+
+      - name: Build
+        run: pnpm build
+        env:
+          NEXT_PUBLIC_API_URL: http://localhost:8000
+          BACKEND_URL: http://localhost:8000
+          NEXT_TELEMETRY_DISABLED: 1
+
+  # ─────────────────────────────────────────
+  # JOB 2: Backend Scripts (cada push master/PR)
+  # ─────────────────────────────────────────
+  backend-scripts:
+    name: Backend Verification Scripts
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: vectorbox
+          POSTGRES_USER: vectorbox_user
+          POSTGRES_PASSWORD: ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: pip-
+
+      - name: Install backend dependencies (sin torch)
+        working-directory: backend
+        run: |
+          pip install --upgrade pip
+          pip install pip-audit
+          pip install -r requirements.txt --ignore-requires-python \
+            || pip install fastapi uvicorn sqlalchemy asyncpg \
+               redis qdrant-client pydantic python-multipart \
+               slowapi httpx aiohttp
+
+      - name: Run security audit
+        working-directory: backend
+        run: python scripts/security_audit.py
+
+      - name: Run Trident math verification
+        working-directory: backend
+        run: python scripts/test_trident_math.py
+
+      - name: Run feed parallelism verification
+        working-directory: backend
+        run: python scripts/verify_feed_parallelism.py
+
+      - name: Run ES whitelist test
+        working-directory: backend
+        run: python scripts/test_es_whitelist.py
+
+  # ─────────────────────────────────────────
+  # JOB 3: Playwright E2E (solo PRs a master)
+  # ─────────────────────────────────────────
+  playwright:
+    name: Playwright E2E
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: [frontend-quality, backend-scripts]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: docker-${{ hashFiles('backend/Dockerfile', 'frontend/Dockerfile') }}
+          restore-keys: docker-
+
+      - name: Create .env for CI
+        run: |
+          cat > .env << EOF
+          POSTGRES_USER=vectorbox_user
+          POSTGRES_PASSWORD=ci_password
+          POSTGRES_DB=vectorbox
+          REDIS_URL=redis://redis:6379
+          QDRANT_HOST=qdrant
+          QDRANT_PORT=6333
+          TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}
+          OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}
+          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
+          SECRET_KEY=ci-secret-key-not-for-production
+          OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
+          OTEL_SERVICE_NAME=vectorbox-backend
+          TESTING_MODE=True
+          EOF
+
+      - name: Start services
+        run: |
+          docker-compose up -d --build
+          echo "Waiting for services to be healthy..."
+          sleep 30
+
+      - name: Wait for backend health
+        run: |
+          for i in {1..30}; do
+            if curl -sf http://localhost:8000/health; then
+              echo "Backend is healthy"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 5
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: pnpm exec playwright install --with-deps chromium webkit
+
+      - name: Create QA user
+        run: |
+          docker-compose exec -T backend python scripts/seed_qa_user.py
+
+      - name: Run Playwright suite
+        working-directory: frontend
+        run: pnpm exec playwright test --reporter=list
+        env:
+          CI: true
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report/
+          retention-days: 7
+
+      - name: Stop services
+        if: always()
+        run: docker-compose down -v
+
+# Required GitHub Secrets (Settings → Secrets → Actions):
+# - TMDB_API_KEY
+# - OMDB_API_KEY
+# - GROQ_API_KEY
+#
+# Add via: GitHub repo → Settings → Secrets and variables
+#           → Actions → New repository secret

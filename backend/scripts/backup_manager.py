@@ -124,28 +124,43 @@ def backup_postgres():
         raise
 
 def backup_redis():
-    """Trigger Redis BGSAVE and copy the dump.rdb file"""
+    """Trigger Redis BGSAVE and copy important keys as JSON"""
     logger.info("Step C: Backing up Redis...")
     try:
-        import redis
-        r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False)
-        # Trigger background save
-        r.bgsave()
+        import redis as redis_client
         import time
-        time.sleep(2)  # Wait for BGSAVE to complete
-
-        # Copy dump.rdb from Redis container
-        dump_path = TEMP_DIR / f"redis_dump_{TIMESTAMP}.rdb"
-        # Use redis DEBUG RELOAD to get current state
-        # then copy via docker exec
-        subprocess.run([
-            "docker", "cp",
-            "vectorbox-redis:/data/dump.rdb",
-            str(dump_path)
-        ], check=True)
-
-        logger.info(f"Redis dump saved: {dump_path.name}")
-        return dump_path
+        import json
+        
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        r = redis_client.from_url(redis_url)
+        
+        # Trigger BGSAVE y esperar a que complete
+        r.bgsave()
+        time.sleep(2)
+        
+        # Guardar las keys más importantes como JSON
+        # (las keys de Redis son caché regenerable, no datos críticos)
+        backup_data = {}
+        for key in r.scan_iter("*"):
+            try:
+                key_str = key.decode('utf-8')
+                ttl = r.ttl(key)
+                # Solo respaldar keys sin TTL o con TTL > 1hora
+                # (evitar caché temporal)
+                if ttl == -1 or ttl > 3600:
+                    val = r.get(key)
+                    if val:
+                        backup_data[key_str] = val.decode('utf-8', errors='ignore')
+            except Exception:
+                pass
+        
+        redis_backup_path = TEMP_DIR / "redis_backup.json"
+        with open(redis_backup_path, 'w') as f:
+            json.dump(backup_data, f)
+        
+        logger.info(f"Redis backup created: {redis_backup_path.name} "
+                    f"({len(backup_data)} keys)")
+        return redis_backup_path
     except Exception as e:
         logger.warning(f"Redis backup skipped: {e}")
         return None  # Non-fatal — Redis is regenerable
