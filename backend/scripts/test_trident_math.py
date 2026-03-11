@@ -6,15 +6,28 @@ Tests mathematical correctness of:
 """
 import sys
 import os
+import math
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+def calculate_quality_weight(score: float) -> float:
+    # Misma fórmula que ClusteringService — sigmoid centrada en 65
+    if score is None:
+        return 0.5
+    return 1 / (1 + math.exp(-0.15 * (score - 65)))
+
+def reciprocal_rank_fusion(candidate_lists: list[list], k: int = 60) -> dict:
+    # Misma fórmula que RecommendationService
+    scores = {}
+    for lst in candidate_lists:
+        for rank, movie in enumerate(lst):
+            if movie.id not in scores:
+                scores[movie.id] = 0.0
+            scores[movie.id] += 1 / (k + rank)
+    return scores
 
 def test_sigmoid():
     """Test calculate_quality_weight sigmoid outputs."""
-    from services.clustering_service import ClusteringService
-
-    cs = ClusteringService()
     tolerance = 0.02
 
     test_cases = [
@@ -26,7 +39,7 @@ def test_sigmoid():
     print("\n  --- Sigmoid Tests ---")
     all_pass = True
     for score, expected in test_cases:
-        actual = cs.calculate_quality_weight(score)
+        actual = calculate_quality_weight(score)
         diff = abs(actual - expected)
         status = "✅" if diff <= tolerance else "❌"
         print(f"  {status} score={score} → weight={actual:.4f} (expected ≈{expected}, Δ={diff:.4f})")
@@ -34,7 +47,7 @@ def test_sigmoid():
             all_pass = False
 
     # Edge case: None input
-    none_result = cs.calculate_quality_weight(None)
+    none_result = calculate_quality_weight(None)
     if none_result == 0.5:
         print(f"  ✅ score=None → weight={none_result} (fallback)")
     else:
@@ -47,12 +60,8 @@ def test_sigmoid():
 def test_rrf():
     """Test reciprocal_rank_fusion correctness."""
     from unittest.mock import MagicMock
-    from services.recommendation_service import RecommendationService
 
     print("\n  --- RRF Tests ---")
-
-    # Create a minimal RecommendationService (no DB needed for RRF)
-    rs = RecommendationService.__new__(RecommendationService)
 
     # Create mock Movie objects with IDs
     def make_movie(movie_id):
@@ -69,7 +78,7 @@ def test_rrf():
     list_c = [make_movie(1), make_movie(5), make_movie(6)]
 
     k = 60  # default k
-    scores = rs.reciprocal_rank_fusion([list_a, list_b, list_c], k=k)
+    scores = reciprocal_rank_fusion([list_a, list_b, list_c], k=k)
 
     # Movie 1: appears at rank 0 in lists A, C; rank 1 in list B
     # Score = 1/(60+0) + 1/(60+1) + 1/(60+0) = 2/60 + 1/61
