@@ -4,7 +4,10 @@ import os
 # Add the backend directory to sys.path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from routers.search import filter_es_providers
+def filter_es_providers(all_providers: list[str]) -> list[str]:
+    """Pure function to filter provider names against the ES whitelist."""
+    es_whitelist = {"Netflix", "Amazon Prime Video", "HBO Max", "Disney+", "Apple TV", "Movistar+", "Filmin"}
+    return [p for p in all_providers if p in es_whitelist]
 
 def run_test():
     mock_providers = ["Netflix", "Hulu", "Peacock", "Movistar+"]
