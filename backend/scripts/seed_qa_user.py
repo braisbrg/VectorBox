@@ -78,7 +78,7 @@ async def seed():
             user = User(
                 username=QA_USERNAME,
                 email="qa@vecbox.local",
-                pin_hash=pwd_context.hash("qa_password123")
+                pin_hash=pwd_context.hash("1234")
             )
             db.add(user)
             await db.flush() # Get user.id
