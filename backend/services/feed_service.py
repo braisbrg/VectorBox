@@ -361,9 +361,15 @@ class FeedService:
         # --- CACHE SAVE BLOCK ---
         if r:
             try:
-                # Cache for 1 hour (3600 seconds)
-                await r.setex(cache_key, 3600, final_resp.model_dump_json())
-                logger.info(f"Feed Cache MISS. Computed and saved for User {user_id}")
+                # Defense: only cache if feed is "complete" (>= 3 sections)
+                # to avoid poisoning cache during cold starts/warmups.
+                if len(final_sections) >= 3:
+                    await r.setex(cache_key, 3600, final_resp.model_dump_json())
+                    logger.info(f"Feed Cache MISS. Computed and saved for User {user_id}")
+                else:
+                    logger.warning(
+                        f"Feed too thin ({len(final_sections)} sections) for User {user_id}. SKIPPING CACHE."
+                    )
             except Exception as e:
                 logger.warning(f"Redis feed cache write failed: {e}")
             finally:
