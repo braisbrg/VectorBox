@@ -35,12 +35,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY . .
 
 # Pre-download AI Model
-ENV SENTENCE_TRANSFORMERS_HOME=/app/models_cache
+ENV SENTENCE_TRANSFORMERS_HOME=/models_cache
 RUN python download_model.py
 
 # Switch to non-root user
 # Ensure the user owns the model cache
-RUN chown -R vectorbox:vectorbox /app/models_cache
+RUN chown -R vectorbox:vectorbox /models_cache
 USER vectorbox
 
 # Expose port
