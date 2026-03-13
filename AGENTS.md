@@ -172,6 +172,8 @@ Rules:
 ### Backup & Restore
 - `backup_manager.py`: Dumps Postgres, Qdrant snapshots, and Redis `BGSAVE`. Rotates to last 5.
 - `restore_manager.py`: Orchestrates full system restoration from ZIP. Supports `--dry-run`.
+- `reconcile_letterboxd_movies.py`: Audits `letterboxd_uri` movies, verifies `tmdb_id` via TMDB search. `--fix` re-ingests and migrates ratings.
+- `fix_movies_manual.py`: Applies manual CSV corrections (`letterboxd_uri,correct_tmdb_id,old_tmdb_id`). Supports `--dry-run` and `--file`.
 - Host wrappers: `backup.ps1` / `backup.sh` for easy CLI access.
 
 When comparing against seen_ids:    always use m.tmdb_id
@@ -238,6 +240,20 @@ All of these have been found and fixed. Do not reintroduce.
         )
     Note: HTTP clients (TMDBClient, QdrantService) ARE safe
     to share across gather tasks. Only DB sessions are not.
+
+---
+
+## Data Integrity — Letterboxd URI Normalization
+
+All `letterboxd_uri` values MUST be canonical:
+  https://letterboxd.com/film/{slug}/
+
+CSVParser.normalize_letterboxd_uri() handles this:
+  /username/film/slug/ → /film/slug/  (converted)
+  boxd.it/...          → None         (rejected)
+  /tmdb/12345          → None         (rejected)
+
+Applied automatically in parse_ratings_csv and parse_watched_csv.
 
 ---
 

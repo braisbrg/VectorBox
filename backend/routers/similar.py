@@ -12,7 +12,8 @@ from models.database import Movie
 from services.qdrant_service import QdrantService
 from services.tmdb_client import TMDBClient
 from services.embedding_service import EmbeddingService
-from dependencies import get_tmdb_client, get_qdrant_service
+from dependencies import get_tmdb_client, get_qdrant_service, get_current_user
+from models.schemas import TokenResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -21,8 +22,8 @@ router = APIRouter()
 @router.get("/similar/{tmdb_id}")
 async def get_similar_movies(
     tmdb_id: int,
-    user_id: int = Query(..., description="User ID for personalization"),
-    limit: int  = Query(12, ge=1, le=50),
+    limit: int = Query(12, ge=1, le=50),
+    current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service)

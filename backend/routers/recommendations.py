@@ -592,7 +592,7 @@ async def get_watchlist(
         paginated = available_movies[start:end]
         
         for movie, providers in paginated:
-            item = await feed_service.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=providers)
+            item = await feed_service.engine.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=providers)
             final_items.append(item)
         
     else:
@@ -609,7 +609,7 @@ async def get_watchlist(
         for movie in paginated_movies:
             movie_providers = providers_map.get(movie.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await feed_service.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=flat_providers)
+            item = await feed_service.engine.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=flat_providers)
             final_items.append(item)
 
     return {"items": final_items, "total": total_items, "page": page, "limit": limit}
@@ -664,7 +664,7 @@ async def get_random_row(
                  providers_data = providers_map.get(movie.id, [])
                  provider_names = [p["provider_name"] for p in providers_data]
                  
-                 item = await feed_service.create_feed_item(
+                 item = await feed_service.engine.create_feed_item(
                      movie=movie, 
                      score=0.85, 
                      country=country_code, 
@@ -763,7 +763,7 @@ async def get_hidden_gems_row(
             providers_data = providers_map.get(movie.id, [])
             provider_names = [p["provider_name"] for p in providers_data]
             
-            item = await feed_service.create_feed_item(
+            item = await feed_service.engine.create_feed_item(
                 movie=movie, 
                 score=scores_map[movie.id], 
                 country=country_code, 

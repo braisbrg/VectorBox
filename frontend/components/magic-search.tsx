@@ -52,18 +52,14 @@ export function MagicSearch({ userId }: MagicSearchProps) {
 
     const searchMutation = useMutation({
         mutationFn: async (text: string) => {
-            const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/search/natural`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    query: text,
-                    user_id: userId,
-                    use_deep_analysis: isDeepAnalysis,
-                    country_code: "ES",
-                }),
+            const { api } = await import("@/lib/api");
+            const res = await api.post("/api/search/natural", {
+                query: text,
+                user_id: userId,
+                use_deep_analysis: isDeepAnalysis,
+                country_code: "ES",
             });
-            if (!res.ok) throw new Error(t("search.error"));
-            return res.json();
+            return res.data;
         },
         onSuccess: (data) => {
             // Deduplicate results

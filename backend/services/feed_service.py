@@ -20,6 +20,9 @@ from utils.decorators import safe_execution
 
 logger = logging.getLogger(__name__)
 
+# Bump when FeedItem/FeedSection schema changes to auto-invalidate Redis cache
+FEED_CACHE_VERSION = "v2"
+
 class FeedService:
     def __init__(self, qdrant: QdrantService = None, embedding_service: EmbeddingService = None):
         self.engine = RecommendationEngine(qdrant=qdrant, embedding_service=embedding_service)
@@ -186,7 +189,7 @@ class FeedService:
         try:
             r = await aioredis.from_url(redis_url, decode_responses=True)
             prov_str = ",".join(map(str, sorted(streaming_providers)))
-            cache_key = f"feed:{user_id}:{country_code}:global:{include_low_quality}:{prov_str}"
+            cache_key = f"feed:{FEED_CACHE_VERSION}:{user_id}:{country_code}:global:{include_low_quality}:{prov_str}"
             
             cached = await r.get(cache_key)
             if cached:
@@ -196,6 +199,27 @@ class FeedService:
         except Exception as e:
             logger.warning(f"Redis feed cache read failed: {e}")
         # --- END CACHE INTERCEPT ---
+
+        # --- PRE-POPULATE watched tmdb_ids so every signal excludes them ---
+        watched_tmdb_ids: Set[int] = set()
+        try:
+            async with AsyncSessionLocal() as session:
+                watched_result = await session.execute(
+                    select(UserRating.movie_id)
+                    .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+                )
+                watched_internal_ids = set(watched_result.scalars().all())
+
+                if watched_internal_ids:
+                    movies_result = await session.execute(
+                        select(Movie.tmdb_id).where(Movie.id.in_(watched_internal_ids))
+                    )
+                    watched_tmdb_ids = set(movies_result.scalars().all())
+
+            logger.info(f"Pre-populated {len(watched_tmdb_ids)} watched tmdb_ids for User {user_id}")
+        except Exception as e:
+            logger.error(f"Failed to pre-populate watched_tmdb_ids: {e}")
+        # --- END PRE-POPULATE ---
 
         async def task_popular():
             try:
@@ -210,7 +234,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, set(), country_code, local_provider, background_tasks=background_tasks)
+                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Watched]: {e}")
                 return None
@@ -219,7 +243,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_your_taste_section(user_id, session, tmdb, set(), country_code, local_provider, background_tasks=background_tasks)
+                    return await self.get_your_taste_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Taste]: {e}")
                 return None
@@ -228,7 +252,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_wildcard_section(user_id, session, tmdb, set(), country_code, local_provider)
+                    return await self.get_wildcard_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Wildcard]: {e}")
                 return None
@@ -237,7 +261,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_random_recommendations_section(user_id, session, tmdb, set(), country_code, local_provider)
+                    return await self.get_random_recommendations_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Random]: {e}")
                 return None
@@ -246,7 +270,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_hidden_gems_section(user_id, session, tmdb, set(), country_code, local_provider, background_tasks=background_tasks)
+                    return await self.get_hidden_gems_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hidden]: {e}")
                 return None
@@ -254,7 +278,7 @@ class FeedService:
         async def task_available():
             try:
                 async with AsyncSessionLocal() as session:
-                    return await self.get_available_now_section(user_id, session, tmdb, set(), country_code, streaming_providers)
+                    return await self.get_available_now_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, streaming_providers)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Available]: {e}")
                 return None
@@ -263,7 +287,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_hybrid_picks_section(user_id, session, country_code, set(), local_provider, qdrant=qdrant, background_tasks=background_tasks)
+                    return await self.get_hybrid_picks_section(user_id, session, country_code, watched_tmdb_ids.copy(), local_provider, qdrant=qdrant, background_tasks=background_tasks)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hybrid]: {e}")
                 return None
@@ -273,7 +297,7 @@ class FeedService:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
                     recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant)
-                    return await recommender.get_auteur_section(user_id, country_code, set(), provider_service=local_provider)
+                    return await recommender.get_auteur_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Auteur]: {e}")
                 return None
@@ -283,7 +307,7 @@ class FeedService:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
                     return await self.get_deep_dive_section(
-                        user_id, session, tmdb, set(), country_code,
+                        user_id, session, tmdb, watched_tmdb_ids.copy(), country_code,
                         local_provider, include_low_quality=include_low_quality,
                         background_tasks=background_tasks
                     )

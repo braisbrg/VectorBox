@@ -47,28 +47,65 @@ async def process_single_movie(
     """
     Helper to process a single movie in a batch.
     Each call owns its own AsyncSession (safe for asyncio.gather).
-    Returns: (tmdb_id, needs_vector_update) or (None, False) on failure.
+    Returns: (movie_id, needs_vector_update) or (None, False) on failure.
+
+    Matching priority:
+      1. Local DB lookup by letterboxd_uri (most reliable, no HTTP)
+      2. TMDB search by title+year with strict year validation (±1 tolerance)
     """
     from config import AsyncSessionLocal
     from services.movie_service import MovieService
 
+    title = movie_data.get("title")
+    year = movie_data.get("year")
+    letterboxd_uri = movie_data.get("letterboxd_uri")
+
     try:
-        # Search TMDB (HTTP client — safe to share across tasks)
-        tmdb_result = await tmdb_client.search_movie(
-            movie_data["title"],
-            movie_data.get("year")
-        )
-
-        if not tmdb_result:
-            return None, False
-
-        tmdb_id = tmdb_result["id"]
-
         # Fresh session per concurrent task (Architect Rule §2)
         async with AsyncSessionLocal() as session:
             movie_service = MovieService(session, tmdb=tmdb_client)
             try:
-                # Check if movie exists in DB
+                # --- Step 1: Local DB lookup by letterboxd_uri ---
+                if letterboxd_uri:
+                    result = await session.execute(
+                        select(Movie).where(Movie.letterboxd_uri == letterboxd_uri)
+                    )
+                    existing_movie = result.scalar_one_or_none()
+
+                    if existing_movie:
+                        logger.info(f"Found movie by letterboxd_uri: {existing_movie.title}")
+                        updated = await movie_service.enrich_movie(existing_movie, skip_qdrant=True)
+                        await session.commit()
+                        return existing_movie.id, updated
+
+                # --- Step 2: TMDB search with strict year validation ---
+                tmdb_result = await tmdb_client.search_movie(title, year)
+
+                if not tmdb_result:
+                    logger.warning(f"No TMDB result for '{title}' ({year})")
+                    return None, False
+
+                # Strict year validation: reject if difference > 1
+                if year:
+                    result_date = tmdb_result.get("release_date", "")
+                    result_year = int(result_date[:4]) if result_date and len(result_date) >= 4 else None
+                    if result_year:
+                        year_diff = abs(result_year - year)
+                        if year_diff > 1:
+                            logger.warning(
+                                f"Rejected TMDB match for '{title}' ({year}): "
+                                f"got {tmdb_result.get('title')} ({result_year})"
+                            )
+                            return None, False
+                        elif year_diff == 1:
+                            logger.warning(
+                                f"Accepted TMDB match for '{title}' with ±1 year tolerance: "
+                                f"expected {year}, got {result_year}"
+                            )
+
+                tmdb_id = tmdb_result["id"]
+
+                # Check if movie already exists in DB by tmdb_id
                 result = await session.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
                 existing_movie = result.scalar_one_or_none()
 
@@ -79,7 +116,7 @@ async def process_single_movie(
                 else:
                     new_movie = await movie_service.ingest_movie(
                         tmdb_id=tmdb_id,
-                        letterboxd_uri=movie_data.get("letterboxd_uri"),
+                        letterboxd_uri=letterboxd_uri,
                         skip_qdrant=True
                     )
                     await session.commit()
@@ -88,7 +125,7 @@ async def process_single_movie(
                 await movie_service.close()
 
     except Exception as e:
-        logger.error(f"Error processing movie {movie_data.get('title')}: {e}")
+        logger.error(f"Error processing movie {title}: {e}")
         return None, False
 
 

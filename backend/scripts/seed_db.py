@@ -186,7 +186,7 @@ class DatabaseSeeder:
         
         # Close connections
         await self.tmdb.aclose()
-        await self.omdb.aclose()
+        await self.omdb.close()
 
     async def prepare_movie_batch_item(self, movie_data: Dict, db):
         """

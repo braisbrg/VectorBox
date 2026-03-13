@@ -72,11 +72,6 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
 
     const bottomItems = [
         {
-            id: "users",
-            label: t("sidebar.users"),
-            icon: Users,
-        },
-        {
             id: "settings",
             label: t("sidebar.settings"),
             icon: Settings,

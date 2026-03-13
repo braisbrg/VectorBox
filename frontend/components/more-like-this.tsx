@@ -5,7 +5,7 @@ import { Search, Loader2, Film } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
-import { getTMDBImageUrl } from "@/lib/api";
+import { getTMDBImageUrl, api } from "@/lib/api";
 import { MovieCard } from "@/components/ui/movie-card";
 
 interface MoreLikeThisProps {
@@ -47,12 +47,8 @@ export function MoreLikeThis({ userId }: MoreLikeThisProps) {
     // Search for a movie
     const searchMutation = useMutation({
         mutationFn: async (query: string) => {
-            const res = await fetch(
-                `${process.env.NEXT_PUBLIC_API_URL}/api/search/movies?query=${encodeURIComponent(query)}`,
-                { method: "GET" }
-            );
-            if (!res.ok) throw new Error("Search failed");
-            return res.json();
+            const res = await api.get(`/api/search/movies?query=${encodeURIComponent(query)}`);
+            return res.data;
         },
         onSuccess: (data) => {
             const results = data.results || [];
@@ -65,12 +61,8 @@ export function MoreLikeThis({ userId }: MoreLikeThisProps) {
     // Get similar movies
     const similarMutation = useMutation({
         mutationFn: async (tmdbId: number) => {
-            const res = await fetch(
-                `${process.env.NEXT_PUBLIC_API_URL}/api/recommendations/similar/${tmdbId}?user_id=${userId}&limit=12`,
-                { method: "GET" }
-            );
-            if (!res.ok) throw new Error("Failed to get recommendations");
-            return res.json();
+            const res = await api.get(`/api/recommendations/similar/${tmdbId}?limit=12`);
+            return res.data;
         },
         onSuccess: (data) => {
             // Deduplicate recommendations just in case
