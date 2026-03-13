@@ -3,7 +3,7 @@
 > **Role:** Lead Software Architect Handover
 > **Target Audience:** CTO / Senior Developers
 > **Version:** 1.3.0 (Gold Master)
-> **Last Updated:** 2026-03-11
+> **Last Updated:** 2026-03-13
 
 This document serves as the absolute source of truth for the **VectorBox** (internal codename: *LetterboxRecommender* / *CineMatch*) project. It documents the existing state of the codebase, detailing architecture, algorithms, and logical flows.
 
@@ -145,8 +145,10 @@ A natural language search interface powered by `nlp_search.py` with a 3-Tier Cas
 
 ### D. Sync System
 - **RSS Sync:** `RSSService` pulls `letterboxd.com/{letterboxd_username}/rss`. Uses linked Letterboxd profile (v1.1).
+- **Frontend Trigger:** Settings page exposes a "Sync Letterboxd Now" button (via `useMutation` + `syncRSS()`) that triggers `POST /api/rss/sync/{username}`. Hidden if no Letterboxd profile is linked.
 - **Phantom Check:** Detects if a movie on a given `watched_date` in DB matches the RSS feed. If not (and it's a "phantom" duplicate often caused by bad TMDB matching), it deletes it.
 - **Match Strategy:** 1. TMDB ID (if present in RSS) -> 2. Letterboxd URI -> 3. Title + Year match.
+- **URI Normalization:** `CSVParser.normalize_letterboxd_uri()` converts user-profile and non-canonical URIs to `https://letterboxd.com/film/{slug}/`. Rejects short URLs (`boxd.it`) and TMDB redirect URLs — stores `None` instead of garbage.
 
 ### E. Background Tasks & Progress (v1.1)
 - **TaskStore:** Redis-based progress tracking for long-running operations.
@@ -269,7 +271,7 @@ The frontend (`next.config.js`) enforces:
   - `nlp_search.py`: "Magic Box" LLM logic using Groq+Instructor.
   - `rss_service.py`: Sync logic for Letterboxd RSS feeds.
 - **`models/`**: SQLAlchemy (`database.py`) and Pydantic (`schemas.py`, `external_schemas.py`) definitions.
-- **`scripts/`**: Maintenance tasks (`seed_db.py`, `enrich_vectors.py`, `popular_scraper.py`, `reset_profiles.py`, `test_magic_box.py`, `verify_feed_parallelism.py`, `test_idor_hidden_gems.py`, `test_trident_math.py`).
+- **`scripts/`**: Maintenance tasks (`seed_db.py`, `enrich_vectors.py`, `popular_scraper.py`, `reset_profiles.py`, `test_magic_box.py`, `verify_feed_parallelism.py`, `test_idor_hidden_gems.py`, `test_trident_math.py`, `reconcile_letterboxd_movies.py`, `fix_movies_manual.py`).
 
 ### Frontend (`/frontend`)
 - **`app/`**: Next.js App Router pages (`page.tsx` for feed).
@@ -331,5 +333,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-03-11 (Gold Master / QA Certified)
+**Last Updated:** 2026-03-13 (Gold Master / QA Certified)
 **Maintained By:** VectorBox Team

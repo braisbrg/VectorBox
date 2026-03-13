@@ -4,7 +4,8 @@ Security: File validation, size limits, sanitization
 """
 import pandas as pd
 import io
-from typing import List, Dict, Tuple
+import re
+from typing import List, Dict, Optional, Tuple
 from fastapi import UploadFile, HTTPException
 import logging
 from datetime import datetime
@@ -22,6 +23,43 @@ class CSVParser:
     # Expected columns for validation
     RATINGS_COLUMNS = {"Name", "Year", "Letterboxd URI"}
     WATCHED_COLUMNS = {"Name", "Year", "Letterboxd URI"}
+
+    # Regex: matches /username/film/slug/ or /film/slug/
+    _FILM_SLUG_RE = re.compile(
+        r"letterboxd\.com/(?:[^/]+/)?film/([^/]+)/?$"
+    )
+
+    @staticmethod
+    def normalize_letterboxd_uri(uri: str) -> Optional[str]:
+        """
+        Normalize a Letterboxd URI to canonical film URL format.
+        Returns None if the URI cannot be normalized to a canonical film URL.
+
+        Examples:
+            letterboxd.com/braisbg/film/black-dog-2024/ → letterboxd.com/film/black-dog-2024/
+            letterboxd.com/film/black-dog-2024/         → letterboxd.com/film/black-dog-2024/ (unchanged)
+            boxd.it/KFnQ                                → None (short URL, cannot resolve)
+            letterboxd.com/tmdb/1245728                 → None (TMDB redirect, no slug)
+        """
+        if not uri:
+            return None
+        uri = uri.strip()
+
+        # Reject short URLs
+        if "boxd.it/" in uri:
+            return None
+
+        # Reject TMDB redirect URLs
+        if "/tmdb/" in uri:
+            return None
+
+        # Try to extract slug from /film/ path
+        match = CSVParser._FILM_SLUG_RE.search(uri)
+        if match:
+            slug = match.group(1)
+            return f"https://letterboxd.com/film/{slug}/"
+
+        return None
     
     @staticmethod
     async def validate_file(file: UploadFile) -> bytes:
@@ -130,7 +168,7 @@ class CSVParser:
                     movies.append({
                         "title": title,
                         "year": year,
-                        "letterboxd_uri": letterboxd_uri,
+                        "letterboxd_uri": CSVParser.normalize_letterboxd_uri(letterboxd_uri),
                         "rating": rating,
                         "watched_date": watched_date,
                         "review": review
@@ -202,7 +240,7 @@ class CSVParser:
                     movies.append({
                         "title": title,
                         "year": year,
-                        "letterboxd_uri": letterboxd_uri,
+                        "letterboxd_uri": CSVParser.normalize_letterboxd_uri(letterboxd_uri),
                         "watched_date": watched_date
                     })
                     

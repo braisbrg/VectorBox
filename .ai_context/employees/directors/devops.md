@@ -2,7 +2,7 @@
 
 > **Role:** DevOps & Infrastructure Lead
 > **Domain:** Containerization, Security, Maintenance Scripts
-> **Last Updated:** 2026-03-11
+> **Last Updated:** 2026-03-13
 
 This file contains all DevOps rules, security protocols, Docker configuration, and the complete scripts inventory for the VectorBox project.
 
@@ -159,6 +159,8 @@ Located in `backend/scripts/`. Run via Docker execution.
 | **`backup_manager.py`** | **Disaster Recovery.** Creates snapshot of Postgres, Qdrant, and Redis, zips them, and implements 5-file rotation. | `docker-compose exec backend python scripts/backup_manager.py` |
 | **`models_cache`** | **Persistence.** Persistent volume for SentenceTransformer models. | `volume: models_cache` |
 | **`restore_manager.py`** | **Disaster Recovery.** Previews (`--dry-run`) or securely executes automated teardown and recreation of the database layer from archived ZIPs. | `docker-compose exec backend python scripts/restore_manager.py /app/backups/[file].zip` |
+| **`reconcile_letterboxd_movies.py`** | **Data Reconciliation.** Audits movies with `letterboxd_uri`, verifies `tmdb_id` against TMDB search, and optionally fixes mismatches with `--fix`. | `docker-compose exec backend python scripts/reconcile_letterboxd_movies.py [--fix]` |
+| **`fix_movies_manual.py`** | **Manual Corrections.** Reads a CSV of `letterboxd_uri,correct_tmdb_id,old_tmdb_id` corrections and applies them. Supports `--dry-run` and `--file`. | `docker-compose exec backend python scripts/fix_movies_manual.py [--dry-run]` |
 
 ### 📦 Frontend Utility Scripts
 
@@ -218,6 +220,12 @@ docker scout quickview vectorbox-backend
 ### Privacy Rule (CSV Import)
 > [!WARNING]
 > The `email` column must be dropped from memory **immediately** after parsing, before any DB insertion.
+
+### Letterboxd URI Normalization
+> [!IMPORTANT]
+> All `letterboxd_uri` values MUST be canonical format: `https://letterboxd.com/film/{slug}/`
+
+**Implementation:** `CSVParser.normalize_letterboxd_uri()` automatically converts user-profile URLs to canonical form and rejects short URLs (`boxd.it`) and TMDB redirects (`/tmdb/...`), storing `None` instead.
 
 ---
 

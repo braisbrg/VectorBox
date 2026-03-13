@@ -1,17 +1,38 @@
 "use client";
 
 import Link from "next/link";
-import { useTheme } from "next-themes";
-import { Moon, Sun, Monitor } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState, useEffect } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { Loader2, RefreshCw } from "lucide-react";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
 import { Switch } from "@/components/ui/switch";
+import { syncRSS } from "@/lib/api";
 
 export function SettingsView() {
-    const { theme: currentTheme, setTheme } = useTheme();
     const { t } = useLanguage();
     const { settings, updateSettings, mounted } = useSettings();
+    const [letterboxdUsername, setLetterboxdUsername] = useState<string | null>(null);
+    const [syncMessage, setSyncMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+    useEffect(() => {
+        try {
+            const user = JSON.parse(localStorage.getItem("vectorbox_user") || "{}");
+            setLetterboxdUsername(user?.letterboxd_username ?? null);
+        } catch {
+            setLetterboxdUsername(null);
+        }
+    }, []);
+
+    const syncMutation = useMutation({
+        mutationFn: (username: string) => syncRSS(username),
+        onSuccess: () => {
+            setSyncMessage({ type: "success", text: "Sync started — your feed will update shortly" });
+        },
+        onError: (error: Error) => {
+            setSyncMessage({ type: "error", text: error.message || "Sync failed. Please try again." });
+        },
+    });
 
     if (!mounted) {
         return null;
@@ -23,57 +44,6 @@ export function SettingsView() {
             <p className="text-muted-foreground mb-6">{t("settings.subtitle")}</p>
 
             <div className="space-y-6">
-                {/* Theme Selection */}
-                <div className="p-4 border rounded-lg">
-                    <div className="flex items-center justify-between mb-4">
-                        <div>
-                            <h3 className="font-medium">{t("settings.theme.title")}</h3>
-                            <p className="text-sm text-muted-foreground">{t("settings.theme.subtitle")}</p>
-                        </div>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-3">
-                        <button
-                            onClick={() => setTheme("light")}
-                            className={`flex flex-col items-center gap-2 p-4 border-2 rounded-lg transition-all ${currentTheme === "light"
-                                ? "border-primary bg-primary/10"
-                                : "border-border hover:border-primary/50"
-                                }`}
-                        >
-                            <Sun className="w-6 h-6" />
-                            <span className="text-sm font-medium">{t("settings.theme.light")}</span>
-                        </button>
-
-                        <button
-                            onClick={() => setTheme("dark")}
-                            className={`flex flex-col items-center gap-2 p-4 border-2 rounded-lg transition-all ${currentTheme === "dark"
-                                ? "border-primary bg-primary/10"
-                                : "border-border hover:border-primary/50"
-                                }`}
-                        >
-                            <Moon className="w-6 h-6" />
-                            <span className="text-sm font-medium">{t("settings.theme.dark")}</span>
-                        </button>
-
-                        <button
-                            onClick={() => setTheme("system")}
-                            className={`flex flex-col items-center gap-2 p-4 border-2 rounded-lg transition-all ${currentTheme === "system"
-                                ? "border-primary bg-primary/10"
-                                : "border-border hover:border-primary/50"
-                                }`}
-                        >
-                            <Monitor className="w-6 h-6" />
-                            <span className="text-sm font-medium">{t("settings.theme.system")}</span>
-                        </button>
-                    </div>
-
-                    <p className="text-xs text-muted-foreground mt-3">
-                        {currentTheme === "system"
-                            ? t("settings.theme.system_desc")
-                            : t("settings.theme.current").replace("{theme}", currentTheme || "system")}
-                    </p>
-                </div>
-
                 {/* Quality Settings */}
                 <div className="p-4 border rounded-lg space-y-4">
                     <div className="flex items-center justify-between">
@@ -87,6 +57,38 @@ export function SettingsView() {
                         />
                     </div>
                 </div>
+
+                {/* Letterboxd Sync */}
+                {letterboxdUsername && (
+                    <div className="p-4 border border-primary/30 rounded-lg space-y-3">
+                        <div className="flex items-center justify-between">
+                            <div className="space-y-0.5">
+                                <h3 className="font-medium text-zinc-200">Letterboxd Sync</h3>
+                                <p className="text-xs text-zinc-500">
+                                    Sync your latest ratings and watchlist from <span className="text-primary">{letterboxdUsername}</span>
+                                </p>
+                            </div>
+                            <button
+                                onClick={() => syncMutation.mutate(letterboxdUsername)}
+                                disabled={syncMutation.isPending}
+                                className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary/30 text-sm font-medium text-primary hover:bg-primary/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {syncMutation.isPending ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                ) : (
+                                    <RefreshCw className="w-4 h-4" />
+                                )}
+                                Sync Letterboxd Now
+                            </button>
+                        </div>
+
+                        {syncMessage && (
+                            <p className={`text-sm ${syncMessage.type === "success" ? "text-primary" : "text-red-500"}`}>
+                                {syncMessage.text}
+                            </p>
+                        )}
+                    </div>
+                )}
 
                 {/* About Section */}
                 <div className="p-4 border rounded-lg bg-muted/30">

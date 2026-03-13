@@ -434,21 +434,27 @@ export function MovieCard({
     // Use programmatic navigation if href is present to avoid nested interactive elements (buttons)
     if (href) {
         return (
-            <div
-                onClick={() => router.push(href)}
-                className="block h-full cursor-pointer"
-                role="link"
-                tabIndex={0}
+            <a
+                href={href}
+                onClick={(e) => {
+                    // Solo interceptar click izquierdo normal (no middle, no ctrl+click)
+                    if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+                        e.preventDefault();
+                        router.push(href);
+                    }
+                }}
                 onKeyDown={(e) => {
-                    if (e.target !== e.currentTarget) return; // Prevent children (buttons) from triggering parent's click on Enter
+                    if (e.target !== e.currentTarget) return;
                     if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         router.push(href);
                     }
                 }}
+                className="block h-full cursor-pointer"
+                tabIndex={0}
             >
                 {content}
-            </div>
+            </a>
         );
     }
 

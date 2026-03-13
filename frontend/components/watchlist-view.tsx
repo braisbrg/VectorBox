@@ -4,8 +4,7 @@ import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Loader2, Filter, X, SortAsc, Tv } from "lucide-react";
-import Image from "next/image";
-import { getTMDBImageUrl, type FeedItem } from "@/lib/api";
+import { getTMDBImageUrl, type FeedItem, getWatchlist, getUserActivity } from "@/lib/api";
 import { getProvidersForCountry } from "@/lib/constants";
 import { MovieCard } from "@/components/ui/movie-card";
 
@@ -16,22 +15,59 @@ interface WatchlistViewProps {
     streamingProviders?: number[];
 }
 
-import { getUserActivity } from "@/lib/api";
+const WATCHLIST_FILTERS_KEY = "watchlist_filters";
+
+interface WatchlistFilters {
+    runtimeMax?: number;
+    runtimeMin?: number;
+    yearMin?: number;
+    yearMax?: number;
+    genre?: string;
+    sortBy: "date_added" | "title" | "rating";
+    streaming: number[];
+    minRating?: number;
+}
+
+const getPersistedFilters = (): Partial<WatchlistFilters> | null => {
+    try {
+        const saved = localStorage.getItem(WATCHLIST_FILTERS_KEY);
+        if (saved) return JSON.parse(saved);
+    } catch { }
+    return null;
+};
 
 export function WatchlistView({ userId, username, countryCode = "ES", streamingProviders = [] }: WatchlistViewProps) {
     const [showFilters, setShowFilters] = useState(false);
     const [page, setPage] = useState(1);
     const LIMIT = 20;
-    const [filters, setFilters] = useState({
-        runtimeMax: undefined as number | undefined,
-        runtimeMin: undefined as number | undefined,
-        yearMin: undefined as number | undefined,
-        yearMax: undefined as number | undefined,
-        genre: undefined as string | undefined,
-        sortBy: "date_added" as "date_added" | "title" | "rating",
-        streaming: streamingProviders,
-        minRating: undefined as number | undefined,
+    const [filters, setFilters] = useState<WatchlistFilters>(() => {
+        const persisted = getPersistedFilters();
+        const base: WatchlistFilters = {
+            runtimeMax: undefined,
+            runtimeMin: undefined,
+            yearMin: undefined,
+            yearMax: undefined,
+            genre: undefined,
+            sortBy: "date_added",
+            streaming: streamingProviders,
+            minRating: undefined,
+            ...persisted,
+        };
+        // streaming always from prop, never from localStorage
+        base.streaming = streamingProviders;
+        return base;
     });
+
+    const updateFilters = (updates: Partial<typeof filters>) => {
+        setFilters(prev => {
+            const next = { ...prev, ...updates };
+            // Persist only preference filters (not streaming which comes from props)
+            const { streaming, ...toPersist } = next;
+            localStorage.setItem(WATCHLIST_FILTERS_KEY, JSON.stringify(toPersist));
+            return next;
+        });
+        setPage(1);
+    };
 
     const { data: activity } = useQuery({
         queryKey: ["user-activity", username],
@@ -52,29 +88,23 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
 
     const { data, isLoading, error } = useQuery({
         queryKey: ["watchlist", userId, debouncedFilters, countryCode, page],
-        queryFn: async () => {
-            const params = new URLSearchParams({
-                country_code: countryCode,
+        queryFn: () => getWatchlist(
+            page,
+            LIMIT,
+            countryCode,
+            {
                 sort_by: debouncedFilters.sortBy,
-                page: page.toString(),
-                limit: LIMIT.toString(),
-            });
-
-            if (debouncedFilters.runtimeMax) params.set("runtime_max", debouncedFilters.runtimeMax.toString());
-            if (debouncedFilters.runtimeMin) params.set("runtime_min", debouncedFilters.runtimeMin.toString());
-            if (debouncedFilters.yearMin) params.set("year_min", debouncedFilters.yearMin.toString());
-            if (debouncedFilters.yearMax) params.set("year_max", debouncedFilters.yearMax.toString());
-            if (debouncedFilters.genre) params.set("genres", debouncedFilters.genre);
-            if (debouncedFilters.minRating) params.set("min_rating", debouncedFilters.minRating.toString());
-            if (debouncedFilters.streaming.length > 0) params.set("streaming_providers", debouncedFilters.streaming.join(","));
-
-            const response = await fetch(
-                `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/api/recommendations/watchlist?${params}`
-            );
-
-            if (!response.ok) throw new Error("Failed to fetch watchlist");
-            return response.json() as Promise<{ items: FeedItem[]; total: number }>;
-        },
+                runtime_min: debouncedFilters.runtimeMin,
+                runtime_max: debouncedFilters.runtimeMax,
+                year_min: debouncedFilters.yearMin,
+                year_max: debouncedFilters.yearMax,
+                genres: debouncedFilters.genre,
+                min_rating: debouncedFilters.minRating,
+                streaming_providers: debouncedFilters.streaming.length > 0
+                    ? debouncedFilters.streaming.join(",")
+                    : undefined,
+            }
+        ),
     });
 
     if (isLoading) {
@@ -143,7 +173,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                             <select
                                 className="w-full px-3 py-2 rounded-md border bg-background"
                                 value={filters.sortBy}
-                                onChange={(e) => setFilters((prev) => ({ ...prev, sortBy: e.target.value as any }))}
+                                onChange={(e) => updateFilters({ sortBy: e.target.value as any })}
                             >
                                 <option value="date_added">Date Added</option>
                                 <option value="title">Title</option>
@@ -165,7 +195,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                 className="w-full"
                                 value={filters.runtimeMax || 240}
                                 onChange={(e) =>
-                                    setFilters((prev) => ({ ...prev, runtimeMax: parseInt(e.target.value) }))
+                                    updateFilters({ runtimeMax: parseInt(e.target.value) })
                                 }
                             />
                         </div>
@@ -178,7 +208,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                 placeholder="1980"
                                 className="w-full px-3 py-2 rounded-md border bg-background"
                                 value={filters.yearMin || ""}
-                                onChange={(e) => setFilters((prev) => ({ ...prev, yearMin: e.target.value ? parseInt(e.target.value) : undefined }))}
+                                onChange={(e) => updateFilters({ yearMin: e.target.value ? parseInt(e.target.value) : undefined })}
                             />
                         </div>
 
@@ -190,7 +220,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                 placeholder="2024"
                                 className="w-full px-3 py-2 rounded-md border bg-background"
                                 value={filters.yearMax || ""}
-                                onChange={(e) => setFilters((prev) => ({ ...prev, yearMax: e.target.value ? parseInt(e.target.value) : undefined }))}
+                                onChange={(e) => updateFilters({ yearMax: e.target.value ? parseInt(e.target.value) : undefined })}
                             />
                         </div>
                     </div>
@@ -208,7 +238,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                             step="5"
                             className="w-full accent-primary"
                             value={filters.minRating || 0}
-                            onChange={(e) => setFilters(prev => ({ ...prev, minRating: parseFloat(e.target.value) || undefined }))}
+                            onChange={(e) => updateFilters({ minRating: parseFloat(e.target.value) || undefined })}
                         />
                     </div>
                 </motion.div>
@@ -225,12 +255,10 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                         <button
                             key={provider.id}
                             onClick={() => {
-                                setFilters((prev) => ({
-                                    ...prev,
-                                    streaming: prev.streaming.includes(provider.id)
-                                        ? prev.streaming.filter((id) => id !== provider.id)
-                                        : [...prev.streaming, provider.id],
-                                }));
+                                const newStreaming = filters.streaming.includes(provider.id)
+                                    ? filters.streaming.filter((id) => id !== provider.id)
+                                    : [...filters.streaming, provider.id];
+                                updateFilters({ streaming: newStreaming });
                             }}
                             className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${filters.streaming.includes(provider.id) ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
                                 }`}
@@ -244,7 +272,8 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
             {/* Clear */}
             {(filters.runtimeMax || filters.yearMin || filters.yearMax || filters.streaming.length > 0) && (
                 <button
-                    onClick={() =>
+                    onClick={() => {
+                        localStorage.removeItem(WATCHLIST_FILTERS_KEY);
                         setFilters({
                             runtimeMax: undefined,
                             runtimeMin: undefined,
@@ -254,8 +283,9 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                             minRating: undefined,
                             sortBy: "date_added",
                             streaming: [],
-                        })
-                    }
+                        });
+                        setPage(1);
+                    }}
                     className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1"
                 >
                     <X className="w-3 h-3" />

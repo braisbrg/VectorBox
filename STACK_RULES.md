@@ -185,6 +185,12 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
     -   **Purpose:** Fetching "Popular on Letterboxd" identifiers without full browser automation.
 4.  **Trending Cache:** Redis-cached "Popular on Letterboxd" identifiers.
 
+### Letterboxd URI Normalization
+- **Rule:** All `letterboxd_uri` values stored in DB MUST be canonical format: `https://letterboxd.com/film/{slug}/`
+- **Implementation:** `CSVParser.normalize_letterboxd_uri()` in `csv_parser.py` handles this automatically.
+- **Rejected formats:** Short URLs (`boxd.it/...`) and TMDB redirects (`/tmdb/...`) → stored as `None`.
+- **Converted formats:** User-profile URLs (`/username/film/slug/`) → canonical (`/film/slug/`).
+
 ## 7. Validation & Quality Assurance (v1.2)
 
 ### Automated QA
@@ -228,5 +234,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-03-11
+**Last Updated:** 2026-03-13
 **Maintained By:** VectorBox Team

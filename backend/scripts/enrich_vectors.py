@@ -50,7 +50,7 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
         for m in all_movies:
             if missing_only:
                 # Check keywords, directors, OR cast
-                if not m.keywords or not m.directors or not m.cast:
+                if m.keywords is None or m.directors is None or m.cast is None:
                     candidates.append(m)
             else:
                 candidates.append(m)
@@ -74,8 +74,8 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
                 db_updated = False
                 
                 # Check what is missing
-                needs_keywords = not movie.keywords or not missing_only
-                needs_credits = not movie.directors or not movie.cast or not missing_only
+                needs_keywords = movie.keywords is None or not missing_only
+                needs_credits = movie.directors is None or movie.cast is None or not missing_only
                 
                 fetched_details = None
                 
