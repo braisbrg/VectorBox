@@ -174,6 +174,7 @@ Rules:
 - `restore_manager.py`: Orchestrates full system restoration from ZIP. Supports `--dry-run`.
 - `reconcile_letterboxd_movies.py`: Audits `letterboxd_uri` movies, verifies `tmdb_id` via TMDB search. `--fix` re-ingests and migrates ratings.
 - `fix_movies_manual.py`: Applies manual CSV corrections (`letterboxd_uri,correct_tmdb_id,old_tmdb_id`). Supports `--dry-run` and `--file`.
+- `reenrich_movies.py`: Targets scored movies missing IMDb data and re-runs enrichment.
 - Host wrappers: `backup.ps1` / `backup.sh` for easy CLI access.
 
 When comparing against seen_ids:    always use m.tmdb_id

@@ -28,144 +28,102 @@ class SyncResponse(BaseModel):
 class GroupVibeRequest(BaseModel):
     usernames: List[str]
 
+async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
+    """Background task — owns its own session. Never re-raises."""
+    from config import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        try:
+            rss_service = RSSService(db)
+            await rss_service.sync_user_rss(letterboxd_profile, user_id)
+
+            scraper = ScraperService()
+            tmdb = TMDBClient()
+            movie_service = MovieService(db)
+            watchlist_added = 0
+
+            try:
+                watchlist_items = await scraper.scrape_watchlist_recent(letterboxd_profile)
+
+                for item in watchlist_items:
+                    film_slug = item["film_slug"]
+                    film_year = item.get("year")
+
+                    tmdb_id = await scraper.get_tmdb_id(film_slug)
+                    if tmdb_id:
+                        logger.info(f"Found authoritative TMDB ID {tmdb_id} for {film_slug}")
+                    else:
+                        logger.info(f"No ID found on page for {film_slug}. Fallback to search...")
+                        params = {"query": film_slug.replace("-", " ")}
+                        if film_year:
+                            params["year"] = film_year
+                        tmdb_results = await tmdb._make_request("/search/movie", params)
+                        if tmdb_results and tmdb_results.get("results"):
+                            top_match = tmdb_results["results"][0]
+                            tmdb_id = top_match["id"]
+                            logger.info(f"Found fuzzy match: {top_match['title']} (ID: {tmdb_id})")
+
+                    if not tmdb_id:
+                        continue
+
+                    movie = await movie_service.get_or_create_movie(
+                        tmdb_id=tmdb_id,
+                        letterboxd_uri=f"https://letterboxd.com/film/{film_slug}/"
+                    )
+
+                    if not movie:
+                        continue
+
+                    # Year check only for fuzzy matches
+                    scraped_id = await scraper.get_tmdb_id(film_slug)
+                    if not scraped_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
+                        logger.warning(f"Year mismatch for {film_slug}: {film_year} vs {movie.year}. Skipping.")
+                        continue
+
+                    rating_stmt = select(UserRating).where(
+                        UserRating.user_id == user_id,
+                        UserRating.movie_id == movie.id
+                    )
+                    existing = (await db.execute(rating_stmt)).scalars().first()
+                    if existing:
+                        if not existing.is_watchlist:
+                            existing.is_watchlist = True
+                            watchlist_added += 1
+                    else:
+                        db.add(UserRating(user_id=user_id, movie_id=movie.id, is_watchlist=True))
+                        watchlist_added += 1
+
+            finally:
+                await scraper.close()
+                await tmdb.aclose()
+
+            await db.commit()
+            logger.info(f"Background sync complete for user_id={user_id}. Watchlist added: {watchlist_added}")
+
+        except Exception as e:
+            logger.error(f"Background sync failed for user_id={user_id}: {e}")
+
+
 @router.post("/sync/{username}", response_model=SyncResponse)
 async def sync_user_data(
-    username: str, 
+    username: str,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db)
 ):
-    """
-    Syncs user data from Letterboxd:
-    1. RSS Feed (Diary/Reviews) - For watched history and ratings.
-    2. Watchlist Scraping (Light) - For recent watchlist additions.
-    
-    Note: username is the VectorBox username. Data is fetched from the linked letterboxd_username.
-    """
-    try:
-        # Verify user exists
-        logger.info(f"Sync requested for user: {username}")
-        
-        stmt = select(User).where(User.username == username)
-        result = await db.execute(stmt)
-        user = result.scalar_one_or_none()
-        
-        if not user:
-            # Auto-create user if not exists (for convenience)
-            user = User(username=username, letterboxd_username=username)  # Default: same as VectorBox username
-            db.add(user)
-            await db.flush()
-        
-        # Determine which Letterboxd profile to use for data fetching
-        letterboxd_profile = user.letterboxd_username or username
-        logger.info(f"Using Letterboxd profile '{letterboxd_profile}' for user '{username}'")
-        
-        # 1. RSS Sync (Uses letterboxd_username)
-        rss_service = RSSService(db)
-        rss_result = await rss_service.sync_user_rss(letterboxd_profile, user.id)
-        
-        # 2. Watchlist Sync (Uses letterboxd_username)
-        scraper = ScraperService()
-        import asyncio
-        loop = asyncio.get_running_loop()
-        
-        watchlist_items = await scraper.scrape_watchlist_recent(letterboxd_profile)
+    stmt = select(User).where(User.username == username)
+    result = await db.execute(stmt)
+    user = result.scalar_one_or_none()
 
-        tmdb = TMDBClient()
-        movie_service = MovieService(db)
-        
-        watchlist_added = 0
-        
-        for item in watchlist_items:
-            film_slug = item["film_slug"]
-            film_year = item.get("year")
-            search_query = film_slug.replace("-", " ")
-            
-            # 1. Try to get authoritative TMDB ID from Letterboxd page
-            # Run in executor because it uses requests.get (blocking)
-            tmdb_id = await scraper.get_tmdb_id(film_slug)
-            
-            if tmdb_id:
-                logger.info(f"Found authoritative TMDB ID {tmdb_id} for {film_slug}")
-            else:
-                # 2. Fallback to Search TMDB (Fuzzy)
-                logger.info(f"No ID found on page for {film_slug}. Fallback to search...")
-                params = {"query": search_query}
-                if film_year:
-                    params["year"] = film_year
-                
-                tmdb_results = await tmdb._make_request("/search/movie", params)
-                
-                if tmdb_results and tmdb_results.get("results"):
-                    top_match = tmdb_results["results"][0]
-                    tmdb_id = top_match["id"]
-                    logger.info(f"Found fuzzy match: {top_match['title']} (ID: {tmdb_id})")
-            
-            if tmdb_id:
-                # Use MovieService to get or create (with full enrichment)
-                movie = await movie_service.get_or_create_movie(
-                    tmdb_id=tmdb_id, 
-                    letterboxd_uri=f"https://letterboxd.com/film/{film_slug}/"
-                )
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-                # Strict Year Check (Only if we did a fuzzy search)
-                # If we got the ID from Letterboxd directly, we trust it 100%
-                scraped_id = await scraper.get_tmdb_id(film_slug)
-                if not scraped_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
-                    logger.warning(f"Year mismatch for {film_slug}: Scraped {film_year} vs DB {movie.year}. Skipping.")
-                    continue
+    letterboxd_profile = user.letterboxd_username or username
+    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile)
 
-                # Add to User Watchlist (Using UserRating table)
-                if movie:
-                    # Check if rating entry exists
-                    rating_stmt = select(UserRating).where(
-                        UserRating.user_id == user.id,
-                        UserRating.movie_id == movie.id
-                    )
-                    existing_rating = await db.execute(rating_stmt)
-                    rating_entry = existing_rating.scalars().first()
-                    
-                    if rating_entry:
-                        # Update existing entry if not already in watchlist
-                        if not rating_entry.is_watchlist:
-                            rating_entry.is_watchlist = True
-                            watchlist_added += 1
-                            logger.info(f"Updated existing rating to watchlist: {movie.title}")
-                        else:
-                            logger.info(f"Already in watchlist: {movie.title}")
-                    else:
-                        # Create new entry
-                        new_rating = UserRating(
-                            user_id=user.id,
-                            movie_id=movie.id,
-                            is_watchlist=True
-                        )
-                        db.add(new_rating)
-                        watchlist_added += 1
-                        logger.info(f"Added new watchlist item: {movie.title}")
-        
-        try:
-            await db.commit()
-        except Exception as e:
-            await db.rollback()
-            logger.error(f"DB commit failed during sync_user_data: {e}")
-            raise
-        await tmdb.aclose()
-        
-        return {
-            "status": "success",
-            "stats": {
-                "rss_new_movies": rss_result.get("new_movies", 0),
-                "rss_new_ratings": rss_result.get("new_ratings", 0),
-                "rss_updated_ratings": rss_result.get("updated_ratings", 0),
-                "rss_errors": rss_result.get("errors", 0),
-                "watchlist_added": watchlist_added
-            },
-            "message": f"Synced. Watchlist added: {watchlist_added}"
-        }
-
-    except Exception as e:
-        logger.error(f"Sync failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "status": "started",
+        "stats": {},
+        "message": f"Sync started for {letterboxd_profile}"
+    }
 
 @router.post("/group/vibe")
 async def get_group_recommendations(

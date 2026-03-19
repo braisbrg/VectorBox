@@ -13,7 +13,8 @@ backend_dir = os.path.dirname(current_dir)
 sys.path.append(backend_dir)
 
 from config import AsyncSessionLocal
-from models.database import UserCluster
+from models.database import UserCluster, User, UserRating
+from services.clustering_service import ClusteringService
 
 # Configure logging
 logging.basicConfig(
@@ -22,7 +23,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("reset_profiles")
 
-async def reset_profiles(force: bool = False):
+async def reset_profiles(force: bool = False, reanalyze: bool = False):
     """
     Resets all computed user profile data (Clusters) and clears the application cache.
     This forces a re-analysis of all users' tastes on their next visit.
@@ -80,7 +81,29 @@ async def reset_profiles(force: bool = False):
         # Don't fail the whole script if Redis fails, DB is more important here
 
     logger.info("🎉 User Profile Reset Complete!")
-    logger.info("Next user request will trigger fresh Cluster Generation with Enriched Vectors.")
+
+    if reanalyze:
+        logger.info("Starting Re-analysis of all user profiles...")
+        clustering = ClusteringService()
+        async with AsyncSessionLocal() as db:
+            # Get all users who have ratings
+            stmt = select(User.id).join(UserRating, User.id == UserRating.user_id).distinct()
+            result = await db.execute(stmt)
+            user_ids = result.scalars().all()
+            
+            logger.info(f"Triggering clustering for {len(user_ids)} users...")
+            for uid in user_ids:
+                try:
+                    logger.info(f"Re-clustering User {uid}...")
+                    # create_user_clusters handles its own commit/rollback
+                    await clustering.create_user_clusters(uid, db)
+                    logger.info(f"✅ User {uid} re-analyzed.")
+                except Exception as e:
+                    logger.error(f"❌ Failed to re-analyze user {uid}: {e}")
+        
+        logger.info("🎉 Re-analysis Complete!")
+    else:
+        logger.info("Next user request will trigger fresh Cluster Generation with Enriched Vectors.")
 
 if __name__ == "__main__":
     if sys.platform == "win32":
@@ -88,6 +111,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Reset User Taste Profiles")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
+    parser.add_argument("--reanalyze", action="store_true", help="Immediately trigger re-analysis for all users")
     args = parser.parse_args()
     
-    asyncio.run(reset_profiles(force=args.force))
+    asyncio.run(reset_profiles(force=args.force, reanalyze=args.reanalyze))

@@ -136,7 +136,7 @@ class MovieService:
             logger.error(f"Failed to repair vector for {movie.title}: {e}")
             return False
 
-    async def enrich_movie(self, movie: Movie, skip_qdrant: bool = False) -> bool:
+    async def enrich_movie(self, movie: Movie, skip_qdrant: bool = False, force: bool = False) -> bool:
         """
         Ensures movie has keywords, OMDb data (VB Score), and a valid vector.
         Self-heals missing data.
@@ -151,8 +151,8 @@ class MovieService:
             changed = False
             details = None
 
-            # 1. Check OMDb / VectorBox Score (FIX: Solo reintenta si es None)
-            if movie.vectorbox_score is None:
+            # 1. Check OMDb / VectorBox Score (FIX: Solo reintenta si es None o falta IMDb)
+            if movie.vectorbox_score is None or movie.imdb_id is None or movie.imdb_rating is None or force:
                 logger.info(f"Enriching OMDb data for {movie.title}...")
                 details = await self.tmdb.get_movie_details(movie.tmdb_id)
                 if details and details.get("imdb_id"):

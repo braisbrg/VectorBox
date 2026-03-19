@@ -1,7 +1,7 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { X, LayoutList, Grid3x3, Calendar, Sparkles, Film, Users, Settings, User as UserIcon } from "lucide-react";
+import { X, LayoutList, Grid3x3, Calendar, Sparkles, Film, Users, Settings, User as UserIcon, LogOut } from "lucide-react";
 import { useMobileNav } from "@/components/mobile-nav-context";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
@@ -84,28 +84,43 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                         })}
                     </div>
 
-                    {/* Footer / User Select */}
+                    {/* Footer / User Profile */}
                     <div className="p-6 border-t border-white/10 space-y-6">
-                        {users && users.length > 0 && currentUserId && onUserSelect && (
-                            <div className="space-y-2">
-                                <label className="text-xs font-mono uppercase text-zinc-400 block text-center">
-                                    {t("sidebar.current_user")}
-                                </label>
-                                <div className="flex justify-center">
-                                    <div className="relative w-full max-w-[200px]">
-                                        <select
-                                            value={currentUserId}
-                                            onChange={(e) => onUserSelect(Number(e.target.value))}
-                                            className="w-full appearance-none bg-white/5 border border-white/20 text-white text-sm font-mono rounded-none py-3 pl-10 pr-4 focus:outline-none focus:border-primary text-center"
-                                        >
-                                            {users.map(u => (
-                                                <option key={u.id} value={u.id} className="bg-black text-white">
-                                                    {u.username}
-                                                </option>
-                                            ))}
-                                        </select>
-                                        <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-400 pointer-events-none" />
+                        {users && currentUserId && (
+                            <div className="space-y-4">
+                                <div className="flex flex-col items-center gap-2">
+                                    <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center border border-primary/50">
+                                        <UserIcon className="w-6 h-6 text-primary" />
                                     </div>
+                                    <span className="text-lg font-mono text-white uppercase tracking-widest">
+                                        {users.find(u => u.id === currentUserId)?.username || "User"}
+                                    </span>
+                                </div>
+                                
+                                <div className="grid grid-cols-2 gap-4">
+                                    <button
+                                        onClick={() => handleViewChange("profile")}
+                                        className="flex flex-col items-center gap-2 p-4 bg-white/5 border border-white/10 hover:border-primary transition-colors group"
+                                    >
+                                        <UserIcon className="w-5 h-5 group-hover:text-primary" />
+                                        <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 group-hover:text-white">
+                                            {t("sidebar.profile")}
+                                        </span>
+                                    </button>
+                                    
+                                    <button
+                                        onClick={async () => {
+                                            const { logout } = await import("@/lib/api");
+                                            await logout();
+                                            window.location.href = "/login";
+                                        }}
+                                        className="flex flex-col items-center gap-2 p-4 bg-white/5 border border-white/10 hover:border-red-500 transition-colors group"
+                                    >
+                                        <LogOut className="w-5 h-5 text-red-500 group-hover:text-red-400" />
+                                        <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 group-hover:text-white">
+                                            {t("app.logout")}
+                                        </span>
+                                    </button>
                                 </div>
                             </div>
                         )}

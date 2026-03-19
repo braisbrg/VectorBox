@@ -2,8 +2,8 @@
 
 > **Role:** Lead Software Architect Handover
 > **Target Audience:** CTO / Senior Developers
-> **Version:** 1.3.0 (Gold Master)
-> **Last Updated:** 2026-03-13
+> **Version:** 1.4.0 (Enhanced Metadata & UI)
+> **Last Updated:** 2026-03-19
 
 This document serves as the absolute source of truth for the **VectorBox** (internal codename: *LetterboxRecommender* / *CineMatch*) project. It documents the existing state of the codebase, detailing architecture, algorithms, and logical flows.
 
@@ -47,6 +47,7 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Mobile First:** Fully responsive grid and touch-optimized navigation overlay.
 - **UI UX/Effects:** Custom **"Tweak" System** (inspired by Magic UI / Aceternity concepts).
   - **Components:** `BorderBeam`, `SpotlightCard`, `ShimmerButton`, `GridPattern`.
+  - **Filter Visibility (v1.4):** Active filter indicators with descriptive labels and "Clear all" functionality in Watchlist.
   - **Error Handling:** Custom **Acid Design** 404/500 pages with glitch effects.
   - **Internationalization:** Full UI localization (EN/ES) via `next-intl` pattern.
   - **Location:** `frontend/components/tweak/`.
@@ -154,7 +155,9 @@ A natural language search interface powered by `nlp_search.py` with a 3-Tier Cas
 - **TaskStore:** Redis-based progress tracking for long-running operations.
 - **Endpoints:** `POST /upload/export` returns `task_id`, `GET /tasks/{task_id}` polls progress.
 - **Frontend:** `ProgressModal` component polls and displays real-time progress with step descriptions ("Enriching", "Clustering"). Replaces static success messages.
-- **Enrichment (v1.2):** `enrich_movie` self-healing logic now runs as a **Background Task** (FastAPI) to prevent blocking the main thread during recommendation generation.
+- **Enrichment (v1.4):** `enrich_movie` self-healing logic now automatically re-attempts enrichment if critical metadata (IMDb ID, IMDb Rating) is missing, even if a VectorBox score exists.
+  - **Background Task:** Runs as a **Background Task** (FastAPI) to prevent blocking the main thread during recommendation generation.
+  - **Fix Script:** `reenrich_movies.py` allows manually targeting movies with incomplete metadata.
   - **Rule:** Background tasks MUST own their own `AsyncSession`. NEVER reuse the request-scoped `db` session, as it is torn down when the HTTP response returns (causing `MissingGreenlet` errors).
 
 ---
@@ -271,7 +274,7 @@ The frontend (`next.config.js`) enforces:
   - `nlp_search.py`: "Magic Box" LLM logic using Groq+Instructor.
   - `rss_service.py`: Sync logic for Letterboxd RSS feeds.
 - **`models/`**: SQLAlchemy (`database.py`) and Pydantic (`schemas.py`, `external_schemas.py`) definitions.
-- **`scripts/`**: Maintenance tasks (`seed_db.py`, `enrich_vectors.py`, `popular_scraper.py`, `reset_profiles.py`, `test_magic_box.py`, `verify_feed_parallelism.py`, `test_idor_hidden_gems.py`, `test_trident_math.py`, `reconcile_letterboxd_movies.py`, `fix_movies_manual.py`).
+- **`scripts/`**: Maintenance tasks (`seed_db.py`, `enrich_vectors.py`, `popular_scraper.py`, `reset_profiles.py`, `test_magic_box.py`, `verify_feed_parallelism.py`, `test_idor_hidden_gems.py`, `test_trident_math.py`, `reconcile_letterboxd_movies.py`, `fix_movies_manual.py`, `reenrich_movies.py`).
 
 ### Frontend (`/frontend`)
 - **`app/`**: Next.js App Router pages (`page.tsx` for feed).

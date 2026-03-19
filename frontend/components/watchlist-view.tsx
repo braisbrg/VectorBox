@@ -144,7 +144,56 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                     </div>
                 </div>
 
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2 items-center">
+                    {(() => {
+                        const activeFilters = [];
+                        if (filters.runtimeMax) activeFilters.push(`Max ${filters.runtimeMax}m`);
+                        if (filters.yearMin || filters.yearMax) {
+                            if (filters.yearMin && filters.yearMax) activeFilters.push(`${filters.yearMin}-${filters.yearMax}`);
+                            else if (filters.yearMin) activeFilters.push(`Since ${filters.yearMin}`);
+                            else activeFilters.push(`Until ${filters.yearMax}`);
+                        }
+                        if (filters.minRating) activeFilters.push(`Rating ${filters.minRating}+`);
+                        if (filters.genre) activeFilters.push(filters.genre);
+                        
+                        // Compare current streaming with initial streamingProviders to see if it's "filtered"
+                        // Note: If streaming is an empty array but initial was 10 providers, it means "none" (filtered)
+                        if (filters.streaming.length !== streamingProviders.length) {
+                             activeFilters.push(`${filters.streaming.length} Providers`);
+                        }
+
+                        if (activeFilters.length > 0) {
+                            return (
+                                <div className="flex flex-wrap gap-1.5 mr-3">
+                                    {activeFilters.map((tag, idx) => (
+                                        <span key={idx} className="px-2 py-0.5 bg-amber-500/10 border border-amber-500/20 text-[10px] font-mono text-amber-500 uppercase tracking-wider rounded-sm">
+                                            {tag}
+                                        </span>
+                                    ))}
+                                    <button
+                                        onClick={() => {
+                                            localStorage.removeItem(WATCHLIST_FILTERS_KEY);
+                                            setFilters({
+                                                runtimeMax: undefined,
+                                                runtimeMin: undefined,
+                                                yearMin: undefined,
+                                                yearMax: undefined,
+                                                genre: undefined,
+                                                minRating: undefined,
+                                                sortBy: "date_added",
+                                                streaming: streamingProviders,
+                                            });
+                                            setPage(1);
+                                        }}
+                                        className="text-[10px] font-mono text-zinc-500 hover:text-primary uppercase tracking-wider underline underline-offset-2 ml-1"
+                                    >
+                                        Clear
+                                    </button>
+                                </div>
+                            );
+                        }
+                        return null;
+                    })()}
                     <button
                         onClick={() => setShowFilters(!showFilters)}
                         className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-colors ${showFilters ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted"
@@ -152,6 +201,23 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                     >
                         <Filter className="w-4 h-4" />
                         Filters
+                        {Object.values({
+                            runtime: filters.runtimeMax,
+                            yearMin: filters.yearMin,
+                            yearMax: filters.yearMax,
+                            minRating: filters.minRating,
+                            streaming: filters.streaming.length > 0 ? true : undefined
+                        }).filter(Boolean).length > 0 && (
+                            <span className="ml-1 px-1.5 py-0.5 bg-primary-foreground text-primary text-[10px] font-bold rounded-full">
+                                {Object.values({
+                                    runtime: filters.runtimeMax,
+                                    yearMin: filters.yearMin,
+                                    yearMax: filters.yearMax,
+                                    minRating: filters.minRating,
+                                    streaming: filters.streaming.length > 0 ? true : undefined
+                                }).filter(Boolean).length}
+                            </span>
+                        )}
                     </button>
                 </div>
             </div>

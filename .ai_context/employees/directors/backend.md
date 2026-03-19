@@ -2,7 +2,7 @@
 
 > **Role:** Backend Technical Lead
 > **Domain:** API Design, Database, Async Patterns, Authentication
-> **Last Updated:** 2026-03-11
+> **Last Updated:** 2026-03-19
 
 This file contains all backend-specific rules, database patterns, and API guidelines for the VectorBox project.
 
@@ -154,7 +154,7 @@ backend/
 ├── services/      # Business logic
 │   ├── feed_service.py      # Home feed orchestration
 │   ├── recommendation_engine.py # Algorithms for feed sections
-│   ├── movie_factory.py     # Centralized ingestion pipeline
+│   ├── movie_factory.py     # Centralized ingestion pipeline (v1.4: ensures metadata resilience)
 │   ├── clustering_service.py # K-Means, MMR
 │   ├── nlp_search.py        # "Magic Box" LLM logic
 │   └── rss_service.py       # Letterboxd sync

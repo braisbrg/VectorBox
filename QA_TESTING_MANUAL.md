@@ -1,8 +1,8 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.3.0 (Post-Test-Suite Stabilization)
-> **Last Updated:** 2026-03-11
+> **Version:** 1.4.0 (Enhanced Metadata & UI)
+> **Last Updated:** 2026-03-19
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
@@ -179,6 +179,10 @@ Navigate manually to `/` while on "Upload Data" screen.
 
 **Test D — Complete upload:**
 1. Drag & drop Letterboxd export ZIP. Click "Start Upload".
+
+**Test E — Verify UI Data Flow (v1.4):**
+1. After upload completes, verify Feed page loads immediately.
+2. Verify "Recently Ingested" user context is correctly reflected in the sidebar profile.
 
 | Check | Expected | Pass? |
 |:------|:---------|:-----:|
@@ -433,6 +437,12 @@ docker-compose exec backend python scripts/test_trident_math.py
 | Sigmoid | score=50→~0.09, score=65→0.50, score=80→~0.91 | ☐ |
 | RRF | Movie in 3 lists scores higher than movie in 1 list | ☐ |
 | Output | `✅ TRIDENT MATH VERIFIED` | ☐ |
+
+### Step 5.11: RSS Sync Resilience (v1.4)
+1. Link an account with active Letterboxd activity.
+2. Trigger "Sync Letterboxd Now" from Settings.
+3. Verify backend logs show successful XML parsing and NO 422 Unprocessable Entity errors.
+4. Verify new movies appear in Watchlist/Feed.
 
 ---
 
@@ -793,4 +803,4 @@ Complete this scorecard only after all phases above pass.
 **Date:** _______________________
 
 ---
-*End of QA Testing Protocol — VectorBox v1.2*
+*End of QA Testing Protocol — VectorBox v1.4*

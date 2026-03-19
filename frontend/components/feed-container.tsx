@@ -7,7 +7,7 @@ import { AcidError } from "@/components/ui/acid-error";
 import { InfoTooltip } from "./info-tooltip";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
-import { getFeed, FeedResponse } from "@/lib/api";
+import { getFeed, FeedResponse, VectorboxUser } from "@/lib/api";
 
 interface FeedContainerProps {
     userId: number;
@@ -15,6 +15,7 @@ interface FeedContainerProps {
     countryCode?: string;
     streamingProviders?: number[];
     initialData?: FeedResponse | null; // SSR Prefetched Data
+    registeredUsers?: VectorboxUser[];
 }
 
 const SECTION_DESCRIPTIONS: Record<string, string> = {
@@ -36,7 +37,7 @@ const TITLE_MAP: Record<string, string> = {
     "available_now": "sections.available_now"
 };
 
-export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [], initialData }: FeedContainerProps) {
+export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [], initialData, registeredUsers }: FeedContainerProps) {
     const { settings } = useSettings();
     const includeLowQuality = settings.includeLowQuality;
 
@@ -119,7 +120,7 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
 
                 <div className="w-full max-w-xl bg-card border border-border rounded-xl shadow-lg p-6">
                     <UploadZone
-                        registeredUsers={[{ id: userId, username: "" } as any]}
+                        registeredUsers={registeredUsers || [{ id: userId, username: "" } as any]}
                         activeSessionUserId={userId}
                         onUploadSuccess={() => window.location.reload()}
                         onUserCreated={() => { }}
