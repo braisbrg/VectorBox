@@ -12,12 +12,16 @@ import {
     ChevronRight,
     Film,
     Sparkles,
+    User,
+    LogOut,
+    UserCircle,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { AppTooltip } from "@/components/info-tooltip";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
-import { VectorboxUser } from "@/lib/api";
+import { VectorboxUser, logout } from "@/lib/api";
 
 interface SidebarProps {
     currentView: string;
@@ -152,13 +156,47 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
             <div className="border-t border-zinc-800 bg-black p-3 space-y-4">
 
                 {!isCollapsed && users && currentUserId && (
-                    <div className="px-3 py-2 bg-zinc-900 border border-zinc-800 mb-2">
-                        <div className="flex items-center gap-2">
-                            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-                            <span className="text-xs font-mono text-zinc-400 uppercase tracking-wider">
-                                {users.find(u => u.id === currentUserId)?.username || "User"}
-                            </span>
-                        </div>
+                    <div className="px-3 mb-2">
+                        <DropdownMenu.Root>
+                            <DropdownMenu.Trigger asChild>
+                                <button className="w-full flex items-center gap-2 px-3 py-2 bg-zinc-900 border border-zinc-800 hover:border-primary/50 transition-colors group cursor-pointer outline-none">
+                                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                                    <span className="text-xs font-mono text-zinc-400 group-hover:text-primary uppercase tracking-wider truncate">
+                                        {users.find(u => u.id === currentUserId)?.username || "User"}
+                                    </span>
+                                </button>
+                            </DropdownMenu.Trigger>
+
+                            <DropdownMenu.Portal>
+                                <DropdownMenu.Content
+                                    className="z-[100] min-w-[160px] bg-black border border-zinc-800 p-1 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+                                    side="right"
+                                    align="end"
+                                    sideOffset={10}
+                                >
+                                    <DropdownMenu.Item
+                                        className="flex items-center gap-2 px-3 py-2 text-xs font-mono text-zinc-400 hover:text-black hover:bg-primary outline-none cursor-pointer transition-colors uppercase tracking-wider"
+                                        onClick={() => onViewChange("profile")}
+                                    >
+                                        <UserCircle className="w-4 h-4" />
+                                        {t("sidebar.profile") || "Profile"}
+                                    </DropdownMenu.Item>
+                                    
+                                    <DropdownMenu.Separator className="h-px bg-zinc-800 my-1" />
+                                    
+                                    <DropdownMenu.Item
+                                        className="flex items-center gap-2 px-3 py-2 text-xs font-mono text-red-500 hover:text-black hover:bg-red-500 outline-none cursor-pointer transition-colors uppercase tracking-wider"
+                                        onClick={async () => {
+                                            await logout();
+                                            window.location.href = "/login";
+                                        }}
+                                    >
+                                        <LogOut className="w-4 h-4" />
+                                        {t("app.logout")}
+                                    </DropdownMenu.Item>
+                                </DropdownMenu.Content>
+                            </DropdownMenu.Portal>
+                        </DropdownMenu.Root>
                     </div>
                 )}
 

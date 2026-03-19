@@ -128,8 +128,11 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                     }
                 }
             }
-            // Force refresh is mostly usually needed, but let's try just state for smooth transition first
-            window.location.reload();
+            
+            // UX: Slight delay before reload to let user see success
+            setTimeout(() => {
+                window.location.reload();
+            }, 800);
         }
     });
 

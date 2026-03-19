@@ -7,7 +7,7 @@ import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/co
 import { motion } from "framer-motion";
 import Image from "next/image";
 import { useLanguage } from "@/components/language-provider";
-import { logout, VectorboxUser, UserSession, getCurrentUser } from "@/lib/api";
+import { logout, VectorboxUser, UserSession, getCurrentUser, getUsers } from "@/lib/api";
 
 import { FeedContainer } from "@/components/feed-container";
 import { UploadZone } from "@/components/upload-zone";
@@ -32,6 +32,7 @@ interface DashboardProps {
 export function Dashboard({ initialFeedData }: DashboardProps) {
     const router = useRouter();
     const [currentUserSession, setCurrentUserSession] = useState<UserSession | null>(null);
+    const [users, setUsers] = useState<VectorboxUser[]>([]);
     const [isLoadingAuth, setIsLoadingAuth] = useState(true);
 
     // View State
@@ -108,10 +109,8 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 setIsLoadingAuth(false);
             });
 
-        // 3. User Sync (Optional/Background)
-        // We can still do the `getUsers()` sync if we want extra data not in `/me`
-        // but `/me` should ideally return everything needed for the Dashboard.
-        // For now, keeping `/me` as primary.
+        // 3. User Sync: Fetch registered users to provide context to components
+        getUsers().then(setUsers).catch(err => console.error("Failed to fetch users", err));
     }, []);
 
     // Clear invalid providers when country changes
@@ -355,6 +354,22 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                         </div>
                     ) : currentView === "settings" ? (
                         <SettingsView />
+                    ) : currentView === "profile" ? (
+                        <div className="py-12 flex flex-col items-center justify-center text-center space-y-6">
+                            <div className="w-24 h-24 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-primary">
+                                <UserIcon size={48} />
+                            </div>
+                            <div className="space-y-2">
+                                <h2 className="text-3xl font-bold tracking-tighter uppercase font-mono italic">User Profile</h2>
+                                <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest">// Profile module coming soon //</p>
+                            </div>
+                            <button 
+                                onClick={() => setCurrentView("feed")}
+                                className="px-6 py-2 bg-primary text-black font-bold uppercase tracking-wider text-xs hover:bg-primary/90 transition-colors"
+                            >
+                                Back to Feed
+                            </button>
+                        </div>
                     ) : currentView === "compatibility" ? (
                         <GroupVibePicker />
                     ) : (
@@ -364,6 +379,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             countryCode={countryCode}
                             streamingProviders={streamingProviders}
                             initialData={initialFeedData}
+                            registeredUsers={users}
                         />
                     )}
                 </div>

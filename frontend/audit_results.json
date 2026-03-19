@@ -1,0 +1,253 @@
+{
+  "actions": [],
+  "advisories": {
+    "1114898": {
+      "findings": [
+        {
+          "version": "16.1.6",
+          "paths": [
+            ".>next"
+          ]
+        }
+      ],
+      "found_by": null,
+      "deleted": null,
+      "references": "- https://github.com/vercel/next.js/security/advisories/GHSA-ggv3-7p47-pfv8\n- https://github.com/vercel/next.js/commit/dc98c04f376c6a1df76ec3e0a2d07edf4abdabd6\n- https://github.com/vercel/next.js/releases/tag/v15.5.13\n- https://github.com/vercel/next.js/releases/tag/v16.1.7\n- https://nvd.nist.gov/vuln/detail/CVE-2026-29057\n- https://github.com/advisories/GHSA-ggv3-7p47-pfv8",
+      "created": "2026-03-17T16:17:15.000Z",
+      "id": 1114898,
+      "npm_advisory_id": null,
+      "overview": "## Summary\nWhen Next.js rewrites proxy traffic to an external backend, a crafted `DELETE`/`OPTIONS` request using `Transfer-Encoding: chunked` could trigger request boundary disagreement between the proxy and backend. This could allow request smuggling through rewritten routes.\n\n## Impact\nAn attacker could smuggle a second request to unintended backend routes (for example, internal/admin endpoints), bypassing assumptions that only the configured rewrite destination/path is reachable. This does not impact applications hosted on providers that handle rewrites at the CDN level, such as Vercel. \n\n## Patches\nThe vulnerability originated in an upstream library vendored by Next.js. It is fixed by updating that dependencyÔÇÖs behavior so `content-length: 0` is added only when both `content-length` and `transfer-encoding` are absent, and `transfer-encoding` is no longer removed in that code path.\n\n## Workarounds\nIf upgrade is not immediately possible:\n- Block chunked `DELETE`/`OPTIONS` requests on rewritten routes at your edge/proxy.\n- Enforce authentication/authorization on backend routes per our [security guidance](https://nextjs.org/docs/app/guides/data-security).",
+      "reported_by": null,
+      "title": "Next.js: HTTP request smuggling in rewrites",
+      "metadata": null,
+      "cves": [
+        "CVE-2026-29057"
+      ],
+      "access": "public",
+      "severity": "moderate",
+      "module_name": "next",
+      "vulnerable_versions": ">=16.0.0-beta.0 <16.1.7",
+      "github_advisory_id": "GHSA-ggv3-7p47-pfv8",
+      "recommendation": "Upgrade to version 16.1.7 or later",
+      "patched_versions": ">=16.1.7",
+      "updated": "2026-03-18T21:53:30.000Z",
+      "cvss": {
+        "score": 0,
+        "vectorString": null
+      },
+      "cwe": [
+        "CWE-444"
+      ],
+      "url": "https://github.com/advisories/GHSA-ggv3-7p47-pfv8"
+    },
+    "1114934": {
+      "findings": [
+        {
+          "version": "3.4.1",
+          "paths": [
+            ".>eslint>file-entry-cache>flat-cache>flatted"
+          ]
+        }
+      ],
+      "found_by": null,
+      "deleted": null,
+      "references": "- https://github.com/WebReflection/flatted/security/advisories/GHSA-rf6f-7fwh-wjgh\n- https://github.com/advisories/GHSA-rf6f-7fwh-wjgh",
+      "created": "2026-03-19T17:43:54.000Z",
+      "id": 1114934,
+      "npm_advisory_id": null,
+      "overview": "---\n  **Summary**\n\n  The parse() function in flatted can use attacker-controlled string values from the parsed JSON as direct array index\n  keys, without validating that they are numeric. Since the internal input buffer is a JavaScript Array, accessing it\n  with the key \"\\_\\_proto\\_\\_\" returns Array.prototype via the inherited getter. This object is then treated as a legitimate\n   parsed value and assigned as a property of the output object, effectively leaking a live reference to Array.prototype\n   to the consumer. Any code that subsequently writes to that property will pollute the global prototype.\n\n  ---\n  **Root Cause**\n\n  File: esm/index.js:29 (identical in cjs/index.js)\n```\n  const resolver = (input, lazy, parsed, $) => output => {\n    for (let ke = keys(output), {length} = ke, y = 0; y < length; y++) {\n      const k = ke[y];\n      const value = output[k];    \n      if (value instanceof Primitive) {\n        const tmp = input[value];      // Bug is here\n```\n\nNo validation that value is a safe numeric index input is built as a plain Array. JavaScript's property lookup on arrays traverses the prototype chain for non-numeric  keys. The key \"\\_\\_proto\\_\\_\" resolves to Array.prototype, which:\n\n  - has type \"object\" ÔåÆ passes the typeof tmp === object guard at line 30\n  - is not in the parsed Set yet ÔåÆ passes the !parsed.has(tmp) guard.\n  - The reference to Array.prototype is then enqueued in lazy and later unconditionally assigned to the output object.\n  ---\n  **Replication Steps**\n```\n  const Flatted = require('flatted'); \n  const parsed = Flatted.parse('[{\"x\":\"__proto__\"}]');\n  parsed.x.polluted = 'pwned';\n  console.log([].polluted);  // Returns true\n``` \n ---\n  **Impact**\n An attacker can supply a crafted flatted string to parse() that causes the returned object to hold a live reference to Array.prototype, enabling any downstream code that writes to that property to pollute the global prototype chain, potentially causing denial of service or code execution.\n\n  **Recommended solution**\n Validate that the index string represents an integer within the bounds of input before accessing it:\n\n  // Before (vulnerable)\n  const tmp = input[value];\n\n  // After (safe)\n  const idx = +value;  // coerce boxed String ÔåÆ number\n  const tmp = (Number.isInteger(idx) && idx >= 0 && idx < input.length)\n    ? input[idx]\n    : undefined;",
+      "reported_by": null,
+      "title": "Prototype Pollution via parse() in NodeJS flatted",
+      "metadata": null,
+      "cves": [
+        "CVE-2026-33228"
+      ],
+      "access": "public",
+      "severity": "high",
+      "module_name": "flatted",
+      "vulnerable_versions": "<=3.4.1",
+      "github_advisory_id": "GHSA-rf6f-7fwh-wjgh",
+      "recommendation": "Upgrade to version 3.4.2 or later",
+      "patched_versions": ">=3.4.2",
+      "updated": "2026-03-19T17:43:55.000Z",
+      "cvss": {
+        "score": 0,
+        "vectorString": null
+      },
+      "cwe": [
+        "CWE-1321"
+      ],
+      "url": "https://github.com/advisories/GHSA-rf6f-7fwh-wjgh"
+    },
+    "1114941": {
+      "findings": [
+        {
+          "version": "16.1.6",
+          "paths": [
+            ".>next"
+          ]
+        }
+      ],
+      "found_by": null,
+      "deleted": null,
+      "references": "- https://github.com/vercel/next.js/security/advisories/GHSA-3x4c-7xq6-9pq8\n- https://github.com/vercel/next.js/commit/39eb8e0ac498b48855a0430fbf4c22276a73b4bd\n- https://github.com/vercel/next.js/releases/tag/v16.1.7\n- https://nvd.nist.gov/vuln/detail/CVE-2026-27980\n- https://github.com/advisories/GHSA-3x4c-7xq6-9pq8",
+      "created": "2026-03-17T16:17:06.000Z",
+      "id": 1114941,
+      "npm_advisory_id": null,
+      "overview": "## Summary\nThe default Next.js image optimization disk cache (`/_next/image`) did not have a configurable upper bound, allowing unbounded cache growth.\n\n## Impact\nAn attacker could generate many unique image-optimization variants and exhaust disk space, causing denial of service. Note that this does not impact platforms that have their own image optimization capabilities, such as Vercel.\n\n## Patches\nFixed by adding an LRU-backed disk cache with `images.maximumDiskCacheSize`, including eviction of least-recently-used entries when the limit is exceeded. Setting `maximumDiskCacheSize: 0` disables disk caching. \n\n## Workarounds\nIf upgrade is not immediately possible:\n- Periodically clean `.next/cache/images`.\n- Reduce variant cardinality (e.g., tighten values for `images.localPatterns`, `images.remotePatterns`, and `images.qualities`)",
+      "reported_by": null,
+      "title": "Next.js: Unbounded next/image disk cache growth can exhaust storage",
+      "metadata": null,
+      "cves": [
+        "CVE-2026-27980"
+      ],
+      "access": "public",
+      "severity": "moderate",
+      "module_name": "next",
+      "vulnerable_versions": ">=16.0.0-beta.0 <16.1.7",
+      "github_advisory_id": "GHSA-3x4c-7xq6-9pq8",
+      "recommendation": "Upgrade to version 16.1.7 or later",
+      "patched_versions": ">=16.1.7",
+      "updated": "2026-03-19T18:33:25.000Z",
+      "cvss": {
+        "score": 0,
+        "vectorString": null
+      },
+      "cwe": [
+        "CWE-400"
+      ],
+      "url": "https://github.com/advisories/GHSA-3x4c-7xq6-9pq8"
+    },
+    "1114942": {
+      "findings": [
+        {
+          "version": "16.1.6",
+          "paths": [
+            ".>next"
+          ]
+        }
+      ],
+      "found_by": null,
+      "deleted": null,
+      "references": "- https://github.com/vercel/next.js/security/advisories/GHSA-h27x-g6w4-24gq\n- https://github.com/vercel/next.js/commit/c885d4825f800dd1e49ead37274dcd08cdd6f3f1\n- https://github.com/vercel/next.js/releases/tag/v16.1.7\n- https://nvd.nist.gov/vuln/detail/CVE-2026-27979\n- https://github.com/advisories/GHSA-h27x-g6w4-24gq",
+      "created": "2026-03-17T16:16:49.000Z",
+      "id": 1114942,
+      "npm_advisory_id": null,
+      "overview": "## Summary\nA request containing the `next-resume: 1` header (corresponding with a PPR resume request) would buffer request bodies without consistently enforcing `maxPostponedStateSize` in certain setups. The previous mitigation protected minimal-mode deployments, but equivalent non-minimal deployments remained vulnerable to the same unbounded postponed resume-body buffering behavior.\n\n## Impact\nIn applications using the App Router with Partial Prerendering capability enabled (via `experimental.ppr` or `cacheComponents`), an attacker could send oversized `next-resume` POST payloads that were buffered without consistent size enforcement in non-minimal deployments, causing excessive memory usage and potential denial of service.\n\n## Patches\nFixed by enforcing size limits across all postponed-body buffering paths and erroring when limits are exceeded.  \n\n## Workarounds\nIf upgrade is not immediately possible:\n- Block requests containing the `next-resume` header, as this is never valid to be sent from an untrusted client.",
+      "reported_by": null,
+      "title": "Next.js: Unbounded postponed resume buffering can lead to DoS",
+      "metadata": null,
+      "cves": [
+        "CVE-2026-27979"
+      ],
+      "access": "public",
+      "severity": "moderate",
+      "module_name": "next",
+      "vulnerable_versions": ">=16.0.1 <16.1.7",
+      "github_advisory_id": "GHSA-h27x-g6w4-24gq",
+      "recommendation": "Upgrade to version 16.1.7 or later",
+      "patched_versions": ">=16.1.7",
+      "updated": "2026-03-19T18:31:03.000Z",
+      "cvss": {
+        "score": 0,
+        "vectorString": null
+      },
+      "cwe": [
+        "CWE-770"
+      ],
+      "url": "https://github.com/advisories/GHSA-h27x-g6w4-24gq"
+    },
+    "1114943": {
+      "findings": [
+        {
+          "version": "16.1.6",
+          "paths": [
+            ".>next"
+          ]
+        }
+      ],
+      "found_by": null,
+      "deleted": null,
+      "references": "- https://github.com/vercel/next.js/security/advisories/GHSA-mq59-m269-xvcx\n- https://github.com/vercel/next.js/commit/a27a11d78e748a8c7ccfd14b7759ad2b9bf097d8\n- https://github.com/vercel/next.js/releases/tag/v16.1.7\n- https://nvd.nist.gov/vuln/detail/CVE-2026-27978\n- https://github.com/advisories/GHSA-mq59-m269-xvcx",
+      "created": "2026-03-17T15:30:14.000Z",
+      "id": 1114943,
+      "npm_advisory_id": null,
+      "overview": "## Summary\n`origin: null` was treated as a \"missing\" origin during Server Action CSRF validation. As a result, requests from opaque contexts (such as sandboxed iframes) could bypass origin verification instead of being validated as cross-origin requests.\n\n## Impact\nAn attacker could induce a victim browser to submit Server Actions from a sandboxed context, potentially executing state-changing actions with victim credentials (CSRF).\n\n## Patches\nFixed by treating `'null'` as an explicit origin value and enforcing host/origin checks unless `'null'` is explicitly allowlisted in `experimental.serverActions.allowedOrigins`.  \n\n## Workarounds\nIf upgrade is not immediately possible:\n- Add CSRF tokens for sensitive Server Actions.\n- Prefer `SameSite=Strict` on sensitive auth cookies.\n- Do not allow `'null'` in `serverActions.allowedOrigins` unless intentionally required and additionally protected.",
+      "reported_by": null,
+      "title": "Next.js: null origin can bypass Server Actions CSRF checks",
+      "metadata": null,
+      "cves": [
+        "CVE-2026-27978"
+      ],
+      "access": "public",
+      "severity": "moderate",
+      "module_name": "next",
+      "vulnerable_versions": ">=16.0.1 <16.1.7",
+      "github_advisory_id": "GHSA-mq59-m269-xvcx",
+      "recommendation": "Upgrade to version 16.1.7 or later",
+      "patched_versions": ">=16.1.7",
+      "updated": "2026-03-19T18:28:51.000Z",
+      "cvss": {
+        "score": 0,
+        "vectorString": null
+      },
+      "cwe": [
+        "CWE-352"
+      ],
+      "url": "https://github.com/advisories/GHSA-mq59-m269-xvcx"
+    },
+    "1114944": {
+      "findings": [
+        {
+          "version": "16.1.6",
+          "paths": [
+            ".>next"
+          ]
+        }
+      ],
+      "found_by": null,
+      "deleted": null,
+      "references": "- https://github.com/vercel/next.js/security/advisories/GHSA-jcc7-9wpm-mj36\n- https://github.com/vercel/next.js/commit/862f9b9bb41d235e0d8cf44aa811e7fd118cee2a\n- https://github.com/vercel/next.js/releases/tag/v16.1.7\n- https://nvd.nist.gov/vuln/detail/CVE-2026-27977\n- https://github.com/advisories/GHSA-jcc7-9wpm-mj36",
+      "created": "2026-03-17T15:29:48.000Z",
+      "id": 1114944,
+      "npm_advisory_id": null,
+      "overview": "## Summary\nIn `next dev`, cross-site protection for internal websocket endpoints could treat `Origin: null` as a bypass case even if [`allowedDevOrigins`](https://nextjs.org/docs/app/api-reference/config/next-config-js/allowedDevOrigins) is configured, allowing privacy-sensitive/opaque contexts (for example sandboxed documents) to connect unexpectedly.\n\n## Impact\nIf a dev server is reachable from attacker-controlled content, an attacker may be able to connect to the HMR websocket channel and interact with dev websocket traffic. This affects development mode only.\nApps without a configured [`allowedDevOrigins`](https://nextjs.org/docs/app/api-reference/config/next-config-js/allowedDevOrigins) still allow connections from any origin.\n\n## Patches\nFixed by validating `Origin: null` through the same cross-site origin-allowance checks used for other origins.  \n\n## Workarounds\nIf upgrade is not immediately possible:\n- Do not expose `next dev` to untrusted networks.\n- Block websocket upgrades to `/_next/webpack-hmr` when `Origin` is `null` at your proxy.",
+      "reported_by": null,
+      "title": "Next.js: null origin can bypass dev HMR websocket CSRF checks",
+      "metadata": null,
+      "cves": [
+        "CVE-2026-27977"
+      ],
+      "access": "public",
+      "severity": "low",
+      "module_name": "next",
+      "vulnerable_versions": ">=16.0.1 <16.1.7",
+      "github_advisory_id": "GHSA-jcc7-9wpm-mj36",
+      "recommendation": "Upgrade to version 16.1.7 or later",
+      "patched_versions": ">=16.1.7",
+      "updated": "2026-03-19T18:28:33.000Z",
+      "cvss": {
+        "score": 0,
+        "vectorString": null
+      },
+      "cwe": [
+        "CWE-1385"
+      ],
+      "url": "https://github.com/advisories/GHSA-jcc7-9wpm-mj36"
+    }
+  },
+  "muted": [],
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 1,
+      "moderate": 4,
+      "high": 1,
+      "critical": 0
+    },
+    "dependencies": 523,
+    "devDependencies": 0,
+    "optionalDependencies": 0,
+    "totalDependencies": 523
+  }
+}

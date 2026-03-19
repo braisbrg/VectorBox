@@ -55,6 +55,7 @@
 - **Rule:** Always use **Pydantic V2** models (`models/external_schemas.py`) for external integrations.
 - **Requirement:** Responses from OMDb and payloads sent to Qdrant **MUST** be validated through strict models.
 - **Ban:** Do not pass around raw `Dict[str, Any]` objects for core data structures.
+- **Rule (Metadata Resilience):** Movie enrichment MUST be re-attempted automatically if critical metadata (IMDb ID or IMDb Rating) is missing, even if a VectorBox score already exists. This ensures data completeness over time.
 
 ## 2. Recommendation Engine Logic
 
@@ -234,5 +235,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-03-13
+**Last Updated:** 2026-03-19
 **Maintained By:** VectorBox Team
