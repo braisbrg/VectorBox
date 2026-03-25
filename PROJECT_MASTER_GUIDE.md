@@ -119,17 +119,18 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 ## 2. Feature Catalogue (The "What")
 
 ### A. The Feed (Home Page)
-The feed is composed of multiple "Sections", generated largely in parallel by `FeedService` using **Batch Fetching** to eliminate N+1 queries.
+The feed is composed of multiple "Sections", generated largely in parallel by `FeedService` using **Batch Fetching** to eliminate N+1 queries. It runs **11 parallel tasks**.
 
 | Section | Logic / Source |
 | :--- | :--- |
 | **Available Now** | **Priority Row.** Fetches user's *unwatched* Watchlist items that are currently streaming on their active providers (Netflix, etc.). |
 | **Popular on Letterboxd** | Fetches trending movies from TMDB/Letterboxd (cached via `ThreadingService`). |
-| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated or liked movie from user history, generates a *content-only* vector (ignoring title), and finds similar vectors in Qdrant. Deduplicated into a single `_item_to_item_search()` helper in `search.py`. |
-| **Your Taste ([Cluster])** | **Centroid Search.** Picks one of the user's "Taste Clusters" (e.g., "80s Sci-Fi"), computes the centroid of that cluster, and searches Qdrant. |
-| **Hidden Gems** | **Score-to-Hype Filtering (v1.2).** Searches Qdrant near user's global profile centroid with **dynamic thresholds** based on user's movie count: Cold start (<30 movies) uses `score > 60, popularity < 40, votes > 200`; Growing (30–99) uses `score > 65, popularity < 30, votes > 300`; Rich (100+) uses `score > 75, popularity < 20, votes > 500`. Identifies critically acclaimed but underexposed films. |
-| **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic (see Algorithms) to find movies similar to the user's favorites. Now runs fully in PARALLEL with the other feed tasks for maximum performance. |
-| **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. |
+| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated or liked movie from user history (with 180-day recency bias), generates a *content-only* vector (ignoring title), and finds similar vectors in Qdrant. Re-ranked via MMR and penalized by an anti-vector of low-rated films. Deduplicated into a single `_item_to_search()` helper. |
+| **Cult Actors (Auteur 2.0)** | **Cast CF.** Finds cult actors by weighting the top 3 actors of highly rated movies and boosting those thresholding >= 2.5 points. |
+| **Your Taste ([Cluster])** | **Centroid Search.** Picks one of the user's "Taste Clusters" (e.g., "80s Sci-Fi"), computes the centroid, penalizes similarity against the anti-vector of hated films, and searches Qdrant. Re-ranked via MMR. |
+| **Hidden Gems** | **Score-to-Hype Filtering (v1.2).** Searches Qdrant near user's centroid with dynamic thresholds based on user's movie count: Cold start (<30): `score > 60, popularity < 40, votes > 200`; Growing (30–99): `score > 65, popularity < 30, votes > 300`; Rich (100+): `score > 75, popularity < 20, votes > 500`. Includes a 15% Exoticism Boost for non-English/US films before MMR re-ranking. |
+| **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic to find movies similar to user's favorites. Runs fully in PARALLEL. Employs a **Trust Bucket**: filters out films with <5000 votes unless `similarity >= 0.85`. |
+| **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. Also serves as a Cold-Start Fallback (using `Movie.genres.overlap()`) if Signal A or B fail to populate. |
 | **Random Picks** | Random selection from top 500 "VectorBox Scored" movies in DB. |
 
 ### B. The "Magic Box" (NLP Search)
@@ -140,7 +141,8 @@ A natural language search interface powered by `nlp_search.py` with a 3-Tier Cas
     -   `year_min`: 1990, `year_max`: 1999.
     -   `include_genres`: ["Crime", "Drama"].
     -   `popularity_vibe`: "any".
-3.  **Execution:** `QdrantService` executes a vector search with the expanded query, filtering strictly by year and genre.
+    -   `quality_gate_bypass`: `bool` (Relaxes the quality gate sigmoid penalty for campy or "trashy" intent).
+3.  **Execution:** `QdrantService` executes a vector search with the expanded query, filtering strictly by year and genre. For standard searches, weight multiplier `midpoint=65` is used. If `quality_gate_bypass` is true, it drops to `midpoint=25, steepness=0.10`.
 
 ### C. Tools
 - **Group Sync:** (`rss_service.get_group_recommendations_hybrid`) calculates a "Group Vibe" by taking the vectors of multiple users (some from DB, some guests via RSS), finding a centroid, and scoring movies based on *Max Similarity* (rewarding passion) while penalizing movies that *any* single user hates (Similarity < 0.65).
@@ -168,9 +170,9 @@ A natural language search interface powered by `nlp_search.py` with a 3-Tier Cas
 
 ### The "Trident" Hybrid System (Fully Operational)
 VectorBox generates recommendations using three distinct engines fused via **Reciprocal Rank Fusion (RRF)**:
-1.  **Signal A: Vector (Vibe):** Qdrant search using dense embeddings. Captures "Vibe" and plot similarity. Seeds from movies rated 4+ stars **or** explicitly liked (`is_liked`).
-2.  **Signal Auteur (Directors):** Boosts movies by directors the user loves (explicit check against user's high-rated history).
-3.  **Signal C: Hidden Gems:** Score-to-Hype ratio filtering with **dynamic thresholds** that adapt to user's movie count (see Feed section table). Identifies critically acclaimed but underexposed films.
+1.  **Signal A: Vector (Vibe):** Qdrant search using dense embeddings. Captures "Vibe" and plot similarity. Seeds from movies rated 4+ stars **or** explicitly liked (`is_liked`). Now features **anti-vector penalties** (pulls away from disliked 1-2★ films).
+2.  **Signal Auteur (Directors & Cast):** Boosts movies by directors (`get_signal_b_auteur`) and cult actors (`get_cult_actor_section`) the user loves, evaluating past 4-5★ ratings. Employs a **weighted point system** rather than strict counts.
+3.  **Signal C: Hidden Gems:** Score-to-Hype ratio filtering. Adds a 15% Exoticism Boost for foreign films and evaluates dynamic thresholds based on profile size.
 
 ### The Scoring Formula
 Every recommendation gets a final score (0-100%) derived from:
@@ -181,9 +183,10 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Quality Weight (Sigmoid):** A non-linear curve applied to the *VectorBox Score* (0-100).
     - **Formula:** `1 / (1 + e^(-0.15 * (Score - 65)))`
     - **Effect:** Movies with a score > 65 get a boost. Movies < 50 get a heavy penalty. This prevents "relevant trash" from appearing.
+    - **Bypass:** When the Magic Box natural language intent triggers a `quality_gate_bypass` (users specifically asking for trashy or campy films), the sigmoid midpoint relaxes entirely (`midpoint=25`, `steepness=0.10`).
 
 ### Diversity: MMR & Collection Collapsing
-- **MMR (Maximal Marginal Relevance):** Used in `clustering_service.mmr_rerank` (`lambda=0.7`). It re-ranks the top results to penalize items that are too similar to items *already selected* for the list.
+- **MMR (Maximal Marginal Relevance):** Prominently used across `because_you_watched`, `your_taste`, and `hidden_gems`. It re-ranks the top results from `clustering_service.mmr_rerank` (`lambda=0.7`) to penalize items that are too similar to items *already selected* for the list based on their dense 384d vectors.
 - **Collection Collapsing:** In `get_item_based_recommendations`, multiple movies from the same franchise (e.g., *Harry Potter 1, 2, 3*) are collapsed into a single "Super Seed" (the highest-rated one). This prevents a single franchise from flooding the recommendation inputs.
 
 ### Clustering Logic (`ClusteringService`)

@@ -75,14 +75,16 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Parameters:**
     - `x0` (Midpoint): **65**
     - `k` (Steepness): **0.15**
+- **Bypass:** When `quality_gate_bypass` is true (e.g. user asks for "trashy"), midpoint drops to 25 and steepness to 0.10.
 
 ### Feed Generation
-- **Diversity:** Implement MMR (Maximal Marginal Relevance) or "Collection Collapsing" to prevent domination by a single franchise.
+- **Diversity:** Implement MMR (Maximal Marginal Relevance) across `because_you_watched`, `your_taste`, and `hidden_gems` to prevent similar vectors from crowding the results.
+- **Collection Collapsing:** Prevents domination by a single franchise (e.g. keeping only the top *Harry Potter* film).
 
 
 ### Redis Caching (Completeness Guard)
 - **Rule**: The Main Feed MUST NOT be cached if the result contains fewer than 3 sections.
-- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds.
+- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN.
 - **Implementation**: Verified in `FeedService.get_main_feed`.
 
 ### Streaming Availability (Spain)
