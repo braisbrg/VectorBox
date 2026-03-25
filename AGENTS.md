@@ -88,27 +88,27 @@ VectorBox uses a 3-signal hybrid recommendation engine (Trident):
 - Signal A `because_you_watched` — Item-Item Collaborative Filtering
   via EmbeddingService + Qdrant nearest-neighbor search.
   Seeds from movies rated 4+ stars OR explicitly liked (is_liked).
-- Signal B `your_taste` — K-Means cluster centroid search
-- Signal Auteur `get_signal_b_auteur` — Director analysis
-  (renamed from "Signal B" in recommendation_service.py logs
-  to avoid collision with Signal B in recommendation_engine.py)
+- Signal B `your_taste` — K-Means cluster centroid search, penalized against Anti-vector of low-rated films, applying MMR.
+- Signal Auteur `get_signal_b_auteur` (Directors + Cast) — Director/Actor analysis
+  Uses a `_compute_auteur_signal_raw()` helper applying a weighted point system (5★→2.0, 4.5★→1.5) triggering at 3.0 pts for directors, 2.5 pts for actors.
 - Signal C `hidden_gems` — Score-to-Hype ratio filtering
   with DYNAMIC thresholds based on user's movie count:
     Cold start (<30 movies): score>60, popularity<40, votes>200
     Growing (30-99):         score>65, popularity<30, votes>300
     Rich (100+):             score>75, popularity<20, votes>500
-  Implemented via `_get_signal_c_thresholds()` helper.
+  Uses an Exoticism Boost (`+15%`) for non-English films.
 
 Results fused via RRF (Reciprocal Rank Fusion) +
 Sigmoid quality weighting on VectorBox Score (0–100).
+Magic Box intent `quality_gate_bypass` bypasses normal bounds (midpoint 65) explicitly allowing "trashy" responses by dropping the midpoint to 25.
 
-Feed orchestration: `FeedService.get_main_feed()` runs 9 tasks
-in parallel via `asyncio.gather()`. Each task opens its own
+Feed orchestration: `FeedService.get_main_feed()` runs **11 tasks
+in parallel** via `asyncio.gather()`. Each task opens its own
 isolated `AsyncSessionLocal()` session — they NEVER share sessions.
 
-**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis.
+**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped `_invalidate_feed_cache()` after RSS sync.
 
-Deep Dive now runs FULLY IN PARALLEL with the other feed tasks, dropping its strict dependency on `seen_ids` for a massive performance boost.
+Deep Dive now runs FULLY IN PARALLEL with the other feed tasks, applying a Trust Bucket filter (`vote_count` > 5k or high similarity) to drop obscure outliers.
 
 ---
 

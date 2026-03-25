@@ -36,12 +36,13 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 - **Source:** Qdrant dense embeddings (384-dimensional)
 - **Purpose:** Captures plot similarity, thematic "vibe", and genre alignment
 - **Model:** `all-MiniLM-L6-v2` via Sentence-Transformers
-- **Seeding:** Movies rated 4+ stars **OR** explicitly liked (`is_liked`)
+- **Seeding:** Movies rated 4+ stars **OR** explicitly liked (`is_liked`), combined with recency bias (180-day decay)
+- **Anti-Vector:** Applies a cosine penalty pulling away from despised/1-star genres and themes (x0.3 or x0.6 multipliers)
 
-### Signal Auteur (Directors)
+### Signal Auteur (Directors & Cast)
 - **Source:** User's high-rated history
-- **Purpose:** Boosts movies by directors the user loves
-- **Logic:** Explicit check: "Has this director made a movie the user rated 4+ stars?"
+- **Purpose:** Boosts movies by directors (`get_signal_b_auteur`) and cult actors (`get_cult_actor_section`) the user loves
+- **Logic:** Employs a **weighted point system** rather than strict counts: 5★→2.0 pts, 4.5★→1.5 pts, 4.0★→1.0 pts. Activates when threshold is met (e.g. 3.0 pts for directors).
 - **Note:** Renamed from "Signal B" in `recommendation_service.py` logs to avoid collision with Signal B (K-Means centroid) in `recommendation_engine.py`.
 
 ### Signal C: Hidden Gems
@@ -116,6 +117,7 @@ def sigmoid_weight(score: float, midpoint: float = 65, steepness: float = 0.15) 
 
 > [!NOTE]
 > This prevents "relevant trash" (high similarity but low quality) from appearing in recommendations.
+> **Bypass:** For NL Magic Box queries with `quality_gate_bypass: true` ("trashy", "campy"), the entire curve is explicitly relaxed to `midpoint=25, steepness=0.10` so low-scored movies don't suffer the penalty.
 
 ---
 
@@ -140,7 +142,7 @@ An aggregated quality score from multiple review sources, all linearly normalize
 ## 4. Diversity Algorithms
 
 ### MMR (Maximal Marginal Relevance)
-Used in `clustering_service.mmr_rerank`:
+Used in `clustering_service.mmr_rerank` and applied across **Signal A, Signal B, and Hidden Gems**:
 
 ```python
 def mmr_score(relevance: float, max_similarity_to_selected: float, lambda_: float = 0.7) -> float:
@@ -155,7 +157,7 @@ def mmr_score(relevance: float, max_similarity_to_selected: float, lambda_: floa
     return lambda_ * relevance - (1 - lambda_) * max_similarity_to_selected
 ```
 
-**Effect:** Re-ranks top results to penalize items too similar to already-selected items.
+**Effect:** Re-ranks top results to penalize items too similar to already-selected items based on their dense 384d vectors.
 
 ### Collection Collapsing
 **Problem:** Single franchise floods recommendations (e.g., Harry Potter 1, 2, 3, 4, 5...)

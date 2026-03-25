@@ -317,6 +317,7 @@ Log in and navigate to the Feed. Verify all sections are rendered:
 | Available Now (Watchlist streaming) | ☐ |
 | Popular on Letterboxd | ☐ |
 | Because you watched [X] | ☐ |
+| Cult Actors (Auteur 2.0) | ☐ |
 | Your Taste [Cluster] | ☐ |
 | Hidden Gems | ☐ |
 | Deep Dive | ☐ |
@@ -342,7 +343,7 @@ Click any movie → "Why Recommended".
 | Check | Expected | Pass? |
 |:------|:---------|:-----:|
 | Signal A (Vector) | Shows similarity to watched movies | ☐ |
-| Signal Auteur | Shows director match (if applicable) | ☐ |
+| Signal Auteur | Shows director or cult actor match (if applicable) | ☐ |
 | Signal C (Crowd) | Shows crowd/popularity signal | ☐ |
 
 ### Step 5.4: Magic Box NLP Query
@@ -353,6 +354,15 @@ Open Magic Box. Toggle "Deep Analysis" ON. Enter query: `Horror but NOT paranorm
 | Response time | < 8 seconds | ☐ |
 | Results | Slasher / psychological horror | ☐ |
 | Exclusion | No ghost/demon/possession films | ☐ |
+| Standard Quality | Films are generally >65 VectorBox Score | ☐ |
+
+**Trashy Intent Bypass Test:**
+Enter query: `so bad it's good campy 80s horror`
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Bypass | `quality_gate_bypass` is triggered | ☐ |
+| Results | Includes lower-scored films (e.g. 30-50 range) | ☐ |
 
 **Additional query tests:**
 
@@ -400,7 +410,7 @@ docker-compose run --rm backend python scripts/test_es_whitelist.py
 | Output | `✅ WHITELIST FILTER SUCCESS` is printed | ☐ |
 
 ### Step 5.8: Feed Parallelism Verification (Automated)
-Verify that the 9 feed tasks execute concurrently via `asyncio.gather`.
+Verify that the 11 feed tasks execute concurrently via `asyncio.gather`.
 
 ```powershell
 docker-compose exec backend python scripts/verify_feed_parallelism.py
@@ -410,7 +420,7 @@ docker-compose exec backend python scripts/verify_feed_parallelism.py
 |:------|:---------|:-----:|
 | Execution | Script runs without errors | ☐ |
 | Concurrency | `✅ FEED PARALLELISM VERIFIED` — total time < 0.4s | ☐ |
-| Session Isolation | 9 unique sessions (no sharing) | ☐ |
+| Session Isolation | 11 unique sessions (no sharing) | ☐ |
 
 ### Step 5.9: IDOR Automated Security Test
 Verify `/hidden-gems` endpoint rejects unauthenticated and forged requests.
