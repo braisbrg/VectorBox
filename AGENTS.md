@@ -1,6 +1,53 @@
 ---
 # Agent Instructions — VectorBox
 
+> ⚠️ BRANCHING RULE: Never commit directly to `main`. Use `develop` or `feature/*` branches. See Git Workflow section below.
+
+## Git Workflow
+
+### Branch Structure
+- `main` — stable, production-ready code only. NEVER commit directly to main.
+- `develop` — active development branch. All work starts here.
+- `feature/name` — temporary branches for significant features or changes. Branch from develop, merge back to develop when complete.
+
+### Rules (mandatory)
+- Never commit directly to `main`. All changes go through `develop` first.
+- Before starting any significant change (new feature, refactor, algorithm improvement), create a feature branch from `develop`:
+```bash
+  git checkout develop
+  git checkout -b feature/descriptive-name
+```
+- Commit messages must follow this format:
+  - `feat: description` — new feature
+  - `fix: description` — bug fix
+  - `refactor: description` — code restructure without behavior change
+  - `perf: description` — performance improvement
+  - `docs: description` — documentation only
+
+### Merging to main (Releases only)
+- Only merge `develop` → `main` when the code is stable and tested.
+- Every merge to `main` must be tagged with a semantic version:
+```bash
+  git checkout main
+  git merge develop
+  git tag -a v1.X.Y -m "Brief description of what this release contains"
+  git push origin main
+  git push origin v1.X.Y
+```
+- Version convention (SemVer):
+  - **Major** (v2.0.0): breaking changes, DB migrations that require data wipe
+  - **Minor** (v1.4.0): new features, algorithm improvements, new UI sections
+  - **Patch** (v1.3.1): bug fixes, hotfixes, small corrections
+
+### Current branch state
+- `main` — last stable release
+- `develop` — active development
+
+### Agent instructions
+- When implementing features or fixes, always ask which branch is currently active before making changes.
+- Never suggest or execute `git push origin main` directly — always push to the current feature branch or `develop`.
+- When a feature is complete, remind the user to merge to `develop` and, if stable, tag a release on `main`.
+
 ## Package Manager
 - Frontend uses **pnpm**, NOT npm and NOT yarn
 - Always use `pnpm install`, `pnpm add`, `pnpm run`

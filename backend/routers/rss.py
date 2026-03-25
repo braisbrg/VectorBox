@@ -28,6 +28,31 @@ class SyncResponse(BaseModel):
 class GroupVibeRequest(BaseModel):
     usernames: List[str]
 
+async def _invalidate_feed_cache(user_id: int) -> None:
+    """Imp 10: Delete all cached feed keys for this user after RSS sync."""
+    try:
+        import redis.asyncio as aioredis
+        import os
+        
+        redis_url = os.environ.get("REDIS_URL", "redis://redis:6379")
+        r = aioredis.from_url(redis_url)
+        try:
+            cursor = 0
+            deleted_count = 0
+            while True:
+                cursor, keys = await r.scan(cursor, match=f"feed:*:{user_id}:*", count=100)
+                if keys:
+                    await r.delete(*keys)
+                    deleted_count += len(keys)
+                if cursor == 0:
+                    break
+            if deleted_count:
+                logger.info(f"Invalidated {deleted_count} feed cache keys for user_id={user_id}")
+        finally:
+            await r.aclose()
+    except Exception as e:
+        logger.error(f"Feed cache invalidation failed for user_id={user_id}: {e}")
+
 async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
     """Background task — owns its own session. Never re-raises."""
     from config import AsyncSessionLocal
@@ -97,6 +122,10 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
                 await tmdb.aclose()
 
             await db.commit()
+            
+            # Imp 10: Invalidate feed cache after sync completes
+            await _invalidate_feed_cache(user_id)
+            
             logger.info(f"Background sync complete for user_id={user_id}. Watchlist added: {watchlist_added}")
 
         except Exception as e:

@@ -2,13 +2,11 @@
 
 import { motion } from "framer-motion";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
-import { Star, Clock, Tv, Film, RotateCcw, HelpCircle, Zap } from "lucide-react";
+import Link from "next/link";
+import { Info, Clock, Film } from "lucide-react";
 import { getTMDBImageUrl } from "@/lib/api";
 import { useState } from "react";
-import { STREAMING_PROVIDERS } from "@/lib/constants";
 import { useLanguage } from "@/components/language-provider";
-import { SpotlightCard } from "@/components/tweak/spotlight-card";
 
 export interface MovieCardProps {
     id: number;
@@ -16,29 +14,26 @@ export interface MovieCardProps {
     posterPath?: string | null;
     year?: number;
     runtime?: number;
-    rating?: number;      // TMDB Vote Average (0-10)
-    matchScore?: number;  // Similarity/Match Score (0-100)
-    genres?: string[];
-    providers?: string[];
-    overview?: string;
-    variant?: "overlay" | "grid"; // overlay = text over image (feed), grid = text below image (search)
-    href?: string;
-    onClick?: () => void;
-    className?: string;
-    priority?: boolean;
-    badgeType?: "match" | "rating" | "none" | "letterboxd"; // Explicit control over badge
-    contributors?: { seed_title: string; contribution: number }[];
-    hideProvidersOnFront?: boolean;
-    // Phase 12 Props
+    rating?: number;
+    matchScore?: number;
     vectorbox_score?: number;
+    title_es?: string;
+    overview?: string;
+    overview_es?: string;
+    genres?: string[];
+    onInspect?: (id: number) => void;
+    priority?: boolean;
+    className?: string;
+    badgeType?: string;
+    providers?: string[];
+    contributors?: any[];
+    forceVectorBoxScore?: boolean;
     imdb_rating?: number;
     metacritic_rating?: number;
     rotten_tomatoes_rating?: number;
-    title_es?: string;
-    overview_es?: string;
     letterboxd_rating?: number;
-    forceVectorBoxScore?: boolean; // New prop to force VB display
-    release_dates?: Record<string, string>;
+    href?: string;
+    variant?: "overlay" | "grid";
 }
 
 export function MovieCard({
@@ -47,416 +42,102 @@ export function MovieCard({
     posterPath,
     year,
     runtime,
-    rating,
     matchScore,
-    genres,
-    providers = [],
-    overview,
-    variant = "grid",
-    href,
-    onClick,
-    className = "",
-    priority = false,
-    badgeType,
-    contributors = [],
-    hideProvidersOnFront = false,
     vectorbox_score,
-    imdb_rating,
-    metacritic_rating,
-    rotten_tomatoes_rating,
     title_es,
-    overview_es,
-    letterboxd_rating,
-    forceVectorBoxScore = false,
-    release_dates,
+    onInspect,
+    priority = false,
+    className = "",
+    href,
 }: MovieCardProps) {
-    const router = useRouter();
-    const [flipContent, setFlipContent] = useState<"synopsis" | "contributors" | null>(null);
     const [imageError, setImageError] = useState(false);
     const { t, language } = useLanguage();
 
-    const isFlipped = flipContent !== null;
-
-    // i18n Logic
     const displayTitle = (language === 'es' && title_es) ? title_es : title;
-    const displayOverview = (language === 'es' && overview_es) ? overview_es : overview;
+    const score = vectorbox_score || matchScore || 0;
+    
+    // Default link to Letterboxd if non provided
+    const movieLink = href || `https://letterboxd.com/tmdb/${id}/`;
 
-    // Determine which badge to show
-    // If forceVectorBoxScore is true, we prioritize VB score over match score
-    const showVectorBox = (vectorbox_score !== undefined && vectorbox_score !== null);
-    const showMatch = !forceVectorBoxScore && (badgeType === "match" || (!badgeType && matchScore !== undefined));
-    const showRating = !forceVectorBoxScore && !showMatch && (badgeType === "rating" || (!badgeType && matchScore === undefined && rating !== undefined));
-    const showLetterboxd = letterboxd_rating !== undefined && letterboxd_rating !== null;
-
-    // Badge Logic - Acid Style
-    const renderBadge = () => {
-        // Prepare VectorBox Score Badge (Reusable)
-        const vbBadge = (vectorbox_score !== undefined && vectorbox_score !== null) ? (
-            <div
-                className="bg-purple-600 text-white text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] cursor-help z-20"
-                title={[
-                    `${t("movie.vb_score")}: ${vectorbox_score.toFixed(1)} / 10`,
-                    rating ? `${t("movie.tmdb_rating")}: ${rating.toFixed(1)} / 10` : null,
-                    imdb_rating ? `${t("movie.imdb_rating")}: ${imdb_rating} / 10` : null,
-                    rotten_tomatoes_rating ? `${t("movie.rotten_tomatoes")}: ${rotten_tomatoes_rating}%` : null,
-                    metacritic_rating ? `${t("movie.metacritic")}: ${metacritic_rating} / 100` : null,
-                ].filter(Boolean).join("\n")}
+    return (
+        <div className={`group relative bg-[#0a0a0a] border border-zinc-800 hover:border-primary transition-all duration-300 flex flex-col overflow-hidden h-full ${className}`}>
+            <Link 
+                href={movieLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex flex-col h-full"
             >
-                VB: {vectorbox_score.toFixed(1)}
-            </div>
-        ) : null;
-
-        if (forceVectorBoxScore) {
-            return (
-                <div className="absolute top-0 right-0 z-10 flex flex-col items-end">
-                    {vbBadge}
-                </div>
-            );
-        }
-
-        // Prepare Letterboxd Badge
-        // If badgeType is explicitly "letterboxd", we show this prominently
-        const isLetterboxdPrimary = badgeType === "letterboxd";
-
-        const lbBadge = showLetterboxd ? (
-            <div
-                className={`text-black text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] cursor-help z-20 ${isLetterboxdPrimary ? "bg-[hsl(var(--letterboxd))] mb-1" : "bg-[hsl(var(--letterboxd))] mt-1"}`}
-                title={`${t("movie.letterboxd_rating")}: ${letterboxd_rating?.toFixed(1)} / 5.0`}
-            >
-                LB: {letterboxd_rating?.toFixed(1)}
-            </div>
-        ) : null;
-
-        // 1. Explicit Letterboxd Badge (Primary)
-        if (isLetterboxdPrimary && showLetterboxd) {
-            return (
-                <div className="absolute top-0 right-0 z-10 flex flex-col items-end">
-                    {lbBadge}
-                    {/* Show VB Score below if available */}
-                    {vbBadge}
-                </div>
-            );
-        }
-
-        // 2. Match Score (Default for recommendations)
-        if (showMatch && matchScore !== undefined && matchScore !== null && matchScore > 0) {
-            return (
-                <div className="absolute top-0 right-0 z-10 flex flex-col items-end">
-                    <div
-                        className="bg-primary text-black text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] cursor-help"
-                        title={`${t("movie.match_prob")}: ${Math.round(matchScore)}%`}
-                    >
-                        {Math.round(matchScore)}% MATCH
-                    </div>
-                    {/* Show VB Score below Match Score if available */}
-                    {vbBadge}
-                    {lbBadge}
-                </div>
-            );
-        }
-
-        // 3. VectorBox Score (Primary if no match score)
-        if (showVectorBox) {
-            return (
-                <div className="absolute top-0 right-0 z-10 flex flex-col items-end">
-                    {vbBadge}
-                    {lbBadge}
-                </div>
-            );
-        }
-
-        // 4. TMDB Rating (Fallback)
-        if (showRating && rating !== undefined && rating !== null) {
-            return (
-                <div className="absolute top-0 right-0 flex flex-col items-end z-10">
-                    <div className="bg-black text-primary text-xs font-mono font-bold px-2 py-1 border-b-2 border-l-2 border-primary shadow-[2px_2px_0px_0px_rgba(204,255,0,1)]"
-                        title={`${t("movie.tmdb_rating")}: ${rating.toFixed(1)}`}>
-                        ★ {rating.toFixed(1)}
-                    </div>
-                    {lbBadge}
-                </div>
-            );
-        }
-        return null;
-    };
-
-    // Release Warning Logic
-    const getReleaseWarning = () => {
-        if (!release_dates) return null;
-
-        const now = new Date();
-        const targetCountry = language === 'es' ? 'ES' : 'US';
-        const localDateStr = release_dates[targetCountry];
-
-        // Check Local
-        if (localDateStr) {
-            const localDate = new Date(localDateStr);
-            if (localDate > now) {
-                // Formatting
-                const formatted = new Intl.DateTimeFormat(language, { dateStyle: 'short' }).format(localDate);
-                const daysDiff = Math.ceil((localDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-                const isHyped = daysDiff <= 30;
-
-                return (
-                    <div
-                        className={`absolute top-2 left-2 z-20 w-3 h-3 rounded-full bg-[#FFB800] border border-black shadow-sm cursor-help ${isHyped ? 'animate-pulse' : ''}`}
-                        title={`${t("movie.release_date")} (${targetCountry}): ${formatted}`}
-                    />
-                );
-            }
-        }
-
-        // Check Global (US fallback) if local passed or missing
-        const globalDateStr = release_dates['US'];
-        if (globalDateStr && targetCountry !== 'US') {
-            const globalDate = new Date(globalDateStr);
-            if (globalDate > now) {
-                const formatted = new Intl.DateTimeFormat(language, { dateStyle: 'short' }).format(globalDate);
-                return (
-                    <div
-                        className="absolute top-2 left-2 z-20 w-3 h-3 rounded-full bg-[#FFB800] border border-black shadow-sm cursor-help opacity-75"
-                        title={`${t("movie.release_date")} (Global): ${formatted}`}
-                    />
-                );
-            }
-        }
-        return null;
-    };
-
-    const PosterContent = (
-        <div
-            className="relative aspect-[2/3] overflow-hidden bg-zinc-900 w-full border-b-2 border-zinc-800 group-hover/card:border-primary transition-all duration-200 group-hover/card:shadow-[4px_4px_0px_0px_var(--primary)] group-hover/card:-translate-y-1 group-hover/card:-translate-x-1"
-            title={[
-                (vectorbox_score !== undefined && vectorbox_score !== null) ? `${t("movie.vb_score")}: ${vectorbox_score.toFixed(1)} / 10` : null,
-                rating ? `${t("movie.tmdb_rating")}: ${rating.toFixed(1)} / 10` : null,
-                imdb_rating ? `${t("movie.imdb_rating")}: ${imdb_rating} / 10` : null,
-                rotten_tomatoes_rating ? `${t("movie.rotten_tomatoes")}: ${rotten_tomatoes_rating}%` : null,
-                metacritic_rating ? `${t("movie.metacritic")}: ${metacritic_rating} / 100` : null,
-            ].filter(Boolean).join("\n")}
-        >
-            {!imageError && posterPath ? (
-                <Image
-                    src={getTMDBImageUrl(posterPath)}
-                    alt={title}
-                    fill
-                    className={`object-cover transition-transform duration-300 ease-out group-hover/card:scale-110 group-hover/card:grayscale group-hover/card:contrast-125 ${isFlipped ? 'opacity-10' : 'opacity-100'}`}
-                    sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 25vw"
-                    priority={priority}
-                    decoding={priority ? "sync" : "async"}
-                    fetchPriority={priority ? "high" : "auto"}
-                    onError={() => setImageError(true)}
-                />
-            ) : (
-                <div className="w-full h-full flex items-center justify-center bg-zinc-900 text-zinc-700">
-                    <Film className="w-10 h-10 opacity-20" />
-                </div>
-            )}
-
-            {/* Scanline Overlay */}
-            <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] z-[5] bg-[length:100%_2px,3px_100%] pointer-events-none" />
-
-            {renderBadge()}
-            {getReleaseWarning()}
-
-            {/* Actions (Flip / Why) - Acid Style - Always visible on mobile, hover on desktop */}
-            <div className="absolute bottom-0 left-0 right-0 p-2 flex justify-between items-end z-20 opacity-100 md:opacity-0 md:group-hover/card:opacity-100 transition-opacity">
-                <div className="flex gap-2">
-                    {/* Flip Button */}
-                    <button
-                        onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setFlipContent(flipContent === "synopsis" ? null : "synopsis");
-                        }}
-                        className="p-1.5 bg-black border border-primary text-primary hover:bg-primary hover:text-black transition-colors"
-                        title={t("movie.synopsis")}
-                        aria-label={t("movie.flip_card")}
-                    >
-                        <RotateCcw className="w-4 h-4" />
-                    </button>
-
-                    {/* Why Button */}
-                    {contributors && contributors.length > 0 && (
-                        <button
-                            onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setFlipContent(flipContent === "contributors" ? null : "contributors");
-                            }}
-                            className="p-1.5 bg-black border border-zinc-500 text-zinc-400 hover:border-white hover:text-white transition-colors"
-                            title={t("movie.why_recommended")}
-                            aria-label={t("movie.show_logic")}
-                        >
-                            <HelpCircle className="w-4 h-4" />
-                        </button>
-                    )}
-                </div>
-
-                <div className="flex items-center gap-2 text-[10px] font-mono text-zinc-400 bg-black/60 px-2 py-1 rounded backdrop-blur-sm border border-white/10">
-                    {year && <span>{year}</span>}
-                    {runtime && (
-                        <>
-                            <span className="text-zinc-600">|</span>
-                            <span>{runtime}m</span>
-                        </>
-                    )}
-                </div>
-            </div>
-
-            {/* Back of Card - Acid Style */}
-            {isFlipped && (
-                <div className="absolute inset-0 bg-black p-4 flex flex-col z-30 border border-primary">
-                    <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-2">
-                        <h5 className="font-mono font-bold text-xs text-primary uppercase tracking-widest">
-                            {flipContent === "synopsis" ? "SYNOPSIS_DATA" : "LOGIC_TRACE"}
-                        </h5>
-                        <button
-                            onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setFlipContent(null);
-                            }}
-                            className="text-zinc-500 hover:text-primary"
-                            aria-label={t("movie.close_panel")}
-                        >
-                            <RotateCcw className="w-4 h-4 rotate-180" />
-                        </button>
-                    </div>
-
-                    <div className="flex-grow overflow-y-auto custom-scrollbar">
-                        {flipContent === "synopsis" ? (
-                            <div className="space-y-4">
-                                <p className="text-xs text-zinc-300 font-mono leading-relaxed">
-                                    {displayOverview || t("movie.no_synopsis")}
-                                </p>
-                            </div>
-                        ) : (
-                            <div className="space-y-4">
-                                {contributors && contributors.map((c, i) => (
-                                    <div key={i} className="space-y-1">
-                                        <div className="flex justify-between text-[10px] font-mono text-zinc-300">
-                                            <span className="truncate pr-2">{c.seed_title}</span>
-                                            <span className="text-primary">{Math.round(c.contribution * 100)}%</span>
-                                        </div>
-                                        <div className="h-1 bg-zinc-900 w-full">
-                                            <div
-                                                className="h-full bg-primary"
-                                                style={{ width: `${Math.min(100, c.contribution * 100)}%` }}
-                                            />
-                                        </div>
-                                    </div>
-                                ))}
-                                {(!contributors || contributors.length === 0) && (
-                                    <p className="text-xs text-zinc-500 font-mono">
-                                        {t("movie.no_contributors")}
-                                    </p>
-                                )}
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Streaming Providers (Back) */}
-                    {providers.length > 0 && (
-                        <div className="mt-auto pt-3 border-t border-zinc-800">
-                            <div className="flex items-center gap-2 text-[10px] text-zinc-400 font-mono">
-                                <Tv className="w-3 h-3 text-primary" />
-                                <span className="truncate">{providers.join(", ")}</span>
-                            </div>
+                {/* Poster Area */}
+                <div className="relative aspect-[2/3] w-full overflow-hidden bg-black">
+                    {!imageError && posterPath ? (
+                        <Image
+                            src={getTMDBImageUrl(posterPath)}
+                            alt={title}
+                            fill
+                            className="object-cover transition-all duration-500 grayscale group-hover:grayscale-0 group-hover:scale-105 opacity-80 group-hover:opacity-100"
+                            sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 20vw"
+                            priority={priority}
+                            onError={() => setImageError(true)}
+                        />
+                    ) : (
+                        <div className="w-full h-full flex items-center justify-center text-zinc-800">
+                            <Film size={48} strokeWidth={1} />
                         </div>
                     )}
-                </div>
-            )}
-        </div>
-    );
 
-    const GridContent = (
-        <div className="flex flex-col h-full bg-black">
-            {PosterContent}
-
-            {/* Grid Variant Info (Below Poster) */}
-            {variant === "grid" && (
-                <div className="p-3 flex flex-col flex-grow border-t border-zinc-800">
-                    <h4 className="font-mono font-bold text-sm leading-tight mb-2 text-zinc-100 group-hover/card:text-primary transition-colors line-clamp-1 uppercase truncate">
-                        {displayTitle}
-                    </h4>
-
-                    <div className="flex items-center gap-3 text-[10px] font-mono text-zinc-400 mb-3">
-                        {year && <span className="bg-zinc-900 px-1 py-0.5 text-zinc-300">{year}</span>}
-                        {runtime && <span className="text-zinc-400">{runtime}m</span>}
-                    </div>
-
-                    {displayOverview && (
-                        <p className="text-xs text-zinc-400 line-clamp-3 mb-3 flex-grow font-mono leading-relaxed opacity-70">
-                            {displayOverview}
-                        </p>
+                    {/* VB Score Overlay (Top Left) */}
+                    {score > 0 && (
+                        <div className="absolute top-0 left-0 z-20 bg-black/80 border-r border-b border-zinc-800 px-1.5 py-0.5 font-mono text-[10px] font-black text-primary tracking-tighter shadow-[2px_2px_0px_rgba(0,0,0,0.5)]">
+                            {score.toFixed(0)}
+                        </div>
                     )}
 
-                    <div className="mt-auto space-y-2 pt-2 border-t border-zinc-900">
-                        {genres && genres.length > 0 && (
-                            <div className="flex flex-wrap gap-1">
-                                {genres.slice(0, 2).map(g => (
-                                    <span key={g} className="text-[9px] px-1 py-0.5 border border-zinc-800 text-zinc-500 uppercase">
-                                        {g}
-                                    </span>
-                                ))}
-                            </div>
-                        )}
+                    {/* Scanline Effect */}
+                    <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.1)_50%)] z-10 bg-[length:100%_2px] pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity" />
+                    
+                    {/* Top Edge Glow */}
+                    <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
+                </div>
 
-                        {providers.length > 0 && !hideProvidersOnFront && (
-                            <div className="flex items-center gap-1 text-[10px] text-zinc-600 font-mono">
-                                <Tv className="w-3 h-3" />
-                                <span className="truncate">{providers.join(", ")}</span>
-                            </div>
-                        )}
+                {/* Bottom Data Bar */}
+                <div className="bg-black p-3 border-t border-zinc-800 flex flex-col gap-1 z-20">
+                    <div className="flex justify-between items-start gap-2">
+                        <h3 className="font-mono text-[11px] font-bold text-zinc-100 uppercase tracking-tighter truncate flex-1 group-hover:text-primary transition-colors">
+                            {displayTitle}
+                        </h3>
+                    </div>
+
+                    <div className="flex justify-between items-center text-[9px] font-mono text-zinc-600 font-bold tracking-widest mt-1">
+                        <div className="flex gap-2">
+                            <span>{year || "????"}</span>
+                            {runtime && (
+                                <>
+                                    <span>|</span>
+                                    <span>{runtime}M</span>
+                                </>
+                            )}
+                        </div>
                     </div>
                 </div>
-            )}
+            </Link>
+
+            {/* Inspect Button - Absolute positioned to avoid Link click if desired, 
+                but keeping it in a way that we can intercept it */}
+            <button
+                onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onInspect?.(id);
+                }}
+                className="absolute bottom-3 right-3 z-30 text-zinc-500 hover:text-primary p-1 bg-black/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/btn"
+                title={t("movie.inspect") || "INSPECT"}
+            >
+                <Info size={10} className="group-hover/btn:animate-pulse" />
+                <span className="hidden group-hover/btn:inline text-[8px] uppercase font-mono">[i]</span>
+            </button>
+
+            {/* Selection/Hover Frame */}
+            <div className="absolute inset-0 border-2 border-primary opacity-0 group-hover:opacity-5 pointer-events-none transition-opacity z-10" />
         </div>
     );
-
-    const content = (
-        <SpotlightCard
-            className={`group/card relative bg-black border border-zinc-800 hover:border-primary transition-colors cursor-pointer h-full ${className}`}
-            spotlightColor="hsl(var(--primary) / 0.06)"
-            spotlightSize={300}
-        >
-            <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="h-full"
-                onClick={onClick}
-            >
-                {GridContent}
-            </motion.div>
-        </SpotlightCard>
-    );
-
-    // Use programmatic navigation if href is present to avoid nested interactive elements (buttons)
-    if (href) {
-        return (
-            <a
-                href={href}
-                onClick={(e) => {
-                    // Solo interceptar click izquierdo normal (no middle, no ctrl+click)
-                    if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
-                        e.preventDefault();
-                        router.push(href);
-                    }
-                }}
-                onKeyDown={(e) => {
-                    if (e.target !== e.currentTarget) return;
-                    if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        router.push(href);
-                    }
-                }}
-                className="block h-full cursor-pointer"
-                tabIndex={0}
-            >
-                {content}
-            </a>
-        );
-    }
-
-    return content;
 }
