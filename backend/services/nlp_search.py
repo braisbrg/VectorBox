@@ -24,6 +24,7 @@ class MovieSearchIntent(BaseModel):
     popularity_vibe: Literal["blockbuster", "hidden_gem", "any"] = Field("any", description="Select 'hidden_gem' for obscure/underrated, 'blockbuster' for famous/hits.")
     original_language: Optional[str] = Field(None, description="ISO 639-1 language code.")
     reference_movie: Optional[str] = Field(None, description="If user asks for movies 'like' X, extract title.")
+    quality_gate_bypass: bool = Field(False, description="Set True when user seeks campy, trashy, guilty-pleasure, so-bad-its-good, or B-movie content. Keeps low-scored films in results.")
     reasoning: str = Field(..., description="Briefly explain interpretation logic.")
 
 class ReasonedMovie(BaseModel):
@@ -75,6 +76,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     2. Map vague dates to years ("Classic" -> <1985, "90s" -> 1990-1999).
     3. Map "Hidden Gems" to popularity_vibe='hidden_gem'.
     4. Extract "Like [Movie]" references to `reference_movie`.
+    5. Set `quality_gate_bypass` to True when the user explicitly seeks campy, trashy, guilty-pleasure, "so bad it's good", B-movie, or low-budget cult content.
     """
 
     messages = [

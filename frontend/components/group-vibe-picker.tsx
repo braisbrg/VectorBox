@@ -141,7 +141,7 @@ export function GroupVibePicker() {
                                     metacritic_rating={item.movie.metacritic_rating}
                                     rotten_tomatoes_rating={item.movie.rotten_tomatoes_rating}
                                     title_es={item.movie.title_es}
-                                    overview_es={item.movie.overview_es}
+                                    onInspect={() => {}} // Placeholder
                                 />
                             );
                         })}

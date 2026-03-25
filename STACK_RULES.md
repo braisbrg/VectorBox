@@ -233,6 +233,14 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **API Timeout Enforcement:** All Server-Side Rendering `fetch` calls MUST implement an `AbortController` bounded to a 10s maximum timeout to prevent hanging connections.
 - **Console Hygiene:** `console.log` and `console.error` MUST NOT leak internal API structures or interceptor states to the production browser console. Use scoped error boundaries instead.
 
+## 9. Git Workflow & Version Control
+
+- **Rule:** Never commit directly to `main`.
+- **Branching:** Use `develop` as the active development branch. Create `feature/*` branches from `develop` for any new changes or features.
+- **Commit Messages:** Follow standard semantic formats (`feat:`, `fix:`, `refactor:`, `perf:`, `docs:`).
+- **Merging & Releases:** Only merge `develop` to `main` when stable and tested. Tag every merge to `main` with a Semantic Versioning tag (e.g., `v1.4.0`).
+- **Release Ages:** Dependabot handles dependency release ages.
+
 ---
 
 **Last Updated:** 2026-03-19

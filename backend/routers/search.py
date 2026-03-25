@@ -309,6 +309,19 @@ async def natural_language_search(
                 final_score = (final_score * 0.5) + (title_score * 0.5)
                 logger.info(f"Blended score for {metadata.get('title')} (Sim: {title_sim:.2f}): {final_score}")
 
+            # Imp 3: Dynamic quality gate — apply sigmoid weight after normalization
+            vb_score = db_movie.vectorbox_score if db_movie else None
+            if vb_score is not None:
+                import math as _math
+                if intent.quality_gate_bypass:
+                    # Relaxed sigmoid for campy/trash/guilty-pleasure intent
+                    midpoint, steepness = 25, 0.10
+                else:
+                    # Default quality gate
+                    midpoint, steepness = 65, 0.15
+                weight = 1.0 / (1.0 + _math.exp(-steepness * (vb_score - midpoint)))
+                final_score = final_score * weight
+
             result = {
                 "movie_id": tmdb_id,
                 "title": metadata.get("title", "Unknown"),

@@ -169,6 +169,10 @@ class FeedService:
         recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
         return await recommender.get_auteur_section(user_id, country, seen_ids, provider_service=provider_service)
 
+    async def get_cult_actor_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None) -> Optional[FeedSection]:
+        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
+        return await recommender.get_cult_actor_section(user_id, country, seen_ids, provider_service=provider_service)
+
     async def get_main_feed(
         self,
         user_id: int,
@@ -302,6 +306,16 @@ class FeedService:
                 logger.error(f"Feed Task Failed [Auteur]: {e}")
                 return None
 
+        async def task_cult_actor():
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant)
+                    return await recommender.get_cult_actor_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Cult Actor]: {e}")
+                return None
+
         async def task_deep_dive():
             try:
                 async with AsyncSessionLocal() as session:
@@ -324,6 +338,7 @@ class FeedService:
             task_random(),
             task_hidden(),
             task_auteur(),
+            task_cult_actor(),
             task_available(),
             task_deep_dive(),
         ]
@@ -339,6 +354,7 @@ class FeedService:
             section_random,
             section_c,
             section_auteur,
+            section_cult_actor,
             section_d,
             section_deep_dive,
         ) = results
@@ -353,6 +369,7 @@ class FeedService:
             section_a,
             section_b,
             section_auteur,
+            section_cult_actor,
             section_wildcard,
             section_random,
             section_c,

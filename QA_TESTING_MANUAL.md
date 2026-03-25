@@ -18,7 +18,7 @@ Before starting, confirm **all** of the following:
 | 2 | `.env` file exists with valid keys (see §0) | ☐ |
 | 3 | Chrome/Firefox with DevTools access | ☐ |
 | 4 | Letterboxd export ZIP available (`ratings.csv`, `watchlist.csv`) | ☐ |
-| 5 | Project is on `master` branch, git tree is clean | ☐ |
+| 5 | Project is on `main` branch, git tree is clean | ☐ |
 
 ### § 0: Required `.env` Keys
 
@@ -245,7 +245,7 @@ On `/login`, observe the login button.
 | Deep Analysis toggle | Brain icon changes glow state | ☐ |
 
 ### Step 3.4: SpotlightCard (Movie Cards)
-Hover over any movie poster in Feed or Grid.
+Hover over any movie poster in the Feed.
 
 | Check | Expected | Pass? |
 |:------|:---------|:-----:|

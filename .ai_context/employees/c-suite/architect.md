@@ -162,4 +162,12 @@ This Architect role has final authority on:
 
 ---
 
+## 6. Version Control (Git)
+
+- **CRITICAL:** NEVER commit directly to `main`.
+- **Active Development:** All changes must occur on `feature/*` branches checking out from `develop`.
+- **Releases:** Merges to `main` are specifically for stable, tested releases and must be tagged via Semantic Versioning (`v1.X.Y`).
+
+---
+
 *This document supersedes conflicting guidance in other files.*

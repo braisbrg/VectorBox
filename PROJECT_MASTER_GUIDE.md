@@ -42,9 +42,10 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Animation:** **Framer Motion 12.34.0**. Powers all complex transitions, hover states, and carousel physics.
 - **Utilities:** `tailwind-merge` v3 (Major version) + `clsx`.
 - **Package Manager:** **pnpm**. Enforced via `STACK_RULES.md`.
-- **Design System:** **Acid Design**. High-contrast neon aesthetics (`text-[#CCFF00]`, `bg-black/95`) with `Space Mono` typography.
+- **Design System:** **Acid Design / Brutalist**. High-contrast neon aesthetics (`text-[#CCFF00]`, `bg-[#0a0a0a]`) with `Space Mono` typography. Global `80%` scaling on Desktop. `0px` border-radius enforced.
+- **Layout Architecture:** 3-Pane interface (Sidebar, Feed, Right Console for filters and inspection).
 - **Build System:** **Multi-Stage Docker Build**. Uses `output: 'standalone'` to minimize image size (~150MB).
-- **Mobile First:** Fully responsive grid and touch-optimized navigation overlay.
+- **Mobile First:** Fully responsive feed and touch-optimized bottom sheets (Mobile Inspector).
 - **UI UX/Effects:** Custom **"Tweak" System** (inspired by Magic UI / Aceternity concepts).
   - **Components:** `BorderBeam`, `SpotlightCard`, `ShimmerButton`, `GridPattern`.
   - **Filter Visibility (v1.4):** Active filter indicators with descriptive labels and "Clear all" functionality in Watchlist.
@@ -105,6 +106,7 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
     - **Redis Flush**: Post-seed cache clearing.
     - **Feed Warmup**: Smoke test that polls until feed richness ≥ 3 sections.
   - **Automated E2E Suite**: Playwright-based QA suite covering Auth, Feed, Security (109 tests).
+- **Version Control:** Branching model enforces that all work starts from `develop` via `feature/*` branches. Commits directly to `main` are strictly forbidden. Merges to `main` must occur only for stable releases and be tagged with Semantic Versioning (`v1.X.Y`).
 
 ### Authentication (v1.2)
 - **Model:** Netflix-style profiles with **Username + 4-digit PIN**.
@@ -280,8 +282,8 @@ The frontend (`next.config.js`) enforces:
 - **`app/`**: Next.js App Router pages (`page.tsx` for feed).
 - **`components/`**: React components.
   - `magic-search.tsx`: The UI for the NLP search bar.
-  - `feed-container.tsx`: The main scrollable feed.
-  - `recommendation-grid.tsx`: Displays movie cards.
+  - `feed-container.tsx`: The main scrollable feed component.
+  - `right-console.tsx`: The Data Inspector and global filters console.
 - **`ui/`**: Reusable primitives settings (buttons, dialogs).
 
 ---

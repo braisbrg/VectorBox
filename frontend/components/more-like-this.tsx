@@ -251,6 +251,7 @@ export function MoreLikeThis({ userId }: MoreLikeThisProps) {
                                         rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
                                         title_es={movie.title_es}
                                         overview_es={movie.overview_es}
+                                        onInspect={() => {}} // Placeholder
                                     />
                                 </motion.div>
                             ))}

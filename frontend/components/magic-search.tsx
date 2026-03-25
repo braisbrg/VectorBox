@@ -225,6 +225,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                                         rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
                                         title_es={movie.title_es}
                                         overview_es={movie.overview_es}
+                                        onInspect={() => {}} // Placeholder or pass from Dashboard
                                     />
                                     {/* AI Reason Overlay for Deep Analysis */}
                                     {movie.ai_reason && (
