@@ -30,36 +30,41 @@ class EmbeddingService:
         # Model is now loaded lazily via get_model()
         pass
     
-    def generate_embedding(self, movie_data: dict, include_title: bool = True) -> np.ndarray:
+    def generate_embedding(self, movie_data: dict, include_title: bool = True, text_override: str = None) -> np.ndarray:
         """
-        Generate embedding from movie metadata
-        Combines: title, overview, genres, keywords
+        Generate embedding from movie metadata.
+        If text_override is provided (e.g. from cinematic enricher), use it directly.
+        Otherwise combines: title, overview, genres, keywords.
         """
         model = get_model()
-        # Build rich text representation (New Format)
-        # Format: f"{title}. {overview}. Genres: {genres}. Themes: {keywords_string}"
         
-        parts: List[str] = []
-        
-        if include_title and movie_data.get("title"):
-             parts.append(movie_data["title"])
-             
-        if movie_data.get("overview"):
-            parts.append(movie_data["overview"])
+        if text_override:
+            combined_text = text_override
+        else:
+            # Build rich text representation (New Format)
+            # Format: f"{title}. {overview}. Genres: {genres}. Themes: {keywords_string}"
             
-        if movie_data.get("genres"):
-            genres = movie_data["genres"]
-            if isinstance(genres, list) and genres:
-                parts.append(f"Genres: {', '.join(genres)}")
+            parts: List[str] = []
+            
+            if include_title and movie_data.get("title"):
+                 parts.append(movie_data["title"])
+                 
+            if movie_data.get("overview"):
+                parts.append(movie_data["overview"])
                 
-        if movie_data.get("keywords"):
-            keywords = movie_data["keywords"]
-            if isinstance(keywords, list) and keywords:
-                # Limit to top 15 keywords to prevent noise
-                kw_str = ", ".join(keywords[:15])
-                parts.append(f"Themes: {kw_str}")
-        
-        combined_text = ". ".join(parts)
+            if movie_data.get("genres"):
+                genres = movie_data["genres"]
+                if isinstance(genres, list) and genres:
+                    parts.append(f"Genres: {', '.join(genres)}")
+                    
+            if movie_data.get("keywords"):
+                keywords = movie_data["keywords"]
+                if isinstance(keywords, list) and keywords:
+                    # Limit to top 15 keywords to prevent noise
+                    kw_str = ", ".join(keywords[:15])
+                    parts.append(f"Themes: {kw_str}")
+            
+            combined_text = ". ".join(parts)
         
         if not combined_text:
             raise ValueError("No text available for embedding generation")

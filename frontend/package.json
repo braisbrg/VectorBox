@@ -48,14 +48,15 @@
     "eslint": "9.39.4",
     "eslint-config-next": "16.1.6",
     "husky": "^9.1.7",
-    "lint-staged": "^16.3.3",
+    "lint-staged": "^16.4.0",
     "typescript": "5.9.3"
   },
   "pnpm": {
     "overrides": {
       "minimatch": ">=10.2.3",
       "ajv": ">=8.18.0",
-      "flatted": ">=3.4.2"
+      "flatted": ">=3.4.2",
+      "picomatch": ">=4.0.4"
     }
   }
 }
