@@ -6,6 +6,7 @@ from models.database import Movie
 from services.tmdb_client import TMDBClient
 from services.omdb_client import OMDbClient
 from services.embedding_service import EmbeddingService
+from services.cinematic_enricher import generate_cinematic_description
 from qdrant_client.models import PointStruct
 
 logger = logging.getLogger(__name__)
@@ -16,10 +17,11 @@ class MovieFactory:
     Unifies logic from seed_db.py and movie_service.py.
     """
 
-    def __init__(self, tmdb_client: TMDBClient, omdb_client: OMDbClient, embedding_service: EmbeddingService):
+    def __init__(self, tmdb_client: TMDBClient, omdb_client: OMDbClient, embedding_service: EmbeddingService, groq_client=None):
         self.tmdb = tmdb_client
         self.omdb = omdb_client
         self.embedding_service = embedding_service
+        self.groq_client = groq_client
 
     async def build_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None) -> Tuple[Optional[Movie], Optional[PointStruct]]:
         """
@@ -84,15 +86,33 @@ class MovieFactory:
             )
 
             # 5. Generate Embedding
-            # Use keywords if available
+            # Try LLM-enriched cinematic description first
             keywords = movie.keywords or []
+            text_override = None
             
-            vector = self.embedding_service.generate_embedding({
-                "title": movie.title,
-                "overview": movie.overview,
-                "genres": movie.genres,
-                "keywords": keywords
-            })
+            if self.groq_client:
+                try:
+                    text_override, model_used = await generate_cinematic_description(
+                        title=movie.title or "",
+                        overview=movie.overview or "",
+                        genres=movie.genres or [],
+                        keywords=keywords,
+                        directors=movie.directors or [],
+                        cast=movie.cast or [],
+                        year=movie.year or 0,
+                        groq_client=self.groq_client,
+                    )
+                    # Only mark as enriched if an LLM model actually produced it
+                    if model_used is not None:
+                        movie.has_enriched_embedding = True
+                except Exception as e:
+                    logger.warning(f"Cinematic enrichment failed for {movie.title}: {e}")
+                    text_override = None
+
+            vector = self.embedding_service.generate_embedding(
+                {"title": movie.title, "overview": movie.overview, "genres": movie.genres, "keywords": keywords},
+                text_override=text_override,
+            )
 
             # 6. Construct PointStruct (Qdrant)
             point = PointStruct(

@@ -45,7 +45,7 @@ This file serves as the **strict enforcement layer** for the VectorBox project. 
 **Requirement:** When running parallel tasks (e.g., `asyncio.gather`), you **MUST** create a fresh, isolated session for each task:
 
 ```python
-# ✅ CORRECT: Fresh session per concurrent task
+# ✅ CORRECT: Fresh session per concurrent task (e.g., FeedService 11 parallel tasks)
 async def process_items(item_ids: list[int]):
     async def process_one(item_id: int):
         async with AsyncSessionLocal() as session:  # Fresh session!
@@ -119,7 +119,7 @@ providers = await session.execute(
 
 ### Caching Policy (Completeness Guard)
 - **Rule**: Feeds with < 3 sections MUST NOT be cached in Redis.
-- **Reason**: Prevents cache poisoning from cold starts or SSR races.
+- **Reason**: Prevents cache poisoning from cold starts or SSR races. `rss.py` actively sweeps and deletes invalid caches `feed:*:{user_id}:*` after background syncs.
 
 ### Hardcoded Secrets & Console Leaks
 - All secrets must come from environment variables.
@@ -159,6 +159,14 @@ This Architect role has final authority on:
 4. Performance optimization strategies
 
 **Escalation Path:** Any deviation from these rules requires explicit Architect approval with documented rationale.
+
+---
+
+## 6. Version Control (Git)
+
+- **CRITICAL:** NEVER commit directly to `main`.
+- **Active Development:** All changes must occur on `feature/*` branches checking out from `develop`.
+- **Releases:** Merges to `main` are specifically for stable, tested releases and must be tagged via Semantic Versioning (`v1.X.Y`).
 
 ---
 

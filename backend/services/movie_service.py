@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 _enriching_now: set[int] = set()
 
 class MovieService:
-    def __init__(self, db: AsyncSession, tmdb: TMDBClient = None):
+    def __init__(self, db: AsyncSession, tmdb: TMDBClient = None, groq_client=None):
         self.db = db
         self._owns_tmdb = tmdb is None
         self.tmdb = tmdb or TMDBClient()
@@ -23,7 +23,7 @@ class MovieService:
         self.qdrant = QdrantService()
         self.embedding_service = EmbeddingService()
         self.provider_service = ProviderService(db, self.tmdb)
-        self.factory = MovieFactory(self.tmdb, self.omdb, self.embedding_service)
+        self.factory = MovieFactory(self.tmdb, self.omdb, self.embedding_service, groq_client=groq_client)
 
     async def get_or_create_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None) -> Optional[Movie]:
         """

@@ -13,6 +13,7 @@ interface WatchlistViewProps {
     username: string;
     countryCode?: string;
     streamingProviders?: number[];
+    onInspect?: (id: number) => void;
 }
 
 const WATCHLIST_FILTERS_KEY = "watchlist_filters";
@@ -36,7 +37,7 @@ const getPersistedFilters = (): Partial<WatchlistFilters> | null => {
     return null;
 };
 
-export function WatchlistView({ userId, username, countryCode = "ES", streamingProviders = [] }: WatchlistViewProps) {
+export function WatchlistView({ userId, username, countryCode = "ES", streamingProviders = [], onInspect }: WatchlistViewProps) {
     const [showFilters, setShowFilters] = useState(false);
     const [page, setPage] = useState(1);
     const LIMIT = 20;
@@ -388,9 +389,9 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                         badgeType="rating"
                                         overview={item.overview}
                                         vectorbox_score={item.vectorbox_score}
-                                        imdb_rating={item.imdb_rating}
                                         metacritic_rating={item.metacritic_rating}
                                         rotten_tomatoes_rating={item.rotten_tomatoes_rating}
+                                        onInspect={onInspect}
                                     />
                                 </motion.div>
                             ))}

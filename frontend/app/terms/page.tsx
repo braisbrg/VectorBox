@@ -179,7 +179,7 @@ export default function TermsPage() {
                             <span className="text-zinc-300">vectorbox.app@proton.me</span>.
                         </p>
                         <p className="text-sm text-zinc-500 mt-4 font-[var(--font-mono-acid)]">
-                            Last updated: March 11, 2026
+                            Last updated: March 26, 2026
                         </p>
                     </section>
                 </div>

@@ -2,7 +2,7 @@ import logging
 import asyncio
 from typing import List, Dict, Set, Optional, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, or_, func, text
+from sqlalchemy import select, desc, or_, func, text, cast, String
 from collections import Counter
 import random
 import math
@@ -71,7 +71,7 @@ class RecommendationService:
 
         signal_a_task = measure_signal("A (Vibe)", "get_signal_a_vibe", user_id, exclude_ids=seen_ids, background_tasks=background_tasks)
         signal_b_task = measure_signal("Auteur", "get_signal_b_auteur", user_id, exclude_ids=seen_ids)
-        signal_c_task = measure_signal("C (Crowd)", "get_signal_c_crowd", user_id, exclude_ids=seen_ids)
+        signal_c_task = measure_signal("C (Crowd)", "get_signal_c_crowd", user_id, exclude_ids=seen_ids, background_tasks=background_tasks)
         
         results = await asyncio.gather(signal_a_task, signal_b_task, signal_c_task, return_exceptions=True)
         
@@ -262,43 +262,45 @@ class RecommendationService:
     async def _compute_auteur_signal_raw(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
         """
         Raw computation for Signal Auteur: The Auteur Expert (Metadata Graph)
+        Imp 8: Uses weighted point system instead of hard count threshold.
         """
-        # 1. Analyze Top Directors
-        # Get highly rated movies
-        stmt = select(Movie.directors).join(UserRating, Movie.id == UserRating.movie_id)\
+        from services.recommendation_engine import _director_weight
+
+        # 1. Analyze Top Directors with weighted scoring
+        # Get rated/liked movies (lowered threshold to 3.0 for weighted system)
+        stmt = select(UserRating, Movie).join(Movie, UserRating.movie_id == Movie.id)\
         .where(
             UserRating.user_id == user_id,
             or_(
-                UserRating.rating >= 4.0,
+                UserRating.rating >= 3.0,
                 UserRating.is_liked.is_(True)
             )
         )
             
         result = await self.db.execute(stmt)
-        all_directors = []
-        for row in result:
-            if row.directors:
-                all_directors.extend(row.directors)
-                
-        if not all_directors:
+        rated_movies = result.all()
+
+        if not rated_movies:
             return []
-            
-        # Top 5 Directors
-        director_counts = Counter(all_directors)
-        top_directors = [name for name, count in director_counts.most_common(5) if count >= 2]
+
+        # Build weighted director scores
+        director_scores: Dict[str, float] = {}
+        for rating_obj, movie in rated_movies:
+            if not movie.directors:
+                continue
+            effective_rating = rating_obj.rating or 4.5  # liked = 4.5
+            weight = _director_weight(effective_rating)
+            if weight > 0:
+                for director in movie.directors:
+                    director_scores[director] = director_scores.get(director, 0) + weight
+
+        # Imp 8: Director activates at >= 3.0 points
+        top_directors = [name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True) if score >= 3.0][:5]
         
         if not top_directors:
             return []
             
         # 2. Query DB for matches
-        # We use ARRAY overlap operator "&&" if using specific dialect, but standard ANY is safer
-        # SQL: SELECT * FROM movies WHERE directors && ARRAY['Nolan', 'Villeneuve']
-        # SQLAlchemy pg dialect supports overlapping
-        
-        # Since we are using ARRAY(String), we can use overlap
-        # But to be safe and simple, let's fetch candidates that have ANY of these directors
-        # And VectorBox Score > 70 (High Quality)
-        
         stmt = select(Movie).where(
             Movie.vectorbox_score > 70,
             Movie.directors.overlap(top_directors)
@@ -307,7 +309,6 @@ class RecommendationService:
         candidates = (await self.db.execute(stmt)).scalars().all()
         
         # Filter watched/excluded
-        # We need watched IDs first
         watched_stmt = select(UserRating.movie_id).where(
             UserRating.user_id == user_id, UserRating.is_watched.is_(True)
         )
@@ -321,7 +322,7 @@ class RecommendationService:
             
         return final_list[:50]
 
-    async def get_signal_c_crowd(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
+    async def get_signal_c_crowd(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
         """
         Signal C: The Crowd Expert (Collaborative Filtering via TMDB)
         "People who liked X also liked Y"
@@ -337,11 +338,11 @@ class RecommendationService:
         return await self._get_signal_with_cache_and_lock(
             user=user_obj,
             signal_type="crowd",
-            params={"exclude_ids": list(exclude_ids)},
+            params={"exclude_ids": list(exclude_ids), "background_tasks": background_tasks},
             compute_method=self._compute_crowd_signal_raw
         )
 
-    async def _compute_crowd_signal_raw(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
+    async def _compute_crowd_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
         """
         Raw computation for Signal C: The Crowd Expert (Collaborative Filtering via TMDB)
         """
@@ -386,20 +387,20 @@ class RecommendationService:
 
         # 4. Ingest only the missing ones (max 5 to avoid long waits)
         missing_ids = [tid for tid in all_tmdb_ids if tid not in existing_tmdb_ids][:5]
-        newly_ingested: List[Movie] = []
         for tid in missing_ids:
             try:
-                movie = await self.movie_service.get_or_create_movie(tid)
-                if movie:
-                    newly_ingested.append(movie)
+                if background_tasks:
+                    background_tasks.add_task(self.movie_service.get_or_create_movie, tid)
+                    logger.debug(f"[Signal C] Queued background ingest for TMDB {tid}")
+                else:
+                    logger.debug(f"[Signal C] Skipping auto-ingest for {tid} — no background_tasks")
             except Exception as e:
-                logger.warning(f"[Signal C] Could not ingest TMDB {tid}: {e}")
+                logger.warning(f"[Signal C] Could not queue ingest TMDB {tid}: {e}")
 
-        # 5. Combine and deduplicate
-        all_movies = list(existing_movies) + newly_ingested
+        # 5. Filter and deduplicate
         seen_local: Set[int] = set()
         unique: List[Movie] = []
-        for m in all_movies:
+        for m in existing_movies:
             if m.id not in seen_local and m.tmdb_id not in exclude_ids:
                 unique.append(m)
                 seen_local.add(m.id)
@@ -468,30 +469,40 @@ class RecommendationService:
         }
 
         # 4. MMR Reranking (diversity-aware, CPU-bound → executor)
-        loop = asyncio.get_running_loop()
-        mmr_func = functools.partial(
-            self.clustering.mmr_rerank,
-            top_candidates,
-            vectors_map,
-            10,          # limit: 10 final items
-            0.7          # lambda_param: 70% relevance, 30% diversity
-        )
-        try:
-            final_list = await loop.run_in_executor(None, mmr_func)
-        except Exception as e:
-            logger.error(f"[Trident] MMR failed, falling back to top-10: {e}")
-            # Fallback: simple collection collapsing
-            seen_collections: set = set()
-            final_list = []
-            for c in candidates:
-                m = c["movie"]
-                if m.collection_id:
-                    if m.collection_id in seen_collections:
-                        continue
-                    seen_collections.add(m.collection_id)
-                final_list.append(c)
-                if len(final_list) >= 10:
-                    break
+        # Filtrar candidatos que no tienen vector en Qdrant
+        mmr_candidates_with_vectors = [
+            c for c in top_candidates 
+            if tmdb_to_internal.get(c["movie"].tmdb_id) in vectors_map
+        ]
+
+        if len(mmr_candidates_with_vectors) < 3:
+            # No hay suficientes vectores, usar top-10 directo
+            final_list = top_candidates[:10]
+        else:
+            loop = asyncio.get_running_loop()
+            mmr_func = functools.partial(
+                self.clustering.mmr_rerank,
+                mmr_candidates_with_vectors,
+                vectors_map,
+                10,          # limit: 10 final items
+                0.7          # lambda_param: 70% relevance, 30% diversity
+            )
+            try:
+                final_list = await loop.run_in_executor(None, mmr_func)
+            except Exception as e:
+                logger.error(f"[Trident] MMR failed, falling back to top-10: {e}")
+                # Fallback: simple collection collapsing
+                seen_collections: set = set()
+                final_list = []
+                for c in candidates:
+                    m = c["movie"]
+                    if m.collection_id:
+                        if m.collection_id in seen_collections:
+                            continue
+                        seen_collections.add(m.collection_id)
+                    final_list.append(c)
+                    if len(final_list) >= 10:
+                        break
 
         # 5. Batch-fetch providers (single query, no N+1)
         feed_items = []
@@ -564,6 +575,115 @@ class RecommendationService:
         return FeedSection(
             id="auteur_picks",
             title="From Your Favorite Directors",
+            items=items
+        )
+
+    @safe_execution(fallback_return=FeedSection(id="cult_actor", title="Cast Picks", items=[]))
+    async def get_cult_actor_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
+        """
+        Imp 2: Cast-based auteur signal — "Because you follow {actor_name}"
+        """
+        from services.recommendation_engine import _director_weight
+
+        # 1. Get rated/liked movies with cast data
+        stmt = select(UserRating, Movie).join(Movie, UserRating.movie_id == Movie.id)\
+            .where(
+                UserRating.user_id == user_id,
+                or_(
+                    UserRating.rating >= 3.5,
+                    UserRating.is_liked.is_(True)
+                )
+            )
+        result = await self.db.execute(stmt)
+        rated_movies = result.all()
+
+        if not rated_movies:
+            return FeedSection(id="cult_actor", title="Cast Picks", items=[])
+
+        # 2. Build weighted frequency counter over first 3 billed actors
+        actor_scores: Dict[str, float] = {}
+        for rating_obj, movie in rated_movies:
+            if not movie.cast:
+                continue
+            effective_rating = rating_obj.rating or 4.5  # liked = 4.5
+            weight = _director_weight(effective_rating)
+            if weight > 0:
+                for actor in movie.cast[:3]:  # First 3 billed only
+                    actor_scores[actor] = actor_scores.get(actor, 0) + weight
+
+        # Threshold: actor must have >= 2.5 points
+        qualifying_actors = [
+            (name, score) for name, score in sorted(actor_scores.items(), key=lambda x: x[1], reverse=True)
+            if score >= 2.5
+        ]
+
+        if not qualifying_actors:
+            return FeedSection(id="cult_actor", title="Cast Picks", items=[])
+
+        # 3. Top 2 cult actors
+        top_actors = qualifying_actors[:2]
+        actor_name = top_actors[0][0]  # Use top actor for title
+
+        # Get watched IDs
+        watched_stmt = select(UserRating.movie_id).where(
+            UserRating.user_id == user_id, UserRating.is_watched.is_(True)
+        )
+        watched_ids = set((await self.db.execute(watched_stmt)).scalars().all())
+
+        # 4. Find their unwatched films
+        actor_names = [a[0] for a in top_actors]
+        all_items = []
+
+        for actor in actor_names:
+            # Query movies where cast contains this actor, not watched
+            stmt = select(Movie).where(
+                Movie.cast.any(actor),
+                Movie.vectorbox_score.isnot(None)
+            ).order_by(desc(Movie.vectorbox_score)).limit(15)
+            
+            candidates = (await self.db.execute(stmt)).scalars().all()
+            
+            for m in candidates:
+                if m.tmdb_id in seen_ids or m.id in watched_ids:
+                    continue
+                all_items.append(m)
+
+        # Deduplicate
+        seen_local: Set[int] = set()
+        unique_movies = []
+        for m in all_items:
+            if m.id not in seen_local:
+                unique_movies.append(m)
+                seen_local.add(m.id)
+
+        unique_movies = unique_movies[:15]
+
+        # Batch fetch providers
+        if provider_service and unique_movies:
+            movie_ids = [m.id for m in unique_movies]
+            providers_map = await provider_service.get_providers_batch(movie_ids, country)
+        else:
+            providers_map = {}
+
+        items = []
+        for m in unique_movies:
+            p_data = providers_map.get(m.id, [])
+            flat_providers = [p["provider_name"] for p in p_data]
+            items.append(FeedItem(
+                id=m.tmdb_id,
+                title=m.title,
+                poster_url=m.poster_path,
+                match_score=88,
+                streaming_providers=flat_providers,
+                year=m.year,
+                overview=m.overview,
+                vectorbox_score=m.vectorbox_score
+            ))
+            seen_ids.add(m.tmdb_id)
+
+        return FeedSection(
+            id="cult_actor",
+            title=f"Because you follow {actor_name}",
             items=items
         )
 

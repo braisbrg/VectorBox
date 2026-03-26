@@ -2,8 +2,8 @@
 
 > **Role:** Lead Software Architect Handover
 > **Target Audience:** CTO / Senior Developers
-> **Version:** 1.4.0 (Enhanced Metadata & UI)
-> **Last Updated:** 2026-03-19
+> **Version:** 1.5.0 (Trident v2: LLM Embeddings & Medoids)
+> **Last Updated:** 2026-03-26
 
 This document serves as the absolute source of truth for the **VectorBox** (internal codename: *LetterboxRecommender* / *CineMatch*) project. It documents the existing state of the codebase, detailing architecture, algorithms, and logical flows.
 
@@ -42,9 +42,10 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Animation:** **Framer Motion 12.34.0**. Powers all complex transitions, hover states, and carousel physics.
 - **Utilities:** `tailwind-merge` v3 (Major version) + `clsx`.
 - **Package Manager:** **pnpm**. Enforced via `STACK_RULES.md`.
-- **Design System:** **Acid Design**. High-contrast neon aesthetics (`text-[#CCFF00]`, `bg-black/95`) with `Space Mono` typography.
+- **Design System:** **Acid Design / Brutalist**. High-contrast neon aesthetics (`text-[#CCFF00]`, `bg-[#0a0a0a]`) with `Space Mono` typography. Global `80%` scaling on Desktop. `0px` border-radius enforced.
+- **Layout Architecture:** 3-Pane interface (Sidebar, Feed, Right Console for filters and inspection).
 - **Build System:** **Multi-Stage Docker Build**. Uses `output: 'standalone'` to minimize image size (~150MB).
-- **Mobile First:** Fully responsive grid and touch-optimized navigation overlay.
+- **Mobile First:** Fully responsive feed and touch-optimized bottom sheets (Mobile Inspector).
 - **UI UX/Effects:** Custom **"Tweak" System** (inspired by Magic UI / Aceternity concepts).
   - **Components:** `BorderBeam`, `SpotlightCard`, `ShimmerButton`, `GridPattern`.
   - **Filter Visibility (v1.4):** Active filter indicators with descriptive labels and "Clear all" functionality in Watchlist.
@@ -60,12 +61,13 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Validation:** **Pydantic V2**. Strongly typed data models for all inputs/outputs, including external responses (OMDb, Qdrant) via `external_schemas.py`.
 - **Scraper:** **curl_cffi 0.7.4**. Impersonates Chrome 120 for evasion.
 - **AI/ML Layer:**
-  - **Groq:** Primary and only Provider.
-    - **Tier 1 (Speed):** `meta-llama/llama-4-scout-17b-16e-instruct` (Search Bar).
-    - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile` ("Deep Analysis" & Retry).
-    - **Tier 3 (Fallback):** `openai/gpt-oss-120b` (Groq fallback).
+  - **Groq:** Primary and only Provider for AI metadata generation and semantic search intent parsing.
+    - **Tier 1 (Speed):** `meta-llama/llama-4-scout-17b-16e-instruct` (Search Bar & Primary Embedding Enrichment).
+    - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile` ("Deep Analysis" & Fallback Enrichment).
+    - **Tier 3 (Alternative):** `llama-3.1-8b-instant` (Final Fallback for Enrichment).
+    - **Fallback:** `openai/gpt-oss-120b` (Final Groq fallback for search).
   - **Instructor:** Python library to force structured JSON outputs from LLMs. (Strictly utilizes `AsyncOpenAI` clients to prevent event loop blocking).
-  - **Sentence-Transformers:** Local inference using `all-MiniLM-L6-v2` (**CPU Optimized**) for embedding generation. Singleton Pattern enforced.
+  - **Sentence-Transformers:** Local inference using `all-MiniLM-L6-v2` (**CPU Optimized**) for embedding generation. Embeddings are generated from rich, LLM-generated cinematic descriptions rather than rigid string concatenations. Singleton Pattern enforced.
 
 ### Service Instantiation (Dependency Injection)
 - **Global HTTP Client:** The FastAPI `lifespan` initializes a single global `httpx.AsyncClient` attached to `app.state` to leverage connection pooling effectively across all external requests.
@@ -105,6 +107,7 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
     - **Redis Flush**: Post-seed cache clearing.
     - **Feed Warmup**: Smoke test that polls until feed richness ≥ 3 sections.
   - **Automated E2E Suite**: Playwright-based QA suite covering Auth, Feed, Security (109 tests).
+- **Version Control:** Branching model enforces that all work starts from `develop` via `feature/*` branches. Commits directly to `main` are strictly forbidden. Merges to `main` must occur only for stable releases and be tagged with Semantic Versioning (`v1.X.Y`).
 
 ### Authentication (v1.2)
 - **Model:** Netflix-style profiles with **Username + 4-digit PIN**.
@@ -117,17 +120,18 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 ## 2. Feature Catalogue (The "What")
 
 ### A. The Feed (Home Page)
-The feed is composed of multiple "Sections", generated largely in parallel by `FeedService` using **Batch Fetching** to eliminate N+1 queries.
+The feed is composed of multiple "Sections", generated largely in parallel by `FeedService` using **Batch Fetching** to eliminate N+1 queries. It runs **11 parallel tasks**.
 
 | Section | Logic / Source |
 | :--- | :--- |
 | **Available Now** | **Priority Row.** Fetches user's *unwatched* Watchlist items that are currently streaming on their active providers (Netflix, etc.). |
 | **Popular on Letterboxd** | Fetches trending movies from TMDB/Letterboxd (cached via `ThreadingService`). |
-| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated or liked movie from user history, generates a *content-only* vector (ignoring title), and finds similar vectors in Qdrant. Deduplicated into a single `_item_to_item_search()` helper in `search.py`. |
-| **Your Taste ([Cluster])** | **Centroid Search.** Picks one of the user's "Taste Clusters" (e.g., "80s Sci-Fi"), computes the centroid of that cluster, and searches Qdrant. |
-| **Hidden Gems** | **Score-to-Hype Filtering (v1.2).** Searches Qdrant near user's global profile centroid with **dynamic thresholds** based on user's movie count: Cold start (<30 movies) uses `score > 60, popularity < 40, votes > 200`; Growing (30–99) uses `score > 65, popularity < 30, votes > 300`; Rich (100+) uses `score > 75, popularity < 20, votes > 500`. Identifies critically acclaimed but underexposed films. |
-| **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic (see Algorithms) to find movies similar to the user's favorites. Now runs fully in PARALLEL with the other feed tasks for maximum performance. |
-| **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. |
+| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated or liked movie from user history (with 180-day recency bias), generates an *LLM-enriched* content vector (ignoring title), and finds similar vectors in Qdrant. Re-ranked via MMR and penalized by an anti-vector of low-rated films. Deduplicated into a single `_item_to_search()` helper. |
+| **Cult Actors (Auteur 2.0)** | **Cast CF.** Finds cult actors by weighting the top 3 actors of highly rated movies and boosting those thresholding >= 2.5 points. |
+| **Your Taste ([Cluster])** | **Medoid Search.** Picks one of the user's "Taste Clusters" (e.g., dynamically labeled by Groq as "A24 Dread" or "80s Sci-Fi"), uses the actual **medoid movie vector** (instead of an abstract mathematical centroid), penalizes similarity against the anti-vector of hated films, and searches Qdrant. Re-ranked via MMR. |
+| **Hidden Gems** | **Score-to-Hype Filtering (v1.2).** Searches Qdrant near user's centroid with dynamic thresholds based on user's movie count: Cold start (<30): `score > 60, popularity < 40, votes > 200`; Growing (30–99): `score > 65, popularity < 30, votes > 300`; Rich (100+): `score > 75, popularity < 20, votes > 500`. Includes a 15% Exoticism Boost for non-English/US films before MMR re-ranking. |
+| **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic to find movies similar to user's favorites. Runs fully in PARALLEL. Employs a **Trust Bucket**: filters out films with <5000 votes unless `similarity >= 0.85`. |
+| **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. Also serves as a Cold-Start Fallback (using `Movie.genres.overlap()`) if Signal A or B fail to populate. |
 | **Random Picks** | Random selection from top 500 "VectorBox Scored" movies in DB. |
 
 ### B. The "Magic Box" (NLP Search)
@@ -137,8 +141,10 @@ A natural language search interface powered by `nlp_search.py` with a 3-Tier Cas
     -   `semantic_query`: "organized crime, mafia, noir, crime drama, 1990s" (Expanded synonyms).
     -   `year_min`: 1990, `year_max`: 1999.
     -   `include_genres`: ["Crime", "Drama"].
+    -   `exclude_genres`: [] (Only explicitly asked exclusions from the user, e.g. "not comedy").
     -   `popularity_vibe`: "any".
-3.  **Execution:** `QdrantService` executes a vector search with the expanded query, filtering strictly by year and genre.
+    -   `quality_gate_bypass`: `bool` (Relaxes the quality gate sigmoid penalty for campy or "trashy" intent).
+3.  **Execution:** `QdrantService` executes a vector search with the expanded query, filtering strictly by year and genre. The `must_not` condition is compiled from explicit user `exclude_genres`. For standard searches, weight multiplier `midpoint=65` is used. If `quality_gate_bypass` is true, it drops to `midpoint=25, steepness=0.10`.
 
 ### C. Tools
 - **Group Sync:** (`rss_service.get_group_recommendations_hybrid`) calculates a "Group Vibe" by taking the vectors of multiple users (some from DB, some guests via RSS), finding a centroid, and scoring movies based on *Max Similarity* (rewarding passion) while penalizing movies that *any* single user hates (Similarity < 0.65).
@@ -166,9 +172,9 @@ A natural language search interface powered by `nlp_search.py` with a 3-Tier Cas
 
 ### The "Trident" Hybrid System (Fully Operational)
 VectorBox generates recommendations using three distinct engines fused via **Reciprocal Rank Fusion (RRF)**:
-1.  **Signal A: Vector (Vibe):** Qdrant search using dense embeddings. Captures "Vibe" and plot similarity. Seeds from movies rated 4+ stars **or** explicitly liked (`is_liked`).
-2.  **Signal Auteur (Directors):** Boosts movies by directors the user loves (explicit check against user's high-rated history).
-3.  **Signal C: Hidden Gems:** Score-to-Hype ratio filtering with **dynamic thresholds** that adapt to user's movie count (see Feed section table). Identifies critically acclaimed but underexposed films.
+1.  **Signal A: Vector (Vibe):** Qdrant search using dense embeddings mapped from LLM-enriched cinematic descriptions (Tone, Pacing, Style). Captures "Vibe" and plot similarity better than legacy genres/keywords mapping. Seeds from movies rated 4+ stars **or** explicitly liked (`is_liked`). Now features **anti-vector penalties** (pulls away from disliked 1-2★ films).
+2.  **Signal Auteur (Directors & Cast):** Boosts movies by directors (`get_signal_b_auteur`) and cult actors (`get_cult_actor_section`) the user loves, evaluating past 4-5★ ratings. Employs a **weighted point system** rather than strict counts.
+3.  **Signal C: Hidden Gems:** Score-to-Hype ratio filtering. Adds a 15% Exoticism Boost for foreign films and evaluates dynamic thresholds based on profile size.
 
 ### The Scoring Formula
 Every recommendation gets a final score (0-100%) derived from:
@@ -179,13 +185,16 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Quality Weight (Sigmoid):** A non-linear curve applied to the *VectorBox Score* (0-100).
     - **Formula:** `1 / (1 + e^(-0.15 * (Score - 65)))`
     - **Effect:** Movies with a score > 65 get a boost. Movies < 50 get a heavy penalty. This prevents "relevant trash" from appearing.
+    - **Bypass:** When the Magic Box natural language intent triggers a `quality_gate_bypass` (users specifically asking for trashy or campy films), the sigmoid midpoint relaxes entirely (`midpoint=25`, `steepness=0.10`).
 
 ### Diversity: MMR & Collection Collapsing
-- **MMR (Maximal Marginal Relevance):** Used in `clustering_service.mmr_rerank` (`lambda=0.7`). It re-ranks the top results to penalize items that are too similar to items *already selected* for the list.
+- **MMR (Maximal Marginal Relevance):** Prominently used across `because_you_watched`, `your_taste`, and `hidden_gems`. It re-ranks the top results from `clustering_service.mmr_rerank` (`lambda=0.7`) to penalize items that are too similar to items *already selected* for the list based on their dense 384d vectors.
 - **Collection Collapsing:** In `get_item_based_recommendations`, multiple movies from the same franchise (e.g., *Harry Potter 1, 2, 3*) are collapsed into a single "Super Seed" (the highest-rated one). This prevents a single franchise from flooding the recommendation inputs.
 
 ### Clustering Logic (`ClusteringService`)
-- **Algorithm:** K-Means.
+- **Algorithm:** K-Medoids (via K-Means computation with closest real-vector mapping).
+- **Interpretability:** Stores `medoid_movie_id` representing the real film anchoring the cluster, leading to vastly improved semantic stability over abstract mathematical centroids.
+- **Labels:** Cluster labels are dynamically generated by Groq (2-4 words, e.g., "Neon-noir Revenge") combining the medoid title and dominant genres.
 - **Vectors:** `all-MiniLM-L6-v2` (384d).
 - **Weights:** Movies rated 4+ stars get `1.0` weight. 2-3.5 stars get `0.5`. Others `0.1`.
 - **Recency Bias:** Older ratings decay in weight if `use_recency_bias=True`.
@@ -198,9 +207,9 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 ### Ingestion Pipeline
 1.  **Trigger:** `seed_db.py`, `RSS Sync`, or `Auto-Ingest` (when Qdrant returns a "Ghost" ID not in DB).
 2.  **TMDB API:** `TMDBClient` fetches metadata, credits, keywords, and release dates. **Singleton Instance** prevents connection exhaustion.
-3.  **Vector Generation:** `EmbeddingService` creates a synthetic text chunk: `Title + Overview + Genres + Keywords`. This chunk is embedded locally via `SentenceTransformer`.
+3.  **Vector Generation:** `cinematic_enricher` calls Groq (Scout -> 70B -> 8B -> legacy fallback) to generate a rich 80-word cinematic description (tone, themes, style). `EmbeddingService` then creates a 384d vector from this description via `SentenceTransformer`.
 4.  **Storage:**
-    -   **Postgres:** Stores metadata in `movies` table. Uses atomic `ON CONFLICT DO UPDATE` UPSERTs to prevent Time-Of-Check-To-Time-Of-Use (TOCTOU) race conditions.
+    -   **Postgres:** Stores metadata in `movies` table. Includes `has_enriched_embedding` and `enriched_by_model`. Uses atomic `ON CONFLICT DO UPDATE` UPSERTs to prevent TOCTOU race conditions.
     -   **Qdrant:** Stores vector with payload (TMDB ID, Genres, Year). Batch upserts check for existing payload differences via a quick `scroll` operation to skip redundant I/O writes.
 
 ### Schema & ID Type Key Points
@@ -209,9 +218,9 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
   - `tmdb_id` → `Movie.tmdb_id` (TMDB API identifier)
   - `seen_ids` set (feed deduplication) MUST use `tmdb_id`.
   - `watched_ids` set MUST use `internal_id`.
-- **`movies` table:** Stores `vectorbox_score`, extensive ratings (IMDb, Metacritic, TMDB), and localized `overview_es`.
+- **`movies` table:** Stores `vectorbox_score`, extensive ratings (IMDb, Metacritic, TMDB), and localized `overview_es`. Tracks LLM enrichment status via `has_enriched_embedding` and `enriched_by_model`.
 - **`user_ratings` table:** Links Users to Movies. Contains `is_watched`, `is_watchlist`, `rating`, `watched_date`. `movie_id` is an FK to `Movie.id` (internal).
-- **`user_clusters` table:** Stores the computed K-Means centroids and labels for each user.
+- **`user_clusters` table:** Stores the computed K-Medoid assignments, `medoid_movie_id`, and Groq-generated labels for each user.
 
 ### Caching Strategy
 - **Redis (Master Feed Cache):** Caches the completely assembled Main Feed JSON response for 1 hour per user/region to provide sub-100ms load times.
@@ -280,8 +289,8 @@ The frontend (`next.config.js`) enforces:
 - **`app/`**: Next.js App Router pages (`page.tsx` for feed).
 - **`components/`**: React components.
   - `magic-search.tsx`: The UI for the NLP search bar.
-  - `feed-container.tsx`: The main scrollable feed.
-  - `recommendation-grid.tsx`: Displays movie cards.
+  - `feed-container.tsx`: The main scrollable feed component.
+  - `right-console.tsx`: The Data Inspector and global filters console.
 - **`ui/`**: Reusable primitives settings (buttons, dialogs).
 
 ---
@@ -336,5 +345,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-03-13 (Gold Master / QA Certified)
+**Last Updated:** 2026-03-26 (Trident v2 / Groq Embedded)
 **Maintained By:** VectorBox Team

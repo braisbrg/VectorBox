@@ -1,7 +1,7 @@
 "use client";
 
 import { motion, AnimatePresence } from "framer-motion";
-import { X, LayoutList, Grid3x3, Calendar, Sparkles, Film, Users, Settings, User as UserIcon, LogOut } from "lucide-react";
+import { X, LayoutList, Calendar, Sparkles, Film, Users, Settings, User as UserIcon, LogOut } from "lucide-react";
 import { useMobileNav } from "@/components/mobile-nav-context";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
@@ -21,7 +21,6 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
 
     const menuItems = [
         { id: "feed", label: t("sidebar.feed"), icon: LayoutList },
-        { id: "grid", label: t("sidebar.grid"), icon: Grid3x3 },
         { id: "watchlist", label: t("sidebar.watchlist"), icon: Calendar },
         { id: "ai-search", label: t("sidebar.ai_search"), icon: Sparkles },
         { id: "more-like-this", label: t("sidebar.more_like_this"), icon: Film },

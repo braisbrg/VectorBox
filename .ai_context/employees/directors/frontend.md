@@ -161,7 +161,7 @@ save-exact=false
 | :--- | :--- | :--- |
 | `magic-search.tsx` | `components/` | NLP search bar UI |
 | `feed-container.tsx` | `components/` | Main scrollable feed |
-| `recommendation-grid.tsx` | `components/` | Movie card grid |
+| `right-console.tsx` | `components/` | Data Inspector and global filters console |
 | `ProgressModal` | `components/` | Real-time task progress display |
 | `AcidError` | `components/ui/` | Graceful, styled error boundary interceptor |
 
