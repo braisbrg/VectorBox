@@ -204,6 +204,13 @@ class QdrantService:
                             match=MatchAny(any=filters["include_genres"])
                         )
                     )
+                
+                if "exclude_genres" in filters and filters["exclude_genres"]:
+                    from qdrant_client.models import MatchValue
+                    for genre in filters["exclude_genres"]:
+                        must_not_conditions.append(
+                            FieldCondition(key="genres", match=MatchValue(value=genre))
+                        )
 
                 # 3. Runtime filters
                 if "min_runtime" in filters and filters["min_runtime"]:

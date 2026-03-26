@@ -19,7 +19,7 @@ class MovieSearchIntent(BaseModel):
     year_min: Optional[int] = Field(None, description="Start year. Interpret '80s' as 1980, 'Modern' as 2010, 'Recent' as 2020.")
     year_max: Optional[int] = Field(None, description="End year. Interpret 'Old/Classic' as 1985, '90s' as 1999.")
     include_genres: Optional[List[str]] = Field(None, description="Official TMDB genres to include.")
-    exclude_genres: Optional[List[str]] = Field(None, description="Genres to strictly exclude.")
+    exclude_genres: List[str] = Field(default_factory=list, description="Automatically populated from GENRE_CONTRADICTIONS when include_genres is set. Can also be set explicitly by the LLM if the user requests exclusions.")
     max_runtime_minutes: Optional[int] = Field(None, description="Max duration in minutes.")
     popularity_vibe: Literal["blockbuster", "hidden_gem", "any"] = Field("any", description="Select 'hidden_gem' for obscure/underrated, 'blockbuster' for famous/hits.")
     original_language: Optional[str] = Field(None, description="ISO 639-1 language code.")
@@ -77,6 +77,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     3. Map "Hidden Gems" to popularity_vibe='hidden_gem'.
     4. Extract "Like [Movie]" references to `reference_movie`.
     5. Set `quality_gate_bypass` to True when the user explicitly seeks campy, trashy, guilty-pleasure, "so bad it's good", B-movie, or low-budget cult content.
+    6. If the user explicitly requests genre exclusions (e.g. "horror but not comedy", "terror pero que no sea de risa"), set exclude_genres accordingly. Do NOT auto-populate exclude_genres from contradictions in the LLM prompt.
     """
 
     messages = [
@@ -159,4 +160,25 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
     except Exception as e:
         logger.error(f"Tier 2 (Deep Analysis) failed: {e}")
         return []
+
+from constants import GENRE_CONTRADICTIONS
+
+def apply_genre_contradictions(intent: MovieSearchIntent) -> MovieSearchIntent:
+    """
+    Auto-populate exclude_genres based on include_genres and GENRE_CONTRADICTIONS.
+    Merges with any explicit exclusions already set by the LLM.
+    Never excludes a genre that is also in include_genres.
+    """
+    auto_exclusions = set()
+    for genre in (intent.include_genres or []):
+        contradictions = GENRE_CONTRADICTIONS.get(genre, [])
+        auto_exclusions.update(contradictions)
+    
+    # Never exclude a genre the user explicitly wants
+    auto_exclusions -= set(intent.include_genres or [])
+    
+    # Merge with LLM-set exclusions (union, no duplicates)
+    existing = set(intent.exclude_genres or [])
+    intent.exclude_genres = list(existing | auto_exclusions)
+    return intent
 
