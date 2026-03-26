@@ -87,8 +87,11 @@
 VectorBox uses a 3-signal hybrid recommendation engine (Trident):
 - Signal A `because_you_watched` — Item-Item Collaborative Filtering
   via EmbeddingService + Qdrant nearest-neighbor search.
-  Seeds from movies rated 4+ stars OR explicitly liked (is_liked).
-- Signal B `your_taste` — K-Means cluster centroid search, penalized against Anti-vector of low-rated films, applying MMR.
+  Embeddings are generated from **LLM-enriched cinematic descriptions** (tone, pacing, style) via Groq (Scout/70B/8B).
+  Seeds from movies rated 4+ stars OR explicitly liked (is_liked). Applies anti-vector penalties.
+- Signal B `your_taste` — **K-Medoids cluster search**, pointing to a real movie (`medoid_movie_id`).
+  Clusters are labeled dynamically by Groq (e.g., "A24 Dread").
+  Penalized against Anti-vector of low-rated films, applying MMR based on dominant cluster genres.
 - Signal Auteur `get_signal_b_auteur` (Directors + Cast) — Director/Actor analysis
   Uses a `_compute_auteur_signal_raw()` helper applying a weighted point system (5★→2.0, 4.5★→1.5) triggering at 3.0 pts for directors, 2.5 pts for actors.
 - Signal C `hidden_gems` — Score-to-Hype ratio filtering

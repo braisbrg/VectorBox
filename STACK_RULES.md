@@ -159,16 +159,19 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ### Model Configuration (3-Tier Fallback Strategy)
 - **Tier 1 (Speed):** `meta-llama/llama-4-scout-17b-16e-instruct`
-    - Use for: Real-time search bar intent parsing.
+    - Use for: Real-time search bar intent parsing & Primary Embedding Enrichment.
 - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile`
     - Use for: Deep Analysis (Re-ranking), detailed reasoning & Tier 1 retry.
-- **Tier 3 (Groq Fallback):** `openai/gpt-oss-120b`
-    - Use for: High throughput fallback before failing completely.
+- **Tier 3 (Alternative):** `llama-3.1-8b-instant`
+    - Use for: Fast fallback for enrichment when larger models hit daily rate limits.
+- **Tier 4 (Final Fallback):** `openai/gpt-oss-120b`
+    - Use for: Final fallback for NLP Search.
 
-### Cascading Fallback
+### Cascading Fallback (Enrichment)
 1.  Tier 1 Primary: Groq `meta-llama/llama-4-scout-17b-16e-instruct`
 2.  Tier 2 Retry: Groq `llama-3.3-70b-versatile`
-3.  Tier 3 OSS: Groq `openai/gpt-oss-120b`
+3.  Tier 3 Fallback: Groq `llama-3.1-8b-instant`
+4.  Tier 4 Failover: Legacy concatenation (Non-LLM)
 
 ### Structured Output
 - **Library:** `instructor` (Python) with Pydantic models.
@@ -245,5 +248,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-03-19
+**Last Updated:** 2026-03-26
 **Maintained By:** VectorBox Team

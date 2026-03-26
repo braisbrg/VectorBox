@@ -1,8 +1,8 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.4.0 (Enhanced Metadata & UI)
-> **Last Updated:** 2026-03-19
+> **Version:** 1.5.0 (Trident v2: LLM Embeddings & Medoids)
+> **Last Updated:** 2026-03-26
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
@@ -318,7 +318,7 @@ Log in and navigate to the Feed. Verify all sections are rendered:
 | Popular on Letterboxd | ☐ |
 | Because you watched [X] | ☐ |
 | Cult Actors (Auteur 2.0) | ☐ |
-| Your Taste [Cluster] | ☐ |
+| Your Taste [Cluster] (e.g. "A24 Dread") | ☐ |
 | Hidden Gems | ☐ |
 | Deep Dive | ☐ |
 | Comfort Zone / Wildcard | ☐ |
@@ -345,6 +345,7 @@ Click any movie → "Why Recommended".
 | Signal A (Vector) | Shows similarity to watched movies | ☐ |
 | Signal Auteur | Shows director or cult actor match (if applicable) | ☐ |
 | Signal C (Crowd) | Shows crowd/popularity signal | ☐ |
+| Medoid Stability | For "Your Taste" cluster lists, verify the header uses a human-readable 2-4 word LLM label (e.g. "Neon-noir Revenge") rather than abstract math parameters | ☐ |
 
 ### Step 5.4: Magic Box NLP Query
 Open Magic Box. Toggle "Deep Analysis" ON. Enter query: `Horror but NOT paranormal`
@@ -371,6 +372,7 @@ Enter query: `so bad it's good campy 80s horror`
 | `80s movies with synth soundtrack` | Drive, Blade Runner, Tron-type results |
 | `French romantic comedies` | Amélie etc., Language filter = FR |
 | `Movies like Interstellar but not space` | Graceful fallback or abstract interpretation |
+
 
 ### Step 5.5: Background Task Enrichment
 After loading the Feed, check backend logs:
