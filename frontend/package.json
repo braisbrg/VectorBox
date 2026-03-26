@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "security-check": "npm audit --audit-level=high",
+    "security-check": "pnpm audit --audit-level=high",
     "prepare": "cd .. && husky frontend/.husky",
     "audit:backend": "cd .. && python backend/scripts/security_audit.py",
     "audit:container": "docker scout quickview",
