@@ -603,9 +603,7 @@ class RecommendationEngine:
                 items.append(item)
                 seen_ids.add(movie.id)  # seen_ids uses internal IDs for this section
             
-            title = "Your Taste"
-            if cluster.dominant_genres:
-                title = ", ".join(cluster.dominant_genres[:3])
+            title = cluster.cluster_label or "Your Taste"
 
             span.set_attribute("result_count", len(items))
             span.set_attribute("cluster_id", cluster.cluster_id)

@@ -66,6 +66,8 @@ class Movie(Base):
     overview_es = Column(Text)
     collection_id = Column(Integer, index=True)  # New: For Franchise Bias fix
     release_dates = Column(JSONB)  # Localized release dates map
+    has_enriched_embedding = Column(Boolean, default=False, server_default="false")  # LLM-enriched vector
+    enriched_by_model = Column(String, nullable=True)  # Stores the Groq model ID used to generate the cinematic embedding description
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
@@ -117,6 +119,7 @@ class UserCluster(Base):
     avg_rating = Column(Float)  # Average rating for movies in this cluster
     dominant_genres = Column(ARRAY(String))
     sample_movie_ids = Column(ARRAY(Integer))  # Representative movies
+    medoid_movie_id = Column(Integer, nullable=True)  # Internal Movie.id of the medoid film
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
