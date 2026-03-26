@@ -112,7 +112,8 @@
         "show_logic": "Show recommendation logic",
         "close_panel": "Close panel",
         "no_synopsis": "No synopsis available",
-        "no_contributors": "No contributor data available"
+        "no_contributors": "No contributor data available",
+        "inspect": "Data Inspector"
     },
     "guide": {
         "title": "App Guide",

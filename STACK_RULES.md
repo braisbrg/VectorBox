@@ -75,14 +75,16 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Parameters:**
     - `x0` (Midpoint): **65**
     - `k` (Steepness): **0.15**
+- **Bypass:** When `quality_gate_bypass` is true (e.g. user asks for "trashy"), midpoint drops to 25 and steepness to 0.10.
 
 ### Feed Generation
-- **Diversity:** Implement MMR (Maximal Marginal Relevance) or "Collection Collapsing" to prevent domination by a single franchise.
+- **Diversity:** Implement MMR (Maximal Marginal Relevance) across `because_you_watched`, `your_taste`, and `hidden_gems` to prevent similar vectors from crowding the results.
+- **Collection Collapsing:** Prevents domination by a single franchise (e.g. keeping only the top *Harry Potter* film).
 
 
 ### Redis Caching (Completeness Guard)
 - **Rule**: The Main Feed MUST NOT be cached if the result contains fewer than 3 sections.
-- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds.
+- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN.
 - **Implementation**: Verified in `FeedService.get_main_feed`.
 
 ### Streaming Availability (Spain)
@@ -157,16 +159,19 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ### Model Configuration (3-Tier Fallback Strategy)
 - **Tier 1 (Speed):** `meta-llama/llama-4-scout-17b-16e-instruct`
-    - Use for: Real-time search bar intent parsing.
+    - Use for: Real-time search bar intent parsing & Primary Embedding Enrichment.
 - **Tier 2 (Intelligence):** `llama-3.3-70b-versatile`
     - Use for: Deep Analysis (Re-ranking), detailed reasoning & Tier 1 retry.
-- **Tier 3 (Groq Fallback):** `openai/gpt-oss-120b`
-    - Use for: High throughput fallback before failing completely.
+- **Tier 3 (Alternative):** `llama-3.1-8b-instant`
+    - Use for: Fast fallback for enrichment when larger models hit daily rate limits.
+- **Tier 4 (Final Fallback):** `openai/gpt-oss-120b`
+    - Use for: Final fallback for NLP Search.
 
-### Cascading Fallback
+### Cascading Fallback (Enrichment)
 1.  Tier 1 Primary: Groq `meta-llama/llama-4-scout-17b-16e-instruct`
 2.  Tier 2 Retry: Groq `llama-3.3-70b-versatile`
-3.  Tier 3 OSS: Groq `openai/gpt-oss-120b`
+3.  Tier 3 Fallback: Groq `llama-3.1-8b-instant`
+4.  Tier 4 Failover: Legacy concatenation (Non-LLM)
 
 ### Structured Output
 - **Library:** `instructor` (Python) with Pydantic models.
@@ -233,7 +238,15 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **API Timeout Enforcement:** All Server-Side Rendering `fetch` calls MUST implement an `AbortController` bounded to a 10s maximum timeout to prevent hanging connections.
 - **Console Hygiene:** `console.log` and `console.error` MUST NOT leak internal API structures or interceptor states to the production browser console. Use scoped error boundaries instead.
 
+## 9. Git Workflow & Version Control
+
+- **Rule:** Never commit directly to `main`.
+- **Branching:** Use `develop` as the active development branch. Create `feature/*` branches from `develop` for any new changes or features.
+- **Commit Messages:** Follow standard semantic formats (`feat:`, `fix:`, `refactor:`, `perf:`, `docs:`).
+- **Merging & Releases:** Only merge `develop` to `main` when stable and tested. Tag every merge to `main` with a Semantic Versioning tag (e.g., `v1.4.0`).
+- **Release Ages:** Dependabot handles dependency release ages.
+
 ---
 
-**Last Updated:** 2026-03-19
+**Last Updated:** 2026-03-26
 **Maintained By:** VectorBox Team

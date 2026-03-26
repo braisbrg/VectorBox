@@ -4,7 +4,6 @@ import { useState } from "react";
 import Link from "next/link";
 import {
     LayoutList,
-    Grid3x3,
     Calendar,
     Users,
     Settings,
@@ -41,12 +40,6 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
             label: t("sidebar.feed"),
             icon: LayoutList,
             description: t("sidebar_desc.feed")
-        },
-        {
-            id: "grid",
-            label: t("sidebar.grid"),
-            icon: Grid3x3,
-            description: t("sidebar_desc.grid")
         },
         {
             id: "watchlist",

@@ -51,13 +51,73 @@ class ClusteringService:
         n_clusters = max(2, n_movies // 20)
         n_clusters = min(5, n_clusters)
         return n_clusters
+
+    @staticmethod
+    def _compute_medoid(vectors: np.ndarray) -> tuple[np.ndarray, int]:
+        """
+        Find the vector in `vectors` closest to the cluster centroid.
+        Returns (medoid_vector, medoid_index).
+        """
+        centroid = np.mean(vectors, axis=0)
+        distances = np.linalg.norm(vectors - centroid, axis=1)
+        medoid_idx = int(np.argmin(distances))
+        return vectors[medoid_idx], medoid_idx
+
+    @staticmethod
+    async def generate_cluster_label(
+        sample_film_titles: list[str],
+        dominant_genres: list[str],
+        groq_client,
+    ) -> str:
+        """
+        Generate a cinematic cluster label using Groq.
+        Falls back to genre-based label on failure.
+        """
+        fallback = ", ".join(dominant_genres[:2]) if dominant_genres else "Cinema"
+
+        if groq_client is None:
+            return fallback
+
+        titles_str = ", ".join(sample_film_titles[:5])
+        genres_str = ", ".join(dominant_genres[:3]) if dominant_genres else "Various"
+
+        prompt = (
+            f"Films: {titles_str}\n"
+            f"Dominant genres: {genres_str}\n\n"
+            "Generate a cinematic cluster name of 2-4 words maximum. "
+            "Style examples: 'Slow Burn Noir', 'European Art House', "
+            "'80s Synth Sci-Fi', 'Korean Revenge Cinema', 'Quiet Contemplative Drama'. "
+            "Respond with ONLY the label, no explanation, no punctuation at the end."
+        )
+
+        try:
+            response = await groq_client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You name film clusters. Respond with ONLY the label in English. 2-4 words. No punctuation at the end.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.5,
+                max_tokens=20,
+            )
+            label = response.choices[0].message.content.strip().rstrip(".!,;:")
+            if label and 1 < len(label) < 60:
+                return label
+            return fallback
+        except Exception as e:
+            logger.warning(f"Groq cluster label generation failed: {e}")
+            return fallback
     
     async def create_user_clusters(
         self,
         user_id: int,
         db: AsyncSession,
         use_recency_bias: bool = False,
-        background_tasks = None
+        background_tasks = None,
+        groq_client = None
     ) -> List[UserCluster]:
         """
         Generate K-Means clusters for a user's taste profile
@@ -220,13 +280,22 @@ class ClusteringService:
             else:
                 decade = "Various"
             
-            if dominant_genres:
-                label = f"{decade} {'/'.join(dominant_genres[:2])}"
-            else:
-                label = f"{decade} Cinema"
-            
+            # Compute medoid: find the real film closest to the cluster center
+            cluster_vectors = X_normalized[cluster_indices]
+            _, medoid_local_idx = self._compute_medoid(cluster_vectors)
+            medoid_movie_data = cluster_movies[medoid_local_idx]
+            medoid_movie_id = medoid_movie_data["id"]
+
+            # Generate cluster label via LLM or fall back to genre-based
             cluster_movies_sorted = sorted(cluster_movies, key=lambda x: x["rating"], reverse=True)
+            sample_titles = [m["title"] for m in cluster_movies_sorted[:5]]
             sample_movie_ids = [m["id"] for m in cluster_movies_sorted[:5]]
+
+            label = await self.generate_cluster_label(
+                sample_film_titles=sample_titles,
+                dominant_genres=dominant_genres,
+                groq_client=groq_client,
+            )
             
             user_cluster = UserCluster(
                 user_id=user_id,
@@ -235,7 +304,8 @@ class ClusteringService:
                 movie_count=len(cluster_movies),
                 avg_rating=float(avg_rating),
                 dominant_genres=dominant_genres,
-                sample_movie_ids=sample_movie_ids
+                sample_movie_ids=sample_movie_ids,
+                medoid_movie_id=medoid_movie_id
             )
             
             db.add(user_cluster)
@@ -276,23 +346,44 @@ class ClusteringService:
         if not cluster:
             raise ValueError(f"Cluster {cluster_id} not found for user {user_id}")
         
-        result = await db.execute(
-            select(UserRating, Movie)
-            .join(Movie, UserRating.movie_id == Movie.id)
-            .where(UserRating.user_id == user_id)
-            .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
-        )
-        all_ratings = result.all()
+        # Medoid-first: use the real film closest to the cluster center
+        cluster_center = None
+        if cluster.medoid_movie_id:
+            # Map medoid internal ID → tmdb_id
+            medoid_result = await db.execute(
+                select(Movie.tmdb_id).where(Movie.id == cluster.medoid_movie_id)
+            )
+            medoid_tmdb_id = medoid_result.scalar_one_or_none()
+            if medoid_tmdb_id:
+                medoid_vector = await self.qdrant.get_vector(medoid_tmdb_id)
+                if medoid_vector:
+                    cluster_center = medoid_vector if isinstance(medoid_vector, list) else medoid_vector.tolist()
+                else:
+                    logger.debug(f"Medoid vector not found in Qdrant for tmdb_id={medoid_tmdb_id}, falling back to centroid")
+            else:
+                logger.debug(f"Medoid movie_id={cluster.medoid_movie_id} not found in DB, falling back to centroid")
+        else:
+            logger.debug(f"No medoid_movie_id set for cluster {cluster_id}, falling back to centroid")
         
-        sample_ids = cluster.sample_movie_ids or []
-        sample_tmdb_ids = [movie.tmdb_id for _, movie in all_ratings if movie.id in sample_ids]
-        vectors_map = await self.qdrant.get_vectors_batch(sample_tmdb_ids)
-        cluster_vectors = list(vectors_map.values())
-        
-        if not cluster_vectors:
-            raise ValueError("No vectors found for cluster samples")
-        
-        cluster_center = np.mean(cluster_vectors, axis=0).tolist()
+        # Fallback to centroid if medoid is unavailable
+        if cluster_center is None:
+            result = await db.execute(
+                select(UserRating, Movie)
+                .join(Movie, UserRating.movie_id == Movie.id)
+                .where(UserRating.user_id == user_id)
+                .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+            )
+            all_ratings = result.all()
+            
+            sample_ids = cluster.sample_movie_ids or []
+            sample_tmdb_ids = [movie.tmdb_id for _, movie in all_ratings if movie.id in sample_ids]
+            vectors_map = await self.qdrant.get_vectors_batch(sample_tmdb_ids)
+            cluster_vectors = list(vectors_map.values())
+            
+            if not cluster_vectors:
+                raise ValueError("No vectors found for cluster samples")
+            
+            cluster_center = np.mean(cluster_vectors, axis=0).tolist()
         
         search_filters = filters or {}
         results = await self.qdrant.search_similar(

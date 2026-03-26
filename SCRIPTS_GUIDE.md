@@ -8,7 +8,7 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 | Script | Description | Command (Safe to Run) |
 | :--- | :--- | :--- |
 | **`seed_db.py`** | **The Main Engine.** Uses `MovieFactory` to fetch movies from TMDB with **Spanish Metadata**, **Keywords**, and strict Pydantic **OMDb Ratings**. Upserts to Postgres + Qdrant. | `docker-compose exec backend python scripts/seed_db.py --limit 100` |
-| **`enrich_vectors.py`** | **Data Fixer.** Iterates over movies, fetches missing keywords, **Directors, and Cast** from TMDB, and regenerates/upserts embeddings. Use `--all` to force update tokens/genres. | `docker-compose exec backend python scripts/enrich_vectors.py` |
+| **`enrich_vectors.py`** | **Data Fixer & LLM Embeddings.** Fetches missing keywords/credits from TMDB. Uses Groq to generate 80-word cinematic descriptions and upserts 384d semantic vectors. Run with `--enrich-embeddings` to process LLM upgrades. Supports `--model-only [scout\|70b\|8b]` for precise rate-limit throttling and `--reset-enrichment` for a fresh start. | `docker-compose exec backend python scripts/enrich_vectors.py [--enrich-embeddings] [--model-only scout]` |
 | **`popular_scraper.py`** | **Trends Scraper.** Fetches "Popular This Week" from Letterboxd HTML, resolves Slugs to TMDB IDs, and caches in Redis with **24h TTL**. | `docker-compose exec backend python scripts/popular_scraper.py` |
 | **`reset_profiles.py`** | **"The Refresh Button".** Forces a complete rebuild of User Clusters. Truncates `user_clusters` table and wipes Redis cache. | `docker-compose exec backend python scripts/reset_profiles.py` |
 | **`create_qdrant_indexes.py`** | **Performance.** Creates payload indexes for `vote_count`, `vectorbox_score`, `popularity`, `year`, and `genres` to enable fast filtering in Qdrant. | `docker-compose exec backend python scripts/create_qdrant_indexes.py` |
@@ -76,4 +76,4 @@ Standard auditing protocols for this project.
     ```
 
 ---
-**Last Updated:** 2026-03-19
+**Last Updated:** 2026-03-26

@@ -37,9 +37,10 @@ interface MovieCarouselProps {
     titlePrefix?: React.ReactNode;
     forceVectorBoxScore?: boolean;
     priority?: boolean;
+    onInspect?: (id: number) => void;
 }
 
-export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore, priority = false }: MovieCarouselProps) {
+export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore, priority = false, onInspect }: MovieCarouselProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const isMounted = useRef(true);
     const [localItems, setLocalItems] = useState<FeedItem[]>(items);
@@ -175,8 +176,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
                             letterboxd_rating={movie.letterboxd_rating}
                             providers={movie.streaming_providers}
-                            forceVectorBoxScore={forceVectorBoxScore}
-                            priority={priority && index < 4}
+                            onInspect={onInspect}
                         />
                     </div>
                 ))}

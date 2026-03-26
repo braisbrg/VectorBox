@@ -59,9 +59,9 @@
   /* ==========================================================================
      Border Radius (Brutalist = Flat)
      ========================================================================== */
-  --radius-lg: 0.5rem;
-  --radius-md: calc(0.5rem - 2px);
-  --radius-sm: calc(0.5rem - 4px);
+  --radius-lg: 0px;
+  --radius-md: 0px;
+  --radius-sm: 0px;
   --radius: 0px;
   /* Acid: Hard edges */
 
@@ -178,6 +178,12 @@
    Base Layer
    ============================================================================ */
 @layer base {
+  @media (min-width: 1024px) {
+    html {
+      font-size: 80%;
+    }
+  }
+
   :root {
     color-scheme: dark;
     /* Legacy HSL fallbacks for Shadcn components */

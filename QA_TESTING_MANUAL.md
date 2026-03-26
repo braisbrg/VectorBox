@@ -1,8 +1,8 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.4.0 (Enhanced Metadata & UI)
-> **Last Updated:** 2026-03-19
+> **Version:** 1.5.0 (Trident v2: LLM Embeddings & Medoids)
+> **Last Updated:** 2026-03-26
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
@@ -18,7 +18,7 @@ Before starting, confirm **all** of the following:
 | 2 | `.env` file exists with valid keys (see §0) | ☐ |
 | 3 | Chrome/Firefox with DevTools access | ☐ |
 | 4 | Letterboxd export ZIP available (`ratings.csv`, `watchlist.csv`) | ☐ |
-| 5 | Project is on `master` branch, git tree is clean | ☐ |
+| 5 | Project is on `main` branch, git tree is clean | ☐ |
 
 ### § 0: Required `.env` Keys
 
@@ -245,7 +245,7 @@ On `/login`, observe the login button.
 | Deep Analysis toggle | Brain icon changes glow state | ☐ |
 
 ### Step 3.4: SpotlightCard (Movie Cards)
-Hover over any movie poster in Feed or Grid.
+Hover over any movie poster in the Feed.
 
 | Check | Expected | Pass? |
 |:------|:---------|:-----:|
@@ -317,7 +317,8 @@ Log in and navigate to the Feed. Verify all sections are rendered:
 | Available Now (Watchlist streaming) | ☐ |
 | Popular on Letterboxd | ☐ |
 | Because you watched [X] | ☐ |
-| Your Taste [Cluster] | ☐ |
+| Cult Actors (Auteur 2.0) | ☐ |
+| Your Taste [Cluster] (e.g. "A24 Dread") | ☐ |
 | Hidden Gems | ☐ |
 | Deep Dive | ☐ |
 | Comfort Zone / Wildcard | ☐ |
@@ -342,8 +343,9 @@ Click any movie → "Why Recommended".
 | Check | Expected | Pass? |
 |:------|:---------|:-----:|
 | Signal A (Vector) | Shows similarity to watched movies | ☐ |
-| Signal Auteur | Shows director match (if applicable) | ☐ |
+| Signal Auteur | Shows director or cult actor match (if applicable) | ☐ |
 | Signal C (Crowd) | Shows crowd/popularity signal | ☐ |
+| Medoid Stability | For "Your Taste" cluster lists, verify the header uses a human-readable 2-4 word LLM label (e.g. "Neon-noir Revenge") rather than abstract math parameters | ☐ |
 
 ### Step 5.4: Magic Box NLP Query
 Open Magic Box. Toggle "Deep Analysis" ON. Enter query: `Horror but NOT paranormal`
@@ -353,6 +355,15 @@ Open Magic Box. Toggle "Deep Analysis" ON. Enter query: `Horror but NOT paranorm
 | Response time | < 8 seconds | ☐ |
 | Results | Slasher / psychological horror | ☐ |
 | Exclusion | No ghost/demon/possession films | ☐ |
+| Standard Quality | Films are generally >65 VectorBox Score | ☐ |
+
+**Trashy Intent Bypass Test:**
+Enter query: `so bad it's good campy 80s horror`
+
+| Check | Expected | Pass? |
+|:------|:---------|:-----:|
+| Bypass | `quality_gate_bypass` is triggered | ☐ |
+| Results | Includes lower-scored films (e.g. 30-50 range) | ☐ |
 
 **Additional query tests:**
 
@@ -361,6 +372,7 @@ Open Magic Box. Toggle "Deep Analysis" ON. Enter query: `Horror but NOT paranorm
 | `80s movies with synth soundtrack` | Drive, Blade Runner, Tron-type results |
 | `French romantic comedies` | Amélie etc., Language filter = FR |
 | `Movies like Interstellar but not space` | Graceful fallback or abstract interpretation |
+
 
 ### Step 5.5: Background Task Enrichment
 After loading the Feed, check backend logs:
@@ -400,7 +412,7 @@ docker-compose run --rm backend python scripts/test_es_whitelist.py
 | Output | `✅ WHITELIST FILTER SUCCESS` is printed | ☐ |
 
 ### Step 5.8: Feed Parallelism Verification (Automated)
-Verify that the 9 feed tasks execute concurrently via `asyncio.gather`.
+Verify that the 11 feed tasks execute concurrently via `asyncio.gather`.
 
 ```powershell
 docker-compose exec backend python scripts/verify_feed_parallelism.py
@@ -410,7 +422,7 @@ docker-compose exec backend python scripts/verify_feed_parallelism.py
 |:------|:---------|:-----:|
 | Execution | Script runs without errors | ☐ |
 | Concurrency | `✅ FEED PARALLELISM VERIFIED` — total time < 0.4s | ☐ |
-| Session Isolation | 9 unique sessions (no sharing) | ☐ |
+| Session Isolation | 11 unique sessions (no sharing) | ☐ |
 
 ### Step 5.9: IDOR Automated Security Test
 Verify `/hidden-gems` endpoint rejects unauthenticated and forged requests.

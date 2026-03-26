@@ -16,6 +16,7 @@ interface FeedContainerProps {
     streamingProviders?: number[];
     initialData?: FeedResponse | null; // SSR Prefetched Data
     registeredUsers?: VectorboxUser[];
+    onInspect?: (id: number) => void;
 }
 
 const SECTION_DESCRIPTIONS: Record<string, string> = {
@@ -37,7 +38,7 @@ const TITLE_MAP: Record<string, string> = {
     "available_now": "sections.available_now"
 };
 
-export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [], initialData, registeredUsers }: FeedContainerProps) {
+export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [], initialData, registeredUsers, onInspect }: FeedContainerProps) {
     const { settings } = useSettings();
     const includeLowQuality = settings.includeLowQuality;
 
@@ -146,6 +147,7 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
                     type={section.type}
                     forceVectorBoxScore={section.id === "wildcard"}
                     priority={index === 0}
+                    onInspect={onInspect}
                     titlePrefix={SECTION_DESCRIPTIONS[section.id] ? (
                         <InfoTooltip
                             id={`feed-section-${section.id}`}

@@ -1,6 +1,53 @@
 ---
 # Agent Instructions — VectorBox
 
+> ⚠️ BRANCHING RULE: Never commit directly to `main`. Use `develop` or `feature/*` branches. See Git Workflow section below.
+
+## Git Workflow
+
+### Branch Structure
+- `main` — stable, production-ready code only. NEVER commit directly to main.
+- `develop` — active development branch. All work starts here.
+- `feature/name` — temporary branches for significant features or changes. Branch from develop, merge back to develop when complete.
+
+### Rules (mandatory)
+- Never commit directly to `main`. All changes go through `develop` first.
+- Before starting any significant change (new feature, refactor, algorithm improvement), create a feature branch from `develop`:
+```bash
+  git checkout develop
+  git checkout -b feature/descriptive-name
+```
+- Commit messages must follow this format:
+  - `feat: description` — new feature
+  - `fix: description` — bug fix
+  - `refactor: description` — code restructure without behavior change
+  - `perf: description` — performance improvement
+  - `docs: description` — documentation only
+
+### Merging to main (Releases only)
+- Only merge `develop` → `main` when the code is stable and tested.
+- Every merge to `main` must be tagged with a semantic version:
+```bash
+  git checkout main
+  git merge develop
+  git tag -a v1.X.Y -m "Brief description of what this release contains"
+  git push origin main
+  git push origin v1.X.Y
+```
+- Version convention (SemVer):
+  - **Major** (v2.0.0): breaking changes, DB migrations that require data wipe
+  - **Minor** (v1.4.0): new features, algorithm improvements, new UI sections
+  - **Patch** (v1.3.1): bug fixes, hotfixes, small corrections
+
+### Current branch state
+- `main` — last stable release
+- `develop` — active development
+
+### Agent instructions
+- When implementing features or fixes, always ask which branch is currently active before making changes.
+- Never suggest or execute `git push origin main` directly — always push to the current feature branch or `develop`.
+- When a feature is complete, remind the user to merge to `develop` and, if stable, tag a release on `main`.
+
 ## Package Manager
 - Frontend uses **pnpm**, NOT npm and NOT yarn
 - Always use `pnpm install`, `pnpm add`, `pnpm run`
@@ -40,28 +87,31 @@
 VectorBox uses a 3-signal hybrid recommendation engine (Trident):
 - Signal A `because_you_watched` — Item-Item Collaborative Filtering
   via EmbeddingService + Qdrant nearest-neighbor search.
-  Seeds from movies rated 4+ stars OR explicitly liked (is_liked).
-- Signal B `your_taste` — K-Means cluster centroid search
-- Signal Auteur `get_signal_b_auteur` — Director analysis
-  (renamed from "Signal B" in recommendation_service.py logs
-  to avoid collision with Signal B in recommendation_engine.py)
+  Embeddings are generated from **LLM-enriched cinematic descriptions** (tone, pacing, style) via Groq (Scout/70B/8B).
+  Seeds from movies rated 4+ stars OR explicitly liked (is_liked). Applies anti-vector penalties.
+- Signal B `your_taste` — **K-Medoids cluster search**, pointing to a real movie (`medoid_movie_id`).
+  Clusters are labeled dynamically by Groq (e.g., "A24 Dread").
+  Penalized against Anti-vector of low-rated films, applying MMR based on dominant cluster genres.
+- Signal Auteur `get_signal_b_auteur` (Directors + Cast) — Director/Actor analysis
+  Uses a `_compute_auteur_signal_raw()` helper applying a weighted point system (5★→2.0, 4.5★→1.5) triggering at 3.0 pts for directors, 2.5 pts for actors.
 - Signal C `hidden_gems` — Score-to-Hype ratio filtering
   with DYNAMIC thresholds based on user's movie count:
     Cold start (<30 movies): score>60, popularity<40, votes>200
     Growing (30-99):         score>65, popularity<30, votes>300
     Rich (100+):             score>75, popularity<20, votes>500
-  Implemented via `_get_signal_c_thresholds()` helper.
+  Uses an Exoticism Boost (`+15%`) for non-English films.
 
 Results fused via RRF (Reciprocal Rank Fusion) +
 Sigmoid quality weighting on VectorBox Score (0–100).
+Magic Box intent `quality_gate_bypass` bypasses normal bounds (midpoint 65) explicitly allowing "trashy" responses by dropping the midpoint to 25.
 
-Feed orchestration: `FeedService.get_main_feed()` runs 9 tasks
-in parallel via `asyncio.gather()`. Each task opens its own
+Feed orchestration: `FeedService.get_main_feed()` runs **11 tasks
+in parallel** via `asyncio.gather()`. Each task opens its own
 isolated `AsyncSessionLocal()` session — they NEVER share sessions.
 
-**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis.
+**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped `_invalidate_feed_cache()` after RSS sync.
 
-Deep Dive now runs FULLY IN PARALLEL with the other feed tasks, dropping its strict dependency on `seen_ids` for a massive performance boost.
+Deep Dive now runs FULLY IN PARALLEL with the other feed tasks, applying a Trust Bucket filter (`vote_count` > 5k or high similarity) to drop obscure outliers.
 
 ---
 
