@@ -123,7 +123,7 @@ export default function PrivacyPage() {
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
                             <li>
                                 Generate personalized movie recommendations using semantic
-                                vector embeddings and K-Means clustering over your rating
+                                vector embeddings and K-Medoids clustering over your rating
                                 history.
                             </li>
                             <li>
@@ -275,7 +275,7 @@ export default function PrivacyPage() {
                             encourage you to review this page periodically.
                         </p>
                         <p className="text-sm text-zinc-500 mt-4 font-[var(--font-mono-acid)]">
-                            Last updated: March 11, 2026
+                            Last updated: March 26, 2026
                         </p>
                     </section>
                 </div>
