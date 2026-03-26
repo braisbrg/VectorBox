@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 
 from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service
-from services.nlp_search import parse_user_intent, search_with_reasoning
+from services.nlp_search import parse_user_intent, search_with_reasoning, apply_genre_contradictions
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
@@ -138,6 +138,7 @@ async def natural_language_search(
 
         # 1. Parse Intent with Advanced LLM (Fallback to Semantic Search)
         intent = await parse_user_intent(search_req.query)
+        intent = apply_genre_contradictions(intent)
         logger.info(f"Parsed intent: {intent}")
         logger.info(f"Reasoning: {intent.reasoning}")
         

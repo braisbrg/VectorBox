@@ -263,6 +263,7 @@ class RecommendationEngine:
         background_tasks = None
     ) -> FeedSection:
         """Signal A: Because you watched [Movie X] — Item-Item Collaborative Filtering"""
+        from constants import GENRE_CONTRADICTIONS
         with _tracer.start_as_current_span("trident.signal_a.because_you_watched") as span:
             span.set_attribute("user_id", user_id)
             span.set_attribute("country", country)
@@ -327,10 +328,16 @@ class RecommendationEngine:
                 if not anchor_vector:
                      continue
                 
+                anchor_exclusions = set()
+                for genre in (anchor_movie.genres or []):
+                    anchor_exclusions.update(GENRE_CONTRADICTIONS.get(genre, []))
+                anchor_exclusions -= set(anchor_movie.genres or [])
+
                 similar_results = await qdrant.search_similar(
                     query_vector=anchor_vector,
                     limit=500,
-                    score_threshold=0.1
+                    score_threshold=0.1,
+                    filters={"exclude_genres": list(anchor_exclusions)} if anchor_exclusions else None
                 )
                 
                 found_tmdb_ids = [res["movie_id"] for res in similar_results]
@@ -477,6 +484,7 @@ class RecommendationEngine:
         background_tasks = None
     ) -> FeedSection:
         """Signal B: Your Taste: [Cluster Name] — Centroid Search"""
+        from constants import GENRE_CONTRADICTIONS
         with _tracer.start_as_current_span("trident.signal_b.your_taste") as span:
             span.set_attribute("user_id", user_id)
             span.set_attribute("country", country)
@@ -494,11 +502,19 @@ class RecommendationEngine:
                 return await self._get_genre_fallback_section(user_id, db, tmdb, seen_ids, country, provider_service)
             
             cluster = clusters[0]
+            
+            cluster_exclusions = set()
+            for genre in (cluster.dominant_genres or []):
+                cluster_exclusions.update(GENRE_CONTRADICTIONS.get(genre, []))
+            cluster_exclusions -= set(cluster.dominant_genres or [])
+
+            filters_to_pass = {"exclude_genres": list(cluster_exclusions)} if cluster_exclusions else {}
+
             results = await self.clustering.get_cluster_recommendations(
                 user_id=user_id,
                 cluster_id=cluster.cluster_id,
                 db=db,
-                filters={},
+                filters=filters_to_pass,
                 limit=500,
                 background_tasks=background_tasks
             )
