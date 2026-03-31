@@ -46,10 +46,13 @@ async def _invalidate_feed_cache(user_id: int) -> None:
                     deleted_count += len(keys)
                 if cursor == 0:
                     break
+            # Delete cluster rotation counter
+            await r.delete(f"cluster_rotation:{user_id}")
+            
             if deleted_count:
-                logger.info(f"Invalidated {deleted_count} feed cache keys for user_id={user_id}")
+                logger.info(f"Invalidated {deleted_count} feed cache keys and rotation for user_id={user_id}")
         finally:
-            await r.aclose()
+            await r.close()
     except Exception as e:
         logger.error(f"Feed cache invalidation failed for user_id={user_id}: {e}")
 
@@ -125,6 +128,11 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
             
             # Imp 10: Invalidate feed cache after sync completes
             await _invalidate_feed_cache(user_id)
+            
+            # Invalidate profile summary cache for LLM regeneration
+            from services.profile_cache import invalidate_profile_summary
+            from config import REDIS_URL
+            await invalidate_profile_summary(user_id, REDIS_URL)
             
             logger.info(f"Background sync complete for user_id={user_id}. Watchlist added: {watchlist_added}")
 

@@ -6,7 +6,7 @@ import logging
 import argparse
 from sqlalchemy import text
 import redis.asyncio as redis
-
+from openai import AsyncOpenAI
 # Fix paths for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 backend_dir = os.path.dirname(current_dir)
@@ -15,6 +15,8 @@ sys.path.append(backend_dir)
 from config import AsyncSessionLocal
 from models.database import UserCluster, User, UserRating
 from services.clustering_service import ClusteringService
+from services.qdrant_service import QdrantService
+from sqlalchemy import select
 
 # Configure logging
 logging.basicConfig(
@@ -23,7 +25,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("reset_profiles")
 
-async def reset_profiles(force: bool = False, reanalyze: bool = False):
+async def reset_profiles(force: bool = False, recluster: bool = True):
     """
     Resets all computed user profile data (Clusters) and clears the application cache.
     This forces a re-analysis of all users' tastes on their next visit.
@@ -63,18 +65,17 @@ async def reset_profiles(force: bool = False, reanalyze: bool = False):
         return
 
     # 2. Clear Redis Cache
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+    redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
     try:
-        r = await redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
-        
-        # Clear FastAPI Cache (Feed responses)
-        keys = await r.keys("fastapi-cache:*")
-        if keys:
-            await r.delete(*keys)
-            logger.info(f"✅ Cleared {len(keys)} Redis cache entries (fastapi-cache).")
+        r = redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+        keys = await r.keys("*")
+        # Broad invalidation of recommendation-related keys
+        deleted = [k for k in keys if any(x in k for x in ["feed", "section", "signal", "profile", "fastapi-cache"])]
+        if deleted:
+            await r.delete(*deleted)
+            logger.info(f"✅ Invalidated {len(deleted)} Redis cache keys (feed/section/signal/profile/fastapi-cache).")
         else:
-            logger.info("ℹ️ No Redis cache keys found to clear.")
-            
+            logger.info("ℹ️ No relevant Redis cache keys found to clear.")
         await r.close()
     except Exception as e:
         logger.error(f"❌ Failed to clear Redis: {e}")
@@ -82,28 +83,38 @@ async def reset_profiles(force: bool = False, reanalyze: bool = False):
 
     logger.info("🎉 User Profile Reset Complete!")
 
-    if reanalyze:
-        logger.info("Starting Re-analysis of all user profiles...")
-        clustering = ClusteringService()
+    if recluster:
+        logger.info("Starting Re-clustering for all users with ratings...")
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        groq_client = AsyncOpenAI(
+            api_key=groq_api_key,
+            base_url="https://api.groq.com/openai/v1",
+            max_retries=0
+        ) if groq_api_key else None
+    
+        qdrant = QdrantService()
+        clustering = ClusteringService(qdrant=qdrant)
+
         async with AsyncSessionLocal() as db:
-            # Get all users who have ratings
             stmt = select(User.id).join(UserRating, User.id == UserRating.user_id).distinct()
             result = await db.execute(stmt)
             user_ids = result.scalars().all()
-            
+
             logger.info(f"Triggering clustering for {len(user_ids)} users...")
             for uid in user_ids:
                 try:
                     logger.info(f"Re-clustering User {uid}...")
-                    # create_user_clusters handles its own commit/rollback
-                    await clustering.create_user_clusters(uid, db)
-                    logger.info(f"✅ User {uid} re-analyzed.")
+                    await clustering.create_user_clusters(uid, db, groq_client=groq_client)
+                    logger.info(f"✅ User {uid} re-clustered.")
                 except Exception as e:
-                    logger.error(f"❌ Failed to re-analyze user {uid}: {e}")
-        
-        logger.info("🎉 Re-analysis Complete!")
+                    logger.error(f"❌ Failed for user {uid}: {e}")
+    
+        if groq_client:
+            await groq_client.close()
+    
+        logger.info("🎉 Re-clustering Complete!")
     else:
-        logger.info("Next user request will trigger fresh Cluster Generation with Enriched Vectors.")
+        logger.info("Re-clustering skipped. Next user request will trigger fresh Cluster Generation.")
 
 if __name__ == "__main__":
     if sys.platform == "win32":
@@ -111,7 +122,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Reset User Taste Profiles")
     parser.add_argument("--force", action="store_true", help="Skip confirmation prompt")
-    parser.add_argument("--reanalyze", action="store_true", help="Immediately trigger re-analysis for all users")
+    parser.add_argument("--no-recluster", action="store_true", help="Skip immediate re-analysis for users with ratings")
     args = parser.parse_args()
     
-    asyncio.run(reset_profiles(force=args.force, reanalyze=args.reanalyze))
+    asyncio.run(reset_profiles(force=args.force, recluster=not args.no_recluster))

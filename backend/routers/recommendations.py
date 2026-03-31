@@ -780,3 +780,63 @@ async def get_hidden_gems_row(
     except Exception as e:
         logger.error(f"Hidden gems failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate hidden gems")
+
+
+@router.post("/reject/{tmdb_id}")
+async def reject_movie(
+    tmdb_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark a movie as 'Not Interested'. Upserts UserRating with is_rejected=True."""
+    user_id = current_user["user_id"]
+
+    # Find the internal movie by tmdb_id
+    movie_result = await db.execute(
+        select(Movie).where(Movie.tmdb_id == tmdb_id)
+    )
+    movie = movie_result.scalar_one_or_none()
+    if not movie:
+        raise HTTPException(status_code=404, detail="Movie not found")
+
+    # Upsert: check if rating row exists
+    existing_result = await db.execute(
+        select(UserRating).where(
+            UserRating.user_id == user_id,
+            UserRating.movie_id == movie.id
+        )
+    )
+    existing = existing_result.scalar_one_or_none()
+
+    if existing:
+        existing.is_rejected = True
+    else:
+        new_rating = UserRating(
+            user_id=user_id,
+            movie_id=movie.id,
+            is_rejected=True,
+            is_watched=False,
+        )
+        db.add(new_rating)
+
+    await db.commit()
+
+    # Invalidate feed cache for this user
+    try:
+        import redis.asyncio as aioredis
+        import os
+        r = await aioredis.from_url(
+            os.getenv("REDIS_URL", "redis://redis:6379"),
+            decode_responses=True
+        )
+        keys = await r.keys(f"*feed*{user_id}*")
+        keys += await r.keys(f"*section*{user_id}*")
+        keys += await r.keys(f"*signal*{user_id}*")
+        if keys:
+            await r.delete(*keys)
+        await r.aclose()
+    except Exception as e:
+        logger.warning(f"Cache invalidation after reject failed: {e}")
+
+    return {"status": "ok", "tmdb_id": tmdb_id, "rejected": True}
+

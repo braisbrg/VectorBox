@@ -6,7 +6,7 @@ from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from config import AsyncSessionLocal
+from config import AsyncSessionLocal, REDIS_URL
 from models.database import UserRating, Movie
 from models.schemas import FeedSection, FeedItem, FeedResponse
 from services.tmdb_client import TMDBClient
@@ -35,7 +35,7 @@ class FeedService:
 
     @safe_execution(fallback_return=FeedSection(id="your_taste", title="Your Taste", items=[]))
     async def get_your_taste_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, groq_client = None
     ) -> FeedSection:
         return await self.engine.get_your_taste_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks)
 
@@ -160,17 +160,17 @@ class FeedService:
         
         return FeedResponse(feed=feed)
 
-    async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None) -> Optional[FeedSection]:
+    async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None, redis_client = None) -> Optional[FeedSection]:
         tmdb = provider_service.tmdb if provider_service else None
-        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
+        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
         return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service, background_tasks=background_tasks)
 
-    async def get_auteur_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None) -> Optional[FeedSection]:
-        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
+    async def get_auteur_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None, redis_client = None) -> Optional[FeedSection]:
+        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
         return await recommender.get_auteur_section(user_id, country, seen_ids, provider_service=provider_service)
 
-    async def get_cult_actor_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None) -> Optional[FeedSection]:
-        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
+    async def get_cult_actor_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None, redis_client = None) -> Optional[FeedSection]:
+        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
         return await recommender.get_cult_actor_section(user_id, country, seen_ids, provider_service=provider_service)
 
     async def get_main_feed(
@@ -188,7 +188,7 @@ class FeedService:
         Includes high-level Redis caching for blazing fast loads.
         """
         # --- CACHE INTERCEPT BLOCK ---
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        redis_url = REDIS_URL
         r = None
         try:
             r = await aioredis.from_url(redis_url, decode_responses=True)
@@ -225,6 +225,17 @@ class FeedService:
             logger.error(f"Failed to pre-populate watched_tmdb_ids: {e}")
         # --- END PRE-POPULATE ---
 
+        # --- GROQ CLIENT INJECTION (Phase 12: Profile Summary) ---
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        groq_client = None
+        if groq_api_key:
+            try:
+                from openai import AsyncOpenAI
+                groq_client = AsyncOpenAI(api_key=groq_api_key, base_url="https://api.groq.com/openai/v1")
+            except ImportError:
+                logger.warning("openai package not found, Groq features disabled")
+        # --- END GROQ CLIENT ---
+
         async def task_popular():
             try:
                 async with AsyncSessionLocal() as session:
@@ -247,7 +258,10 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_your_taste_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks)
+                    return await self.get_your_taste_section(
+                        user_id, session, tmdb, watched_tmdb_ids.copy(), 
+                        country_code, local_provider, background_tasks=background_tasks
+                    )
             except Exception as e:
                 logger.error(f"Feed Task Failed [Taste]: {e}")
                 return None
@@ -291,7 +305,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_hybrid_picks_section(user_id, session, country_code, watched_tmdb_ids.copy(), local_provider, qdrant=qdrant, background_tasks=background_tasks)
+                    return await self.get_hybrid_picks_section(user_id, session, country_code, watched_tmdb_ids.copy(), local_provider, qdrant=qdrant, background_tasks=background_tasks, redis_client=r)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hybrid]: {e}")
                 return None
@@ -300,7 +314,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant)
+                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
                     return await recommender.get_auteur_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Auteur]: {e}")
@@ -310,7 +324,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant)
+                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
                     return await recommender.get_cult_actor_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Cult Actor]: {e}")
@@ -343,7 +357,13 @@ class FeedService:
             task_deep_dive(),
         ]
         
-        results = await asyncio.gather(*tasks)
+        results = []
+        try:
+            results = await asyncio.gather(*tasks)
+        finally:
+            if groq_client:
+                await groq_client.close()
+                logger.info("Groq client closed after feed generation")
 
         (
             section_popular,

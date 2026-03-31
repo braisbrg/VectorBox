@@ -19,6 +19,15 @@ from services.recommendation_service import RecommendationService
 from services.embedding_service import EmbeddingService
 from services.movie_service import MovieService
 from services.trending_service import TrendingService
+from services.profile_cache import (
+    get_profile_summary_status, 
+    get_cached_profile_summary, 
+    set_cached_profile_summary
+)
+from services.cinematic_enricher import generate_profile_summary
+from config import REDIS_URL
+import time
+
 from opentelemetry import trace
 from telemetry import get_tracer
 
@@ -45,7 +54,7 @@ def _get_signal_c_thresholds(user_movie_count: int) -> dict:
     else:
         # Rich profile — full fidelity
         return {
-            "min_score": 75,
+            "min_score": 70,
             "max_popularity": 20,
             "min_votes": 500,
         }
@@ -91,13 +100,20 @@ class RecommendationEngine:
 
     async def _get_anti_vector(self, user_id: int, db: AsyncSession, qdrant: QdrantService) -> Optional[list]:
         """
-        Compute the average embedding vector of films the user rated <= 2 stars.
+        Compute the average embedding vector of films the user rated <= 2 stars
+        OR explicitly rejected ("Not Interested").
         Returns None if fewer than 3 such films exist (not enough signal).
         """
-        # Step 1: Get internal movie_ids from UserRating
+        # Step 1: Get internal movie_ids from UserRating (low-rated OR rejected)
         rating_result = await db.execute(
             select(UserRating.movie_id)
-            .where(UserRating.user_id == user_id, UserRating.rating <= 2.0)
+            .where(
+                UserRating.user_id == user_id,
+                or_(
+                    UserRating.rating <= 2.0,
+                    UserRating.is_rejected.is_(True)
+                )
+            )
             .limit(50)
         )
         internal_ids = rating_result.scalars().all()
@@ -314,6 +330,8 @@ class RecommendationEngine:
                 else:
                     if anchor_movie.keywords is None:
                         keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
+                    else:
+                        keywords = anchor_movie.keywords
                     anchor_vector = self.embedding_service.generate_embedding({
                         "title": anchor_movie.title, 
                         "overview": anchor_movie.overview or "",
@@ -493,8 +511,29 @@ class RecommendationEngine:
                 # Imp 9: Cold start fallback
                 return await self._get_genre_fallback_section(user_id, db, tmdb, seen_ids, country, provider_service)
             
-            cluster = clusters[0]
+            # --- CLUSTER ROTATION LOGIC ---
+            import redis.asyncio as aioredis
             
+            cluster_index = 0
+            try:
+                r = await aioredis.from_url(REDIS_URL, decode_responses=True)
+                rotation_key = f"cluster_rotation:{user_id}"
+                raw_index = await r.get(rotation_key)
+                
+                if raw_index is not None:
+                    cluster_index = (int(raw_index) + 1) % len(clusters)
+                
+                # Save next index with 7 day TTL
+                await r.setex(rotation_key, 60 * 60 * 24 * 7, cluster_index)
+                await r.close()
+            except Exception as e:
+                logger.warning(f"Cluster rotation failed for User {user_id}, falling back to top cluster: {e}")
+                cluster_index = 0
+            
+            cluster = clusters[cluster_index]
+            logger.info(f"Rotating to Cluster {cluster_index} ('{cluster.cluster_label}') for User {user_id}")
+            
+            # 2. Get Cluster Recommendations (Standard medoid path)
             results = await self.clustering.get_cluster_recommendations(
                 user_id=user_id,
                 cluster_id=cluster.cluster_id,
@@ -627,97 +666,114 @@ class RecommendationEngine:
         """Signal C: Hidden Gems — Score-to-Hype Filtering"""
         with _tracer.start_as_current_span("trident.signal_c.hidden_gems") as span:
             span.set_attribute("user_id", user_id)
-            span.set_attribute("country", country)
-
-            # Dynamic thresholds based on user's movie count
+            span.set_attribute            # Step 1: Get dynamic thresholds based on user's movie count
             user_count_result = await db.execute(
                 select(func.count(UserRating.id))
-                .where(UserRating.user_id == user_id)
-                .where(
-                    or_(
-                        UserRating.rating.isnot(None),
-                        UserRating.is_liked.is_(True)
-                    )
-                )
+                .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
             )
             user_movie_count = user_count_result.scalar() or 0
             thresholds = _get_signal_c_thresholds(user_movie_count)
             logger.info(f"[Signal C] User {user_id} has {user_movie_count} movies, using thresholds: {thresholds}")
-
-            results = await self.clustering.get_user_centric_recommendations(
-                user_id=user_id,
-                db=db,
-                filters={
-                    "min_vectorbox_score": thresholds["min_score"],
-                    "max_popularity": thresholds["max_popularity"],
-                    "min_vote_count": thresholds["min_votes"]
-                },
-                limit=500,
-                background_tasks=background_tasks
+            
+            # Step 2: DB Query — Fetch high-quality unwatched candidates
+            # We exclude watched_tmdb_ids (converted to internal IDs)
+            watched_result = await db.execute(
+                select(UserRating.movie_id)
+                .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
             )
+            watched_internal_ids = set(watched_result.scalars().all())
             
-            target_ids = [res["movie_id"] for res in results if res["movie_id"] not in seen_ids][:50]
+            result = await db.execute(
+                select(Movie)
+                .where(Movie.vectorbox_score >= thresholds["min_score"])
+                .where(Movie.popularity <= thresholds["max_popularity"])
+                .where(Movie.vote_count >= thresholds["min_votes"])
+                .where(Movie.id.notin_(watched_internal_ids) if watched_internal_ids else True)
+                .order_by(desc(Movie.vectorbox_score))
+                .limit(200)
+            )
+            candidates = result.scalars().all()
             
-            if target_ids:
-                 movies_result = await db.execute(select(Movie).where(Movie.id.in_(target_ids)))
-                 fetched_movies = movies_result.scalars().all()
-                 movie_map = {m.id: m for m in fetched_movies}
-                 
-                 if provider_service:
-                     valid_ids = [m.id for m in fetched_movies]
-                     providers_map = await provider_service.get_providers_batch(valid_ids, country)
-                 else:
-                     providers_map = {}
-            else:
-                 movie_map = {}
-                 providers_map = {}
+            if not candidates:
+                span.set_attribute("result_count", 0)
+                return FeedSection(id="hidden_gems", title="Hidden Gems", items=[])
 
-            # Build intermediate candidate dicts with exoticism boost (Imp 4)
+            # Step 3: Get user's global center vector (from cluster medoids)
+            clusters_result = await db.execute(
+                select(UserCluster).where(UserCluster.user_id == user_id)
+            )
+            clusters = clusters_result.scalars().all()
+            
+            global_center = None
+            if clusters:
+                # Use mean of medoid vectors
+                medoid_ids = [c.medoid_movie_id for c in clusters if c.medoid_movie_id]
+                if medoid_ids:
+                    medoid_movies = await db.execute(select(Movie.tmdb_id).where(Movie.id.in_(medoid_ids)))
+                    medoid_tmdb_ids = medoid_movies.scalars().all()
+                    vectors_map = await self.qdrant.get_vectors_batch(medoid_tmdb_ids)
+                    if vectors_map:
+                        global_center = np.mean(list(vectors_map.values()), axis=0)
+            
+            # Step 4: Fetch candidate vectors in batch and score
+            candidate_tmdb_ids = [m.tmdb_id for m in candidates]
+            candidate_vectors_map = await self.qdrant.get_vectors_batch(candidate_tmdb_ids)
+            
             mmr_candidates = []
-            for res in results:
-                movie_id = res["movie_id"]
-                if movie_id in seen_ids:
-                    continue
+            for movie in candidates:
+                # Base score from VectorBox quality (scaled 0-1)
+                quality_score = (movie.vectorbox_score / 100.0)
                 
-                movie = movie_map.get(movie_id)
-                if movie and movie.vectorbox_score and movie.vectorbox_score > thresholds["min_score"]:
-                    # Imp 4: Apply exoticism boost to non-English films
-                    boosted_score = _apply_exoticism_boost(res["score"], movie.original_language)
-                    mmr_candidates.append({
-                        "movie_id": movie.id,  # internal ID for MMR
-                        "tmdb_id": movie.tmdb_id,
-                        "score": boosted_score,
-                        "movie": movie,
-                    })
-                    if len(mmr_candidates) >= 20:
-                        break
-
-            # Imp 4: Re-sort by boosted score before MMR
+                # Similarity signal (if available) - default 0.5 to not penalize
+                similarity_score = 0.5
+                if global_center is not None:
+                    vec = candidate_vectors_map.get(movie.tmdb_id)
+                    if vec is not None:
+                        vec_np = np.array(vec)
+                        # Cosine similarity (assuming normalized vectors)
+                        similarity_score = float(np.dot(vec_np, global_center) / (np.linalg.norm(vec_np) * np.linalg.norm(global_center)))
+                
+                # Combine Score: 70% Quality + 30% Profile Similarity
+                combined_score = (quality_score * 0.7) + (similarity_score * 0.3)
+                
+                # Apply Exoticism Boost (implemented helper)
+                boosted_score = _apply_exoticism_boost(combined_score, movie.original_language)
+                
+                mmr_candidates.append({
+                    "movie_id": movie.id,
+                    "tmdb_id": movie.tmdb_id,
+                    "score": boosted_score,
+                    "movie": movie
+                })
+            
+            # Re-sort by boosted score
             mmr_candidates.sort(key=lambda x: x["score"], reverse=True)
+            mmr_candidates = mmr_candidates[:50] # Limit for MMR pool
 
-            # Imp 6: Apply MMR reranking
-            if mmr_candidates:
-                try:
-                    mmr_tmdb_ids = [c["tmdb_id"] for c in mmr_candidates]
-                    mmr_vectors_raw = await self.qdrant.get_vectors_batch(mmr_tmdb_ids)
-                    tmdb_to_internal = {c["tmdb_id"]: c["movie_id"] for c in mmr_candidates}
-                    vectors_map_mmr = {
-                        tmdb_to_internal[tid]: np.array(v)
-                        for tid, v in mmr_vectors_raw.items()
-                        if tid in tmdb_to_internal
-                    }
-                    
-                    loop = asyncio.get_running_loop()
-                    mmr_func = functools.partial(
-                        self.clustering.mmr_rerank,
-                        mmr_candidates, vectors_map_mmr, 10, lambda_param=0.7
-                    )
-                    mmr_results = await loop.run_in_executor(None, mmr_func)
-                except Exception as e:
-                    logger.error(f"MMR failed in Hidden Gems, falling back to top-10: {e}")
-                    mmr_results = mmr_candidates[:10]
+            # Step 5: Apply MMR Diversity
+            try:
+                mmr_tmdb_ids = [c["tmdb_id"] for c in mmr_candidates]
+                mmr_vectors_raw = await self.qdrant.get_vectors_batch(mmr_tmdb_ids)
+                vectors_map_mmr = {
+                    c["movie_id"]: np.array(mmr_vectors_raw[c["tmdb_id"]])
+                    for c in mmr_candidates if c["tmdb_id"] in mmr_vectors_raw
+                }
+                
+                loop = asyncio.get_running_loop()
+                mmr_func = functools.partial(
+                    self.clustering.mmr_rerank,
+                    mmr_candidates, vectors_map_mmr, 10, lambda_param=0.8 # Less diversity, focus on the top candidates
+                )
+                mmr_results = await loop.run_in_executor(None, mmr_func)
+            except Exception as e:
+                logger.error(f"MMR failed in Hidden Gems: {e}")
+                mmr_results = mmr_candidates[:10]
+
+            if provider_service:
+                cand_ids = [c["movie_id"] for c in mmr_results]
+                providers_map = await provider_service.get_providers_batch(cand_ids, country)
             else:
-                mmr_results = []
+                providers_map = {}
 
             items = []
             for cand in mmr_results:
@@ -726,12 +782,12 @@ class RecommendationEngine:
                 s_providers = [p["provider_name"] for p in p_data]
                 
                 item = await self.create_feed_item(
-                    movie, cand["score"], country, tmdb, 
+                    movie, cand["score"], country, tmdb,
                     include_rating=True, provider_service=provider_service,
                     streaming_providers=s_providers
                 )
                 items.append(item)
-                seen_ids.add(movie_id)
+                seen_ids.add(item.id)
             
             span.set_attribute("result_count", len(items))
             return FeedSection(

@@ -81,6 +81,10 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Diversity:** Implement MMR (Maximal Marginal Relevance) across `because_you_watched`, `your_taste`, and `hidden_gems` to prevent similar vectors from crowding the results.
 - **Collection Collapsing:** Prevents domination by a single franchise (e.g. keeping only the top *Harry Potter* film).
 
+### Anti-Vector Logic
+- **Rule**: Movies with `UserRating.is_rejected.is_(True)` or `rating <= 2.0` MUST be included in the user's Anti-Vector.
+- **Rule**: All recommendation signals MUST exclude rejected movies by fetching both `is_watched` and `is_rejected` IDs from the database during initial candidate gathering.
+- **Filter**: All SQLAlchemy queries for recommendations MUST include `.where(UserRating.is_rejected.is_(False))` when joining on ratings.
 
 ### Redis Caching (Completeness Guard)
 - **Rule**: The Main Feed MUST NOT be cached if the result contains fewer than 3 sections.

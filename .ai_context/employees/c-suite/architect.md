@@ -2,7 +2,7 @@
 
 > **Role:** Chief Software Architect
 > **Authority:** Final say on technology choices, forbidden patterns, and async discipline.
-> **Last Updated:** 2026-03-19
+> **Last Updated:** 2026-03-31
 
 This file serves as the **strict enforcement layer** for the VectorBox project. All code modifications must comply with these rules.
 

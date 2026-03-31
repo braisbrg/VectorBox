@@ -11,9 +11,6 @@ import { ClusterInfo, FeedItem, api } from "@/lib/api";
 interface RightConsoleProps {
     selectedMovieId: number | null;
     onCloseInspector: () => void;
-    clusters: ClusterInfo[];
-    selectedClusterId: number | null;
-    onSelectCluster: (id: number | null) => void;
     scope: "watchlist" | "global";
     onScopeChange: (scope: "watchlist" | "global") => void;
     countryCode: string;
@@ -26,9 +23,6 @@ interface RightConsoleProps {
 export function RightConsole({
     selectedMovieId,
     onCloseInspector,
-    clusters,
-    selectedClusterId,
-    onSelectCluster,
     scope,
     onScopeChange,
     countryCode,
@@ -139,32 +133,6 @@ export function RightConsole({
                                                     sizes="40px"
                                                     className="object-cover"
                                                 />
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-
-                            {/* SYS_CLUSTERS */}
-                            <div className="space-y-4">
-                                <span className="text-zinc-500 uppercase tracking-widest text-[10px] block border-b border-zinc-800 pb-2">
-                                    {">"} SYS_CLUSTERS
-                                </span>
-                                <div className="flex flex-col gap-2">
-                                    {clusters.map(cluster => {
-                                        const isActive = selectedClusterId === cluster.cluster_id;
-                                        return (
-                                            <button
-                                                key={cluster.cluster_id}
-                                                onClick={() => onSelectCluster(isActive ? null : cluster.cluster_id)}
-                                                className={`group flex items-center justify-between p-2 border transition-colors ${isActive ? "bg-primary text-black border-primary" : "bg-transparent text-zinc-400 border-zinc-800 hover:border-zinc-500"}`}
-                                            >
-                                                <span className="uppercase text-[10px] font-bold">
-                                                    {cluster.label}
-                                                </span>
-                                                <span className={`text-[9px] ${isActive ? "text-black" : "text-zinc-600 group-hover:text-primary"}`}>
-                                                    {cluster.movie_count}P
-                                                </span>
                                             </button>
                                         );
                                     })}

@@ -1,8 +1,8 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.5.0 (Trident v2: LLM Embeddings & Medoids)
-> **Last Updated:** 2026-03-26
+> **Version:** 1.6.0 (Trident v2: LLM Embeddings & Medoids)
+> **Last Updated:** 2026-03-31
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 

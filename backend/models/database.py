@@ -93,6 +93,7 @@ class UserRating(Base):
     is_watchlist = Column(Boolean, default=False)
     is_liked = Column(Boolean, default=False)
     is_watched = Column(Boolean, default=False)
+    is_rejected = Column(Boolean, default=False, server_default="false")  # "Not Interested" rejection
     watched_date = Column(DateTime)
     review = Column(Text)  # Optional review text
     created_at = Column(DateTime, default=datetime.utcnow)

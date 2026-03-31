@@ -198,6 +198,7 @@ backend/
 | Use Case | TTL | Key Pattern |
 | :--- | :--- | :--- |
 | Feed sections | 1 hour | `feed:{user_id}:{section}` |
+| Profile Summary | 24 hours | `profile_summary:{user_id}` |
 | TMDB responses | 24 hours | `tmdb:{endpoint}:{id}` |
 | Provider availability | 24 hours | `providers:{movie_id}:{region}` |
 | Trending cache | 24 hours | `trending:letterboxd` |
