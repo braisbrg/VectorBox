@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
-import { Info, Clock, Film } from "lucide-react";
+import { Info, Clock, Film, X } from "lucide-react";
 import { getTMDBImageUrl } from "@/lib/api";
 import { useState } from "react";
 import { useLanguage } from "@/components/language-provider";
@@ -22,6 +22,7 @@ export interface MovieCardProps {
     overview_es?: string;
     genres?: string[];
     onInspect?: (id: number) => void;
+    onReject?: (id: number) => void;
     priority?: boolean;
     className?: string;
     badgeType?: string;
@@ -46,6 +47,7 @@ export function MovieCard({
     vectorbox_score,
     title_es,
     onInspect,
+    onReject,
     priority = false,
     className = "",
     href,
@@ -123,18 +125,34 @@ export function MovieCard({
 
             {/* Inspect Button - Absolute positioned to avoid Link click if desired, 
                 but keeping it in a way that we can intercept it */}
-            <button
-                onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onInspect?.(id);
-                }}
-                className="absolute bottom-3 right-3 z-30 text-zinc-500 hover:text-primary p-1 bg-black/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/btn"
-                title={t("movie.inspect") || "INSPECT"}
-            >
-                <Info size={10} className="group-hover/btn:animate-pulse" />
-                <span className="hidden group-hover/btn:inline text-[8px] uppercase font-mono">[i]</span>
-            </button>
+            {/* Action Buttons */}
+            <div className="absolute bottom-3 right-3 z-30 flex gap-1">
+                {onReject && (
+                    <button
+                        onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onReject(id);
+                        }}
+                        className="text-zinc-500 hover:text-red-500 p-1 bg-black/50 border border-zinc-800 hover:border-red-500 transition-all flex items-center gap-1 group/rej"
+                        title="Not Interested"
+                    >
+                        <X size={10} className="group-hover/rej:animate-pulse" />
+                    </button>
+                )}
+                <button
+                    onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onInspect?.(id);
+                    }}
+                    className="text-zinc-500 hover:text-primary p-1 bg-black/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/btn"
+                    title={t("movie.inspect") || "INSPECT"}
+                >
+                    <Info size={10} className="group-hover/btn:animate-pulse" />
+                    <span className="hidden group-hover/btn:inline text-[8px] uppercase font-mono">[i]</span>
+                </button>
+            </div>
 
             {/* Selection/Hover Frame */}
             <div className="absolute inset-0 border-2 border-primary opacity-0 group-hover:opacity-5 pointer-events-none transition-opacity z-10" />

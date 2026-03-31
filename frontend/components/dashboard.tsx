@@ -40,17 +40,11 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
     // View State
     const [currentView, setCurrentView] = useState("feed");
-    const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
     const [scope, setScope] = useState<"watchlist" | "global">("global");
     const [countryCode, setCountryCode] = useState("ES");
     const [streamingProviders, setStreamingProviders] = useState<number[]>([]);
     const [inspectedMovieId, setInspectedMovieId] = useState<number | null>(null);
 
-    const { data: clusters = [] } = useQuery({
-        queryKey: ["clusters", currentUserSession?.id],
-        queryFn: () => getUserClusters(currentUserSession!.id),
-        enabled: !!currentUserSession?.id,
-    });
 
     const { t } = useLanguage();
 
@@ -143,7 +137,6 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const clearFilters = () => {
         setStreamingProviders([]);
         setCountryCode("ES");
-        setSelectedClusterId(null);
     };
 
     // Show loading briefly during hydration
@@ -303,9 +296,6 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             <RightConsole
                 selectedMovieId={inspectedMovieId}
                 onCloseInspector={() => setInspectedMovieId(null)}
-                clusters={clusters}
-                selectedClusterId={selectedClusterId}
-                onSelectCluster={setSelectedClusterId}
                 scope={scope}
                 onScopeChange={setScope}
                 countryCode={countryCode}

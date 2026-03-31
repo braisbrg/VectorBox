@@ -464,3 +464,13 @@ export const getFeedServerSide = async (
         return null;
     }
 };
+
+/**
+ * Reject a movie ("Not Interested")
+ * Marks the movie so it won't appear in future recommendations.
+ */
+export const rejectMovie = async (tmdbId: number): Promise<{ status: string; tmdb_id: number; rejected: boolean }> => {
+    const response = await api.post(`/api/recommendations/reject/${tmdbId}`);
+    return response.data;
+};
+

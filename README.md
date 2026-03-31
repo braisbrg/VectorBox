@@ -1,6 +1,18 @@
-# VectorBox ![version](https://img.shields.io/badge/version-v1.5.0-blue) ![Next.js](https://img.shields.io/badge/Next.js-16.1.6-black?logo=next.js) ![FastAPI](https://img.shields.io/badge/FastAPI-0.122.0-009688?logo=fastapi) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?logo=postgresql) ![Qdrant](https://img.shields.io/badge/Qdrant-vector--db-red) ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis) ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker) ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python) ![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-3178C6?logo=typescript)
+# VectorBox (Trident Engine)
 
-> Letterboxd-connected film recommendation engine powered by vector similarity, director-lineage analysis, and crowd signal fusion.
+![Version](https://img.shields.io/badge/version-v1.6.0-acidgreen?style=flat-square)
+![Last Updated](https://img.shields.io/badge/last_updated-2026--03--31-orange?style=flat-square)
+
+VectorBox is a premium movie recommendation engine designed to bridge the gap between social tracking (Letterboxd) and AI-driven cinematic discovery. 
+
+Powered by the **Trident Hybrid Engine**, it fuses dense vector embeddings, LLM-enriched plot analysis, and dynamic collaborative filtering into a seamless, high-performance feed.
+
+### ✨ Key Features
+- **Trident Signal Fusion**: Vector (Vibe), Auteur (Director), and Crowd (TMDB CF).
+- **K-Medoids Clustering**: Taste-based rows like "A24 Dread" or "Neon-noir Revenge" with **Cluster Rotation**.
+- **Magic Box**: Natural language search with intent parsing (Groq/Llama-4).
+- **Movie Rejection**: Support for "Not interested" movies to prune the recommendation engine.
+- **Letterboxd Integration**: Sync your history and ratings via RSS automatically.
 
 ---
 

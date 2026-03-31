@@ -119,7 +119,9 @@ class RecommendationService:
             logger.warning(f"Redis client not available for {signal_type} signal. Computing without cache/lock.")
             return await compute_method(user.id, **params)
 
-        cache_key = f"signal_cache:{user.id}:{signal_type}:{json.dumps(params, sort_keys=True)}"
+        # Strip non-serializable params (e.g. BackgroundTasks) from the cache key
+        serializable_params = {k: v for k, v in params.items() if k != "background_tasks"}
+        cache_key = f"signal_cache:{user.id}:{signal_type}:{json.dumps(serializable_params, sort_keys=True)}"
         
         # Try to get from cache first
         cached = await self.redis.get(cache_key)
@@ -450,7 +452,7 @@ class RecommendationService:
             rrf_score = rrf_scores.get(m.id, 0)
             vb_score = m.vectorbox_score or 50
             quality_weight = self.clustering.calculate_quality_weight(vb_score)
-            candidates.append({"movie": m, "score": rrf_score * quality_weight})
+            candidates.append({"movie": m, "movie_id": m.id, "score": rrf_score * quality_weight})
 
         candidates.sort(key=lambda x: x["score"], reverse=True)
 

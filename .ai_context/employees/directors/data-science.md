@@ -37,7 +37,8 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 - **Purpose:** Captures plot similarity, thematic "vibe", tone, and genre alignment
 - **Model:** `all-MiniLM-L6-v2` via Sentence-Transformers, applied to an **LLM-enriched cinematic description** (generated via Groq: Scout -> 70B -> 8B fallback).
 - **Seeding:** Movies rated 4+ stars **OR** explicitly liked (`is_liked`), combined with recency bias (180-day decay)
-- **Anti-Vector:** Applies a cosine penalty pulling away from despised/1-star genres and themes (x0.3 or x0.6 multipliers)
+- **Anti-Vector:** Applies a cosine penalty pulling away from despised/1-star genres and themes. Signal is derived from movies rated <= 2 stars **AND** explicitly rejected movies (`is_rejected`).
+- **Cluster Rotation:** Signal B (Your Taste) now rotates through the user's K-Medoid clusters on each feed refresh to prevent staleness.
 
 ### Signal Auteur (Directors & Cast)
 - **Source:** User's high-rated history

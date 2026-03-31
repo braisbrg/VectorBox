@@ -2,7 +2,7 @@
 
 import { motion } from "framer-motion";
 import Image from "next/image";
-import { getTMDBImageUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation } from "@/lib/api";
+import { getTMDBImageUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie } from "@/lib/api";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { useRef, useState, useEffect } from "react";
 import { MovieCard } from "@/components/ui/movie-card";
@@ -38,9 +38,10 @@ interface MovieCarouselProps {
     forceVectorBoxScore?: boolean;
     priority?: boolean;
     onInspect?: (id: number) => void;
+    onReject?: (id: number) => void;
 }
 
-export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore, priority = false, onInspect }: MovieCarouselProps) {
+export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore, priority = false, onInspect, onReject }: MovieCarouselProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const isMounted = useRef(true);
     const [localItems, setLocalItems] = useState<FeedItem[]>(items);
@@ -92,6 +93,18 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
             if (isMounted.current) {
                 setIsRerolling(false);
             }
+        }
+    };
+
+    const handleReject = async (tmdbId: number) => {
+        try {
+            await rejectMovie(tmdbId);
+            if (isMounted.current) {
+                setLocalItems(prev => prev.filter(item => item.id !== tmdbId));
+            }
+            onReject?.(tmdbId);
+        } catch (error) {
+            console.error("Failed to reject movie:", error);
         }
     };
 
@@ -177,6 +190,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             letterboxd_rating={movie.letterboxd_rating}
                             providers={movie.streaming_providers}
                             onInspect={onInspect}
+                            onReject={handleReject}
                         />
                     </div>
                 ))}
