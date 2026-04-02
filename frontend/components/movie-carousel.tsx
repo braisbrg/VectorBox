@@ -1,12 +1,13 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { getTMDBImageUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie } from "@/lib/api";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import { MovieCard } from "@/components/ui/movie-card";
 import { useLanguage } from "@/components/language-provider";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 
 interface FeedItem {
     id: number;
@@ -37,7 +38,7 @@ interface MovieCarouselProps {
     titlePrefix?: React.ReactNode;
     forceVectorBoxScore?: boolean;
     priority?: boolean;
-    onInspect?: (id: number) => void;
+    onInspect?: (id: number, sectionId?: string) => void;
     onReject?: (id: number) => void;
 }
 
@@ -48,6 +49,8 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
     const [localTitle, setLocalTitle] = useState<string>(title);
     const [isRerolling, setIsRerolling] = useState(false);
     const { t } = useLanguage();
+
+    const queryClient = useQueryClient();
 
     // Update local state when props change
     useEffect(() => {
@@ -62,7 +65,40 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
         };
     }, []);
 
-    if (localItems.length === 0) return null;
+    // FIX 3: Optimistic reject with rollback
+    const [rejectingIds, setRejectingIds] = useState<Set<number>>(new Set());
+
+    const handleReject = useCallback(async (tmdbId: number) => {
+        // Snapshot for rollback
+        const previousItems = localItems;
+
+        // Optimistic: remove immediately
+        setLocalItems(prev => prev.filter(item => item.id !== tmdbId));
+        setRejectingIds(prev => new Set(prev).add(tmdbId));
+
+        try {
+            await rejectMovie(tmdbId);
+            if (isMounted.current) {
+                // Invalidate feed query so next load reflects the rejection
+                queryClient.invalidateQueries({ queryKey: ["feed"] });
+            }
+            onReject?.(tmdbId);
+        } catch (error) {
+            console.error("Failed to reject movie:", error);
+            // Rollback: restore previous items
+            if (isMounted.current) {
+                setLocalItems(previousItems);
+            }
+        } finally {
+            if (isMounted.current) {
+                setRejectingIds(prev => {
+                    const next = new Set(prev);
+                    next.delete(tmdbId);
+                    return next;
+                });
+            }
+        }
+    }, [localItems, onReject, queryClient, isMounted]);
 
     const isWildcard = type === "wildcard" || sectionId?.startsWith("wildcard_");
     const isRandom = type === "random" || sectionId === "random_picks";
@@ -96,17 +132,10 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
         }
     };
 
-    const handleReject = async (tmdbId: number) => {
-        try {
-            await rejectMovie(tmdbId);
-            if (isMounted.current) {
-                setLocalItems(prev => prev.filter(item => item.id !== tmdbId));
-            }
-            onReject?.(tmdbId);
-        } catch (error) {
-            console.error("Failed to reject movie:", error);
-        }
-    };
+    // FIX 3: Auto-hide empty rows with fade-out
+    if (localItems.length === 0) {
+        return null;
+    }
 
     const scroll = (direction: "left" | "right") => {
         if (scrollContainerRef.current) {
@@ -129,7 +158,14 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
     ) ? "rating" : (sectionId === "popular_letterboxd" ? "letterboxd" : "match");
 
     return (
-        <div className="space-y-4 mb-8" data-testid="feed-carousel">
+        <AnimatePresence>
+        <motion.div
+            className="space-y-4 mb-8"
+            data-testid="feed-carousel"
+            initial={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0, marginBottom: 0, overflow: "hidden" }}
+            transition={{ duration: 0.3 }}
+        >
             <div className="flex items-center justify-between px-4 md:px-8">
                 <div className="flex items-center gap-3">
                     {titlePrefix}
@@ -189,12 +225,23 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
                             letterboxd_rating={movie.letterboxd_rating}
                             providers={movie.streaming_providers}
-                            onInspect={onInspect}
+                            onInspect={(id) => onInspect?.(id, sectionId)}
                             onReject={handleReject}
+                            isRejecting={rejectingIds.has(movie.id)}
                         />
                     </div>
                 ))}
+
+                {/* FIX 3: Low item threshold message */}
+                {localItems.length > 0 && localItems.length < 3 && (
+                    <div className="flex-none flex items-center px-4">
+                        <span className="text-zinc-600 font-mono text-xs whitespace-nowrap">
+                            [ SECTION REFRESHES ON NEXT LOAD ]
+                        </span>
+                    </div>
+                )}
             </div>
-        </div>
+        </motion.div>
+        </AnimatePresence>
     );
 }

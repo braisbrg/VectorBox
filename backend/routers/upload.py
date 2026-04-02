@@ -42,7 +42,8 @@ async def get_upload_status(
 async def process_single_movie(
     movie_data: dict,
     user_id: int,
-    tmdb_client: "TMDBClient"
+    tmdb_client: "TMDBClient",
+    groq_client=None
 ):
     """
     Helper to process a single movie in a batch.
@@ -63,7 +64,7 @@ async def process_single_movie(
     try:
         # Fresh session per concurrent task (Architect Rule §2)
         async with AsyncSessionLocal() as session:
-            movie_service = MovieService(session, tmdb=tmdb_client)
+            movie_service = MovieService(session, tmdb=tmdb_client, groq_client=groq_client)
             try:
                 # --- Step 1: Local DB lookup by letterboxd_uri ---
                 if letterboxd_uri:
@@ -169,6 +170,16 @@ async def enrich_movies_background(
         from services.tmdb_client import TMDBClient
         tmdb_client = TMDBClient()
 
+        # FIX 5: Create groq_client once for LLM-enriched embeddings
+        import os
+        from openai import AsyncOpenAI
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        groq_client = AsyncOpenAI(
+            api_key=groq_api_key,
+            base_url="https://api.groq.com/openai/v1",
+            max_retries=0
+        ) if groq_api_key else None
+
         try:
             async with AsyncSessionLocal() as db:
                 # Process in Chunks
@@ -189,7 +200,7 @@ async def enrich_movies_background(
                     # 1. Parallel Resolve & Ingest (each task owns its own session)
                     tasks = []
                     for m_data in chunk:
-                        tasks.append(process_single_movie(m_data, user_id, tmdb_client))
+                        tasks.append(process_single_movie(m_data, user_id, tmdb_client, groq_client=groq_client))
 
                     # Results: list of (movie_id | None, needs_vector)
                     results = await asyncio.gather(*tasks)
@@ -326,6 +337,9 @@ async def enrich_movies_background(
         finally:
             # Close the shared TMDB HTTP client
             await tmdb_client.aclose()
+            # FIX 5: Close the shared Groq client
+            if groq_client:
+                await groq_client.close()
 
         # Mark as complete (outside the session context — uses in-memory dict + Redis)
         upload_status[user_id] = {

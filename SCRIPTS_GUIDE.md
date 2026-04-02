@@ -15,7 +15,7 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 | **`verify_nlp_fallback.py`** | **Chaos Monkey.** Mocks failures in 1st/2nd tier LLM clients to guarantee that the application successfully cascades down to the universal fallback tiers without crashing. | `docker-compose run --rm backend python scripts/verify_nlp_fallback.py` |
 | **`test_es_whitelist.py`** | **QA Whitelist.** Unit tests the pure standalone function `filter_es_providers` to guarantee disallowed streaming services don't reach the frontend. | `docker-compose run --rm backend python scripts/test_es_whitelist.py` |
 | **`security_audit.py`** | **Security Audit.** Runs `pip-audit --require-hashes` against `requirements.lock` for strict hash-verified CVE scanning. Falls back to `pip freeze` + `--no-deps` if no lockfile is present. Ignores known false positives (torchvision CPU builds, diskcache). | `docker-compose exec backend python scripts/security_audit.py` |
-| **`verify_feed_parallelism.py`** | **QA Certification (Phase 2).** Mocks 9 feed tasks with 200ms latency, confirms `asyncio.gather` runs concurrently (total < 400ms), and verifies each task uses an isolated session object. | `docker-compose exec backend python scripts/verify_feed_parallelism.py` |
+| **`verify_feed_parallelism.py`** | **QA Certification (Phase 2).** Mocks 11 feed tasks with 200ms latency, confirms `asyncio.gather` runs concurrently (total < 400ms), and verifies each task uses an isolated session object. | `docker-compose exec backend python scripts/verify_feed_parallelism.py` |
 | **`test_idor_hidden_gems.py`** | **QA Certification (Phase 3).** Calls `/api/recommendations/hidden-gems` without auth cookie, verifies 401 response. Also tests forged `user_id` query param is ignored. | `docker-compose exec backend python scripts/test_idor_hidden_gems.py` |
 | **`test_trident_math.py`** | **QA Certification (Phase 4).** Verifies sigmoid curve outputs at score=50/65/80 against expected weights, and tests RRF correctness by asserting movies in multiple lists score higher than single-list entries. | `docker-compose exec backend python scripts/test_trident_math.py` |
 | **`wait_for_db.py`** | **Infrastructure.** Blocks boot until Postgres is ready using `socket` check. Used automatically in Docker entrypoint. | *(Internal use only)* |
@@ -75,4 +75,4 @@ Standard auditing protocols for this project.
     ```
 
 ---
-**Last Updated:** 2026-03-26
+**Last Updated:** 2026-04-02

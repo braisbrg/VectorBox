@@ -51,11 +51,7 @@ class FeedService:
     ) -> FeedSection:
         return await self.engine.get_available_now_section(user_id, db, tmdb, seen_ids, country, streaming_providers)
 
-    @safe_execution(fallback_return=FeedSection(id="deep_dive", title="Deep Dive", items=[]))
-    async def get_deep_dive_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, include_low_quality: bool = False, background_tasks = None
-    ) -> FeedSection:
-        return await self.engine.get_deep_dive_section(user_id, db, tmdb, seen_ids, country, provider_service, include_low_quality, background_tasks=background_tasks)
+
 
     @safe_execution(fallback_return=None)
     async def get_wildcard_section(
@@ -330,18 +326,7 @@ class FeedService:
                 logger.error(f"Feed Task Failed [Cult Actor]: {e}")
                 return None
 
-        async def task_deep_dive():
-            try:
-                async with AsyncSessionLocal() as session:
-                    local_provider = ProviderService(session, tmdb)
-                    return await self.get_deep_dive_section(
-                        user_id, session, tmdb, watched_tmdb_ids.copy(), country_code,
-                        local_provider, include_low_quality=include_low_quality,
-                        background_tasks=background_tasks
-                    )
-            except Exception as e:
-                logger.error(f"Feed Task Failed [Deep Dive]: {e}")
-                return None
+
 
         tasks =[
             task_popular(),
@@ -354,7 +339,6 @@ class FeedService:
             task_auteur(),
             task_cult_actor(),
             task_available(),
-            task_deep_dive(),
         ]
         
         results = []
@@ -376,7 +360,6 @@ class FeedService:
             section_auteur,
             section_cult_actor,
             section_d,
-            section_deep_dive,
         ) = results
 
         # Deduplicate and assemble in display order
@@ -384,8 +367,8 @@ class FeedService:
         final_sections = []
 
         ordered_results =[
-            section_hybrid,
             section_popular,
+            section_hybrid,
             section_a,
             section_b,
             section_auteur,
@@ -408,14 +391,6 @@ class FeedService:
                 section.items = unique_items
                 final_sections.append(section)
 
-        if section_deep_dive and section_deep_dive.items:
-            unique_items =[item for item in section_deep_dive.items if item.id not in seen_ids]
-            for item in unique_items:
-                seen_ids.add(item.id)
-            if unique_items:
-                section_deep_dive.items = unique_items
-                insert_pos = min(len(final_sections), 5)
-                final_sections.insert(insert_pos, section_deep_dive)
 
         final_resp = FeedResponse(feed=final_sections, status="ok")
 

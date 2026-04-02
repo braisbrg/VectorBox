@@ -34,6 +34,19 @@ from telemetry import get_tracer
 logger = logging.getLogger(__name__)
 _tracer = get_tracer("recommendation_engine")
 
+# Genres too generic to be useful discriminators for cluster filtering
+GENERIC_GENRES = {"Action", "Drama", "Comedy", "Adventure", "Thriller"}
+
+# Genre exclusion pairs: (movie_must_not_have, unless_cluster_has)
+# If a movie has a niche genre the cluster doesn't, exclude it
+EXCLUSION_PAIRS = [
+    ({"Family", "Animation"}, {"Family", "Animation"}),
+    ({"Documentary"}, {"Documentary"}),
+    ({"Horror"}, {"Horror"}),
+    ({"Musical", "Music"}, {"Musical", "Music"}),
+    ({"Western"}, {"Western"}),
+]
+
 
 def _get_signal_c_thresholds(user_movie_count: int) -> dict:
     """Return dynamic thresholds for Signal C based on user's rated/liked movie count."""
@@ -561,6 +574,37 @@ class RecommendationEngine:
                 movie_map = {}
                 providers_map = {}
 
+            # FIX 2: Apply genre coherence filter — only keep movies that share at least 1 genre with the cluster
+            cluster_genres = set(cluster.dominant_genres or [])
+            if cluster_genres and movie_map:
+                genre_filtered_ids = []
+                for mid, movie in movie_map.items():
+                    if not movie.genres:
+                        genre_filtered_ids.append(mid)  # no genre info, include by default
+                        continue
+                    movie_genre_set = set(movie.genres)
+                    if not (movie_genre_set & cluster_genres):  # no genre in common → skip
+                        continue
+
+                    # FIX 1: EXCLUSION_PAIRS — prevent niche genre mismatches
+                    exclude = False
+                    for movie_genres_to_check, cluster_must_have in EXCLUSION_PAIRS:
+                        movie_has = bool(movie_genre_set & movie_genres_to_check)
+                        cluster_has = bool(cluster_genres & cluster_must_have)
+                        if movie_has and not cluster_has:
+                            exclude = True
+                            break
+                    if exclude:
+                        continue
+
+                    genre_filtered_ids.append(mid)
+                # Only apply filter if it leaves enough results (min 5)
+                if len(genre_filtered_ids) >= 5:
+                    results = [r for r in results if r["movie_id"] in genre_filtered_ids or r["movie_id"] not in movie_map]
+                    logger.info(f"Genre filter for cluster '{cluster.cluster_label}': {len(movie_map)} → {len(genre_filtered_ids)} movies (genres: {cluster_genres})")
+                else:
+                    logger.debug(f"Genre filter too aggressive for cluster '{cluster.cluster_label}', skipping ({len(genre_filtered_ids)} results)")
+
             # Imp 5: Compute anti-vector once for this section
             anti_vector = await self._get_anti_vector(user_id, db, self.qdrant)
             anti_vector_np = np.array(anti_vector) if anti_vector else None
@@ -641,7 +685,7 @@ class RecommendationEngine:
                     streaming_providers=s_providers
                 )
                 items.append(item)
-                seen_ids.add(movie.id)  # seen_ids uses internal IDs for this section
+                seen_ids.add(movie.tmdb_id)
             
             title = cluster.cluster_label or "Your Taste"
 
@@ -886,7 +930,7 @@ class RecommendationEngine:
             background_tasks=background_tasks
         )
         
-        target_ids = [res["movie_id"] for res in results if res["movie_id"] not in seen_ids][:30]
+        target_ids = [res["movie_id"] for res in results][:30]
         
         if target_ids:
             movies_result = await db.execute(select(Movie).where(Movie.id.in_(target_ids)))
@@ -904,7 +948,7 @@ class RecommendationEngine:
         items = []
         for res in results:
             movie_id = res["movie_id"]
-            if movie_id in seen_ids:
+            if movie_id in seen_ids or (movie_map.get(movie_id) and movie_map[movie_id].tmdb_id in seen_ids):
                 continue
             movie = movie_map.get(movie_id)
             if movie:
@@ -926,7 +970,7 @@ class RecommendationEngine:
                     streaming_providers=s_providers
                 )
                 items.append(item)
-                seen_ids.add(movie_id)
+                seen_ids.add(movie.tmdb_id)
                 if len(items) >= 10:
                     break
                     
@@ -1088,6 +1132,21 @@ class RecommendationEngine:
         fetched_movies = result.scalars().all()
         movies_map = {m.tmdb_id: m for m in fetched_movies}
 
+        # FIX 8: Filter out movies the user has already watched
+        watched_result = await db.execute(
+            select(UserRating.movie_id)
+            .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+        )
+        watched_internal_ids = set(watched_result.scalars().all())
+        # Map internal IDs → tmdb_ids for comparison
+        if watched_internal_ids:
+            watched_tmdb_result = await db.execute(
+                select(Movie.tmdb_id).where(Movie.id.in_(watched_internal_ids))
+            )
+            watched_tmdb_ids = set(watched_tmdb_result.scalars().all())
+        else:
+            watched_tmdb_ids = set()
+
         # Batch-fetch providers (no N+1)
         if provider_service and fetched_movies:
             internal_ids = [m.id for m in fetched_movies]
@@ -1097,6 +1156,8 @@ class RecommendationEngine:
         
         items = []
         for tmdb_id in popular_ids:
+            if tmdb_id in watched_tmdb_ids:
+                continue
             movie = movies_map.get(tmdb_id)
             if movie:
                 p_data = providers_map.get(movie.id, [])
