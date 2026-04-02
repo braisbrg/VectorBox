@@ -10,6 +10,7 @@ import { ClusterInfo, FeedItem, api } from "@/lib/api";
 
 interface RightConsoleProps {
     selectedMovieId: number | null;
+    selectedSectionId?: string;
     onCloseInspector: () => void;
     scope: "watchlist" | "global";
     onScopeChange: (scope: "watchlist" | "global") => void;
@@ -22,6 +23,7 @@ interface RightConsoleProps {
 
 export function RightConsole({
     selectedMovieId,
+    selectedSectionId,
     onCloseInspector,
     scope,
     onScopeChange,
@@ -34,6 +36,20 @@ export function RightConsole({
     const { t } = useLanguage();
     const [inspectedMovie, setInspectedMovie] = useState<FeedItem | null>(null);
     const [isLoadingMovie, setIsLoadingMovie] = useState(false);
+
+    const getSectionReason = (sectionId?: string) => {
+        if (!sectionId) return "MATRIX GENERAL ALGORITHM";
+        if (sectionId.startsWith("because_you_watched")) return "Item-to-Item Semantic Similarity from Anchors";
+        if (sectionId === "your_taste") return "Matches User Medoid Cluster Profiling";
+        if (sectionId === "picked_for_you") return "Hybrid RRF Signal Fusion Mechanism";
+        if (sectionId === "available_now") return "Streaming Availability Cross-reference";
+        if (sectionId === "hidden_gems") return "Algorithmically Detected Discovery Metrics";
+        if (sectionId.startsWith("watchlist")) return "User Curated Dataset";
+        if (sectionId === "auteur") return "Auteur/Director Affinity Calculation";
+        if (sectionId === "cult_actor") return "Actor Representation Calculation";
+        if (sectionId.includes("wildcard") || sectionId.includes("random")) return "Anti-Routine Parameter Matrix Injection";
+        return "STANDARD VECTORBOX MATCH";
+    };
 
     useEffect(() => {
         if (selectedMovieId) {
@@ -223,6 +239,28 @@ export function RightConsole({
                                         <p className="text-zinc-400 text-[11px] leading-relaxed font-sans normal-case">
                                             {inspectedMovie.overview || "NO OVERVIEW DATA AVAILABLE IN LOCAL_CACHE."}
                                         </p>
+                                    </div>
+
+                                    {/* FIX 4b: Why Recommended */}
+                                    <div className="space-y-2">
+                                        <span className="text-[10px] text-zinc-500 uppercase tracking-widest block border-b border-zinc-800 pb-2">
+                                            {">"} WHY_RECOMMENDED
+                                        </span>
+                                        {inspectedMovie.contributors && inspectedMovie.contributors.length > 0 ? (
+                                            <ul className="text-zinc-400 text-[11px] space-y-1 mt-2">
+                                                {inspectedMovie.contributors.map((contrib, i) => (
+                                                    <li key={i} className="flex justify-between">
+                                                        <span>{contrib.seed_title}</span>
+                                                        <span className="text-primary">{contrib.contribution.toFixed(1)}%</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        ) : (
+                                            <p className="text-zinc-400 text-[10px] uppercase mt-2">
+                                                <span className="text-primary opacity-80 mr-2">LOGIC:</span> 
+                                                {getSectionReason(selectedSectionId)}
+                                            </p>
+                                        )}
                                     </div>
 
                                     {/* Actions */}

@@ -43,7 +43,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const [scope, setScope] = useState<"watchlist" | "global">("global");
     const [countryCode, setCountryCode] = useState("ES");
     const [streamingProviders, setStreamingProviders] = useState<number[]>([]);
-    const [inspectedMovieId, setInspectedMovieId] = useState<number | null>(null);
+    const [inspectedMovie, setInspectedMovie] = useState<{ id: number; sectionId?: string } | null>(null);
 
 
     const { t } = useLanguage();
@@ -257,7 +257,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             username={currentUserSession.username}
                             countryCode={countryCode}
                             streamingProviders={streamingProviders}
-                            onInspect={setInspectedMovieId}
+                            onInspect={(id: number, sectionId?: string) => setInspectedMovie({ id, sectionId })}
                         />
                     ) : currentView === "settings" ? (
                         <SettingsView />
@@ -287,15 +287,16 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             streamingProviders={streamingProviders}
                             initialData={initialFeedData}
                             registeredUsers={users}
-                            onInspect={setInspectedMovieId}
+                            onInspect={(id: number, sectionId?: string) => setInspectedMovie({ id, sectionId })}
                         />
                     )}
                 </div>
             </div>
 
             <RightConsole
-                selectedMovieId={inspectedMovieId}
-                onCloseInspector={() => setInspectedMovieId(null)}
+                selectedMovieId={inspectedMovie?.id ?? null}
+                selectedSectionId={inspectedMovie?.sectionId}
+                onCloseInspector={() => setInspectedMovie(null)}
                 scope={scope}
                 onScopeChange={setScope}
                 countryCode={countryCode}
@@ -307,7 +308,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
             {/* Mobile Bottom Sheet for Inspector */}
             <AnimatePresence>
-                {inspectedMovieId && (
+                {inspectedMovie && (
                     <motion.div
                         initial={{ y: "100%" }}
                         animate={{ y: 0 }}
@@ -315,12 +316,12 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                         transition={{ type: "spring", damping: 25, stiffness: 200 }}
                         className="lg:hidden fixed inset-x-0 bottom-0 z-50 bg-[#0a0a0a] border-t border-zinc-800 rounded-t-2xl shadow-[0_-8px_30px_rgb(0,0,0,0.5)] max-h-[90vh] overflow-hidden flex flex-col"
                     >
-                        <div className="w-12 h-1.5 bg-zinc-800 rounded-full mx-auto my-4 shrink-0" onClick={() => setInspectedMovieId(null)} />
+                        <div className="w-12 h-1.5 bg-zinc-800 rounded-full mx-auto my-4 shrink-0" onClick={() => setInspectedMovie(null)} />
                         <div className="overflow-y-auto px-6 pb-12">
                             {/* Reusing Inspector logic or simplified version for mobile */}
                             <div className="flex justify-between items-start mb-6">
                                 <h2 className="text-xl font-bold uppercase font-mono tracking-tighter">DATA_INSPECTOR_MOB</h2>
-                                <button onClick={() => setInspectedMovieId(null)} className="p-2 text-zinc-500"><X /></button>
+                                <button onClick={() => setInspectedMovie(null)} className="p-2 text-zinc-500"><X /></button>
                             </div>
                             <div className="text-zinc-500 font-mono text-xs uppercase italic tracking-widest text-center py-20 border border-dashed border-zinc-800">
                                 [ INSPECTOR_VIEW_PORTED_FROM_CONSOLE ]

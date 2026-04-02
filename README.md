@@ -1,17 +1,18 @@
 # VectorBox (Trident Engine)
 
-![Version](https://img.shields.io/badge/version-v1.6.0-acidgreen?style=flat-square)
-![Last Updated](https://img.shields.io/badge/last_updated-2026--03--31-orange?style=flat-square)
+![Version](https://img.shields.io/badge/version-v1.7.0-acidgreen?style=flat-square)
+![Last Updated](https://img.shields.io/badge/last_updated-2026--04--02-orange?style=flat-square)
 
 VectorBox is a premium movie recommendation engine designed to bridge the gap between social tracking (Letterboxd) and AI-driven cinematic discovery. 
 
 Powered by the **Trident Hybrid Engine**, it fuses dense vector embeddings, LLM-enriched plot analysis, and dynamic collaborative filtering into a seamless, high-performance feed.
 
 ### ✨ Key Features
-- **Trident Signal Fusion**: Vector (Vibe), Auteur (Director), and Crowd (TMDB CF).
-- **K-Medoids Clustering**: Taste-based rows like "A24 Dread" or "Neon-noir Revenge" with **Cluster Rotation**.
+- **Trident Signal Fusion**: Vector (Vibe), Auteur (Director), and Discovery (Signal C).
+- **Automated Cluster Rotation**: K-Medoids rows that automatically cycle through user tastes (e.g. "A24 Dread" to "80s Cyberpunk").
+- **Discovery (Hidden Gems)**: **DB-first discovery** logic tailored to profile richness, followed by vector-weighted similarity re-ranking.
 - **Magic Box**: Natural language search with intent parsing (Groq/Llama-4).
-- **Movie Rejection**: Support for "Not interested" movies to prune the recommendation engine.
+- **Movie Rejection**: Native support for "Not interested" movies with active **anti-vector penalties**.
 - **Letterboxd Integration**: Sync your history and ratings via RSS automatically.
 
 ---
@@ -165,13 +166,13 @@ Redis is internal-only (no host port).
 
 ### Feed Engine
 
-The home feed is composed of eight parallel sections, each powered by a distinct retrieval strategy:
+The home feed is composed of **ten parallel sections**, each powered by a distinct retrieval strategy:
 
 | Section | Strategy |
 |---------|----------|
 - **Available Now**: Filter by user's streaming services + RRF ranked
 - **Cache Guard**: Smart Redis caching that rejects feeds with < 3 sections.
-- **Internationalization**: Full i18n support for **English** and **Spanish** via `next-intl` message files in `frontend/messages/`.
+- **Cluster Rotation**: Automated cycling of user taste clusters on every refresh.
 
 ### 🔍 Magic Box NLP Search
 
@@ -426,7 +427,7 @@ VectorBox/
 
 ## 📜 License
 
-**Version:** v1.5.0 Trident v2 Upgrade  
-**Last Updated:** 2026-03-26  
+**Version:** v1.7.0 Trident v2 Optimization  
+**Last Updated:** 2026-04-02  
 **Contact:** vectorbox.app@proton.me
 **License:** Proprietary & Confidential. All rights reserved.

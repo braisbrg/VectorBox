@@ -2,7 +2,7 @@
 
 > **Role:** Chief Software Architect
 > **Authority:** Final say on technology choices, forbidden patterns, and async discipline.
-> **Last Updated:** 2026-03-31
+> **Last Updated:** 2026-04-02
 
 This file serves as the **strict enforcement layer** for the VectorBox project. All code modifications must comply with these rules.
 
@@ -45,7 +45,7 @@ This file serves as the **strict enforcement layer** for the VectorBox project. 
 **Requirement:** When running parallel tasks (e.g., `asyncio.gather`), you **MUST** create a fresh, isolated session for each task:
 
 ```python
-# ✅ CORRECT: Fresh session per concurrent task (e.g., FeedService 11 parallel tasks)
+# ✅ CORRECT: Fresh session per concurrent task (e.g., FeedService 10 parallel tasks)
 async def process_items(item_ids: list[int]):
     async def process_one(item_id: int):
         async with AsyncSessionLocal() as session:  # Fresh session!
@@ -119,7 +119,8 @@ providers = await session.execute(
 
 ### Caching Policy (Completeness Guard)
 - **Rule**: Feeds with < 3 sections MUST NOT be cached in Redis.
-- **Reason**: Prevents cache poisoning from cold starts or SSR races. `rss.py` actively sweeps and deletes invalid caches `feed:*:{user_id}:*` after background syncs.
+- **Reason**: Prevents cache poisoning from cold starts or SSR races. `rss.py` actively sweeps and deletes invalid caches `feed:*:{user_id}:*` AND the `cluster_rotation:{user_id}` counter after background syncs.
+- **Discovery (Signal C)**: Signal C MUST use **DB-first discovery** logic (Postgres quality/popularity filters) before similarity weighting. Direct Qdrant-first discovery for Signal C is forbidden as it washes out niche quality.
 
 ### Hardcoded Secrets & Console Leaks
 - All secrets must come from environment variables.

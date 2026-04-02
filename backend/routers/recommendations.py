@@ -785,11 +785,11 @@ async def get_hidden_gems_row(
 @router.post("/reject/{tmdb_id}")
 async def reject_movie(
     tmdb_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Mark a movie as 'Not Interested'. Upserts UserRating with is_rejected=True."""
-    user_id = current_user["user_id"]
+    user_id = current_user.user_id
 
     # Find the internal movie by tmdb_id
     movie_result = await db.execute(
@@ -834,7 +834,7 @@ async def reject_movie(
         keys += await r.keys(f"*signal*{user_id}*")
         if keys:
             await r.delete(*keys)
-        await r.aclose()
+        await r.close()
     except Exception as e:
         logger.warning(f"Cache invalidation after reject failed: {e}")
 

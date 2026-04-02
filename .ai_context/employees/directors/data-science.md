@@ -2,7 +2,7 @@
 
 > **Role:** Data Science & ML Lead
 > **Domain:** Recommendation Algorithms, Vector Search, Scoring Math
-> **Last Updated:** 2026-03-26
+> **Last Updated:** 2026-04-02
 
 This file contains all data science logic, mathematical formulas, and Qdrant configuration for the VectorBox recommendation engine.
 
@@ -47,8 +47,8 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 - **Note:** Renamed from "Signal B" in `recommendation_service.py` logs to avoid collision with Signal B (K-Means centroid) in `recommendation_engine.py`.
 
 ### Signal C: Hidden Gems
-- **Source:** Score-to-Hype ratio filtering
-- **Purpose:** Identifies critically acclaimed but underexposed films
+- **Source:** **DB-First Discovery** (PostgreSQL)
+- **Purpose:** Identifies critically acclaimed but underexposed films before applying user-centric vector weighting.
 - **Logic:** Uses **dynamic thresholds** based on user's movie count:
 
 | Profile | Movies | Min Score | Max Popularity | Min Votes |
@@ -57,7 +57,9 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 | Growing | 30–99 | 65 | 30 | 300 |
 | Rich | 100+ | 75 | 20 | 500 |
 
-- **Deep Dive**: Now runs fully in PARALLEL with other signals for peak performance.
+- **Weighting:** Final ranking applies a **30% Vector Similarity weight** to the quality score to ensure "Hidden Gems" remain within the user's broader interest sphere without sacrificing discovery.
+- **Implementation:** `get_hidden_gems_section()` in `recommendation_engine.py` (v1.7 fix).
+
 - **Implementation:** `_get_signal_c_thresholds()` in `recommendation_engine.py`
 
 ### Observability Logs (The `[TRIDENT]` Prefix)
@@ -247,7 +249,7 @@ docker-compose exec backend python scripts/create_qdrant_indexes.py
 | **Because you watched [X]** | Item-Item CF | Content-only vector (LLM-enriched description) |
 | **Your Taste ([Cluster])** | Medoid Search | User's taste cluster actual movie medoid |
 | **Hidden Gems** | Score-to-Hype Filter | Dynamic: Cold `60/40/200`, Growing `65/30/300`, Rich `75/20/500` |
-| **Deep Dive** | Super Seed | Weighted favorites (fully parallelized) |
+
 | **Comfort Zone** | Anti-Recommendation | Non-overlapping genres |
 
 ---

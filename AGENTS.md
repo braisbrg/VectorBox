@@ -90,16 +90,17 @@ VectorBox uses a 3-signal hybrid recommendation engine (Trident):
   Embeddings are generated from **LLM-enriched cinematic descriptions** (tone, pacing, style) via Groq (Scout/70B/8B).
   Seeds from movies rated 4+ stars OR explicitly liked (is_liked). Applies anti-vector penalties.
 - Signal B `your_taste` — **K-Medoids cluster search**, pointing to a real movie (`medoid_movie_id`).
-  Clusters are labeled dynamically by Groq (e.g., "A24 Dread").
-  Penalized against Anti-vector of low-rated films, applying MMR based on dominant cluster genres.
+  Clusters are labeled dynamically by Groq (e.g., "A24 Dread") with dominant genre filtering.
+  **Automated Rotation**: Automatically cycles through user's clusters on each feed fetch using a Redis counter.
+  Penalized against Anti-vector of low-rated/rejected films, applying MMR based on dominant cluster genres.
 - Signal Auteur `get_signal_b_auteur` (Directors + Cast) — Director/Actor analysis
   Uses a `_compute_auteur_signal_raw()` helper applying a weighted point system (5★→2.0, 4.5★→1.5) triggering at 3.0 pts for directors, 2.5 pts for actors.
-- Signal C `hidden_gems` — Score-to-Hype ratio filtering
-  with DYNAMIC thresholds based on user's movie count:
+- Signal C `hidden_gems` — **DB-First Discovery**
+  Identifies high-quality niche films directly from Postgres with DYNAMIC thresholds based on user's movie count:
     Cold start (<30 movies): score>60, popularity<40, votes>200
     Growing (30-99):         score>65, popularity<30, votes>300
     Rich (100+):             score>75, popularity<20, votes>500
-  Uses an Exoticism Boost (`+15%`) for non-English films.
+  Uses an Exoticism Boost (`+15%`) for non-English films. Re-ranked using 30% vector similarity weight.
 
 Results fused via RRF (Reciprocal Rank Fusion) +
 Sigmoid quality weighting on VectorBox Score (0–100).
@@ -111,7 +112,7 @@ isolated `AsyncSessionLocal()` session — they NEVER share sessions.
 
 **Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped `_invalidate_feed_cache()` after RSS sync.
 
-Deep Dive now runs FULLY IN PARALLEL with the other feed tasks, applying a Trust Bucket filter (`vote_count` > 5k or high similarity) to drop obscure outliers.
+
 
 ---
 

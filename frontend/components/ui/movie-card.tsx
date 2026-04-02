@@ -3,7 +3,7 @@
 import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
-import { Info, Clock, Film, X } from "lucide-react";
+import { Info, Clock, Film, X, Loader2 } from "lucide-react";
 import { getTMDBImageUrl } from "@/lib/api";
 import { useState } from "react";
 import { useLanguage } from "@/components/language-provider";
@@ -35,6 +35,7 @@ export interface MovieCardProps {
     letterboxd_rating?: number;
     href?: string;
     variant?: "overlay" | "grid";
+    isRejecting?: boolean;
 }
 
 export function MovieCard({
@@ -51,6 +52,7 @@ export function MovieCard({
     priority = false,
     className = "",
     href,
+    isRejecting = false,
 }: MovieCardProps) {
     const [imageError, setImageError] = useState(false);
     const { t, language } = useLanguage();
@@ -134,10 +136,15 @@ export function MovieCard({
                             e.stopPropagation();
                             onReject(id);
                         }}
-                        className="text-zinc-500 hover:text-red-500 p-1 bg-black/50 border border-zinc-800 hover:border-red-500 transition-all flex items-center gap-1 group/rej"
+                        disabled={isRejecting}
+                        className={`text-zinc-500 hover:text-red-500 p-1 bg-black/50 border border-zinc-800 hover:border-red-500 transition-all flex items-center gap-1 group/rej ${isRejecting ? 'opacity-50 cursor-not-allowed' : ''}`}
                         title="Not Interested"
                     >
-                        <X size={10} className="group-hover/rej:animate-pulse" />
+                        {isRejecting ? (
+                            <Loader2 size={10} className="animate-spin" />
+                        ) : (
+                            <X size={10} className="group-hover/rej:animate-pulse" />
+                        )}
                     </button>
                 )}
                 <button

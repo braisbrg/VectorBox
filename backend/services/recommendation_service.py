@@ -7,6 +7,7 @@ from collections import Counter
 import random
 import math
 import json
+import hashlib
 import redis.asyncio as redis
 
 from models.database import UserRating, Movie, UserCluster, User
@@ -38,7 +39,7 @@ class RecommendationService:
         self.clustering = ClusteringService(qdrant=qdrant)
         self.movie_service = MovieService(db, tmdb=tmdb)
 
-    @safe_execution(fallback_return=FeedSection(id="hybrid_picks", title="Hybrid Picks (Signal Lost)", items=[]))
+    @safe_execution(fallback_return=FeedSection(id="picked_for_you", title="Picked For You (Signal Lost)", items=[]))
     async def get_hybrid_picks_section(
         self, 
         user_id: int, 
@@ -97,16 +98,30 @@ class RecommendationService:
         
         rrf_scores = self.reciprocal_rank_fusion([signal_a, signal_b, signal_c])
         
+        # FIX 2: Get user's dominant cluster genres for exclusion-pair filtering
+        from models.database import UserCluster
+        clusters_result = await self.db.execute(
+            select(UserCluster)
+            .where(UserCluster.user_id == user_id)
+            .order_by(desc(UserCluster.movie_count))
+            .limit(3)
+        )
+        user_clusters = clusters_result.scalars().all()
+        user_cluster_genres: Set[str] = set()
+        for c in user_clusters:
+            if c.dominant_genres:
+                user_cluster_genres.update(c.dominant_genres)
+        
         # 3. Post-Processing (Quality & Diversity)
-        final_items = await self.hybrid_reranking(rrf_scores, user_id, country, provider_service)
+        final_items = await self.hybrid_reranking(rrf_scores, user_id, country, provider_service, user_cluster_genres=user_cluster_genres)
         
         # Update seen_ids
         for item in final_items:
             seen_ids.add(item.id)
             
         return FeedSection(
-            id="hybrid_picks",
-            title="Hybrid Picks for You",
+            id="picked_for_you",
+            title="Picked For You",
             items=final_items
         )
 
@@ -121,7 +136,9 @@ class RecommendationService:
 
         # Strip non-serializable params (e.g. BackgroundTasks) from the cache key
         serializable_params = {k: v for k, v in params.items() if k != "background_tasks"}
-        cache_key = f"signal_cache:{user.id}:{signal_type}:{json.dumps(serializable_params, sort_keys=True)}"
+        # FIX 4: Hash params to avoid multi-KB Redis keys from large exclude_ids lists
+        params_hash = hashlib.md5(json.dumps(serializable_params, sort_keys=True).encode()).hexdigest()[:12]
+        cache_key = f"signal_cache:{user.id}:{signal_type}:{params_hash}"
         
         # Try to get from cache first
         cached = await self.redis.get(cache_key)
@@ -432,7 +449,8 @@ class RecommendationService:
         rrf_scores: Dict[int, float],
         user_id: int,
         country: str,
-        provider_service: ProviderService
+        provider_service: ProviderService,
+        user_cluster_genres: Set[str] = None
     ) -> List[FeedItem]:
         """
         Final polish: RRF Score * Quality Score -> Collection Collapsing -> Batch Provider Fetch
@@ -445,6 +463,32 @@ class RecommendationService:
         stmt = select(Movie).where(Movie.id.in_(movie_ids))
         result = await self.db.execute(stmt)
         movies = result.scalars().all()
+
+        # FIX 3: Minimum quality filter — no movie below 55 VB score in Picked For You
+        MIN_QUALITY_SCORE = 55
+        movies = [m for m in movies if (m.vectorbox_score or 50) >= MIN_QUALITY_SCORE]
+
+        # FIX 2: Apply EXCLUSION_PAIRS genre filter if we have cluster genres
+        if user_cluster_genres:
+            from services.recommendation_engine import EXCLUSION_PAIRS
+            filtered_movies = []
+            for m in movies:
+                if not m.genres:
+                    filtered_movies.append(m)
+                    continue
+                movie_genre_set = set(m.genres)
+                exclude = False
+                for movie_genres_to_check, cluster_must_have in EXCLUSION_PAIRS:
+                    movie_has = bool(movie_genre_set & movie_genres_to_check)
+                    cluster_has = bool(user_cluster_genres & cluster_must_have)
+                    if movie_has and not cluster_has:
+                        exclude = True
+                        break
+                if not exclude:
+                    filtered_movies.append(m)
+            if len(filtered_movies) >= 5:
+                movies = filtered_movies
+                logger.info(f"[Trident] EXCLUSION_PAIRS filtered: {len(movies)} movies remain for Picked For You")
 
         # 2. Score = RRF * Sigmoid Quality Weight
         candidates = []
