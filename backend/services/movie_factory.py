@@ -50,7 +50,12 @@ class MovieFactory:
             
             # Returns VectorBoxScore object
             vb_score_data = self.omdb.calculate_vectorbox_score(omdb_data, details.get("vote_average"))
-            
+
+            # Fallback: TMDB-only score if OMDb unavailable
+            vectorbox_score = vb_score_data.score
+            if not vectorbox_score and details.get("vote_average"):
+                vectorbox_score = round((details["vote_average"] / 10) * 100 * 0.6, 1)
+
             # 3. Process Release Dates
             release_dates_map = self._process_release_dates(details)
 
@@ -75,7 +80,7 @@ class MovieFactory:
                 imdb_id=imdb_id,
                 imdb_rating=vb_score_data.breakdown.imdb,
                 metacritic_rating=vb_score_data.breakdown.meta,
-                vectorbox_score=vb_score_data.score,
+                vectorbox_score=vectorbox_score,
                 title_es=details.get("title_es"),
                 overview_es=details.get("overview_es"),
                 collection_id=details.get("belongs_to_collection", {}).get("id") if details.get("belongs_to_collection") else None,

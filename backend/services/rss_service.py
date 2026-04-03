@@ -210,6 +210,15 @@ class RSSService:
                         stats["errors"] += 1
                         continue
                 # 7. Upsert rating safely
+                # Pre-load existing rating to track rewatch count
+                existing_rating_result = await self.db.execute(
+                    select(UserRating).where(
+                        UserRating.user_id == user_id,
+                        UserRating.movie_id == movie.id
+                    )
+                )
+                existing_rating = existing_rating_result.scalar_one_or_none()
+
                 stmt = insert(UserRating).values(
                     user_id=user_id,
                     movie_id=movie.id,
@@ -237,6 +246,9 @@ class RSSService:
                             stats["new_ratings"] += 1
                         else:
                             stats["updated_ratings"] += 1
+                    # Increment watch_count for rewatches (existing watched entry)
+                    if existing_rating and existing_rating.is_watched:
+                        existing_rating.watch_count = (existing_rating.watch_count or 1) + 1
                     await self.db.commit()
                 except Exception as e:
                     await self.db.rollback()

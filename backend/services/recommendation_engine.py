@@ -72,14 +72,16 @@ def _get_signal_c_thresholds(user_movie_count: int) -> dict:
             "min_votes": 500,
         }
 
-def _score_anchor_candidate(rating: float, watched_date: datetime, now: datetime) -> float:
+def _score_anchor_candidate(rating: float, watched_date: datetime, now: datetime, watch_count: int = 1) -> float:
     """
     Combine rating quality with gentle recency tiebreaker.
     Half-life: 730 days. Minimum decay floor: 0.6 (old films keep 60% of their weight).
+    Rewatch boost: +15% per additional watch, capped at 1.4x.
     """
     days_ago = max(0, (now - watched_date).days) if watched_date else 730
     decay = max(0.6, 0.5 ** (days_ago / 730))
-    return (rating / 5.0) * decay
+    rewatch_boost = min(1.0 + (watch_count - 1) * 0.15, 1.4)
+    return (rating / 5.0) * decay * rewatch_boost
 
 
 def _apply_exoticism_boost(score: float, original_language: str) -> float:
@@ -327,7 +329,7 @@ class RecommendationEngine:
                 user_rating, movie = row
                 effective_rating = user_rating.rating or 4.5  # liked without rating
                 watched_date = user_rating.watched_date or user_rating.created_at
-                anchor_score = _score_anchor_candidate(effective_rating, watched_date, now)
+                anchor_score = _score_anchor_candidate(effective_rating, watched_date, now, watch_count=getattr(user_rating, 'watch_count', 1) or 1)
                 scored_candidates.append((anchor_score, user_rating, movie))
             
             scored_candidates.sort(key=lambda x: x[0], reverse=True)
@@ -337,7 +339,8 @@ class RecommendationEngine:
             anti_vector_np = np.array(anti_vector) if anti_vector else None
 
             for _, user_rating, anchor_movie in scored_candidates:
-                
+                logger.info(f"[Because you watched] Anchor: {anchor_movie.title} ({anchor_movie.year}) rating={user_rating.rating} watch_count={getattr(user_rating, 'watch_count', 1)}")
+
                 if not self.embedding_service:
                     # No embedding service — fall back to stored vector
                     anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
@@ -362,7 +365,7 @@ class RecommendationEngine:
                 similar_results = await qdrant.search_similar(
                     query_vector=anchor_vector,
                     limit=500,
-                    score_threshold=0.1
+                    score_threshold=0.25
                 )
                 
                 found_tmdb_ids = [res["movie_id"] for res in similar_results]
@@ -396,11 +399,13 @@ class RecommendationEngine:
                 
                 if target_ids:
                     movies_result = await db.execute(
-                        select(Movie).where(Movie.tmdb_id.in_(target_ids))
+                        select(Movie)
+                        .where(Movie.tmdb_id.in_(target_ids))
+                        .where(Movie.vectorbox_score.isnot(None))
                     )
                     fetched_movies = movies_result.scalars().all()
                     movie_map = {m.tmdb_id: m for m in fetched_movies}
-                    
+
                     if provider_service:
                         valid_internal_ids = [m.id for m in fetched_movies]
                         providers_map = await provider_service.get_providers_batch(valid_internal_ids, country)
@@ -476,15 +481,22 @@ class RecommendationEngine:
                     movie = cand["movie"]
                     p_data = providers_map.get(movie.id, [])
                     s_providers = [p["provider_name"] for p in p_data]
-                    
+
                     item = await self.create_feed_item(
-                        movie, cand["score"], country, tmdb, 
+                        movie, cand["score"], country, tmdb,
                         provider_service=provider_service,
-                        streaming_providers=s_providers
+                        streaming_providers=s_providers,
+                        contributors=[{
+                            "type": "anchor",
+                            "seed_title": anchor_movie.title,
+                            "seed_year": anchor_movie.year,
+                            "seed_rating": float(user_rating.rating or 0),
+                            "similarity": round(cand["score"], 3)
+                        }]
                     )
                     items.append(item)
                     seen_ids.add(movie.tmdb_id)
-                
+
                 if items:
                     span.set_attribute("result_count", len(items))
                     span.set_attribute("anchor_movie", anchor_movie.title)
@@ -558,10 +570,20 @@ class RecommendationEngine:
             )
             
             target_ids = [res["movie_id"] for res in results if res["movie_id"] not in seen_ids][:30]
-            
+
+            # A2: Fetch medoid title for contributor provenance
+            medoid_movie_title = None
+            if cluster.medoid_movie_id:
+                medoid_result = await db.execute(
+                    select(Movie.title).where(Movie.id == cluster.medoid_movie_id)
+                )
+                medoid_movie_title = medoid_result.scalar_one_or_none()
+
             if target_ids:
                 movies_result = await db.execute(
-                    select(Movie).where(Movie.id.in_(target_ids))
+                    select(Movie)
+                    .where(Movie.id.in_(target_ids))
+                    .where(Movie.vectorbox_score.isnot(None))
                 )
                 fetched_movies = movies_result.scalars().all()
                 movie_map = {m.id: m for m in fetched_movies}
@@ -679,15 +701,21 @@ class RecommendationEngine:
                 movie = cand["movie"]
                 p_data = providers_map.get(movie.id, [])
                 s_providers = [p["provider_name"] for p in p_data]
-                
+
                 item = await self.create_feed_item(
-                    movie, cand["score"], country, tmdb, 
+                    movie, cand["score"], country, tmdb,
                     provider_service=provider_service,
-                    streaming_providers=s_providers
+                    streaming_providers=s_providers,
+                    contributors=[{
+                        "type": "cluster",
+                        "cluster_name": cluster.cluster_label,
+                        "medoid_title": medoid_movie_title,
+                        "similarity": round(cand["score"], 3)
+                    }]
                 )
                 items.append(item)
                 seen_ids.add(movie.tmdb_id)
-            
+
             title = cluster.cluster_label or "Your Taste"
 
             span.set_attribute("result_count", len(items))
