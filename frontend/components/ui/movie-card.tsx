@@ -21,7 +21,7 @@ export interface MovieCardProps {
     overview?: string;
     overview_es?: string;
     genres?: string[];
-    onInspect?: (id: number) => void;
+    onInspect?: (id: number, contributors?: any[]) => void;
     onReject?: (id: number) => void;
     priority?: boolean;
     className?: string;
@@ -53,6 +53,7 @@ export function MovieCard({
     className = "",
     href,
     isRejecting = false,
+    contributors,
 }: MovieCardProps) {
     const [imageError, setImageError] = useState(false);
     const { t, language } = useLanguage();
@@ -151,7 +152,7 @@ export function MovieCard({
                     onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        onInspect?.(id);
+                        onInspect?.(id, contributors);
                     }}
                     className="text-zinc-500 hover:text-primary p-1 bg-black/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/btn"
                     title={t("movie.inspect") || "INSPECT"}

@@ -6,11 +6,12 @@ import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { useLanguage } from "@/components/language-provider";
 import { COUNTRIES, getProvidersForCountry } from "@/lib/constants";
-import { ClusterInfo, FeedItem, api } from "@/lib/api";
+import { ClusterInfo, FeedItem, api, getTMDBImageUrl } from "@/lib/api";
 
 interface RightConsoleProps {
     selectedMovieId: number | null;
     selectedSectionId?: string;
+    selectedContributors?: any[];
     onCloseInspector: () => void;
     scope: "watchlist" | "global";
     onScopeChange: (scope: "watchlist" | "global") => void;
@@ -24,6 +25,7 @@ interface RightConsoleProps {
 export function RightConsole({
     selectedMovieId,
     selectedSectionId,
+    selectedContributors,
     onCloseInspector,
     scope,
     onScopeChange,
@@ -192,9 +194,9 @@ export function RightConsole({
                                 <>
                                     {/* Mock Poster / Visual Area */}
                                     <div className="relative aspect-[2/3] w-48 mx-auto border border-zinc-800 grayscale hover:grayscale-0 transition-all">
-                                        {inspectedMovie.poster_url ? (
+                                        {inspectedMovie.poster_url || (inspectedMovie as any).poster_path ? (
                                             <Image
-                                                src={inspectedMovie.poster_url}
+                                                src={inspectedMovie.poster_url || getTMDBImageUrl((inspectedMovie as any).poster_path, "w342")}
                                                 alt={inspectedMovie.title}
                                                 fill
                                                 className="object-cover"
@@ -246,12 +248,12 @@ export function RightConsole({
                                         <span className="text-[10px] text-zinc-500 uppercase tracking-widest block border-b border-zinc-800 pb-2">
                                             {">"} WHY_RECOMMENDED
                                         </span>
-                                        {inspectedMovie.contributors && inspectedMovie.contributors.length > 0 ? (
+                                        {selectedContributors && selectedContributors.length > 0 ? (
                                             <ul className="text-zinc-400 text-[11px] space-y-1 mt-2">
-                                                {inspectedMovie.contributors.map((contrib, i) => (
+                                                {selectedContributors.map((contrib, i) => (
                                                     <li key={i} className="flex justify-between">
                                                         <span>{contrib.seed_title}</span>
-                                                        <span className="text-primary">{contrib.contribution.toFixed(1)}%</span>
+                                                        <span className="text-primary">{Number(contrib.contribution).toFixed(1)}%</span>
                                                     </li>
                                                 ))}
                                             </ul>

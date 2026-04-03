@@ -43,7 +43,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const [scope, setScope] = useState<"watchlist" | "global">("global");
     const [countryCode, setCountryCode] = useState("ES");
     const [streamingProviders, setStreamingProviders] = useState<number[]>([]);
-    const [inspectedMovie, setInspectedMovie] = useState<{ id: number; sectionId?: string } | null>(null);
+    const [inspectedMovie, setInspectedMovie] = useState<{ id: number; sectionId?: string; contributors?: any[] } | null>(null);
 
 
     const { t } = useLanguage();
@@ -257,7 +257,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             username={currentUserSession.username}
                             countryCode={countryCode}
                             streamingProviders={streamingProviders}
-                            onInspect={(id: number, sectionId?: string) => setInspectedMovie({ id, sectionId })}
+                            onInspect={(id: number, sectionId?: string, contributors?: any[]) => setInspectedMovie({ id, sectionId, contributors })}
                         />
                     ) : currentView === "settings" ? (
                         <SettingsView />
@@ -287,7 +287,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             streamingProviders={streamingProviders}
                             initialData={initialFeedData}
                             registeredUsers={users}
-                            onInspect={(id: number, sectionId?: string) => setInspectedMovie({ id, sectionId })}
+                            onInspect={(id: number, sectionId?: string, contributors?: any[]) => setInspectedMovie({ id, sectionId, contributors })}
                         />
                     )}
                 </div>
@@ -296,6 +296,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             <RightConsole
                 selectedMovieId={inspectedMovie?.id ?? null}
                 selectedSectionId={inspectedMovie?.sectionId}
+                selectedContributors={inspectedMovie?.contributors}
                 onCloseInspector={() => setInspectedMovie(null)}
                 scope={scope}
                 onScopeChange={setScope}

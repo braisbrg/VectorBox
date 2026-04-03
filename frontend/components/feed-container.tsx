@@ -16,7 +16,7 @@ interface FeedContainerProps {
     streamingProviders?: number[];
     initialData?: FeedResponse | null; // SSR Prefetched Data
     registeredUsers?: VectorboxUser[];
-    onInspect?: (id: number, sectionId?: string) => void;
+    onInspect?: (id: number, sectionId?: string, contributors?: any[]) => void;
 }
 
 const SECTION_DESCRIPTIONS: Record<string, string> = {
