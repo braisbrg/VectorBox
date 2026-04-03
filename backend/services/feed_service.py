@@ -23,6 +23,51 @@ logger = logging.getLogger(__name__)
 # Bump when FeedItem/FeedSection schema changes to auto-invalidate Redis cache
 FEED_CACHE_VERSION = "v2"
 
+SECTION_CACHE_TTLS: dict[str, int] = {
+    "popular_letterboxd":  86400,  # 24h — changes once daily via scraper
+    "available_now":       3600,   # 1h — provider availability
+    "because_you_watched": 7200,   # 2h
+    "your_taste":          7200,   # 2h
+    "hidden_gems":         7200,   # 2h
+    "picked_for_you":      7200,   # 2h
+    "wildcard":            3600,   # 1h — some randomness desired
+    "random_picks":        0,      # never cache — random by design
+    "cult_actor":          7200,   # 2h
+    "auteur":              7200,   # 2h
+}
+DEFAULT_SECTION_TTL = 3600
+
+async def _get_cached_section(
+    r, user_id: int, section_id: str, country_code: str, prov_str: str
+) -> FeedSection | None:
+    if not r:
+        return None
+    ttl = SECTION_CACHE_TTLS.get(section_id, DEFAULT_SECTION_TTL)
+    if ttl == 0:
+        return None  # never cache
+    key = f"section:{FEED_CACHE_VERSION}:{user_id}:{section_id}:{country_code}:{prov_str}"
+    try:
+        cached = await r.get(key)
+        if cached:
+            return FeedSection.model_validate_json(cached)
+    except Exception:
+        pass
+    return None
+
+async def _cache_section(
+    r, user_id: int, section: FeedSection, country_code: str, prov_str: str
+) -> None:
+    if not r:
+        return
+    ttl = SECTION_CACHE_TTLS.get(section.id, DEFAULT_SECTION_TTL)
+    if ttl == 0:
+        return
+    key = f"section:{FEED_CACHE_VERSION}:{user_id}:{section.id}:{country_code}:{prov_str}"
+    try:
+        await r.setex(key, ttl, section.model_dump_json())
+    except Exception:
+        pass
+
 class FeedService:
     def __init__(self, qdrant: QdrantService = None, embedding_service: EmbeddingService = None):
         self.engine = RecommendationEngine(qdrant=qdrant, embedding_service=embedding_service)
@@ -186,18 +231,11 @@ class FeedService:
         # --- CACHE INTERCEPT BLOCK ---
         redis_url = REDIS_URL
         r = None
+        prov_str = ",".join(map(str, sorted(streaming_providers)))
         try:
             r = await aioredis.from_url(redis_url, decode_responses=True)
-            prov_str = ",".join(map(str, sorted(streaming_providers)))
-            cache_key = f"feed:{FEED_CACHE_VERSION}:{user_id}:{country_code}:global:{include_low_quality}:{prov_str}"
-            
-            cached = await r.get(cache_key)
-            if cached:
-                logger.info(f"Feed Cache HIT for User {user_id} (0.05s response)")
-                await r.close()
-                return FeedResponse.model_validate_json(cached)
         except Exception as e:
-            logger.warning(f"Redis feed cache read failed: {e}")
+            logger.warning(f"Redis connection failed: {e}")
         # --- END CACHE INTERCEPT ---
 
         # --- PRE-POPULATE watched tmdb_ids so every signal excludes them ---
@@ -233,6 +271,9 @@ class FeedService:
         # --- END GROQ CLIENT ---
 
         async def task_popular():
+            cached = await _get_cached_section(r, user_id, "popular_letterboxd", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -242,6 +283,9 @@ class FeedService:
                 return None
 
         async def task_watched():
+            cached = await _get_cached_section(r, user_id, "because_you_watched", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -251,6 +295,9 @@ class FeedService:
                 return None
 
         async def task_taste():
+            cached = await _get_cached_section(r, user_id, "your_taste", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -263,6 +310,9 @@ class FeedService:
                 return None
 
         async def task_wildcard():
+            cached = await _get_cached_section(r, user_id, "wildcard", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -272,6 +322,9 @@ class FeedService:
                 return None
 
         async def task_random():
+            cached = await _get_cached_section(r, user_id, "random_picks", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -281,6 +334,9 @@ class FeedService:
                 return None
 
         async def task_hidden():
+            cached = await _get_cached_section(r, user_id, "hidden_gems", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -290,6 +346,9 @@ class FeedService:
                 return None
 
         async def task_available():
+            cached = await _get_cached_section(r, user_id, "available_now", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     return await self.get_available_now_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, streaming_providers)
@@ -298,6 +357,9 @@ class FeedService:
                 return None
 
         async def task_hybrid():
+            cached = await _get_cached_section(r, user_id, "picked_for_you", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -307,6 +369,9 @@ class FeedService:
                 return None
 
         async def task_auteur():
+            cached = await _get_cached_section(r, user_id, "auteur", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -317,6 +382,9 @@ class FeedService:
                 return None
 
         async def task_cult_actor():
+            cached = await _get_cached_section(r, user_id, "cult_actor", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -400,8 +468,10 @@ class FeedService:
                 # Defense: only cache if feed is "complete" (>= 3 sections)
                 # to avoid poisoning cache during cold starts/warmups.
                 if len(final_sections) >= 3:
-                    await r.setex(cache_key, 3600, final_resp.model_dump_json())
-                    logger.info(f"Feed Cache MISS. Computed and saved for User {user_id}")
+                    for section in ordered_results:
+                        if section and section.items:
+                            await _cache_section(r, user_id, section, country_code, prov_str)
+                    logger.info(f"Per-section cache saved for User {user_id}")
                 else:
                     logger.warning(
                         f"Feed too thin ({len(final_sections)} sections) for User {user_id}. SKIPPING CACHE."

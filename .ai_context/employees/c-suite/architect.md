@@ -2,7 +2,7 @@
 
 > **Role:** Chief Software Architect
 > **Authority:** Final say on technology choices, forbidden patterns, and async discipline.
-> **Last Updated:** 2026-04-02
+> **Last Updated:** 2026-04-03
 
 This file serves as the **strict enforcement layer** for the VectorBox project. All code modifications must comply with these rules.
 
@@ -117,9 +117,9 @@ providers = await session.execute(
 ### Hanging Server-Side Fetches (Frontend)
 - Next.js Server Components using `fetch` MUST include an `AbortController` bounded by `setTimeout`. Relying on default fetch infinite timeouts blocks internal worker threads and crashes deployments.
 
-### Caching Policy (Completeness Guard)
+### Caching Policy (Completeness Guard & Per-Section TTL)
 - **Rule**: Feeds with < 3 sections MUST NOT be cached in Redis.
-- **Reason**: Prevents cache poisoning from cold starts or SSR races. `rss.py` actively sweeps and deletes invalid caches `feed:*:{user_id}:*` AND the `cluster_rotation:{user_id}` counter after background syncs.
+- **Reason**: Prevents cache poisoning from cold starts or SSR races. `rss.py` actively sweeps and deletes invalid section cache keys (`section:v2:{user_id}:*`) AND the `cluster_rotation:{user_id}` counter after background syncs.
 - **Discovery (Signal C)**: Signal C MUST use **DB-first discovery** logic (Postgres quality/popularity filters) before similarity weighting. Direct Qdrant-first discovery for Signal C is forbidden as it washes out niche quality.
 
 ### Hardcoded Secrets & Console Leaks

@@ -35,12 +35,12 @@ async def _invalidate_feed_cache(user_id: int) -> None:
         import os
         
         redis_url = os.environ.get("REDIS_URL", "redis://redis:6379")
-        r = aioredis.from_url(redis_url)
+        r = aioredis.from_url(redis_url, decode_responses=True)
         try:
             cursor = 0
             deleted_count = 0
             while True:
-                cursor, keys = await r.scan(cursor, match=f"feed:*:{user_id}:*", count=100)
+                cursor, keys = await r.scan(cursor, match=f"section:*:{user_id}:*", count=100)
                 if keys:
                     await r.delete(*keys)
                     deleted_count += len(keys)

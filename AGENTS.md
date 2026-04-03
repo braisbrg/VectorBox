@@ -110,7 +110,7 @@ Feed orchestration: `FeedService.get_main_feed()` runs **11 tasks
 in parallel** via `asyncio.gather()`. Each task opens its own
 isolated `AsyncSessionLocal()` session — they NEVER share sessions.
 
-**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped `_invalidate_feed_cache()` after RSS sync.
+**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped `_invalidate_feed_cache()` (which scans and clears `section:*` keys) after RSS sync. The feed is cached on a per-section basis with discrete TTL limits targeting optimum freshness.
 
 
 
