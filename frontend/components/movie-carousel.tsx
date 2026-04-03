@@ -38,7 +38,7 @@ interface MovieCarouselProps {
     titlePrefix?: React.ReactNode;
     forceVectorBoxScore?: boolean;
     priority?: boolean;
-    onInspect?: (id: number, sectionId?: string) => void;
+    onInspect?: (id: number, sectionId?: string, contributors?: any[]) => void;
     onReject?: (id: number) => void;
 }
 
@@ -225,7 +225,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
                             letterboxd_rating={movie.letterboxd_rating}
                             providers={movie.streaming_providers}
-                            onInspect={(id) => onInspect?.(id, sectionId)}
+                            onInspect={(id, contribs) => onInspect?.(id, sectionId, contribs)}
                             onReject={handleReject}
                             isRejecting={rejectingIds.has(movie.id)}
                         />

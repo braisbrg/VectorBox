@@ -44,3 +44,8 @@ class TrendingService:
             return json.loads(data)
         except json.JSONDecodeError:
             return []
+
+    async def close(self):
+        if self._redis:
+            await self._redis.close()
+        await self.movie_service.close()

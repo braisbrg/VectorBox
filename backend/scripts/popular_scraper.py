@@ -88,7 +88,7 @@ async def scrape_letterboxd_popular():
             failed_slugs = []
             
             async with AsyncSessionLocal() as db:
-                movie_service = MovieService(db)
+                movie_service = MovieService(db, tmdb=tmdb)
                 
                 try:
                     for i, slug in enumerate(unique_slugs):
@@ -145,7 +145,7 @@ async def scrape_letterboxd_popular():
                             
                 finally:
                     # Clean up batches
-                    pass
+                    await movie_service.close()
             
             logger.info(f"🎉 Resolved {len(tmdb_ids)} movies successfully.")
             if failed_slugs:
