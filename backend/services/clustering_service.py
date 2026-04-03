@@ -204,12 +204,18 @@ class ClusteringService:
         now = datetime.now(timezone.utc)
         
         for i, r in enumerate(ratings):
-            if r >= 4.0:
+            if r >= 4.5:
                 w = 1.0
+            elif r >= 4.0:
+                w = 0.85
+            elif r >= 3.5:
+                w = 0.65
+            elif r >= 3.0:
+                w = 0.35
             elif r >= 2.0:
-                w = 0.5
+                w = 0.15
             else:
-                w = 0.1
+                w = 0.05
             
             if use_recency_bias:
                 rating_obj = ratings_movies[i][0]
@@ -218,8 +224,8 @@ class ClusteringService:
                 if date:
                     if date.tzinfo is None:
                         date = date.replace(tzinfo=timezone.utc)
-                    age_years = (now - date).days / 365.0
-                    decay = 1.0 / (1.0 + 0.5 * age_years)
+                    age_days = max(0, (now - date).days)
+                    decay = max(0.6, 0.5 ** (age_days / 730))
                     w *= decay
             
             weights.append(w)

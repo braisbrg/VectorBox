@@ -74,11 +74,11 @@ def _get_signal_c_thresholds(user_movie_count: int) -> dict:
 
 def _score_anchor_candidate(rating: float, watched_date: datetime, now: datetime) -> float:
     """
-    Combine rating quality with recency decay.
-    Decay half-life: 180 days (score halves every 6 months).
+    Combine rating quality with gentle recency tiebreaker.
+    Half-life: 730 days. Minimum decay floor: 0.6 (old films keep 60% of their weight).
     """
-    days_ago = max(0, (now - watched_date).days) if watched_date else 365
-    decay = 0.5 ** (days_ago / 180)
+    days_ago = max(0, (now - watched_date).days) if watched_date else 730
+    decay = max(0.6, 0.5 ** (days_ago / 730))
     return (rating / 5.0) * decay
 
 
@@ -93,8 +93,9 @@ def _director_weight(rating: float) -> float:
     """Weighted point system for director/actor auteur activation."""
     if rating >= 4.5: return 2.0
     if rating >= 4.0: return 1.5
-    if rating >= 3.5: return 0.8
-    if rating >= 3.0: return 0.3
+    if rating >= 3.5: return 1.0
+    if rating >= 3.0: return 0.5
+    if rating >= 2.5: return 0.2
     return 0.0
 
 
@@ -303,7 +304,7 @@ class RecommendationEngine:
                 .where(
                     UserRating.user_id == user_id,
                     or_(
-                        UserRating.rating >= 4.0,
+                        UserRating.rating >= 3.5,
                         UserRating.is_liked.is_(True)
                     )
                 )

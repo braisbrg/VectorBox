@@ -89,10 +89,10 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Rule**: All recommendation signals MUST exclude rejected movies by fetching both `is_watched` and `is_rejected` IDs from the database during initial candidate gathering.
 - **Filter**: All SQLAlchemy queries for recommendations MUST include `.where(UserRating.is_rejected.is_(False))` when joining on ratings.
 
-### Redis Caching (Completeness Guard)
+### Redis Caching (Completeness Guard & Per-Section TTL)
 - **Rule**: The Main Feed MUST NOT be cached if the result contains fewer than 3 sections.
-- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN.
-- **Implementation**: Verified in `FeedService.get_main_feed`.
+- **Implementation**: The feed utilizes **Per-Section TTL Caching**. Each unique section resolves to its own Redis key (`section:v2:user_id:...`) instead of one monolithic payload blob, allowing sections like `random_picks` to skip caching (`TTL=0`) dynamically.
+- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN `section:*`.
 
 ### Streaming Availability (Spain)
 - **Strict Whitelist:** Filter providers to ONLY include:
@@ -255,5 +255,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-04-02
+**Last Updated:** 2026-04-03
 **Maintained By:** VectorBox Team

@@ -1,7 +1,7 @@
 # VectorBox (Trident Engine)
 
 ![Version](https://img.shields.io/badge/version-v1.7.0-acidgreen?style=flat-square)
-![Last Updated](https://img.shields.io/badge/last_updated-2026--04--02-orange?style=flat-square)
+![Last Updated](https://img.shields.io/badge/last_updated-2026--04--03-orange?style=flat-square)
 
 VectorBox is a premium movie recommendation engine designed to bridge the gap between social tracking (Letterboxd) and AI-driven cinematic discovery. 
 
@@ -171,7 +171,7 @@ The home feed is composed of **ten parallel sections**, each powered by a distin
 | Section | Strategy |
 |---------|----------|
 - **Available Now**: Filter by user's streaming services + RRF ranked
-- **Cache Guard**: Smart Redis caching that rejects feeds with < 3 sections.
+- **Per-Section Cache**: Smart discrete TTLs for each section and cache guards (rejects feeds with < 3 sections).
 - **Cluster Rotation**: Automated cycling of user taste clusters on every refresh.
 
 ### 🔍 Magic Box NLP Search
@@ -428,6 +428,6 @@ VectorBox/
 ## 📜 License
 
 **Version:** v1.7.0 Trident v2 Optimization  
-**Last Updated:** 2026-04-02  
+**Last Updated:** 2026-04-03  
 **Contact:** vectorbox.app@proton.me
 **License:** Proprietary & Confidential. All rights reserved.
