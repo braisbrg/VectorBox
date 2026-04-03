@@ -216,18 +216,26 @@ class ClusteringService:
                 w = 0.15
             else:
                 w = 0.05
-            
+
+            rating_obj = ratings_movies[i][0]
+
             if use_recency_bias:
-                rating_obj = ratings_movies[i][0]
                 date = rating_obj.watched_date or rating_obj.created_at
-                
+
                 if date:
                     if date.tzinfo is None:
                         date = date.replace(tzinfo=timezone.utc)
                     age_days = max(0, (now - date).days)
                     decay = max(0.6, 0.5 ** (age_days / 730))
                     w *= decay
-            
+
+            # Rewatch boost: movies seen multiple times signal stronger preference
+            watch_count = getattr(rating_obj, 'watch_count', 1) or 1
+            if watch_count >= 3:
+                w = min(w * 1.5, 1.0)
+            elif watch_count == 2:
+                w = min(w * 1.2, 1.0)
+
             weights.append(w)
             
         weights_array = np.array(weights)

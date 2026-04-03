@@ -317,7 +317,7 @@ async def enrich_movies_background(
 
                 try:
                     clustering = ClusteringService(qdrant=qdrant)
-                    await clustering.create_user_clusters(user_id, db)
+                    await clustering.create_user_clusters(user_id, db, groq_client=groq_client)
                     logger.info(f"Created clusters for user {user_id}")
                 except Exception as e:
                     logger.error(f"Failed to create clusters: {e}")

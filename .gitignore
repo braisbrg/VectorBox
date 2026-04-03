@@ -18,6 +18,7 @@ $RECYCLE.BIN/
 .history/
 *.sublime-project
 *.sublime-workspace
+.claude/
 
 # Secrets & Environment (CRITICAL)
 .env

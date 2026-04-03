@@ -243,23 +243,51 @@ export function RightConsole({
                                         </p>
                                     </div>
 
-                                    {/* FIX 4b: Why Recommended */}
-                                    <div className="space-y-2">
-                                        <span className="text-[10px] text-zinc-500 uppercase tracking-widest block border-b border-zinc-800 pb-2">
-                                            {">"} WHY_RECOMMENDED
-                                        </span>
+                                    {/* WHY RECOMMENDED */}
+                                    <div className="space-y-2 border-t border-zinc-800 pt-3 mt-3">
+                                        <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">
+                                            Why This Film
+                                        </p>
                                         {selectedContributors && selectedContributors.length > 0 ? (
-                                            <ul className="text-zinc-400 text-[11px] space-y-1 mt-2">
-                                                {selectedContributors.map((contrib, i) => (
-                                                    <li key={i} className="flex justify-between">
-                                                        <span>{contrib.seed_title}</span>
-                                                        <span className="text-primary">{Number(contrib.contribution).toFixed(1)}%</span>
-                                                    </li>
+                                            <div className="space-y-2">
+                                                {selectedContributors.map((c: any, i: number) => (
+                                                    <div key={i} className="space-y-0.5">
+                                                        {c.type === "anchor" && (
+                                                            <>
+                                                                <p className="text-xs font-mono text-primary">
+                                                                    Similar to {c.seed_title} ({c.seed_year})
+                                                                </p>
+                                                                <p className="text-[11px] font-mono text-zinc-500">
+                                                                    You rated it {c.seed_rating}★ · Similarity {Math.round(c.similarity * 100)}%
+                                                                </p>
+                                                            </>
+                                                        )}
+                                                        {c.type === "cluster" && (
+                                                            <>
+                                                                <p className="text-xs font-mono text-primary">
+                                                                    Matches cluster: {c.cluster_name}
+                                                                </p>
+                                                                {c.medoid_title && (
+                                                                    <p className="text-[11px] font-mono text-zinc-500">
+                                                                        Anchored to: {c.medoid_title}
+                                                                    </p>
+                                                                )}
+                                                            </>
+                                                        )}
+                                                        {(c.type === "vibe" || c.type === "auteur" || c.type === "crowd") && (
+                                                            <div className="flex items-center justify-between">
+                                                                <p className="text-xs font-mono text-primary">{c.label}</p>
+                                                                <p className="text-[11px] font-mono text-zinc-500">
+                                                                    {Math.round(c.score * 100)}%
+                                                                </p>
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 ))}
-                                            </ul>
+                                            </div>
                                         ) : (
                                             <p className="text-zinc-400 text-[10px] uppercase mt-2">
-                                                <span className="text-primary opacity-80 mr-2">LOGIC:</span> 
+                                                <span className="text-primary opacity-80 mr-2">LOGIC:</span>
                                                 {getSectionReason(selectedSectionId)}
                                             </p>
                                         )}

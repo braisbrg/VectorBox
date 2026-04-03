@@ -20,7 +20,7 @@ interface FeedItem {
     letterboxd_uri?: string;
     rating?: number;
     overview?: string;
-    contributors?: { seed_title: string; contribution: number }[];
+    contributors?: Array<Record<string, any>>;
     // Phase 12 Fields
     vectorbox_score?: number;
     imdb_rating?: number;
