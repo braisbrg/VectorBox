@@ -72,16 +72,18 @@ def _get_signal_c_thresholds(user_movie_count: int) -> dict:
             "min_votes": 500,
         }
 
-def _score_anchor_candidate(rating: float, watched_date: datetime, now: datetime, watch_count: int = 1) -> float:
+def _score_anchor_candidate(rating, watched_date, now, watch_count: int = 1) -> float:
     """
     Combine rating quality with gentle recency tiebreaker.
     Half-life: 730 days. Minimum decay floor: 0.6 (old films keep 60% of their weight).
     Rewatch boost: +15% per additional watch, capped at 1.4x.
+    Handles rating=None (liked-only movies) by defaulting to 3.5.
     """
+    effective_rating = rating if rating is not None else 3.5
     days_ago = max(0, (now - watched_date).days) if watched_date else 730
     decay = max(0.6, 0.5 ** (days_ago / 730))
     rewatch_boost = min(1.0 + (watch_count - 1) * 0.15, 1.4)
-    return (rating / 5.0) * decay * rewatch_boost
+    return (effective_rating / 5.0) * decay * rewatch_boost
 
 
 def _apply_exoticism_boost(score: float, original_language: str) -> float:
@@ -299,7 +301,8 @@ class RecommendationEngine:
             span.set_attribute("user_id", user_id)
             span.set_attribute("country", country)
 
-            # Imp 1: Fetch 20 candidates (not 5) for recency-weighted anchor selection
+            # FIX 6: Fetch 100 candidates without ORDER BY — Python sorts by _score_anchor_candidate
+            # so NULL dates and liked-only movies don't beat a high-rated recent watch.
             result = await db.execute(
                 select(UserRating, Movie)
                 .join(Movie, UserRating.movie_id == Movie.id)
@@ -310,28 +313,28 @@ class RecommendationEngine:
                         UserRating.is_liked.is_(True)
                     )
                 )
-                .order_by(
-                    desc(func.coalesce(UserRating.watched_date, UserRating.created_at))
-                )
-                .limit(20)
+                .limit(100)
             )
-            
+
             candidates = result.all()
             if not candidates:
                 span.set_attribute("result_count", 0)
                 # Imp 9: Cold start fallback
                 return await self._get_genre_fallback_section(user_id, db, tmdb, seen_ids, country, provider_service)
-            
-            # Imp 1: Score candidates with recency decay and pick best anchor
+
+            # Sort entirely in Python — _score_anchor_candidate handles rating=None and NULL dates
             now = datetime.utcnow()
             scored_candidates = []
             for row in candidates:
                 user_rating, movie = row
-                effective_rating = user_rating.rating or 4.5  # liked without rating
-                watched_date = user_rating.watched_date or user_rating.created_at
-                anchor_score = _score_anchor_candidate(effective_rating, watched_date, now, watch_count=getattr(user_rating, 'watch_count', 1) or 1)
+                anchor_score = _score_anchor_candidate(
+                    rating=user_rating.rating,
+                    watched_date=user_rating.watched_date or user_rating.created_at,
+                    now=now,
+                    watch_count=getattr(user_rating, 'watch_count', 1) or 1
+                )
                 scored_candidates.append((anchor_score, user_rating, movie))
-            
+
             scored_candidates.sort(key=lambda x: x[0], reverse=True)
 
             # Imp 5: Compute anti-vector once for this section
@@ -402,6 +405,7 @@ class RecommendationEngine:
                         select(Movie)
                         .where(Movie.tmdb_id.in_(target_ids))
                         .where(Movie.vectorbox_score.isnot(None))
+                        .where(Movie.vectorbox_score >= 55)
                     )
                     fetched_movies = movies_result.scalars().all()
                     movie_map = {m.tmdb_id: m for m in fetched_movies}
@@ -584,6 +588,7 @@ class RecommendationEngine:
                     select(Movie)
                     .where(Movie.id.in_(target_ids))
                     .where(Movie.vectorbox_score.isnot(None))
+                    .where(Movie.vectorbox_score >= 55)
                 )
                 fetched_movies = movies_result.scalars().all()
                 movie_map = {m.id: m for m in fetched_movies}
