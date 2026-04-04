@@ -275,11 +275,15 @@ export function RightConsole({
                                                             </>
                                                         )}
                                                         {(c.type === "vibe" || c.type === "auteur" || c.type === "crowd") && (
-                                                            <div className="flex items-center justify-between">
+                                                            <div className="flex items-center justify-between gap-2">
                                                                 <p className="text-xs font-mono text-primary">{c.label}</p>
-                                                                <p className="text-[11px] font-mono text-zinc-500">
-                                                                    {Math.round(c.score * 100)}%
-                                                                </p>
+                                                                {selectedContributors!.filter(
+                                                                    (x: any) => ["vibe", "auteur", "crowd"].includes(x.type)
+                                                                ).length > 1 && (
+                                                                    <p className="text-[11px] font-mono text-zinc-500 shrink-0">
+                                                                        {Math.round(c.score * 100)}%
+                                                                    </p>
+                                                                )}
                                                             </div>
                                                         )}
                                                     </div>

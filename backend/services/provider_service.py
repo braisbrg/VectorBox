@@ -72,20 +72,18 @@ class ProviderService:
         unique_providers = {p["provider_id"]: p for p in providers_list}.values()
         final_providers = list(unique_providers)
         
-        # 3. Update DB
-        if availability:
-            availability.providers = final_providers
-            availability.last_updated = datetime.utcnow()
-        else:
-            new_availability = MovieAvailability(
-                movie_id=movie_id,
-                country_code=country_code,
-                providers=final_providers,
-                last_updated=datetime.utcnow()
-            )
-            self.db.add(new_availability)
-            
+        # 3. Upsert into DB — avoids UniqueViolationError on concurrent requests
+        upsert_stmt = insert(MovieAvailability).values(
+            movie_id=movie_id,
+            country_code=country_code,
+            providers=final_providers,
+            last_updated=datetime.utcnow()
+        ).on_conflict_do_update(
+            index_elements=["movie_id", "country_code"],
+            set_={"providers": final_providers, "last_updated": datetime.utcnow()}
+        )
         try:
+            await self.db.execute(upsert_stmt)
             await self.db.commit()
         except Exception as e:
             await self.db.rollback()
@@ -165,27 +163,23 @@ class ProviderService:
                  final_providers = list(unique_providers)
             
             final_results[movie.id] = final_providers
-            
-            # Update DB
-            avail = availability_map.get(movie.id)
-            if avail:
-                avail.providers = final_providers
-                avail.last_updated = datetime.utcnow()
-            else:
-                new_avail = MovieAvailability(
-                    movie_id=movie.id,
-                    country_code=country_code,
-                    providers=final_providers,
-                    last_updated=datetime.utcnow()
-                )
-                self.db.add(new_avail)
-        
-        try:
-            await self.db.commit()
-        except Exception as e:
-            await self.db.rollback()
-            logger.error(f"DB commit failed in get_providers_batch: {e}")
-            raise
+
+            # Upsert into DB — avoids UniqueViolationError on concurrent requests
+            upsert_stmt = insert(MovieAvailability).values(
+                movie_id=movie.id,
+                country_code=country_code,
+                providers=final_providers,
+                last_updated=datetime.utcnow()
+            ).on_conflict_do_update(
+                index_elements=["movie_id", "country_code"],
+                set_={"providers": final_providers, "last_updated": datetime.utcnow()}
+            )
+            try:
+                await self.db.execute(upsert_stmt)
+                await self.db.commit()
+            except Exception as e:
+                await self.db.rollback()
+                logger.error(f"Failed to upsert providers for movie {movie.id}: {e}")
         
         return final_results
 

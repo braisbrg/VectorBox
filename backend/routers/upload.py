@@ -198,9 +198,11 @@ async def enrich_movies_background(
                         await task_store.update_progress(task_id, progress, msg)
 
                     # 1. Parallel Resolve & Ingest (each task owns its own session)
+                    # FIX 5: Skip Scout enrichment during bulk upload to preserve quota.
+                    # The nightly enrich_vectors.py --enrich-embeddings script handles enrichment.
                     tasks = []
                     for m_data in chunk:
-                        tasks.append(process_single_movie(m_data, user_id, tmdb_client, groq_client=groq_client))
+                        tasks.append(process_single_movie(m_data, user_id, tmdb_client, groq_client=None))
 
                     # Results: list of (movie_id | None, needs_vector)
                     results = await asyncio.gather(*tasks)
@@ -224,7 +226,8 @@ async def enrich_movies_background(
                                 is_liked=movie_data.get("is_liked", False),
                                 is_watched=movie_data.get("is_watched", False),
                                 watched_date=movie_data.get("watched_date"),
-                                review=movie_data.get("review")
+                                review=movie_data.get("review"),
+                                watch_count=movie_data.get("watch_count", 1),
                             ).on_conflict_do_update(
                                 index_elements=["user_id", "movie_id"],
                                 set_={
@@ -233,7 +236,8 @@ async def enrich_movies_background(
                                     "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
                                     "is_watched": getattr(insert(UserRating).excluded, "is_watched"),
                                     "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
-                                    "review": getattr(insert(UserRating).excluded, "review")
+                                    "review": getattr(insert(UserRating).excluded, "review"),
+                                    "watch_count": getattr(insert(UserRating).excluded, "watch_count"),
                                 }
                             )
                             await db.execute(stmt)
