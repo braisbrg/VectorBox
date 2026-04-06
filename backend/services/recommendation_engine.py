@@ -74,14 +74,14 @@ def _get_signal_c_thresholds(user_movie_count: int) -> dict:
 
 def _score_anchor_candidate(rating, watched_date, now, watch_count: int = 1) -> float:
     """
-    Combine rating quality with gentle recency tiebreaker.
-    Half-life: 730 days. Minimum decay floor: 0.6 (old films keep 60% of their weight).
-    Rewatch boost: +15% per additional watch, capped at 1.4x.
+    Combine rating quality with recency decay and rewatch boost.
+    Half-life: 730 days. No floor — decay is unbounded so recent high-rated films
+    correctly beat old liked-only films even when all history is 2-5 years old.
     Handles rating=None (liked-only movies) by defaulting to 3.5.
     """
     effective_rating = rating if rating is not None else 3.5
     days_ago = max(0, (now - watched_date).days) if watched_date else 730
-    decay = max(0.6, 0.5 ** (days_ago / 730))
+    decay = 0.5 ** (days_ago / 730)
     rewatch_boost = min(1.0 + (watch_count - 1) * 0.15, 1.4)
     return (effective_rating / 5.0) * decay * rewatch_boost
 
