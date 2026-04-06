@@ -232,7 +232,8 @@ class RSSService:
                     set_={
                         "rating": getattr(insert(UserRating).excluded, "rating"),
                         "is_watched": True, # Ensure it's marked as watched
-                        "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
+                        # is_liked intentionally omitted — RSS feed has no liked status.
+                        # Overwriting with False would erase likes set by ZIP upload.
                         "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
                         "review": getattr(insert(UserRating).excluded, "review"),
                     }

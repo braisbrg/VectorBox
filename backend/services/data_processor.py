@@ -86,7 +86,11 @@ class DataProcessor:
     @staticmethod
     def _get_key(row) -> str:
         title = str(row.get('Name', '')).strip()
-        year = str(row.get('Year', ''))
+        raw_year = row.get('Year', '')
+        try:
+            year = str(int(float(raw_year))) if pd.notna(raw_year) and str(raw_year) not in ('', 'nan') else ''
+        except (ValueError, TypeError):
+            year = ''
         return f"{title}_{year}"
 
     @staticmethod
