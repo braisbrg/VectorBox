@@ -83,7 +83,13 @@ async def process_single_movie(
                 tmdb_result = await tmdb_client.search_movie(title, year)
 
                 if not tmdb_result:
-                    logger.warning(f"No TMDB result for '{title}' ({year})")
+                    logger.debug(f"No TMDB result for '{title}' ({year}) — may be a TV show or regional title")
+                    return None, False
+
+                # FIX 1: Reject TV show results — movies have release_date, TV shows have first_air_date.
+                # search_movie calls /search/movie so this is defensive; guards against future /search/multi use.
+                if tmdb_result.get("first_air_date") and not tmdb_result.get("release_date"):
+                    logger.debug(f"Skipping TV show result for '{title}' ({year})")
                     return None, False
 
                 # Strict year validation: reject if difference > 1
@@ -210,11 +216,9 @@ async def enrich_movies_background(
                     # 2. Update User Ratings — SERIAL on main session (safe)
                     movies_to_vectorize_ids = []
 
-                    for idx, (movie_id, needs_vector) in enumerate(results):
+                    for movie_data, (movie_id, needs_vector) in zip(chunk, results):
                         if not movie_id:
                             continue
-
-                        movie_data = chunk[idx]
 
                         try:
                             # 3. UPSERT Rating Safely
