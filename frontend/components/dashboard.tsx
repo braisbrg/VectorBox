@@ -87,11 +87,9 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                     token: verifiedUser.token // or undefined, dependent on session type
                 };
 
-                // Merge with extended flags if we have them (like has_data)
-                // We know backend returns `has_data` in AuthResponse
-                const fullSession = { ...verifiedSession, has_data: (verifiedUser as any).has_data };
+                const fullSession: UserSession = { ...verifiedSession, has_data: verifiedUser.has_data };
 
-                setCurrentUserSession(fullSession as any as UserSession);
+                setCurrentUserSession(fullSession);
 
                 // Update Local Storage with fresh truth
                 localStorage.setItem("vectorbox_user", JSON.stringify(fullSession));
@@ -155,7 +153,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     }
 
     // ONBOARDING JAIL: If user has no data, lock them here
-    if (!(currentUserSession as any).has_data) {
+    if (!currentUserSession.has_data) {
         return (
             <div className="min-h-screen bg-black text-foreground flex flex-col items-center justify-center p-4 relative overflow-hidden">
                 <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10 pointer-events-none" />

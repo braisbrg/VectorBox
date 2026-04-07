@@ -70,6 +70,7 @@ export interface UserSession {
     username: string; // vectorbox_handle
     token?: string;
     letterboxd_username?: string; // letterboxd_handle
+    has_data?: boolean;
 }
 
 export interface VectorboxUser {
