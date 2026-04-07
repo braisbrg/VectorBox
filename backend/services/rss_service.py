@@ -28,12 +28,13 @@ class RSSService:
         tmdb: TMDBClient = None,
         qdrant: QdrantService = None,
         embedding_service: EmbeddingService = None,
+        omdb: OMDbClient = None,
     ):
         self.db = db
-        self.tmdb = tmdb or TMDBClient()
-        self.omdb = OMDbClient()
-        self.qdrant = qdrant or QdrantService()
-        self.embedding_service = embedding_service or EmbeddingService()
+        self.tmdb = tmdb  # callers must pass — no fallback
+        self.omdb = omdb  # callers must pass — no fallback
+        self.qdrant = qdrant
+        self.embedding_service = embedding_service
         # FIX 5: Create groq_client for LLM-enriched embeddings on new movies
         import os
         groq_api_key = os.getenv("GROQ_API_KEY")

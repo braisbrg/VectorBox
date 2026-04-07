@@ -70,7 +70,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
         },
         onSuccess: (data) => {
             // Deduplicate results
-            const uniqueResults = data.results ? Array.from(new Map(data.results.map((item: any) => [item.movie_id, item])).values()) : [];
+            const uniqueResults = data.results ? Array.from(new Map((data.results as SearchResult[]).map((item: SearchResult) => [item.movie_id, item])).values()) : [];
             setResults(uniqueResults as SearchResult[]);
             setIntent(data.intent);
             setShowResults(true);
