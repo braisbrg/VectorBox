@@ -21,7 +21,7 @@ asyncpg==0.31.0
 
 groq==0.37.1
 openai==2.26.0
-instructor==1.14.5
+instructor==1.15.1
 
 tqdm==4.67.3
 pip-audit==2.10.0
