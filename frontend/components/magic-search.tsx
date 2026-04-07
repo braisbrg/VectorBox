@@ -55,7 +55,6 @@ export function MagicSearch({ userId }: MagicSearchProps) {
             const { api } = await import("@/lib/api");
             const res = await api.post("/api/search/natural", {
                 query: text,
-                user_id: userId,
                 use_deep_analysis: isDeepAnalysis,
                 country_code: "ES",
             });

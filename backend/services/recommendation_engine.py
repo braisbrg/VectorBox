@@ -34,6 +34,18 @@ from telemetry import get_tracer
 logger = logging.getLogger(__name__)
 _tracer = get_tracer("recommendation_engine")
 
+
+async def _ingest_movie_background(tmdb_id: int) -> None:
+    """Background-safe movie ingestion: owns its own session, never re-raises."""
+    from config import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        try:
+            movie_service = MovieService(session)
+            await movie_service.get_or_create_movie(tmdb_id)
+            await session.commit()
+        except Exception as e:
+            logger.error(f"Background auto-ingest failed for tmdb_id={tmdb_id}: {e}")
+
 # Genres too generic to be useful discriminators for cluster filtering
 GENERIC_GENRES = {"Action", "Drama", "Comedy", "Adventure", "Thriller"}
 
@@ -352,12 +364,16 @@ class RecommendationEngine:
                         keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
                     else:
                         keywords = anchor_movie.keywords
-                    anchor_vector = self.embedding_service.generate_embedding({
-                        "title": anchor_movie.title, 
-                        "overview": anchor_movie.overview or "",
-                        "genres": anchor_movie.genres or [],
-                        "keywords": keywords
-                    }, include_title=False).tolist()
+                    loop = asyncio.get_event_loop()
+                    anchor_vector = await loop.run_in_executor(
+                        None,
+                        lambda: self.embedding_service.generate_embedding({
+                            "title": anchor_movie.title,
+                            "overview": anchor_movie.overview or "",
+                            "genres": anchor_movie.genres or [],
+                            "keywords": keywords
+                        }, include_title=False).tolist()
+                    )
                 
                 if not anchor_vector:
                      anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
@@ -382,14 +398,14 @@ class RecommendationEngine:
                 
                 if missing_ids:
                     ids_to_ingest = missing_ids[:5]
-                    movie_service = MovieService(db)
-                    for mid in ids_to_ingest:
-                        if background_tasks:
-                             background_tasks.add_task(movie_service.get_or_create_movie, mid)
-                        else:
-                             try:
-                                await movie_service.get_or_create_movie(mid)
-                             except Exception as e:
+                    if background_tasks:
+                        for mid in ids_to_ingest:
+                            background_tasks.add_task(_ingest_movie_background, mid)
+                    else:
+                        for mid in ids_to_ingest:
+                            try:
+                                await _ingest_movie_background(mid)
+                            except Exception as e:
                                 logger.error(f"Failed to auto-ingest movie {mid}: {e}")
                 
                 target_ids = []
@@ -544,10 +560,11 @@ class RecommendationEngine:
             # --- CLUSTER ROTATION LOGIC ---
             import redis.asyncio as aioredis
             
+            from services.feed_service import FEED_CACHE_VERSION
             cluster_index = 0
             try:
                 r = await aioredis.from_url(REDIS_URL, decode_responses=True)
-                rotation_key = f"cluster_rotation:{user_id}"
+                rotation_key = f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}"
                 raw_index = await r.get(rotation_key)
                 
                 if raw_index is not None:
@@ -943,72 +960,6 @@ class RecommendationEngine:
             title="Available on Your Services",
             items=items
         )
-
-    async def get_deep_dive_section(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        seen_ids: Set[int],
-        country: str,
-        provider_service: ProviderService = None,
-        include_low_quality: bool = False,
-        background_tasks = None
-    ) -> FeedSection:
-        """Section: Deep Dive"""
-        results = await self.clustering.get_item_based_recommendations(
-            user_id=user_id,
-            db=db,
-            limit=60,
-            include_low_quality=include_low_quality,
-            background_tasks=background_tasks
-        )
-        
-        target_ids = [res["movie_id"] for res in results][:30]
-        
-        if target_ids:
-            movies_result = await db.execute(select(Movie).where(Movie.id.in_(target_ids)))
-            fetched_movies = movies_result.scalars().all()
-            movie_map = {m.id: m for m in fetched_movies}
-            if provider_service:
-                valid_ids = [m.id for m in fetched_movies]
-                providers_map = await provider_service.get_providers_batch(valid_ids, country)
-            else:
-                providers_map = {}
-        else:
-            movie_map = {}
-            providers_map = {}
-        
-        items = []
-        for res in results:
-            movie_id = res["movie_id"]
-            if movie_id in seen_ids or (movie_map.get(movie_id) and movie_map[movie_id].tmdb_id in seen_ids):
-                continue
-            movie = movie_map.get(movie_id)
-            if movie:
-                # Imp 7: Trust Bucket — skip obscure films with low similarity
-                is_obscure = (movie.vote_count or 0) < 5000
-                if is_obscure and res["score"] < 0.85:
-                    logger.debug(
-                        f"Trust Bucket: obscure film {movie.title} score {res['score']:.2f} < 0.85, skipping from Deep Dive"
-                    )
-                    continue
-
-                p_data = providers_map.get(movie.id, [])
-                s_providers = [p["provider_name"] for p in p_data]
-                contributors = res.get("contributors", [])
-                item = await self.create_feed_item(
-                    movie, res["score"], country, tmdb, 
-                    contributors=contributors, 
-                    provider_service=provider_service,
-                    streaming_providers=s_providers
-                )
-                items.append(item)
-                seen_ids.add(movie.tmdb_id)
-                if len(items) >= 10:
-                    break
-                    
-        return FeedSection(id="deep_dive", title="Deep Dive", items=items)
 
     async def get_wildcard_section(
         self,

@@ -382,25 +382,20 @@ async def get_group_recommendations(
     """
     Get recommendations for a group of users.
     """
-    # Group recommendations implies user ids are passed.
-    # We should at least ensure the current user is IN the group?
     if current_user.user_id not in request.user_ids:
-         # Implicitly add or just warn?
-         # Let's add them to ensure they are part of it
-         pass 
-         # request.user_ids.append(current_user.user_id) # Optional logic
-    
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
-        # 1. Find Watchlist Intersection
-        watchlist_movies = {}
-        for user_id in request.user_ids:
-            result = await db.execute(
-                select(UserRating.movie_id)
-                .where((UserRating.user_id == user_id) & (UserRating.is_watchlist.is_(True)))
+        # 1. Find Watchlist Intersection — batch query instead of per-user loop
+        result = await db.execute(
+            select(UserRating.movie_id, UserRating.user_id).where(
+                UserRating.user_id.in_(request.user_ids),
+                UserRating.is_watchlist.is_(True)
             )
-            user_watchlist = set(result.scalars().all())
-            for movie_id in user_watchlist:
-                watchlist_movies[movie_id] = watchlist_movies.get(movie_id, 0) + 1
+        )
+        watchlist_movies: dict = {}
+        for movie_id, user_id in result.all():
+            watchlist_movies[movie_id] = watchlist_movies.get(movie_id, 0) + 1
         
         threshold = len(request.user_ids) if len(request.user_ids) <= 2 else len(request.user_ids) / 2
         intersection_ids = [mid for mid, count in watchlist_movies.items() if count >= threshold]
@@ -829,11 +824,15 @@ async def reject_movie(
             os.getenv("REDIS_URL", "redis://redis:6379"),
             decode_responses=True
         )
-        keys = await r.keys(f"*feed*{user_id}*")
-        keys += await r.keys(f"*section*{user_id}*")
-        keys += await r.keys(f"*signal*{user_id}*")
-        if keys:
-            await r.delete(*keys)
+        from services.feed_service import FEED_CACHE_VERSION
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
+            if keys:
+                await r.delete(*keys)
+            if cursor == 0:
+                break
+        await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
         await r.close()
     except Exception as e:
         logger.warning(f"Cache invalidation after reject failed: {e}")

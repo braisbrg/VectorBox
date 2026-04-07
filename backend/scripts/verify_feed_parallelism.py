@@ -36,7 +36,6 @@ async def main():
         "task_popular", "task_hybrid", "task_watched",
         "task_taste", "task_wildcard", "task_random",
         "task_hidden", "task_auteur", "task_available",
-        "task_deep_dive"
     ]
 
     tasks = [mock_task(name) for name in task_names]
