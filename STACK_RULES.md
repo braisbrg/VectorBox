@@ -80,7 +80,9 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 ### Feed Generation
 - **Signal C (Discovery):** Signal C MUST use a **DB-first approach** for initial candidate discovery (quality/popularity filters in Postgres) before applying vector-weighted re-ranking. This prevents "similarity wash" where niche but high-quality films are eclipsed by mainstream items.
 - **Signal B (Rotation):** Cluster-based sections (Signal B) MUST implement **Redis-based counter rotation** to cycle through user taste clusters on each cache miss/refresh.
-- **Genre Coherence (Exclusion Pairs):** Hybrid cluster feeds MUST enforce genre coherence. Movies featuring explicitly niche genres (e.g., Animation, Family, Horror) MUST be excluded if the user's base cluster does not also explicitly support those genres, preventing tonal mismatch.
+- **Genre Coherence (Exclusion Pairs):** Genre coherence filtering (EXCLUSION_PAIRS) applies ONLY to `get_your_taste_section`. Movies with niche genres (Animation, Family, Horror) are excluded there if the user's cluster doesn't support those genres. This filter MUST NOT be applied in `hybrid_reranking` (Picked For You) — it was removed from there because it produced catastrophically small candidate pools.
+- **Quality Floor:** `because_you_watched` and `your_taste` sections MUST filter candidates with `vectorbox_score IS NOT NULL AND vectorbox_score >= 55`. This prevents unscored or low-quality films from surfacing.
+- **Coherence Threshold:** `because_you_watched` MUST use `score_threshold=0.25` (vector similarity) to ensure anchor-based recommendations are meaningfully similar to the seed film.
 - **Diversity:** Implement MMR (Maximal Marginal Relevance) across `because_you_watched`, `your_taste`, and `hidden_gems` to prevent similar vectors from crowding the results.
 - **Collection Collapsing:** Prevents domination by a single franchise (e.g. keeping only the top *Harry Potter* film).
 
@@ -255,5 +257,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-04-03
+**Last Updated:** 2026-04-07
 **Maintained By:** VectorBox Team

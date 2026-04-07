@@ -148,9 +148,9 @@ The feed is composed of multiple "Sections", generated largely in parallel by `F
 | :--- | :--- |
 | **Available Now** | **Priority Row.** Fetches user's *unwatched* Watchlist items that are currently streaming on their active providers (Netflix, etc.). |
 | **Popular on Letterboxd** | Fetches trending movies from TMDB/Letterboxd (cached via `ThreadingService`). |
-| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated or liked movie from user history (with a 730-day gentle recency decay floor), generates an *LLM-enriched* content vector (ignoring title), and finds similar vectors in Qdrant. Re-ranked via MMR and penalized by an anti-vector of low-rated films. Deduplicated into a single `_item_to_search()` helper. |
+| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks the best anchor from up to 100 candidates (Python scoring: rating × recency decay × rewatch boost), generates an *LLM-enriched* content vector, and finds similar vectors in Qdrant. Coherence threshold: 0.25. Quality floor: `vectorbox_score >= 55`. Re-ranked via MMR. Contributors carry `{type: "anchor", seed_title, seed_year, seed_rating, similarity}`. |
 | **Cult Actors (Auteur 2.0)** | **Cast CF.** Finds cult actors by weighting the top 3 actors of highly rated movies and boosting those thresholding >= 2.5 points. |
-| **Your Taste ([Cluster])** | **Cluster Rotation.** Automatically cycles through user's taste clusters on every feed fetch using a Redis counter. Uses actual **medoid movie vectors** (interpreted by Groq with genre-de-biasing) to search Qdrant. Re-ranked via MMR. |
+| **Your Taste ([Cluster])** | **Cluster Rotation.** Automatically cycles through user's taste clusters on every feed fetch using a Redis counter. Quality floor: `vectorbox_score >= 55`. Genre coherence (EXCLUSION_PAIRS) applied here only — NOT in Picked For You. Contributors carry `{type: "cluster", cluster_name, medoid_title, similarity}`. |
 | **Hidden Gems** | **DB-First Discovery.** Identifies high-quality, low-popularity films directly from Postgres using dynamic thresholds. Re-ranked using **30% Vector Similarity** weight to maintain user-centricity without "similarity wash". |
 
 | **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. Also serves as a Cold-Start Fallback (using `Movie.genres.overlap()`) if Signal A or B fail to populate. |
@@ -241,7 +241,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
   - `seen_ids` set (feed deduplication) MUST use `tmdb_id`.
   - `watched_ids` set MUST use `internal_id`.
 - **`movies` table:** Stores `vectorbox_score`, extensive ratings (IMDb, Metacritic, TMDB), and localized `overview_es`. Tracks LLM enrichment status via `has_enriched_embedding` and `enriched_by_model`.
-- **`user_ratings` table:** Links Users to Movies. Contains `is_watched`, `is_watchlist`, `rating`, `watched_date`. `movie_id` is an FK to `Movie.id` (internal).
+- **`user_ratings` table:** Links Users to Movies. Contains `is_watched`, `is_watchlist`, `is_liked`, `rating`, `watched_date`, `watch_count` (INTEGER DEFAULT 1). `movie_id` is an FK to `Movie.id` (internal). `watch_count` is incremented via `diary.csv` entries during ZIP import and on rewatch detection during RSS sync.
 - **`user_clusters` table:** Stores the computed K-Medoid assignments, `medoid_movie_id`, and Groq-generated labels for each user.
 
 ### Memory & Cache Logic
@@ -372,5 +372,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-04-03 (v1.7.0 / Automated Cluster Rotation, Per-Section Cache & 730d Recency)
+**Last Updated:** 2026-04-07 (v1.7.1 / Contributors provenance, watch_count, quality floor 55, coherence threshold 0.25, is_liked fix, EXCLUSION_PAIRS scope fix)
 **Maintained By:** VectorBox Team

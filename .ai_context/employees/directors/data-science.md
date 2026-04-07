@@ -2,7 +2,7 @@
 
 > **Role:** Data Science & ML Lead
 > **Domain:** Recommendation Algorithms, Vector Search, Scoring Math
-> **Last Updated:** 2026-04-02
+> **Last Updated:** 2026-04-07
 
 This file contains all data science logic, mathematical formulas, and Qdrant configuration for the VectorBox recommendation engine.
 
@@ -185,13 +185,23 @@ def mmr_score(relevance: float, max_similarity_to_selected: float, lambda_: floa
 ### Rating Weights
 | User Rating | Weight | Interpretation |
 | :---: | :---: | :--- |
-| 4-5 stars | 1.0 | Full influence |
-| 2-3.5 stars | 0.5 | Reduced influence |
-| < 2 stars | 0.1 | Minimal (negative signal) |
+| 4.5–5 stars | 1.0 | Full influence |
+| 4.0 stars | 0.85 | High influence |
+| 3.5 stars | 0.65 | Moderate influence |
+| 3.0 stars | 0.35 | Low influence |
+| ≤ 2.5 stars | 0.15 / 0.05 | Minimal (negative signal) |
+
+### Rewatch Multiplier (watch_count)
+Applied on top of the rating weight `w`:
+- `watch_count >= 3` → `w = min(w * 1.5, 1.0)`
+- `watch_count == 2` → `w = min(w * 1.2, 1.0)`
+- `watch_count == 1` → no change (default)
+
+Source: `UserRating.watch_count` populated by diary.csv entries during ZIP import.
 
 ### Recency Bias
 When `use_recency_bias=True`:
-- Recent ratings get higher influence
+- Recent ratings get higher influence via 730-day half-life decay
 - Older ratings decay exponentially
 - Purpose: Capture evolving taste
 
@@ -246,10 +256,10 @@ docker-compose exec backend python scripts/create_qdrant_indexes.py
 
 | Section | Algorithm | Key Parameters |
 | :--- | :--- | :--- |
-| **Because you watched [X]** | Item-Item CF | Content-only vector (LLM-enriched description) |
-| **Your Taste ([Cluster])** | Medoid Search | User's taste cluster actual movie medoid |
+| **Because you watched [X]** | Item-Item CF | Anchor pool: 100 candidates, score_threshold=0.25, vectorbox_score≥55. Contributors: `{type:"anchor", seed_title, seed_year, seed_rating, similarity}`. |
+| **Your Taste ([Cluster])** | Medoid Search | User's taste cluster actual movie medoid. vectorbox_score≥55. EXCLUSION_PAIRS genre filter here only. Contributors: `{type:"cluster", cluster_name, medoid_title, similarity}`. |
+| **Picked For You** | Trident RRF | Signal A (vibe) + Auteur + Signal C fused. No EXCLUSION_PAIRS. Contributors: normalized % per signal summing to 100%. |
 | **Hidden Gems** | Score-to-Hype Filter | Dynamic: Cold `60/40/200`, Growing `65/30/300`, Rich `75/20/500` |
-
 | **Comfort Zone** | Anti-Recommendation | Non-overlapping genres |
 
 ---

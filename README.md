@@ -1,7 +1,7 @@
 # VectorBox (Trident Engine)
 
 ![Version](https://img.shields.io/badge/version-v1.7.0-acidgreen?style=flat-square)
-![Last Updated](https://img.shields.io/badge/last_updated-2026--04--03-orange?style=flat-square)
+![Last Updated](https://img.shields.io/badge/last_updated-2026--04--07-orange?style=flat-square)
 
 VectorBox is a premium movie recommendation engine designed to bridge the gap between social tracking (Letterboxd) and AI-driven cinematic discovery. 
 
@@ -170,8 +170,15 @@ The home feed is composed of **ten parallel sections**, each powered by a distin
 
 | Section | Strategy |
 |---------|----------|
-- **Available Now**: Filter by user's streaming services + RRF ranked
-- **Per-Section Cache**: Smart discrete TTLs for each section and cache guards (rejects feeds with < 3 sections).
+| **Because You Watched [X]** | Item-Item CF anchored to best-scored watched film (rating × recency × rewatch boost). Coherence threshold 0.25, quality floor 55. |
+| **Your Taste ([Cluster])** | K-Medoids cluster rotation via Redis counter. Quality floor 55, genre coherence (EXCLUSION_PAIRS) applied here only. |
+| **Picked For You** | Trident RRF fusion of Vibe + Auteur + Hidden Gems signals. No genre exclusion filter. Contributors show normalized signal breakdown. |
+| **Available Now** | Unwatched watchlist items currently streaming on user's active providers. |
+| **Hidden Gems** | DB-first discovery with dynamic quality/popularity thresholds. 30% vector similarity re-ranking. |
+| **Popular on Letterboxd** | Trending titles cached from Letterboxd via `popular_scraper.py`. |
+| **Auteur / Cult Actor** | Boost by directors and actors from user's high-rated history. |
+
+- **Per-Section Cache**: Smart discrete TTLs for each section; cache guard rejects feeds with < 3 sections.
 - **Cluster Rotation**: Automated cycling of user taste clusters on every refresh.
 
 ### 🔍 Magic Box NLP Search
@@ -411,8 +418,6 @@ VectorBox/
 │   └── Dockerfile
 ├── tests/
 │   └── archive/                # Legacy python test archive
-├── frontend/
-│   ├── e2e/                    # Playwright E2E suite
 ├── docker-compose.yml
 ├── setup.ps1                   # Bootstrap script (Windows)
 ├── setup.sh                    # Bootstrap script (Linux/macOS)
@@ -427,7 +432,7 @@ VectorBox/
 
 ## 📜 License
 
-**Version:** v1.7.0 Trident v2 Optimization  
-**Last Updated:** 2026-04-03  
+**Version:** v1.7.1  
+**Last Updated:** 2026-04-07  
 **Contact:** vectorbox.app@proton.me
 **License:** Proprietary & Confidential. All rights reserved.
