@@ -89,9 +89,16 @@ VectorBox uses a 3-signal hybrid recommendation engine (Trident):
   via EmbeddingService + Qdrant nearest-neighbor search.
   Embeddings are generated from **LLM-enriched cinematic descriptions** (tone, pacing, style) via Groq (Scout/70B/8B).
   Seeds from movies rated 4+ stars OR explicitly liked (is_liked). Applies anti-vector penalties.
+  **Quality floor:** candidates filtered by `vectorbox_score IS NOT NULL AND vectorbox_score >= 55`.
+  **Coherence threshold:** `score_threshold=0.25` (vector similarity) to keep results tightly anchored.
+  **Anchor pool:** fetches up to 100 candidates without ORDER BY (Python scoring selects best anchor).
+  **Contributors:** each result carries `[{"type": "anchor", "seed_title": ..., "seed_year": ..., "seed_rating": ..., "similarity": ...}]`.
 - Signal B `your_taste` — **K-Medoids cluster search**, pointing to a real movie (`medoid_movie_id`).
   Clusters are labeled dynamically by Groq (e.g., "A24 Dread") with dominant genre filtering.
   **Automated Rotation**: Automatically cycles through user's clusters on each feed fetch using a Redis counter.
+  **Quality floor:** same `vectorbox_score >= 55` filter applied.
+  **Genre coherence (EXCLUSION_PAIRS):** niche genres (Animation, Family, Horror) excluded if cluster doesn't support them. This filter ONLY applies here — NOT in hybrid_reranking (Picked For You).
+  **Contributors:** each result carries `[{"type": "cluster", "cluster_name": ..., "medoid_title": ..., "similarity": ...}]`.
   Penalized against Anti-vector of low-rated/rejected films, applying MMR based on dominant cluster genres.
 - Signal Auteur `get_signal_b_auteur` (Directors + Cast) — Director/Actor analysis
   Uses a `_compute_auteur_signal_raw()` helper applying a weighted point system (5★→2.0, 4.5★→1.5) triggering at 3.0 pts for directors, 2.5 pts for actors.
@@ -101,6 +108,11 @@ VectorBox uses a 3-signal hybrid recommendation engine (Trident):
     Growing (30-99):         score>65, popularity<30, votes>300
     Rich (100+):             score>75, popularity<20, votes>500
   Uses an Exoticism Boost (`+15%`) for non-English films. Re-ranked using 30% vector similarity weight.
+
+- Picked For You (`hybrid_reranking`) — Trident RRF fusion of signals A (vibe), Auteur (director/actor), and C (hidden gems).
+  **Contributors:** normalized percentage breakdown per signal: `[{"type": "vibe"|"auteur"|"crowd", "label": ..., "score": 0.0-1.0}]` where scores sum to 1.0.
+  Percentage hidden in UI when only a single signal contributed (no "100%" shown).
+  EXCLUSION_PAIRS genre filter is ABSENT here — only MIN_QUALITY_SCORE=55 applies.
 
 Results fused via RRF (Reciprocal Rank Fusion) +
 Sigmoid quality weighting on VectorBox Score (0–100).
@@ -278,6 +290,16 @@ All of these have been found and fixed. Do not reintroduce.
    ❌  setState after async call with no isMounted check
    ✅  Use isMounted ref + cleanup useEffect
 
+11. EXCLUSION_PAIRS IN HYBRID_RERANKING
+    ❌  Applying EXCLUSION_PAIRS genre filter inside hybrid_reranking (Picked For You)
+        → reduces candidate pool to near zero ("5 movies remain" observed in logs)
+    ✅  EXCLUSION_PAIRS belongs ONLY in get_your_taste_section
+
+12. is_liked IN RSS UPSERT SET CLAUSE
+    ❌  Including "is_liked": excluded.is_liked in on_conflict_do_update for RSS
+        → RSS items never carry liked status, silently resets ZIP-imported likes to False
+    ✅  Omit is_liked from RSS upsert SET; only ZIP upload controls is_liked
+
 10. SHARED SESSION IN TRIDENT / SIGNAL GATHER
     ❌  asyncio.gather(signal_a(db), signal_b(db), signal_c(db))
         where db is a single shared AsyncSession
@@ -306,6 +328,31 @@ CSVParser.normalize_letterboxd_uri() handles this:
   /tmdb/12345          → None         (rejected)
 
 Applied automatically in parse_ratings_csv and parse_watched_csv.
+
+## Data Integrity — CSV Key Normalization
+
+`DataProcessor._get_key(row)` builds the lookup key as `"{title}_{year}"`.
+**CRITICAL:** pandas promotes the Year column to float64 (e.g. 1991.0) when any
+row in the CSV has a missing year. Always normalize via `int(float(raw_year))`
+to prevent key mismatches between CSVs (e.g. "My Girl_1991.0" vs "My Girl_1991").
+The current implementation in `data_processor.py` handles this correctly.
+
+## Data Integrity — RSS Sync & is_liked
+
+The RSS upsert in `rss_service.py` MUST NOT include `is_liked` in the
+`on_conflict_do_update` SET clause. RSS feeds carry no liked-film data, so
+including it would overwrite ZIP-imported likes with False on every sync.
+Current implementation omits `is_liked` from the RSS upsert SET.
+
+## UserRating Schema
+
+`user_ratings` table columns include `watch_count INTEGER DEFAULT 1`:
+- Populated from `diary.csv` during ZIP import (each diary row = +1 watch)
+- Incremented by `rss_service.py` on rewatch detection (existing `is_watched` entry)
+- Used in clustering weight multiplier (watch_count≥3 → ×1.5, watch_count=2 → ×1.2)
+- Used in `_score_anchor_candidate` rewatch boost (up to ×1.4)
+- `create_user_clusters` in upload.py receives `groq_client=groq_client` (not None)
+  so LLM cluster labels are generated on initial upload.
 
 ---
 

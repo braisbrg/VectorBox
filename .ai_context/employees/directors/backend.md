@@ -2,7 +2,7 @@
 
 > **Role:** Backend Technical Lead
 > **Domain:** API Design, Database, Async Patterns, Authentication
-> **Last Updated:** 2026-03-19
+> **Last Updated:** 2026-04-07
 
 This file contains all backend-specific rules, database patterns, and API guidelines for the VectorBox project.
 
@@ -113,6 +113,14 @@ The following indexes are critical for performance:
 - `vectorbox_score` (filtering quality)
 - `popularity` (sorting)
 - `vote_count` (validity filtering)
+
+### UserRating Schema
+Key columns: `is_watched`, `is_liked`, `is_watchlist`, `is_rejected`, `rating`, `watched_date`, `watch_count` (INTEGER DEFAULT 1), `review`.
+- `watch_count` is populated from `diary.csv` during ZIP import (each diary row = +1) and incremented on RSS rewatch detection.
+- `is_liked` is set ONLY by ZIP import (likes/films.csv processed last). The RSS upsert MUST NOT include `is_liked` in its `on_conflict_do_update` SET clause — RSS carries no liked status.
+
+### CSV Key Normalization
+`DataProcessor._get_key(row)` builds `"{title}_{year}"`. **Always normalize year** via `int(float(raw_year))` — pandas promotes Year to float64 when any row has a null year, causing key mismatches between CSVs that break is_liked matching.
 
 ### Code Conventions — ID Types
 VectorBox uses TWO different movie ID spaces. Mixing them causes silent deduplication failures.
