@@ -152,6 +152,14 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         return null;
     }
 
+    // Typed VectorboxUser derived from session (avoids double-cast)
+    const sessionAsVectorboxUser: VectorboxUser = {
+        id: currentUserSession.id,
+        username: currentUserSession.username,
+        has_data: currentUserSession.has_data,
+        letterboxd_username: currentUserSession.letterboxd_username,
+    };
+
     // ONBOARDING JAIL: If user has no data, lock them here
     if (!currentUserSession.has_data) {
         return (
@@ -176,7 +184,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
                         <div className="bg-background/50 rounded-lg p-4 border border-border/30">
                             <UploadZone
-                                registeredUsers={[currentUserSession as any as VectorboxUser]}
+                                registeredUsers={[sessionAsVectorboxUser]}
                                 activeSessionUserId={currentUserSession.id}
                                 onUploadSuccess={(userId) => {
                                     window.location.reload();
@@ -209,7 +217,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             <Sidebar
                 currentView={currentView}
                 onViewChange={setCurrentView}
-                users={[currentUserSession as any as VectorboxUser]}
+                users={[sessionAsVectorboxUser]}
                 currentUserId={currentUserSession.id}
                 onUserSelect={() => { }}
             />
@@ -217,7 +225,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             <MobileNav
                 currentView={currentView}
                 onViewChange={setCurrentView}
-                users={[currentUserSession as any as VectorboxUser]}
+                users={[sessionAsVectorboxUser]}
                 currentUserId={currentUserSession.id}
                 onUserSelect={() => { }}
             />

@@ -3,6 +3,7 @@ Upload router for CSV file processing
 Security: File validation, rate limiting, background tasks
 v1.1: Uses Redis-based TaskStore for progress tracking
 """
+import asyncio
 from fastapi import APIRouter, UploadFile, File, Depends, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -281,8 +282,12 @@ async def enrich_movies_background(
                                     "keywords": m.keywords or []
                                 })
 
-                            # Generate Batch Embeddings (Fast)
-                            vectors = embedding_service.generate_batch_embeddings(data_for_embedding)
+                            # Generate Batch Embeddings (non-blocking)
+                            loop = asyncio.get_event_loop()
+                            vectors = await loop.run_in_executor(
+                                None,
+                                lambda: embedding_service.generate_batch_embeddings(data_for_embedding)
+                            )
 
                             # Prepare Qdrant Points
                             from qdrant_client.models import PointStruct

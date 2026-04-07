@@ -6,12 +6,14 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import User, Movie, UserRating
+from models.schemas import TokenResponse
 from services.movie_service import MovieService
 from services.rss_service import RSSService
 from services.scraper_service import ScraperService
 from services.tmdb_client import TMDBClient
+from services.qdrant_service import QdrantService
 from config import get_db
-from dependencies import get_tmdb_client
+from dependencies import get_tmdb_client, get_current_user, get_qdrant_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -146,7 +148,8 @@ async def sync_user_data(
     username: str,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client)
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    current_user: TokenResponse = Depends(get_current_user)
 ):
     stmt = select(User).where(User.username == username)
     result = await db.execute(stmt)
@@ -154,6 +157,9 @@ async def sync_user_data(
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if user.id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Cannot sync another user's account")
 
     letterboxd_profile = user.letterboxd_username or username
     background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb)
@@ -167,12 +173,15 @@ async def sync_user_data(
 @router.post("/group/vibe")
 async def get_group_recommendations(
     request: GroupVibeRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    current_user: TokenResponse = Depends(get_current_user)
 ):
     """
     Get recommendations based on the 'Group Vibe' (centroid of multiple users).
     """
-    rss_service = RSSService(db)
+    rss_service = RSSService(db, tmdb=tmdb, qdrant=qdrant)
     
     # Get Hybrid Recommendations
     scored_results = await rss_service.get_group_recommendations_hybrid(request.usernames)
