@@ -3,6 +3,7 @@
  * Security: Input sanitization, error handling
  */
 import axios, { AxiosError } from "axios";
+import type { Contributor } from "@/types/feed";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -69,6 +70,7 @@ export interface UserSession {
     username: string; // vectorbox_handle
     token?: string;
     letterboxd_username?: string; // letterboxd_handle
+    has_data?: boolean;
 }
 
 export interface VectorboxUser {
@@ -123,7 +125,7 @@ export interface RecommendationResponse {
     streaming_available: boolean;
     streaming_providers: string[];
     providers?: string[];
-    contributors?: Array<Record<string, any>>;
+    contributors?: Contributor[];
 }
 
 export interface RecommendationRequest {
@@ -156,7 +158,7 @@ export interface FeedItem {
     letterboxd_uri?: string;
     rating?: number;
     overview?: string;
-    contributors?: Array<Record<string, any>>;
+    contributors?: Contributor[];
     // Phase 12 Fields
     vectorbox_score?: number;
     imdb_rating?: number;
@@ -441,25 +443,27 @@ export const getFeedServerSide = async (
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
-        const response = await fetch(
-            `${API_URL}/api/recommendations/feed?${params.toString()}`,
-            {
-                cache: "no-store", // Dynamic data, always fresh
-                signal: controller.signal,
-                headers: {
-                    "Content-Type": "application/json",
-                    ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-                },
+        try {
+            const response = await fetch(
+                `${API_URL}/api/recommendations/feed?${params.toString()}`,
+                {
+                    cache: "no-store", // Dynamic data, always fresh
+                    signal: controller.signal,
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+                    },
+                }
+            );
+
+            if (!response.ok) {
+                return null;
             }
-        );
 
-        clearTimeout(timeoutId);
-
-        if (!response.ok) {
-            return null;
+            return response.json();
+        } finally {
+            clearTimeout(timeoutId);
         }
-
-        return response.json();
     } catch (error) {
         return null;
     }

@@ -35,8 +35,16 @@ interface SearchResult {
 import { useLanguage } from "@/components/language-provider";
 
 interface SearchIntent {
-    summary?: string;
-    [key: string]: any;
+    semantic_query: string;
+    year_min?: number;
+    year_max?: number;
+    include_genres?: string[];
+    max_runtime_minutes?: number;
+    popularity_vibe?: "blockbuster" | "hidden_gem" | "any";
+    original_language?: string;
+    reference_movie?: string;
+    quality_gate_bypass?: boolean;
+    reasoning: string;
 }
 
 export function MagicSearch({ userId }: MagicSearchProps) {
@@ -55,7 +63,6 @@ export function MagicSearch({ userId }: MagicSearchProps) {
             const { api } = await import("@/lib/api");
             const res = await api.post("/api/search/natural", {
                 query: text,
-                user_id: userId,
                 use_deep_analysis: isDeepAnalysis,
                 country_code: "ES",
             });

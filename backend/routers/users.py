@@ -207,7 +207,7 @@ async def get_user_activity(
     # Last Watched
     watched_stmt = select(Movie).join(UserRating).where(
         UserRating.user_id == user.id,
-        UserRating.is_watched == True
+        UserRating.is_watched.is_(True)
     ).order_by(UserRating.watched_date.desc()).limit(1)
     
     watched_result = await db.execute(watched_stmt)

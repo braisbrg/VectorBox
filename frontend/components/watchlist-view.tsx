@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { Contributor } from "@/types/feed";
 import { motion } from "framer-motion";
 import { Loader2, Filter, X, SortAsc, Tv } from "lucide-react";
 import { getTMDBImageUrl, type FeedItem, getWatchlist, getUserActivity } from "@/lib/api";
@@ -13,7 +14,7 @@ interface WatchlistViewProps {
     username: string;
     countryCode?: string;
     streamingProviders?: number[];
-    onInspect?: (id: number, sectionId?: string, contributors?: any[]) => void;
+    onInspect?: (id: number, sectionId?: string, contributors?: Contributor[]) => void;
 }
 
 const WATCHLIST_FILTERS_KEY = "watchlist_filters";

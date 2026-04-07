@@ -3,6 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { getTMDBImageUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie } from "@/lib/api";
+import type { Contributor } from "@/types/feed";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { useRef, useState, useEffect, useCallback } from "react";
 import { MovieCard } from "@/components/ui/movie-card";
@@ -20,7 +21,7 @@ interface FeedItem {
     letterboxd_uri?: string;
     rating?: number;
     overview?: string;
-    contributors?: Array<Record<string, any>>;
+    contributors?: Contributor[];
     // Phase 12 Fields
     vectorbox_score?: number;
     imdb_rating?: number;
@@ -38,7 +39,7 @@ interface MovieCarouselProps {
     titlePrefix?: React.ReactNode;
     forceVectorBoxScore?: boolean;
     priority?: boolean;
-    onInspect?: (id: number, sectionId?: string, contributors?: any[]) => void;
+    onInspect?: (id: number, sectionId?: string, contributors?: Contributor[]) => void;
     onReject?: (id: number) => void;
 }
 
