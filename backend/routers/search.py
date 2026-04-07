@@ -416,7 +416,8 @@ async def search_movies(
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
-    embedding_service: EmbeddingService = Depends(get_embedding_service)
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+    current_user: TokenResponse = Depends(get_current_user)
 ):
     """
     Hybrid search:
