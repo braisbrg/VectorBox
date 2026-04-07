@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Optional, Tuple, Dict, Any, List
 from datetime import datetime
@@ -114,9 +115,13 @@ class MovieFactory:
                     logger.warning(f"Cinematic enrichment failed for {movie.title}: {e}")
                     text_override = None
 
-            vector = self.embedding_service.generate_embedding(
-                {"title": movie.title, "overview": movie.overview, "genres": movie.genres, "keywords": keywords},
-                text_override=text_override,
+            loop = asyncio.get_event_loop()
+            vector = await loop.run_in_executor(
+                None,
+                lambda: self.embedding_service.generate_embedding(
+                    {"title": movie.title, "overview": movie.overview, "genres": movie.genres, "keywords": keywords},
+                    text_override=text_override,
+                )
             )
 
             # 6. Construct PointStruct (Qdrant)

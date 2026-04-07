@@ -21,8 +21,11 @@ router = APIRouter()
 @router.post("/group-watchlist")
 async def create_group_watchlist(
     request: GroupWatchlistRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: TokenResponse = Depends(get_current_user)
 ):
+    if current_user.user_id not in request.user_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
     """
     Find intersection of multiple users' watchlists
     Rank by average rating
@@ -196,7 +199,8 @@ async def run_popular_update_task():
 
 @router.post("/update-popular")
 async def update_popular_movies(
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    current_user: TokenResponse = Depends(get_current_user)
 ):
     """
     Manually trigger the 'Popular on Letterboxd' scraper in the background.

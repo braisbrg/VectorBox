@@ -5,8 +5,8 @@ logger = logging.getLogger(__name__)
 
 async def invalidate_user_cache(user_id: int):
     """
-    Invalidate all cache keys related to a user.
-    This includes feed, recommendations, and other user-specific data.
+    Invalidate all cache keys related to a user after upload/sync.
+    Uses versioned prefix to avoid scanning unrelated keys.
     """
     try:
         redis = FastAPICache.get_backend()
@@ -14,38 +14,24 @@ async def invalidate_user_cache(user_id: int):
             logger.warning("Redis backend not available for cache invalidation")
             return
 
-        # Pattern matching for user-specific keys
-        # We assume keys are constructed like "feed:{user_id}:..." or "recommendations:{user_id}:..."
-        # The user requested clearing "cache:recommendations:{user_id}:*"
-        # FastAPICache usually prefixes keys. We need to be careful.
-        # If using RedisBackend, we can use scan_iter or keys (careful with keys in prod)
-        
-        # We will use a broad pattern to ensure we catch everything
-        pattern = f"*{user_id}*" 
-        
-        # Ideally, we should use specific prefixes if we know them.
-        # Based on the user request: "cache:recommendations:{user_id}:*"
-        
-        # Let's try to clear specific patterns we know we will use
-        patterns = [
-            f"feed:{user_id}*",
-            f"recommendations:{user_id}*",
-            f"watchlist:{user_id}*",
-            f"clusters:{user_id}*"
-        ]
-        
-        for p in patterns:
-            await redis.clear(namespace=None, key=p) # This might not work as expected depending on backend implementation
-            
         # If using Redis directly via the backend instance
         if hasattr(redis, "redis"):
+            from services.feed_service import FEED_CACHE_VERSION
             r = redis.redis
-            # Scan for keys matching the user ID
-            # This is expensive but necessary if keys are not well-namespaced
-            async for key in r.scan_iter(match=f"*{user_id}*"):
-                await r.delete(key)
-                
-        logger.info(f"Invalidated cache for user {user_id}")
-        
+            cursor = 0
+            deleted_count = 0
+            while True:
+                cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
+                if keys:
+                    await r.delete(*keys)
+                    deleted_count += len(keys)
+                if cursor == 0:
+                    break
+            await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
+            if deleted_count:
+                logger.info(f"Invalidated {deleted_count} feed cache keys for user_id={user_id}")
+        else:
+            logger.warning("Redis backend does not expose raw redis client; cache invalidation skipped")
+
     except Exception as e:
         logger.error(f"Failed to invalidate cache for user {user_id}: {e}")
