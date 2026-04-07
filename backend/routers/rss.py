@@ -11,6 +11,7 @@ from services.rss_service import RSSService
 from services.scraper_service import ScraperService
 from services.tmdb_client import TMDBClient
 from config import get_db
+from dependencies import get_tmdb_client
 import logging
 
 logger = logging.getLogger(__name__)
@@ -37,17 +38,18 @@ async def _invalidate_feed_cache(user_id: int) -> None:
         redis_url = os.environ.get("REDIS_URL", "redis://redis:6379")
         r = aioredis.from_url(redis_url, decode_responses=True)
         try:
+            from services.feed_service import FEED_CACHE_VERSION
             cursor = 0
             deleted_count = 0
             while True:
-                cursor, keys = await r.scan(cursor, match=f"section:*:{user_id}:*", count=100)
+                cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
                 if keys:
                     await r.delete(*keys)
                     deleted_count += len(keys)
                 if cursor == 0:
                     break
-            # Delete cluster rotation counter
-            await r.delete(f"cluster_rotation:{user_id}")
+            # Delete cluster rotation counter (versioned to match recommendation_engine.py)
+            await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
             
             if deleted_count:
                 logger.info(f"Invalidated {deleted_count} feed cache keys and rotation for user_id={user_id}")
@@ -56,16 +58,15 @@ async def _invalidate_feed_cache(user_id: int) -> None:
     except Exception as e:
         logger.error(f"Feed cache invalidation failed for user_id={user_id}: {e}")
 
-async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
+async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDBClient) -> None:
     """Background task — owns its own session. Never re-raises."""
     from config import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         try:
-            rss_service = RSSService(db)
+            rss_service = RSSService(db, tmdb=tmdb)
             await rss_service.sync_user_rss(letterboxd_profile, user_id)
 
             scraper = ScraperService()
-            tmdb = TMDBClient()
             movie_service = MovieService(db)
             watchlist_added = 0
 
@@ -122,7 +123,7 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
 
             finally:
                 await scraper.close()
-                await tmdb.aclose()
+                # tmdb is the injected singleton — never close it
 
             await db.commit()
             
@@ -144,7 +145,8 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
 async def sync_user_data(
     username: str,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client)
 ):
     stmt = select(User).where(User.username == username)
     result = await db.execute(stmt)
@@ -154,7 +156,7 @@ async def sync_user_data(
         raise HTTPException(status_code=404, detail="User not found")
 
     letterboxd_profile = user.letterboxd_username or username
-    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile)
+    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb)
 
     return {
         "status": "started",

@@ -22,12 +22,18 @@ from services.movie_service import MovieService
 logger = logging.getLogger(__name__)
 
 class RSSService:
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+        tmdb: TMDBClient = None,
+        qdrant: QdrantService = None,
+        embedding_service: EmbeddingService = None,
+    ):
         self.db = db
-        self.tmdb = TMDBClient()
+        self.tmdb = tmdb or TMDBClient()
         self.omdb = OMDbClient()
-        self.qdrant = QdrantService()
-        self.embedding_service = EmbeddingService()
+        self.qdrant = qdrant or QdrantService()
+        self.embedding_service = embedding_service or EmbeddingService()
         # FIX 5: Create groq_client for LLM-enriched embeddings on new movies
         import os
         groq_api_key = os.getenv("GROQ_API_KEY")
@@ -339,7 +345,7 @@ class RSSService:
                 # B. Get Watchlist (Candidates)
                 stmt = select(Movie.tmdb_id).join(UserRating).where(
                     UserRating.user_id == user.id,
-                    UserRating.is_watchlist == True
+                    UserRating.is_watchlist.is_(True)
                 )
                 result = await self.db.execute(stmt)
                 watchlist_ids = result.scalars().all()
@@ -348,7 +354,7 @@ class RSSService:
                 # C. Get Watched (Exclusions)
                 stmt = select(Movie.tmdb_id).join(UserRating).where(
                     UserRating.user_id == user.id,
-                    UserRating.is_watched == True
+                    UserRating.is_watched.is_(True)
                 )
                 result = await self.db.execute(stmt)
                 watched_ids = result.scalars().all()

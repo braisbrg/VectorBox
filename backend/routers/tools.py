@@ -9,8 +9,9 @@ import numpy as np
 import logging
 
 from config import get_db
+from dependencies import get_qdrant_service, get_current_user
 from models.database import UserRating, Movie, User
-from models.schemas import GroupWatchlistRequest, CompatibilityRequest, CompatibilityResponse
+from models.schemas import GroupWatchlistRequest, CompatibilityRequest, CompatibilityResponse, TokenResponse
 from services.qdrant_service import QdrantService
 
 logger = logging.getLogger(__name__)
@@ -80,23 +81,26 @@ async def create_group_watchlist(
 @router.post("/compatibility", response_model=CompatibilityResponse)
 async def calculate_compatibility(
     request: CompatibilityRequest,
-    db: AsyncSession = Depends(get_db)
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    qdrant: QdrantService = Depends(get_qdrant_service)
 ):
     """
     Calculate compatibility between two users
     Using cosine similarity of their taste vectors
     """
-    qdrant = QdrantService()
-    
+    if current_user.user_id not in [request.user_id_1, request.user_id_2]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     # Get both users
     result = await db.execute(
         select(User).where(User.id.in_([request.user_id_1, request.user_id_2]))
     )
     users = {u.id: u for u in result.scalars().all()}
-    
+
     if len(users) != 2:
         raise HTTPException(status_code=404, detail="One or both users not found")
-    
+
     # Get rated movies for both users
     user1_ratings = await db.execute(
         select(UserRating, Movie)
@@ -104,19 +108,19 @@ async def calculate_compatibility(
         .where(UserRating.user_id == request.user_id_1)
     )
     user1_movies = user1_ratings.all()
-    
+
     user2_ratings = await db.execute(
         select(UserRating, Movie)
         .join(Movie, UserRating.movie_id == Movie.id)
         .where(UserRating.user_id == request.user_id_2)
     )
     user2_movies = user2_ratings.all()
-    
-    # Find shared movies
+
+    # Find shared movies (by internal id, which is correct here — intersection count only)
     user1_movie_ids = {movie.id for _, movie in user1_movies}
     user2_movie_ids = {movie.id for _, movie in user2_movies}
     shared_movie_ids = user1_movie_ids & user2_movie_ids
-    
+
     # Calculate genre overlap
     user1_genres = set()
     user2_genres = set()
@@ -126,41 +130,47 @@ async def calculate_compatibility(
     for _, movie in user2_movies:
         if movie.genres:
             user2_genres.update(movie.genres)
-    
+
     shared_genres = list(user1_genres & user2_genres)
-    
-    # Compute average taste vectors
+
+    # Batch-fetch all vectors (Qdrant is indexed by tmdb_id)
+    all_tmdb_ids = [
+        movie.tmdb_id for _, movie in user1_movies + user2_movies
+        if movie.tmdb_id is not None
+    ]
+    vectors_map = await qdrant.get_vectors_batch(all_tmdb_ids)
+
+    # Compute average taste vectors using batch results
     user1_vectors = []
     user2_vectors = []
-    
+
     for rating, movie in user1_movies:
-        vector = await qdrant.get_vector(movie.id)
+        vector = vectors_map.get(movie.tmdb_id)
         if vector and rating.rating:
-            # Weight by rating
             weighted_vector = np.array(vector) * (rating.rating / 5.0)
             user1_vectors.append(weighted_vector)
-    
+
     for rating, movie in user2_movies:
-        vector = await qdrant.get_vector(movie.id)
+        vector = vectors_map.get(movie.tmdb_id)
         if vector and rating.rating:
             weighted_vector = np.array(vector) * (rating.rating / 5.0)
             user2_vectors.append(weighted_vector)
-    
+
     if not user1_vectors or not user2_vectors:
         raise HTTPException(
             status_code=400,
             detail="Insufficient data for compatibility calculation"
         )
-    
+
     # Average vectors
     user1_avg = np.mean(user1_vectors, axis=0)
     user2_avg = np.mean(user2_vectors, axis=0)
-    
+
     # Cosine similarity
     similarity = np.dot(user1_avg, user2_avg) / (
         np.linalg.norm(user1_avg) * np.linalg.norm(user2_avg)
     )
-    
+
     return CompatibilityResponse(
         user_1=users[request.user_id_1].username,
         user_2=users[request.user_id_2].username,

@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
+import type { Contributor } from "@/types/feed";
 import { Info, Clock, Film, X, Loader2 } from "lucide-react";
 import { getTMDBImageUrl } from "@/lib/api";
 import { useState } from "react";
@@ -21,13 +22,13 @@ export interface MovieCardProps {
     overview?: string;
     overview_es?: string;
     genres?: string[];
-    onInspect?: (id: number, contributors?: any[]) => void;
+    onInspect?: (id: number, contributors?: Contributor[]) => void;
     onReject?: (id: number) => void;
     priority?: boolean;
     className?: string;
     badgeType?: string;
     providers?: string[];
-    contributors?: any[];
+    contributors?: Contributor[];
     forceVectorBoxScore?: boolean;
     imdb_rating?: number;
     metacritic_rating?: number;

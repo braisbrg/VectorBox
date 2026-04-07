@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Globe, Tv, RotateCcw, Info, CheckCircle2, Lock } from "lucide-react";
+import type { Contributor } from "@/types/feed";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { useLanguage } from "@/components/language-provider";
@@ -11,7 +12,7 @@ import { ClusterInfo, FeedItem, api, getTMDBImageUrl } from "@/lib/api";
 interface RightConsoleProps {
     selectedMovieId: number | null;
     selectedSectionId?: string;
-    selectedContributors?: any[];
+    selectedContributors?: Contributor[];
     onCloseInspector: () => void;
     scope: "watchlist" | "global";
     onScopeChange: (scope: "watchlist" | "global") => void;
@@ -250,7 +251,7 @@ export function RightConsole({
                                         </p>
                                         {selectedContributors && selectedContributors.length > 0 ? (
                                             <div className="space-y-2">
-                                                {selectedContributors.map((c: any, i: number) => (
+                                                {selectedContributors.map((c: Contributor, i: number) => (
                                                     <div key={i} className="space-y-0.5">
                                                         {c.type === "anchor" && (
                                                             <>
@@ -258,7 +259,7 @@ export function RightConsole({
                                                                     Similar to {c.seed_title} ({c.seed_year})
                                                                 </p>
                                                                 <p className="text-[11px] font-mono text-zinc-500">
-                                                                    You rated it {c.seed_rating}★ · Similarity {Math.round(c.similarity * 100)}%
+                                                                    You rated it {c.seed_rating}★ · Similarity {Math.round((c.similarity ?? 0) * 100)}%
                                                                 </p>
                                                             </>
                                                         )}
@@ -278,10 +279,10 @@ export function RightConsole({
                                                             <div className="flex items-center justify-between gap-2">
                                                                 <p className="text-xs font-mono text-primary">{c.label}</p>
                                                                 {selectedContributors!.filter(
-                                                                    (x: any) => ["vibe", "auteur", "crowd"].includes(x.type)
+                                                                    (x: Contributor) => ["vibe", "auteur", "crowd"].includes(x.type)
                                                                 ).length > 1 && (
                                                                     <p className="text-[11px] font-mono text-zinc-500 shrink-0">
-                                                                        {Math.round(c.score * 100)}%
+                                                                        {Math.round((c.score ?? 0) * 100)}%
                                                                     </p>
                                                                 )}
                                                             </div>
