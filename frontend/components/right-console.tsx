@@ -7,7 +7,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { useLanguage } from "@/components/language-provider";
 import { COUNTRIES, getProvidersForCountry } from "@/lib/constants";
-import { ClusterInfo, FeedItem, api, getTMDBImageUrl } from "@/lib/api";
+import { ClusterInfo, FeedItem, api } from "@/lib/api";
 
 interface RightConsoleProps {
     selectedMovieId: number | null;
@@ -195,10 +195,10 @@ export function RightConsole({
                                 <>
                                     {/* Mock Poster / Visual Area */}
                                     <div className="relative aspect-[2/3] w-48 mx-auto border border-zinc-800 grayscale hover:grayscale-0 transition-all">
-                                        {inspectedMovie.poster_url || (inspectedMovie as any).poster_path ? (
+                                        {inspectedMovie.poster_url ? (
                                             <Image
-                                                src={inspectedMovie.poster_url || getTMDBImageUrl((inspectedMovie as any).poster_path, "w342")}
-                                                alt={inspectedMovie.title}
+                                                src={inspectedMovie.poster_url}
+                                                alt={inspectedMovie.title ?? "Movie poster"}
                                                 fill
                                                 className="object-cover"
                                             />
