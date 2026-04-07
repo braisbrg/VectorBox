@@ -7,7 +7,7 @@ import httpx
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
@@ -28,7 +28,7 @@ from routers.similar import router as similar_router
 from services.qdrant_service import QdrantService
 from models.schemas import HealthResponse, RootResponse
 from database import engine, Base
-from dependencies import close_services
+from dependencies import close_services, get_qdrant_service
 from scheduler import start_scheduler
 
 # Configure logging
@@ -192,7 +192,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # Health check endpoint (no rate limiting)
 @app.get("/health", tags=["System"], response_model=HealthResponse)
-async def health_check() -> HealthResponse:
+async def health_check(qdrant: QdrantService = Depends(get_qdrant_service)) -> HealthResponse:
     """Health check for container orchestration"""
     # Deep Health Check
     health_status = {
@@ -235,10 +235,6 @@ async def health_check() -> HealthResponse:
 
     # 3. Qdrant Check
     try:
-        qdrant = QdrantService()
-        # Use get_collections as it's a standard light read, fallback to info/health if needed.
-        # User said: "if client.get_collections() is too slow, a simple client.info() or ping"
-        # Since we don't have direct http access, we use the client method.
         await qdrant.client.get_collections()
         health_status["dependencies"]["qdrant"] = "ok"
     except Exception as e:

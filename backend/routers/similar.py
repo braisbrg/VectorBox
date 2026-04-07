@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
+import asyncio
 import logging
 
 from config import get_db
@@ -12,7 +13,8 @@ from models.database import Movie
 from services.qdrant_service import QdrantService
 from services.tmdb_client import TMDBClient
 from services.embedding_service import EmbeddingService
-from dependencies import get_tmdb_client, get_qdrant_service, get_current_user
+from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_embedding_service
+
 from models.schemas import TokenResponse
 
 logger = logging.getLogger(__name__)
@@ -26,7 +28,8 @@ async def get_similar_movies(
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
-    qdrant: QdrantService = Depends(get_qdrant_service)
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding_service: EmbeddingService = Depends(get_embedding_service)
 ):
     """
     Get movies similar to the specified movie.
@@ -36,7 +39,6 @@ async def get_similar_movies(
     4. Fallback to TMDB recommendations if local results are scarce.
     """
     try:
-        embedding_service = EmbeddingService()
         
         # 1. Get movie details (Local or TMDB) to generate a FRESH query vector
         # We want to search by CONTENT (overview, genres), not by Title.
@@ -80,12 +82,16 @@ async def get_similar_movies(
             keywords = await tmdb.get_movie_keywords(tmdb_id)
 
         # Generate QUERY vector - WITHOUT title to avoid name-matching
-        query_vector = embedding_service.generate_embedding({
-            "title": movie_title,
-            "overview": overview,
-            "genres": genres,
-            "keywords": keywords
-        }, include_title=False).tolist()
+        loop = asyncio.get_event_loop()
+        query_vector = await loop.run_in_executor(
+            None,
+            lambda: embedding_service.generate_embedding({
+                "title": movie_title,
+                "overview": overview,
+                "genres": genres,
+                "keywords": keywords
+            }, include_title=False).tolist()
+        )
 
         # 3. Search Qdrant
         similar_results = await qdrant.search_similar(

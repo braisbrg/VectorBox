@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import type { Contributor } from "@/types/feed";
 import { LayoutList, Globe, Tv, Loader2, RotateCcw, Heart, User as UserIcon, LogOut } from "lucide-react";
 import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/constants";
 import { motion } from "framer-motion";
@@ -43,7 +44,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const [scope, setScope] = useState<"watchlist" | "global">("global");
     const [countryCode, setCountryCode] = useState("ES");
     const [streamingProviders, setStreamingProviders] = useState<number[]>([]);
-    const [inspectedMovie, setInspectedMovie] = useState<{ id: number; sectionId?: string; contributors?: any[] } | null>(null);
+    const [inspectedMovie, setInspectedMovie] = useState<{ id: number; sectionId?: string; contributors?: Contributor[] } | null>(null);
 
 
     const { t } = useLanguage();
@@ -86,11 +87,9 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                     token: verifiedUser.token // or undefined, dependent on session type
                 };
 
-                // Merge with extended flags if we have them (like has_data)
-                // We know backend returns `has_data` in AuthResponse
-                const fullSession = { ...verifiedSession, has_data: (verifiedUser as any).has_data };
+                const fullSession: UserSession = { ...verifiedSession, has_data: verifiedUser.has_data };
 
-                setCurrentUserSession(fullSession as any as UserSession);
+                setCurrentUserSession(fullSession);
 
                 // Update Local Storage with fresh truth
                 localStorage.setItem("vectorbox_user", JSON.stringify(fullSession));
@@ -154,7 +153,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     }
 
     // ONBOARDING JAIL: If user has no data, lock them here
-    if (!(currentUserSession as any).has_data) {
+    if (!currentUserSession.has_data) {
         return (
             <div className="min-h-screen bg-black text-foreground flex flex-col items-center justify-center p-4 relative overflow-hidden">
                 <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10 pointer-events-none" />
@@ -257,7 +256,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             username={currentUserSession.username}
                             countryCode={countryCode}
                             streamingProviders={streamingProviders}
-                            onInspect={(id: number, sectionId?: string, contributors?: any[]) => setInspectedMovie({ id, sectionId, contributors })}
+                            onInspect={(id: number, sectionId?: string, contributors?: Contributor[]) => setInspectedMovie({ id, sectionId, contributors })}
                         />
                     ) : currentView === "settings" ? (
                         <SettingsView />
@@ -287,7 +286,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             streamingProviders={streamingProviders}
                             initialData={initialFeedData}
                             registeredUsers={users}
-                            onInspect={(id: number, sectionId?: string, contributors?: any[]) => setInspectedMovie({ id, sectionId, contributors })}
+                            onInspect={(id: number, sectionId?: string, contributors?: Contributor[]) => setInspectedMovie({ id, sectionId, contributors })}
                         />
                     )}
                 </div>

@@ -13,7 +13,7 @@ from slowapi.util import get_remote_address
 import logging
 
 from config import get_db
-from dependencies import get_current_user, verify_user_ownership
+from dependencies import get_current_user, verify_user_ownership, get_embedding_service, get_qdrant_service
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.clustering_service import ClusteringService
@@ -149,8 +149,8 @@ async def enrich_movies_background(
     from config import AsyncSessionLocal
     from services.movie_service import MovieService
 
-    embedding_service = EmbeddingService()
-    qdrant = QdrantService()
+    embedding_service = await get_embedding_service()
+    qdrant = await get_qdrant_service()
     task_store = get_task_store()
 
     total_movies = len(movies_data)

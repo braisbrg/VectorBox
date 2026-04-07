@@ -25,16 +25,20 @@ logger = logging.getLogger(__name__)
 from config import AsyncSessionLocal
 
 async def _enrich_movie_background(tmdb_id: int):
-    """Background-safe enrichment: creates its own DB session."""
+    """Background-safe enrichment: creates its own DB session. Never re-raises."""
     from services.movie_service import MovieService
     from models.database import Movie
     from sqlalchemy import select
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
-        movie = result.scalar_one_or_none()
-        if movie:
-            movie_service = MovieService(session)
-            await movie_service.enrich_movie(movie)
+        try:
+            result = await session.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
+            movie = result.scalar_one_or_none()
+            if movie:
+                movie_service = MovieService(session)
+                await movie_service.enrich_movie(movie)
+                await session.commit()
+        except Exception as e:
+            logger.error(f"Background enrichment failed for tmdb_id={tmdb_id}: {e}")
 
 class ClusteringService:
     """Create and manage user taste clusters"""
