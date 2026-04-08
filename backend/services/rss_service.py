@@ -22,13 +22,34 @@ from services.movie_service import MovieService
 logger = logging.getLogger(__name__)
 
 class RSSService:
-    def __init__(self, db: Session):
+    def __init__(
+        self,
+        db: Session,
+        tmdb: TMDBClient = None,
+        qdrant: QdrantService = None,
+        embedding_service: EmbeddingService = None,
+        omdb: OMDbClient = None,
+    ):
         self.db = db
-        self.tmdb = TMDBClient()
-        self.omdb = OMDbClient()
-        self.qdrant = QdrantService()
-        self.embedding_service = EmbeddingService()
-        self.movie_service = MovieService(db)
+        self.tmdb = tmdb  # callers must pass — no fallback
+        self.omdb = omdb  # callers must pass — no fallback
+        self.qdrant = qdrant
+        self.embedding_service = embedding_service
+        # FIX 5: Create groq_client for LLM-enriched embeddings on new movies
+        import os
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        self.groq_client = None
+        if groq_api_key:
+            try:
+                from openai import AsyncOpenAI
+                self.groq_client = AsyncOpenAI(
+                    api_key=groq_api_key,
+                    base_url="https://api.groq.com/openai/v1",
+                    max_retries=0
+                )
+            except ImportError:
+                logger.warning("openai package not found, Groq features disabled for RSS")
+        self.movie_service = MovieService(db, tmdb=self.tmdb, groq_client=self.groq_client)
 
     async def fetch_user_rss(self, username: str) -> List[Dict]:
         """
@@ -196,6 +217,15 @@ class RSSService:
                         stats["errors"] += 1
                         continue
                 # 7. Upsert rating safely
+                # Pre-load existing rating to track rewatch count
+                existing_rating_result = await self.db.execute(
+                    select(UserRating).where(
+                        UserRating.user_id == user_id,
+                        UserRating.movie_id == movie.id
+                    )
+                )
+                existing_rating = existing_rating_result.scalar_one_or_none()
+
                 stmt = insert(UserRating).values(
                     user_id=user_id,
                     movie_id=movie.id,
@@ -209,7 +239,8 @@ class RSSService:
                     set_={
                         "rating": getattr(insert(UserRating).excluded, "rating"),
                         "is_watched": True, # Ensure it's marked as watched
-                        "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
+                        # is_liked intentionally omitted — RSS feed has no liked status.
+                        # Overwriting with False would erase likes set by ZIP upload.
                         "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
                         "review": getattr(insert(UserRating).excluded, "review"),
                     }
@@ -223,6 +254,9 @@ class RSSService:
                             stats["new_ratings"] += 1
                         else:
                             stats["updated_ratings"] += 1
+                    # Increment watch_count for rewatches (existing watched entry)
+                    if existing_rating and existing_rating.is_watched:
+                        existing_rating.watch_count = (existing_rating.watch_count or 1) + 1
                     await self.db.commit()
                 except Exception as e:
                     await self.db.rollback()
@@ -312,7 +346,7 @@ class RSSService:
                 # B. Get Watchlist (Candidates)
                 stmt = select(Movie.tmdb_id).join(UserRating).where(
                     UserRating.user_id == user.id,
-                    UserRating.is_watchlist == True
+                    UserRating.is_watchlist.is_(True)
                 )
                 result = await self.db.execute(stmt)
                 watchlist_ids = result.scalars().all()
@@ -321,7 +355,7 @@ class RSSService:
                 # C. Get Watched (Exclusions)
                 stmt = select(Movie.tmdb_id).join(UserRating).where(
                     UserRating.user_id == user.id,
-                    UserRating.is_watched == True
+                    UserRating.is_watched.is_(True)
                 )
                 result = await self.db.execute(stmt)
                 watched_ids = result.scalars().all()

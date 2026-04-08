@@ -2,7 +2,7 @@
 
 > **Role:** Frontend Technical Lead
 > **Domain:** React, Next.js, Styling, Animation, Mobile UX
-> **Last Updated:** 2026-03-03
+> **Last Updated:** 2026-04-07
 
 This file contains all frontend-specific rules, design system specifications, and mobile guidelines for the VectorBox project.
 
@@ -193,6 +193,70 @@ frontend/
 3. **Best Practices:**
    - **Resilience:** All Next.js Server-Side fetch calls MUST wrap an `AbortController` with a strictly enforced timeout (e.g., 10s) to prevent hanging the internal worker threads.
    - **Hygiene:** Strip development `console.log` from interceptors and production error paths.
+
+---
+
+---
+
+## 8. TypeScript Type Safety
+
+> [!WARNING]
+> TypeScript's `any` type is a build-time escape hatch that defeats the entire purpose of type checking. Every `as any` cast is a latent bug waiting to happen.
+
+### Rules — No Type Erasure
+- **Ban:** `(obj as any).field` — casting to `any` to access a field you know exists. **Fix:** add the missing field to the proper interface.
+- **Ban:** `interface Foo { [key: string]: any }` — open index signatures on typed request/response shapes. Every field from the backend schema must be declared explicitly.
+- **Ban:** `setState(x as any as TargetType)` — double-cast assignment. Ensure the source type is correctly shaped.
+
+### Pattern — Keeping Interfaces in Sync with the Backend
+When the backend adds or changes a field on a Pydantic schema, the corresponding TypeScript interface MUST be updated before using the field:
+
+```typescript
+// ❌ Accessing an undeclared field via cast
+const hasData = (verifiedUser as any).has_data;
+
+// ✅ Add the field to the interface
+export interface AuthResponse {
+    token: string;
+    user_id: number;
+    username: string;
+    has_data?: boolean; // ← declared here
+}
+const hasData = verifiedUser.has_data;
+```
+
+### Pattern — Explicit Intent Interfaces
+API request bodies that originate from structured backend schemas must mirror that schema exactly:
+
+```typescript
+// ❌ Open index signature — hides typos, breaks autocomplete
+interface SearchIntent {
+    summary?: string;
+    [key: string]: any;
+}
+
+// ✅ All fields declared explicitly (matches MovieSearchIntent Pydantic model)
+interface SearchIntent {
+    semantic_query: string;
+    reasoning: string;
+    year_min?: number;
+    year_max?: number;
+    include_genres?: string[];
+    popularity_vibe?: "blockbuster" | "hidden_gem" | "any";
+    // ... remaining fields
+}
+```
+
+### Pattern — Dead Fallback Removal
+When the API contract guarantees a field name, remove fallback paths that access the old name via `as any`:
+
+```typescript
+// ❌ Dead fallback — API always returns poster_url, never poster_path
+src={movie.poster_url || getTMDBImageUrl((movie as any).poster_path, "w342")}
+
+// ✅ Use the guaranteed field
+src={movie.poster_url}
+```
 
 ---
 

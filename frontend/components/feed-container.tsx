@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { MovieCarousel } from "./movie-carousel";
+import type { Contributor } from "@/types/feed";
 import { UploadZone } from "@/components/upload-zone";
 import { AcidError } from "@/components/ui/acid-error";
 import { InfoTooltip } from "./info-tooltip";
@@ -16,7 +17,7 @@ interface FeedContainerProps {
     streamingProviders?: number[];
     initialData?: FeedResponse | null; // SSR Prefetched Data
     registeredUsers?: VectorboxUser[];
-    onInspect?: (id: number) => void;
+    onInspect?: (id: number, sectionId?: string, contributors?: Contributor[]) => void;
 }
 
 const SECTION_DESCRIPTIONS: Record<string, string> = {
@@ -32,7 +33,6 @@ const SECTION_DESCRIPTIONS: Record<string, string> = {
 const TITLE_MAP: Record<string, string> = {
     "popular_movies": "sections.popular_letterboxd",
     "hidden_gems": "sections.hidden_gems",
-    "deep_dive": "sections.deep_dive",
     "random_picks": "sections.random_picks",
     "wildcard": "sections.wildcard",
     "available_now": "sections.available_now"

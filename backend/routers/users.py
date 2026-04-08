@@ -8,8 +8,9 @@ from sqlalchemy.exc import IntegrityError
 import logging
 
 from config import get_db
+from dependencies import get_current_user, verify_user_ownership
 from models.database import User
-from models.schemas import UserCreate, UserResponse
+from models.schemas import UserCreate, UserResponse, TokenResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -87,7 +88,8 @@ async def create_user(
 async def list_users(
     skip: int = 0,
     limit: int = 100,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: TokenResponse = Depends(get_current_user)
 ):
     """
     List all users with data status
@@ -123,9 +125,6 @@ async def list_users(
         
     return response
 
-
-from dependencies import verify_user_ownership
-from models.schemas import TokenResponse
 
 @router.patch("/{user_id}/link-letterboxd")
 async def link_letterboxd(
@@ -189,7 +188,8 @@ async def link_letterboxd(
 @router.get("/{username}/activity")
 async def get_user_activity(
     username: str,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: TokenResponse = Depends(get_current_user)
 ):
     """
     Get user's last watched and last rated movies
@@ -207,7 +207,7 @@ async def get_user_activity(
     # Last Watched
     watched_stmt = select(Movie).join(UserRating).where(
         UserRating.user_id == user.id,
-        UserRating.is_watched == True
+        UserRating.is_watched.is_(True)
     ).order_by(UserRating.watched_date.desc()).limit(1)
     
     watched_result = await db.execute(watched_stmt)

@@ -1,11 +1,33 @@
 # PROJECT MASTER GUIDE: VectorBox
 
-> **Role:** Lead Software Architect Handover
-> **Target Audience:** CTO / Senior Developers
-> **Version:** 1.5.0 (Trident v2: LLM Embeddings & Medoids)
-> **Last Updated:** 2026-03-26
+> **Project:** VectorBox (codename: *Trident*)
+> **Version:** `v1.7.2`
+> **Last Updated:** 2026-04-08
+> **Owner:** Lead Architect
+> **Confidentiality:** Proprietary
 
-This document serves as the absolute source of truth for the **VectorBox** (internal codename: *LetterboxRecommender* / *CineMatch*) project. It documents the existing state of the codebase, detailing architecture, algorithms, and logical flows.
+---
+
+## 1. Project Vision
+VectorBox is a high-performance, AI-driven movie recommendation engine. It bridges the gap between Letterboxd's social tracking and professional discovery by using dense vector embeddings, LLM-enriched cinematic descriptions, and a 3-signal "Trident" hybrid engine.
+
+---
+
+## 2. Feature Catalogue
+
+### Core Experience
+- **Personalized Home Feed**: 10 parallel-generated sections including Signal A (Vibe), Signal B (Your Taste Clusters), and Signal C (Hidden Gems).
+- **Magic Box (NL Search)**: Natural language movie search powered by Groq (Scout/70B) with intent parsing and quality-gate-bypass logic.
+- **Letterboxd Sync**: Automatic RSS-based synchronization of watched history, ratings, and likes.
+- **RightConsole**: simplified side-panel focused on global filters, data inspection, and profile management (manual cluster selection removed in v1.7).
+
+### Smart Discovery (Trident v2)
+- **Signal A (Vibe)**: Item-Item Collaborative Filtering via embeddings.
+- **Signal B (Your Taste)**: K-Medoids cluster analysis (e.g., "A24 Dread", "Neon-Noir Revenge") with **Automated Cluster Rotation** via Redis counters.
+- **Signal C (Hidden Gems)**: **DB-first quality discovery** for high-quality niche films followed by vector-weighted similarity re-ranking.
+- **Movie Rejection**: Support for "Not interested" movies to prune the recommendation engine. Uses **anti-vector penalties** to actively avoid disliked 1-2★ films.
+- **user_clusters**: K-Medoid assignments and LLM-generated labels.
+- **trending**: 24h rolling cached trending snapshots.
 
 ---
 
@@ -82,8 +104,8 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 - **Vector DB:** **Qdrant** (Latest Docker Image). Stores 384-dimensional dense vectors for semantic search.
   - **Optimization:** Payload Indexes on `genres`, `year`, and `score` for fast filtering.
 - **Cache:** **Redis 7-alpine**. Used for:
-  - Caching the entire Master Feed JSON response (`FeedResponse`) for 1 hour.
-  - **Cache Guard:** Feeds with < 3 sections are NEVER cached (prevents poisoning from cold starts).
+  - **Per-Section TTL Caching**: The Feed JSON response is not cached as a monolith, but broken down by section (e.g. `section:v2:user_id:popular_letterboxd`) with independent TTLs ranging from 0 to 24h for optimal granularity.
+  - **Cache Guard**: Feeds with < 3 sections are NEVER cached (prevents poisoning from cold starts).
   - Caching TMDB/Provider API responses (`provider_service`, `tmdb_client`).
   - Session/Rate limiting.
 
@@ -120,19 +142,19 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
 ## 2. Feature Catalogue (The "What")
 
 ### A. The Feed (Home Page)
-The feed is composed of multiple "Sections", generated largely in parallel by `FeedService` using **Batch Fetching** to eliminate N+1 queries. It runs **11 parallel tasks**.
+The feed is composed of multiple "Sections", generated largely in parallel by `FeedService` using **Batch Fetching** to eliminate N+1 queries. It runs **10 parallel tasks**.
 
 | Section | Logic / Source |
 | :--- | :--- |
 | **Available Now** | **Priority Row.** Fetches user's *unwatched* Watchlist items that are currently streaming on their active providers (Netflix, etc.). |
 | **Popular on Letterboxd** | Fetches trending movies from TMDB/Letterboxd (cached via `ThreadingService`). |
-| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks a highly-rated or liked movie from user history (with 180-day recency bias), generates an *LLM-enriched* content vector (ignoring title), and finds similar vectors in Qdrant. Re-ranked via MMR and penalized by an anti-vector of low-rated films. Deduplicated into a single `_item_to_search()` helper. |
+| **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks the best anchor from up to 100 candidates (Python scoring: rating × recency decay × rewatch boost), generates an *LLM-enriched* content vector, and finds similar vectors in Qdrant. Coherence threshold: 0.25. Quality floor: `vectorbox_score >= 55`. Re-ranked via MMR. Contributors carry `{type: "anchor", seed_title, seed_year, seed_rating, similarity}`. |
 | **Cult Actors (Auteur 2.0)** | **Cast CF.** Finds cult actors by weighting the top 3 actors of highly rated movies and boosting those thresholding >= 2.5 points. |
-| **Your Taste ([Cluster])** | **Medoid Search.** Picks one of the user's "Taste Clusters" (e.g., dynamically labeled by Groq as "A24 Dread" or "80s Sci-Fi"), uses the actual **medoid movie vector** (instead of an abstract mathematical centroid), penalizes similarity against the anti-vector of hated films, and searches Qdrant. Re-ranked via MMR. |
-| **Hidden Gems** | **Score-to-Hype Filtering (v1.2).** Searches Qdrant near user's centroid with dynamic thresholds based on user's movie count: Cold start (<30): `score > 60, popularity < 40, votes > 200`; Growing (30–99): `score > 65, popularity < 30, votes > 300`; Rich (100+): `score > 75, popularity < 20, votes > 500`. Includes a 15% Exoticism Boost for non-English/US films before MMR re-ranking. |
-| **Deep Dive** | **Pure Item-Based.** Uses the weighted "Super Seed" logic to find movies similar to user's favorites. Runs fully in PARALLEL. Employs a **Trust Bucket**: filters out films with <5000 votes unless `similarity >= 0.85`. |
-| **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. Also serves as a Cold-Start Fallback (using `Movie.genres.overlap()`) if Signal A or B fail to populate. |
-| **Random Picks** | Random selection from top 500 "VectorBox Scored" movies in DB. |
+| **Your Taste ([Cluster])** | **Cluster Rotation.** Automatically cycles through user's taste clusters on every feed fetch using a Redis counter. Quality floor: `vectorbox_score >= 55`. Genre coherence (EXCLUSION_PAIRS) applied here only — NOT in Picked For You. Contributors carry `{type: "cluster", cluster_name, medoid_title, similarity}`. |
+| **Hidden Gems** | **DB-First Discovery.** Identifies high-quality, low-popularity films directly from Postgres using dynamic thresholds. Re-ranked using **30% Vector Similarity** weight to maintain user-centricity without "similarity wash". |
+
+| **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres don't overlap with the user's dominant clusters. Filter pushed to DB via `~genres.overlap() + func.random() LIMIT 50`. |
+| **Random Picks** | DB-random selection via `func.random() LIMIT 30` from VectorBox-scored unwatched movies. |
 
 ### B. The "Magic Box" (NLP Search)
 A natural language search interface powered by `nlp_search.py` with a 3-Tier Cascading Fallback Architecture.
@@ -174,7 +196,7 @@ A natural language search interface powered by `nlp_search.py` with a 3-Tier Cas
 VectorBox generates recommendations using three distinct engines fused via **Reciprocal Rank Fusion (RRF)**:
 1.  **Signal A: Vector (Vibe):** Qdrant search using dense embeddings mapped from LLM-enriched cinematic descriptions (Tone, Pacing, Style). Captures "Vibe" and plot similarity better than legacy genres/keywords mapping. Seeds from movies rated 4+ stars **or** explicitly liked (`is_liked`). Now features **anti-vector penalties** (pulls away from disliked 1-2★ films).
 2.  **Signal Auteur (Directors & Cast):** Boosts movies by directors (`get_signal_b_auteur`) and cult actors (`get_cult_actor_section`) the user loves, evaluating past 4-5★ ratings. Employs a **weighted point system** rather than strict counts.
-3.  **Signal C: Hidden Gems:** Score-to-Hype ratio filtering. Adds a 15% Exoticism Boost for foreign films and evaluates dynamic thresholds based on profile size.
+3.  **Signal C: Hidden Gems:** **DB-First Discovery** (Postgres quality/popularity filters) followed by **30% vector similarity** re-ranking to maintain user discovery focus. Works with dynamic thresholds based on profile user profile size.
 
 ### The Scoring Formula
 Every recommendation gets a final score (0-100%) derived from:
@@ -196,8 +218,8 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Interpretability:** Stores `medoid_movie_id` representing the real film anchoring the cluster, leading to vastly improved semantic stability over abstract mathematical centroids.
 - **Labels:** Cluster labels are dynamically generated by Groq (2-4 words, e.g., "Neon-noir Revenge") combining the medoid title and dominant genres.
 - **Vectors:** `all-MiniLM-L6-v2` (384d).
-- **Weights:** Movies rated 4+ stars get `1.0` weight. 2-3.5 stars get `0.5`. Others `0.1`.
-- **Recency Bias:** Older ratings decay in weight if `use_recency_bias=True`.
+- **Weights:** Movies rated 4.5+ get `1.0` weight, 4.0 get `0.85`, 3.5 get `0.65`, 3.0 get `0.35`, and <=2.5 get `0.15` / `0.05`.
+- **Recency Bias:** Older ratings gently decay in weight spanning a **730-day half-life** with a hard minimum floor of `0.6`.
 - **Optimal Clusters:** `min(5, max(2, total_movies // 20))`. Dynamic based on history size.
 
 ---
@@ -219,13 +241,18 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
   - `seen_ids` set (feed deduplication) MUST use `tmdb_id`.
   - `watched_ids` set MUST use `internal_id`.
 - **`movies` table:** Stores `vectorbox_score`, extensive ratings (IMDb, Metacritic, TMDB), and localized `overview_es`. Tracks LLM enrichment status via `has_enriched_embedding` and `enriched_by_model`.
-- **`user_ratings` table:** Links Users to Movies. Contains `is_watched`, `is_watchlist`, `rating`, `watched_date`. `movie_id` is an FK to `Movie.id` (internal).
+- **`user_ratings` table:** Links Users to Movies. Contains `is_watched`, `is_watchlist`, `is_liked`, `rating`, `watched_date`, `watch_count` (INTEGER DEFAULT 1). `movie_id` is an FK to `Movie.id` (internal). `watch_count` is incremented via `diary.csv` entries during ZIP import and on rewatch detection during RSS sync.
 - **`user_clusters` table:** Stores the computed K-Medoid assignments, `medoid_movie_id`, and Groq-generated labels for each user.
 
-### Caching Strategy
-- **Redis (Master Feed Cache):** Caches the completely assembled Main Feed JSON response for 1 hour per user/region to provide sub-100ms load times.
+### Memory & Cache Logic
+
+1. **Redis (Query Cache)**: 1-hour TTL on feed sections. Caches for < 3 sections are rejected (Cache Guard).
+2. **Redis (Profile Cache)**: Caches the natural language profile summary generated by Groq to avoid per-feed LLM latency. Wiped on RSS sync.
+3. **Signal Cache Hash**: Signal cache keys use deterministic MD5 hashing of arguments to prevent multi-KB keys from large `exclude_ids` arrays.
+4. **Cluster Rotation**: Redis persists the current cluster index for each user, rotating through their K-Medoid clusters on every feed fetch.
+5. **Qdrant (Vectors)**: 384-dimensional dense vectors with payload indexes for scores, popularity, and genres.
 - **ProviderService:** Caches availability (Netflix/Prime) to avoid hitting TMDB API limit.
-- **Invalidation:** `reset_profiles.py` and `ClusteringService` have logic to wipe cache keys when user data changes significantly.
+- **Invalidation:** `_invalidate_feed_cache()` sweeps BOTH `section:{FEED_CACHE_VERSION}:{user_id}:*` and `signal_cache:{user_id}:*` keys after RSS sync, so stale 24h Trident signal caches don't persist after new data. `reset_profiles.py` and `ClusteringService` also wipe cache keys when user data changes significantly.
 
 ---
 
@@ -345,5 +372,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-03-26 (Trident v2 / Groq Embedded)
+**Last Updated:** 2026-04-08 (v1.7.2 / Optimization sprint: Redis caching fix, signal cache invalidation, anti-vector pre-compute, DB-level wildcard/random, TrendingService close, hidden gems MMR dedup, scoring utility, dead code removal)
 **Maintained By:** VectorBox Team

@@ -1,8 +1,8 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.5.0 (Trident v2: LLM Embeddings & Medoids)
-> **Last Updated:** 2026-03-26
+> **Version:** 1.7.2 (Optimization Sprint)
+> **Last Updated:** 2026-04-08
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
@@ -320,18 +320,18 @@ Log in and navigate to the Feed. Verify all sections are rendered:
 | Cult Actors (Auteur 2.0) | ☐ |
 | Your Taste [Cluster] (e.g. "A24 Dread") | ☐ |
 | Hidden Gems | ☐ |
-| Deep Dive | ☐ |
 | Comfort Zone / Wildcard | ☐ |
+
 | Random Picks | ☐ |
 
 ### Step 5.2: Hidden Gems Audit
 Click any 3 movies from the "Hidden Gems" row and verify:
 
-> **Note:** Thresholds are now **dynamic** based on user's movie count. The table below shows defaults for a **rich profile (100+ movies)**. Cold start profiles (<30 movies) use more permissive thresholds (`score > 60`, `popularity < 40`, `votes > 200`).
+> **Note:** Signal C now uses **DB-first discovery**. It queries the database for high-quality, low-popularity films before applying vector-weighted re-ranking. Thresholds are **dynamic** based on user history size.
 
 | Metric | Required (Rich Profile) | Movie 1 | Movie 2 | Movie 3 |
 |:-------|:---------|:-------:|:-------:|:-------:|
-| VectorBox Score | > 75 | ☐ | ☐ | ☐ |
+| VectorBox Score | > 70 | ☐ | ☐ | ☐ |
 | Vote Count | 500–25,000 | ☐ | ☐ | ☐ |
 | TMDB Popularity | < 20 | ☐ | ☐ | ☐ |
 
@@ -344,7 +344,7 @@ Click any movie → "Why Recommended".
 |:------|:---------|:-----:|
 | Signal A (Vector) | Shows similarity to watched movies | ☐ |
 | Signal Auteur | Shows director or cult actor match (if applicable) | ☐ |
-| Signal C (Crowd) | Shows crowd/popularity signal | ☐ |
+| Signal C (Hidden Gems) | Shows hidden gem discovery signal | ☐ |
 | Medoid Stability | For "Your Taste" cluster lists, verify the header uses a human-readable 2-4 word LLM label (e.g. "Neon-noir Revenge") rather than abstract math parameters | ☐ |
 
 ### Step 5.4: Magic Box NLP Query
@@ -412,7 +412,7 @@ docker-compose run --rm backend python scripts/test_es_whitelist.py
 | Output | `✅ WHITELIST FILTER SUCCESS` is printed | ☐ |
 
 ### Step 5.8: Feed Parallelism Verification (Automated)
-Verify that the 11 feed tasks execute concurrently via `asyncio.gather`.
+Verify that the 10 feed tasks execute concurrently via `asyncio.gather`.
 
 ```powershell
 docker-compose exec backend python scripts/verify_feed_parallelism.py
@@ -422,7 +422,7 @@ docker-compose exec backend python scripts/verify_feed_parallelism.py
 |:------|:---------|:-----:|
 | Execution | Script runs without errors | ☐ |
 | Concurrency | `✅ FEED PARALLELISM VERIFIED` — total time < 0.4s | ☐ |
-| Session Isolation | 11 unique sessions (no sharing) | ☐ |
+| Session Isolation | 10 unique sessions (no sharing) confirmed | ☐ |
 
 ### Step 5.9: IDOR Automated Security Test
 Verify `/hidden-gems` endpoint rejects unauthenticated and forged requests.
@@ -455,6 +455,19 @@ docker-compose exec backend python scripts/test_trident_math.py
 2. Trigger "Sync Letterboxd Now" from Settings.
 3. Verify backend logs show successful XML parsing and NO 422 Unprocessable Entity errors.
 4. Verify new movies appear in Watchlist/Feed.
+
+### Step 5.12: Cluster Rotation Logic
+1. Log in as `qa_vecbox`. Note the title of the "Your Taste" section (e.g., "Neo-Noir").
+2. Clear Redis cache: `docker-compose exec redis redis-cli FLUSHALL`.
+3. Refresh the page.
+4. Verify the "Your Taste" section has rotated to a DIFFERENT cluster name (e.g., "80s Cyberpunk").
+
+### Step 5.13: Movie Rejection (Anti-Vector)
+1. Find a movie in your feed you don't like.
+2. Click "Not Interested" (Rejection icon).
+3. Verify the movie disappears immediately.
+4. Refresh the page and verify it does NOT reappear in ANY Trident section (Vector, Taste, or Discovery).
+5. Verify `user_ratings` table has `is_rejected = true` for that movie.
 
 ---
 
@@ -815,4 +828,4 @@ Complete this scorecard only after all phases above pass.
 **Date:** _______________________
 
 ---
-*End of QA Testing Protocol — VectorBox v1.4*
+*End of QA Testing Protocol — VectorBox v1.7.2*

@@ -7,7 +7,8 @@ import asyncio
 from difflib import SequenceMatcher
 
 from config import get_db
-from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service
+from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user
+from models.schemas import TokenResponse
 from services.nlp_search import parse_user_intent, search_with_reasoning
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
@@ -15,13 +16,13 @@ from services.tmdb_client import TMDBClient
 from services.provider_service import ProviderService
 from models.database import UserRating, Movie
 from sqlalchemy import select, or_
+from utils.scoring import normalize_similarity_score
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 class SearchRequest(BaseModel):
     query: str
-    user_id: int
     use_deep_analysis: Optional[bool] = False
     country_code: Optional[str] = "ES"
 
@@ -54,15 +55,7 @@ async def _item_to_item_search(
     results = []
     for r in raw_results:
         metadata = r.get("metadata", {})
-        # Normalized scoring (same formula as Tier 1 semantic search)
-        min_sim, max_sim = 0.2, 0.7
-        raw_score = r["score"]
-        if raw_score > max_sim:
-            final_score = min(99, 90 + ((raw_score - max_sim) * 100))
-        else:
-            normalized = max(0.0, min(1.0,
-                (raw_score - min_sim) / (max_sim - min_sim)))
-            final_score = 60 + (normalized * 30)
+        final_score = normalize_similarity_score(r["score"])
         results.append({
             "movie_id": metadata.get("tmdb_id") or r["movie_id"],
             "title": metadata.get("title", "Unknown"),
@@ -90,7 +83,8 @@ from limiter import limiter
 @limiter.limit("5/minute")
 async def natural_language_search(
     request: Request, # Request object is required for slowapi
-    search_req: SearchRequest, # Renamed to avoid conflict
+    search_req: SearchRequest,
+    current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
@@ -169,12 +163,16 @@ async def natural_language_search(
                     return result
         
         # 2. Generate Embedding for the EXPANDED semantic query
-        query_vector = embedding_service.generate_embedding({
-            "title": intent.semantic_query,
-            "overview": intent.semantic_query,
-            "genres": intent.include_genres or [],
-            "keywords": []
-        }).tolist()
+        loop = asyncio.get_event_loop()
+        query_vector = await loop.run_in_executor(
+            None,
+            lambda: embedding_service.generate_embedding({
+                "title": intent.semantic_query,
+                "overview": intent.semantic_query,
+                "genres": intent.include_genres or [],
+                "keywords": []
+            }).tolist()
+        )
         
         # 3. Construct Advanced Qdrant Filters
         qdrant_filters = {}
@@ -208,7 +206,7 @@ async def natural_language_search(
         result = await db.execute(
             select(Movie.tmdb_id)
             .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(UserRating.user_id == search_req.user_id)
+            .where(UserRating.user_id == current_user.user_id)
             .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
         )
         watched_tmdb_ids = [row[0] for row in result.all() if row[0] is not None]
@@ -277,18 +275,7 @@ async def natural_language_search(
                     if not metadata.get("overview"):
                         metadata["overview"] = details.get("overview", "")
 
-            # Normalize score
-            min_sim = 0.2
-            max_sim = 0.7
-            raw_score = r["score"]
-            
-            if raw_score > max_sim:
-                final_score = 90 + ((raw_score - max_sim) * 100)
-                final_score = min(99, final_score)
-            else:
-                normalized = (raw_score - min_sim) / (max_sim - min_sim)
-                normalized = max(0.0, min(1.0, normalized))
-                final_score = 60 + (normalized * 30)
+            final_score = normalize_similarity_score(r["score"])
 
             # Title Match Boost (Weighted Average)
             # If query is very similar to title, blend the scores
@@ -350,8 +337,6 @@ async def natural_language_search(
                 result_ids, search_req.country_code or "ES"
             )
             
-            es_whitelist = {"Netflix", "Amazon Prime Video", "HBO Max", "Disney+", "Apple TV", "Movistar+", "Filmin"}
-            
             # Attach to results
             for r in results:
                 mid = r["movie_id"]
@@ -411,7 +396,8 @@ async def search_movies(
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
-    embedding_service: EmbeddingService = Depends(get_embedding_service)
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+    current_user: TokenResponse = Depends(get_current_user)
 ):
     """
     Hybrid search:
@@ -422,12 +408,16 @@ async def search_movies(
     try:
         
         # 1. Generate query vector
-        query_vector = embedding_service.generate_embedding({
-            "title": query,
-            "overview": "",
-            "genres": [],
-            "keywords": []
-        }).tolist()
+        loop = asyncio.get_event_loop()
+        query_vector = await loop.run_in_executor(
+            None,
+            lambda: embedding_service.generate_embedding({
+                "title": query,
+                "overview": "",
+                "genres": [],
+                "keywords": []
+            }).tolist()
+        )
         
         # 2. Search Qdrant (Local)
         local_results = await qdrant.search_similar(
@@ -527,12 +517,16 @@ async def search_movies(
                             genres = [g["name"] for g in details.get("genres", [])]
                         
                             # Generate embedding
-                            vector = embedding_service.generate_embedding({
-                                "title": title,
-                                "overview": overview,
-                                "genres": genres,
-                                "keywords": keywords
-                            }).tolist()
+                            loop = asyncio.get_event_loop()
+                            vector = await loop.run_in_executor(
+                                None,
+                                lambda: embedding_service.generate_embedding({
+                                    "title": title,
+                                    "overview": overview,
+                                    "genres": genres,
+                                    "keywords": keywords
+                                }).tolist()
+                            )
                             
                             # Prepare metadata for Qdrant
                             payload = {

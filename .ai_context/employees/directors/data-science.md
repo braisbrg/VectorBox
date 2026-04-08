@@ -2,7 +2,7 @@
 
 > **Role:** Data Science & ML Lead
 > **Domain:** Recommendation Algorithms, Vector Search, Scoring Math
-> **Last Updated:** 2026-03-26
+> **Last Updated:** 2026-04-07
 
 This file contains all data science logic, mathematical formulas, and Qdrant configuration for the VectorBox recommendation engine.
 
@@ -37,7 +37,8 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 - **Purpose:** Captures plot similarity, thematic "vibe", tone, and genre alignment
 - **Model:** `all-MiniLM-L6-v2` via Sentence-Transformers, applied to an **LLM-enriched cinematic description** (generated via Groq: Scout -> 70B -> 8B fallback).
 - **Seeding:** Movies rated 4+ stars **OR** explicitly liked (`is_liked`), combined with recency bias (180-day decay)
-- **Anti-Vector:** Applies a cosine penalty pulling away from despised/1-star genres and themes (x0.3 or x0.6 multipliers)
+- **Anti-Vector:** Applies a cosine penalty pulling away from despised/1-star genres and themes. Signal is derived from movies rated <= 2 stars **AND** explicitly rejected movies (`is_rejected`).
+- **Cluster Rotation:** Signal B (Your Taste) now rotates through the user's K-Medoid clusters on each feed refresh to prevent staleness.
 
 ### Signal Auteur (Directors & Cast)
 - **Source:** User's high-rated history
@@ -46,8 +47,8 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 - **Note:** Renamed from "Signal B" in `recommendation_service.py` logs to avoid collision with Signal B (K-Means centroid) in `recommendation_engine.py`.
 
 ### Signal C: Hidden Gems
-- **Source:** Score-to-Hype ratio filtering
-- **Purpose:** Identifies critically acclaimed but underexposed films
+- **Source:** **DB-First Discovery** (PostgreSQL)
+- **Purpose:** Identifies critically acclaimed but underexposed films before applying user-centric vector weighting.
 - **Logic:** Uses **dynamic thresholds** based on user's movie count:
 
 | Profile | Movies | Min Score | Max Popularity | Min Votes |
@@ -56,7 +57,9 @@ VectorBox generates recommendations using **three distinct engines** fused via R
 | Growing | 30–99 | 65 | 30 | 300 |
 | Rich | 100+ | 75 | 20 | 500 |
 
-- **Deep Dive**: Now runs fully in PARALLEL with other signals for peak performance.
+- **Weighting:** Final ranking applies a **30% Vector Similarity weight** to the quality score to ensure "Hidden Gems" remain within the user's broader interest sphere without sacrificing discovery.
+- **Implementation:** `get_hidden_gems_section()` in `recommendation_engine.py` (v1.7 fix).
+
 - **Implementation:** `_get_signal_c_thresholds()` in `recommendation_engine.py`
 
 ### Observability Logs (The `[TRIDENT]` Prefix)
@@ -182,13 +185,23 @@ def mmr_score(relevance: float, max_similarity_to_selected: float, lambda_: floa
 ### Rating Weights
 | User Rating | Weight | Interpretation |
 | :---: | :---: | :--- |
-| 4-5 stars | 1.0 | Full influence |
-| 2-3.5 stars | 0.5 | Reduced influence |
-| < 2 stars | 0.1 | Minimal (negative signal) |
+| 4.5–5 stars | 1.0 | Full influence |
+| 4.0 stars | 0.85 | High influence |
+| 3.5 stars | 0.65 | Moderate influence |
+| 3.0 stars | 0.35 | Low influence |
+| ≤ 2.5 stars | 0.15 / 0.05 | Minimal (negative signal) |
+
+### Rewatch Multiplier (watch_count)
+Applied on top of the rating weight `w`:
+- `watch_count >= 3` → `w = min(w * 1.5, 1.0)`
+- `watch_count == 2` → `w = min(w * 1.2, 1.0)`
+- `watch_count == 1` → no change (default)
+
+Source: `UserRating.watch_count` populated by diary.csv entries during ZIP import.
 
 ### Recency Bias
 When `use_recency_bias=True`:
-- Recent ratings get higher influence
+- Recent ratings get higher influence via 730-day half-life decay
 - Older ratings decay exponentially
 - Purpose: Capture evolving taste
 
@@ -243,10 +256,10 @@ docker-compose exec backend python scripts/create_qdrant_indexes.py
 
 | Section | Algorithm | Key Parameters |
 | :--- | :--- | :--- |
-| **Because you watched [X]** | Item-Item CF | Content-only vector (LLM-enriched description) |
-| **Your Taste ([Cluster])** | Medoid Search | User's taste cluster actual movie medoid |
+| **Because you watched [X]** | Item-Item CF | Anchor pool: 100 candidates, score_threshold=0.25, vectorbox_score≥55. Contributors: `{type:"anchor", seed_title, seed_year, seed_rating, similarity}`. |
+| **Your Taste ([Cluster])** | Medoid Search | User's taste cluster actual movie medoid. vectorbox_score≥55. EXCLUSION_PAIRS genre filter here only. Contributors: `{type:"cluster", cluster_name, medoid_title, similarity}`. |
+| **Picked For You** | Trident RRF | Signal A (vibe) + Auteur + Signal C fused. No EXCLUSION_PAIRS. Contributors: normalized % per signal summing to 100%. |
 | **Hidden Gems** | Score-to-Hype Filter | Dynamic: Cold `60/40/200`, Growing `65/30/300`, Rich `75/20/500` |
-| **Deep Dive** | Super Seed | Weighted favorites (fully parallelized) |
 | **Comfort Zone** | Anti-Recommendation | Non-overlapping genres |
 
 ---

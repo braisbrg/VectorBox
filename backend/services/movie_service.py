@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -106,12 +107,16 @@ class MovieService:
             logger.warning(f"Vector missing for {movie.title} ({movie.tmdb_id}). Regenerating...")
             
             keywords = await self.tmdb.get_movie_keywords(movie.tmdb_id)
-            vector = self.embedding_service.generate_embedding({
-                "title": movie.title,
-                "overview": movie.overview,
-                "genres": movie.genres,
-                "keywords": keywords
-            })
+            loop = asyncio.get_event_loop()
+            vector = await loop.run_in_executor(
+                None,
+                lambda: self.embedding_service.generate_embedding({
+                    "title": movie.title,
+                    "overview": movie.overview,
+                    "genres": movie.genres,
+                    "keywords": keywords
+                })
+            )
 
             await self.qdrant.upsert_movie_vector(
                 movie_id=movie.tmdb_id,
@@ -207,12 +212,16 @@ class MovieService:
                     logger.error(f"DB commit failed enriching movie: {e}")
                     raise
 
-                vector = self.embedding_service.generate_embedding({
-                    "title": movie.title,
-                    "overview": movie.overview,
-                    "genres": movie.genres,
-                    "keywords": movie.keywords or[]
-                })
+                loop = asyncio.get_event_loop()
+                vector = await loop.run_in_executor(
+                    None,
+                    lambda: self.embedding_service.generate_embedding({
+                        "title": movie.title,
+                        "overview": movie.overview,
+                        "genres": movie.genres,
+                        "keywords": movie.keywords or []
+                    })
+                )
 
                 if not skip_qdrant:
                     from models.external_schemas import QdrantPayload

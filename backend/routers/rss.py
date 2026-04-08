@@ -6,11 +6,14 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import User, Movie, UserRating
+from models.schemas import TokenResponse
 from services.movie_service import MovieService
 from services.rss_service import RSSService
 from services.scraper_service import ScraperService
 from services.tmdb_client import TMDBClient
+from services.qdrant_service import QdrantService
 from config import get_db
+from dependencies import get_tmdb_client, get_current_user, get_qdrant_service
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,40 +32,49 @@ class GroupVibeRequest(BaseModel):
     usernames: List[str]
 
 async def _invalidate_feed_cache(user_id: int) -> None:
-    """Imp 10: Delete all cached feed keys for this user after RSS sync."""
+    """Delete all cached feed keys for this user after RSS sync or upload."""
     try:
         import redis.asyncio as aioredis
         import os
-        
+
         redis_url = os.environ.get("REDIS_URL", "redis://redis:6379")
-        r = aioredis.from_url(redis_url)
+        r = aioredis.from_url(redis_url, decode_responses=True)
         try:
-            cursor = 0
+            from services.feed_service import FEED_CACHE_VERSION
             deleted_count = 0
-            while True:
-                cursor, keys = await r.scan(cursor, match=f"feed:*:{user_id}:*", count=100)
-                if keys:
-                    await r.delete(*keys)
-                    deleted_count += len(keys)
-                if cursor == 0:
-                    break
+            # Sweep all key patterns that encode user-specific feed state
+            patterns = [
+                f"section:{FEED_CACHE_VERSION}:{user_id}:*",
+                f"signal_cache:{user_id}:*",
+            ]
+            for pattern in patterns:
+                cursor = 0
+                while True:
+                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
+                    if keys:
+                        await r.delete(*keys)
+                        deleted_count += len(keys)
+                    if cursor == 0:
+                        break
+            # Delete cluster rotation counter
+            await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
+
             if deleted_count:
-                logger.info(f"Invalidated {deleted_count} feed cache keys for user_id={user_id}")
+                logger.info(f"Invalidated {deleted_count} feed/signal cache keys and rotation for user_id={user_id}")
         finally:
-            await r.aclose()
+            await r.close()
     except Exception as e:
         logger.error(f"Feed cache invalidation failed for user_id={user_id}: {e}")
 
-async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
+async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDBClient) -> None:
     """Background task — owns its own session. Never re-raises."""
     from config import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         try:
-            rss_service = RSSService(db)
+            rss_service = RSSService(db, tmdb=tmdb)
             await rss_service.sync_user_rss(letterboxd_profile, user_id)
 
             scraper = ScraperService()
-            tmdb = TMDBClient()
             movie_service = MovieService(db)
             watchlist_added = 0
 
@@ -73,7 +85,8 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
                     film_slug = item["film_slug"]
                     film_year = item.get("year")
 
-                    tmdb_id = await scraper.get_tmdb_id(film_slug)
+                    page_tmdb_id = await scraper.get_tmdb_id(film_slug)
+                    tmdb_id = page_tmdb_id
                     if tmdb_id:
                         logger.info(f"Found authoritative TMDB ID {tmdb_id} for {film_slug}")
                     else:
@@ -98,9 +111,8 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
                     if not movie:
                         continue
 
-                    # Year check only for fuzzy matches
-                    scraped_id = await scraper.get_tmdb_id(film_slug)
-                    if not scraped_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
+                    # Year check only for fuzzy matches — reuse page_tmdb_id from first call, no second HTTP request
+                    if not page_tmdb_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
                         logger.warning(f"Year mismatch for {film_slug}: {film_year} vs {movie.year}. Skipping.")
                         continue
 
@@ -119,12 +131,17 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
 
             finally:
                 await scraper.close()
-                await tmdb.aclose()
+                # tmdb is the injected singleton — never close it
 
             await db.commit()
             
             # Imp 10: Invalidate feed cache after sync completes
             await _invalidate_feed_cache(user_id)
+            
+            # Invalidate profile summary cache for LLM regeneration
+            from services.profile_cache import invalidate_profile_summary
+            from config import REDIS_URL
+            await invalidate_profile_summary(user_id, REDIS_URL)
             
             logger.info(f"Background sync complete for user_id={user_id}. Watchlist added: {watchlist_added}")
 
@@ -136,7 +153,9 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str) -> None:
 async def sync_user_data(
     username: str,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    current_user: TokenResponse = Depends(get_current_user)
 ):
     stmt = select(User).where(User.username == username)
     result = await db.execute(stmt)
@@ -145,8 +164,11 @@ async def sync_user_data(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if user.id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="Cannot sync another user's account")
+
     letterboxd_profile = user.letterboxd_username or username
-    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile)
+    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb)
 
     return {
         "status": "started",
@@ -157,12 +179,15 @@ async def sync_user_data(
 @router.post("/group/vibe")
 async def get_group_recommendations(
     request: GroupVibeRequest,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    current_user: TokenResponse = Depends(get_current_user)
 ):
     """
     Get recommendations based on the 'Group Vibe' (centroid of multiple users).
     """
-    rss_service = RSSService(db)
+    rss_service = RSSService(db, tmdb=tmdb, qdrant=qdrant)
     
     # Get Hybrid Recommendations
     scored_results = await rss_service.get_group_recommendations_hybrid(request.usernames)

@@ -1,6 +1,19 @@
-# VectorBox ![version](https://img.shields.io/badge/version-v1.5.0-blue) ![Next.js](https://img.shields.io/badge/Next.js-16.1.6-black?logo=next.js) ![FastAPI](https://img.shields.io/badge/FastAPI-0.122.0-009688?logo=fastapi) ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-336791?logo=postgresql) ![Qdrant](https://img.shields.io/badge/Qdrant-vector--db-red) ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis) ![Docker](https://img.shields.io/badge/Docker-compose-2496ED?logo=docker) ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python) ![TypeScript](https://img.shields.io/badge/TypeScript-5.9.3-3178C6?logo=typescript)
+# VectorBox (Trident Engine)
 
-> Letterboxd-connected film recommendation engine powered by vector similarity, director-lineage analysis, and crowd signal fusion.
+![Version](https://img.shields.io/badge/version-v1.7.2-acidgreen?style=flat-square)
+![Last Updated](https://img.shields.io/badge/last_updated-2026--04--08-orange?style=flat-square)
+
+VectorBox is a premium movie recommendation engine designed to bridge the gap between social tracking (Letterboxd) and AI-driven cinematic discovery. 
+
+Powered by the **Trident Hybrid Engine**, it fuses dense vector embeddings, LLM-enriched plot analysis, and dynamic collaborative filtering into a seamless, high-performance feed.
+
+### ✨ Key Features
+- **Trident Signal Fusion**: Vector (Vibe), Auteur (Director), and Discovery (Signal C).
+- **Automated Cluster Rotation**: K-Medoids rows that automatically cycle through user tastes (e.g. "A24 Dread" to "80s Cyberpunk").
+- **Discovery (Hidden Gems)**: **DB-first discovery** logic tailored to profile richness, followed by vector-weighted similarity re-ranking.
+- **Magic Box**: Natural language search with intent parsing (Groq/Llama-4).
+- **Movie Rejection**: Native support for "Not interested" movies with active **anti-vector penalties**.
+- **Letterboxd Integration**: Sync your history and ratings via RSS automatically.
 
 ---
 
@@ -14,7 +27,7 @@ VectorBox ingests a user's Letterboxd history (CSV export, RSS feed, or scraper)
 |--------|------|-----------|
 | A | Vibe / Vector | `sentence-transformers` embeddings on LLM-enriched cinematic descriptions via Groq |
 | B | Your Taste / Medoids | K-Medoids semantic clustering of vectors, mapped to actual films + Groq dynamic labels |
-| C | Crowd / TMDB | Popularity, vote average, and trending data from TMDB API |
+| C | Hidden Gems (DB-First Discovery) | High-quality niche films discovered via dynamic Postgres thresholds (quality/popularity), re-ranked with 30% vector similarity weight |
 | Auteur | Directors & Cast | In-memory director/actor frequency weighting (`Counter` over `movie.directors` / `movie.cast`) |
 
 Scores from all signals are fused with RRF, then re-ranked through a Sigmoid quality function that discounts low-vote-count outliers.
@@ -153,13 +166,20 @@ Redis is internal-only (no host port).
 
 ### Feed Engine
 
-The home feed is composed of eight parallel sections, each powered by a distinct retrieval strategy:
+The home feed is composed of **ten parallel sections**, each powered by a distinct retrieval strategy:
 
 | Section | Strategy |
 |---------|----------|
-- **Available Now**: Filter by user's streaming services + RRF ranked
-- **Cache Guard**: Smart Redis caching that rejects feeds with < 3 sections.
-- **Internationalization**: Full i18n support for **English** and **Spanish** via `next-intl` message files in `frontend/messages/`.
+| **Because You Watched [X]** | Item-Item CF anchored to best-scored watched film (rating × recency × rewatch boost). Coherence threshold 0.25, quality floor 55. |
+| **Your Taste ([Cluster])** | K-Medoids cluster rotation via Redis counter. Quality floor 55, genre coherence (EXCLUSION_PAIRS) applied here only. |
+| **Picked For You** | Trident RRF fusion of Vibe + Auteur + Hidden Gems signals. No genre exclusion filter. Contributors show normalized signal breakdown. |
+| **Available Now** | Unwatched watchlist items currently streaming on user's active providers. |
+| **Hidden Gems** | DB-first discovery with dynamic quality/popularity thresholds. 30% vector similarity re-ranking. |
+| **Popular on Letterboxd** | Trending titles cached from Letterboxd via `popular_scraper.py`. |
+| **Auteur / Cult Actor** | Boost by directors and actors from user's high-rated history. |
+
+- **Per-Section Cache**: Smart discrete TTLs for each section; cache guard rejects feeds with < 3 sections.
+- **Cluster Rotation**: Automated cycling of user taste clusters on every refresh.
 
 ### 🔍 Magic Box NLP Search
 
@@ -398,8 +418,6 @@ VectorBox/
 │   └── Dockerfile
 ├── tests/
 │   └── archive/                # Legacy python test archive
-├── frontend/
-│   ├── e2e/                    # Playwright E2E suite
 ├── docker-compose.yml
 ├── setup.ps1                   # Bootstrap script (Windows)
 ├── setup.sh                    # Bootstrap script (Linux/macOS)
@@ -414,7 +432,7 @@ VectorBox/
 
 ## 📜 License
 
-**Version:** v1.5.0 Trident v2 Upgrade  
-**Last Updated:** 2026-03-26  
+**Version:** v1.7.2  
+**Last Updated:** 2026-04-08  
 **Contact:** vectorbox.app@proton.me
 **License:** Proprietary & Confidential. All rights reserved.

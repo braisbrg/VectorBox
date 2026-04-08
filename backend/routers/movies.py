@@ -1,15 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 import logging
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.dialects.postgresql import insert
+from datetime import datetime
 
-from config import get_db
-from models.database import Movie
-from dependencies import get_tmdb_client
+from config import get_db, REDIS_URL
+from models.database import Movie, UserRating
+from dependencies import get_tmdb_client, get_current_user
 from services.tmdb_client import TMDBClient
+from services.profile_cache import set_profile_dirty
+from models.schemas import TokenResponse
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+class RateMovieRequest(BaseModel):
+    rating: Optional[float] = None
+    is_watchlist: bool = False
+    is_liked: bool = False
 
 @router.get("/{tmdb_id}")
 async def get_movie_details(
@@ -69,3 +80,81 @@ async def get_movie_details(
     except Exception as e:
         logger.error(f"Failed to fetch movie details for {tmdb_id}: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
+
+
+@router.post("/{tmdb_id}/rate")
+async def rate_movie(
+    tmdb_id: int,
+    request: RateMovieRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: TokenResponse = Depends(get_current_user),
+    tmdb: TMDBClient = Depends(get_tmdb_client)
+):
+    """
+    Rate a movie, add to watchlist, or like it.
+    Updates the 'profile_dirty' flag in Redis for LLM profile summary regeneration.
+    """
+    try:
+        # 1. Ensure movie exists in local DB
+        stmt = select(Movie).where(Movie.tmdb_id == tmdb_id)
+        result = await db.execute(stmt)
+        movie = result.scalars().first()
+        
+        if not movie:
+            # Fetch from TMDB and create if missing
+            details = await tmdb.get_movie_details(tmdb_id)
+            if not details:
+                 raise HTTPException(status_code=404, detail="Movie not found in TMDB.")
+            
+            movie = Movie(
+                tmdb_id=tmdb_id,
+                title=details.get("title"),
+                year=int(details["release_date"][:4]) if details.get("release_date") else None,
+                runtime=details.get("runtime"),
+                genres=[g["name"] for g in details.get("genres", [])],
+                overview=details.get("overview", ""),
+                poster_path=details.get("poster_path"),
+                popularity=details.get("popularity", 0),
+                vote_average=details.get("vote_average", 0),
+                vote_count=details.get("vote_count", 0),
+                original_language=details.get("original_language", "en")
+            )
+            db.add(movie)
+            await db.flush() # Get the movie.id
+        
+        # 2. Upsert UserRating
+        # Note: Index elements must match the unique constraint (idx_user_movie)
+        stmt = insert(UserRating).values(
+            user_id=current_user.user_id,
+            movie_id=movie.id,
+            rating=request.rating,
+            is_watchlist=request.is_watchlist,
+            is_liked=request.is_liked,
+            is_watched=True if request.rating is not None else False,
+            watched_date=datetime.utcnow() if request.rating is not None else None,
+            created_at=datetime.utcnow()
+        ).on_conflict_do_update(
+            index_elements=['user_id', 'movie_id'],
+            set_={
+                'rating': request.rating,
+                'is_watchlist': request.is_watchlist,
+                'is_liked': request.is_liked,
+                'is_watched': True if request.rating is not None else UserRating.is_watched,
+                'watched_date': datetime.utcnow() if request.rating is not None else UserRating.watched_date,
+            }
+        )
+        
+        await db.execute(stmt)
+        await db.commit()
+
+        # 3. Mark profile as dirty in Redis
+        await set_profile_dirty(current_user.user_id, REDIS_URL)
+
+        return {"status": "success", "message": "Rating updated and profile marked dirty."}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to rate movie {tmdb_id}: {e}")
+        await db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to update rating: {str(e)}")

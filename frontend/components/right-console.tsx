@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { X, Globe, Tv, RotateCcw, Info, CheckCircle2, Lock } from "lucide-react";
+import type { Contributor } from "@/types/feed";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { useLanguage } from "@/components/language-provider";
@@ -10,10 +11,9 @@ import { ClusterInfo, FeedItem, api } from "@/lib/api";
 
 interface RightConsoleProps {
     selectedMovieId: number | null;
+    selectedSectionId?: string;
+    selectedContributors?: Contributor[];
     onCloseInspector: () => void;
-    clusters: ClusterInfo[];
-    selectedClusterId: number | null;
-    onSelectCluster: (id: number | null) => void;
     scope: "watchlist" | "global";
     onScopeChange: (scope: "watchlist" | "global") => void;
     countryCode: string;
@@ -25,10 +25,9 @@ interface RightConsoleProps {
 
 export function RightConsole({
     selectedMovieId,
+    selectedSectionId,
+    selectedContributors,
     onCloseInspector,
-    clusters,
-    selectedClusterId,
-    onSelectCluster,
     scope,
     onScopeChange,
     countryCode,
@@ -40,6 +39,20 @@ export function RightConsole({
     const { t } = useLanguage();
     const [inspectedMovie, setInspectedMovie] = useState<FeedItem | null>(null);
     const [isLoadingMovie, setIsLoadingMovie] = useState(false);
+
+    const getSectionReason = (sectionId?: string) => {
+        if (!sectionId) return "MATRIX GENERAL ALGORITHM";
+        if (sectionId.startsWith("because_you_watched")) return "Item-to-Item Semantic Similarity from Anchors";
+        if (sectionId === "your_taste") return "Matches User Medoid Cluster Profiling";
+        if (sectionId === "picked_for_you") return "Hybrid RRF Signal Fusion Mechanism";
+        if (sectionId === "available_now") return "Streaming Availability Cross-reference";
+        if (sectionId === "hidden_gems") return "Algorithmically Detected Discovery Metrics";
+        if (sectionId.startsWith("watchlist")) return "User Curated Dataset";
+        if (sectionId === "auteur") return "Auteur/Director Affinity Calculation";
+        if (sectionId === "cult_actor") return "Actor Representation Calculation";
+        if (sectionId.includes("wildcard") || sectionId.includes("random")) return "Anti-Routine Parameter Matrix Injection";
+        return "STANDARD VECTORBOX MATCH";
+    };
 
     useEffect(() => {
         if (selectedMovieId) {
@@ -144,32 +157,6 @@ export function RightConsole({
                                     })}
                                 </div>
                             </div>
-
-                            {/* SYS_CLUSTERS */}
-                            <div className="space-y-4">
-                                <span className="text-zinc-500 uppercase tracking-widest text-[10px] block border-b border-zinc-800 pb-2">
-                                    {">"} SYS_CLUSTERS
-                                </span>
-                                <div className="flex flex-col gap-2">
-                                    {clusters.map(cluster => {
-                                        const isActive = selectedClusterId === cluster.cluster_id;
-                                        return (
-                                            <button
-                                                key={cluster.cluster_id}
-                                                onClick={() => onSelectCluster(isActive ? null : cluster.cluster_id)}
-                                                className={`group flex items-center justify-between p-2 border transition-colors ${isActive ? "bg-primary text-black border-primary" : "bg-transparent text-zinc-400 border-zinc-800 hover:border-zinc-500"}`}
-                                            >
-                                                <span className="uppercase text-[10px] font-bold">
-                                                    {cluster.label}
-                                                </span>
-                                                <span className={`text-[9px] ${isActive ? "text-black" : "text-zinc-600 group-hover:text-primary"}`}>
-                                                    {cluster.movie_count}P
-                                                </span>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            </div>
                         </div>
 
                         {/* Footer Status */}
@@ -211,7 +198,7 @@ export function RightConsole({
                                         {inspectedMovie.poster_url ? (
                                             <Image
                                                 src={inspectedMovie.poster_url}
-                                                alt={inspectedMovie.title}
+                                                alt={inspectedMovie.title ?? "Movie poster"}
                                                 fill
                                                 className="object-cover"
                                             />
@@ -255,6 +242,60 @@ export function RightConsole({
                                         <p className="text-zinc-400 text-[11px] leading-relaxed font-sans normal-case">
                                             {inspectedMovie.overview || "NO OVERVIEW DATA AVAILABLE IN LOCAL_CACHE."}
                                         </p>
+                                    </div>
+
+                                    {/* WHY RECOMMENDED */}
+                                    <div className="space-y-2 border-t border-zinc-800 pt-3 mt-3">
+                                        <p className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">
+                                            Why This Film
+                                        </p>
+                                        {selectedContributors && selectedContributors.length > 0 ? (
+                                            <div className="space-y-2">
+                                                {selectedContributors.map((c: Contributor, i: number) => (
+                                                    <div key={i} className="space-y-0.5">
+                                                        {c.type === "anchor" && (
+                                                            <>
+                                                                <p className="text-xs font-mono text-primary">
+                                                                    Similar to {c.seed_title} ({c.seed_year})
+                                                                </p>
+                                                                <p className="text-[11px] font-mono text-zinc-500">
+                                                                    You rated it {c.seed_rating}★ · Similarity {Math.round((c.similarity ?? 0) * 100)}%
+                                                                </p>
+                                                            </>
+                                                        )}
+                                                        {c.type === "cluster" && (
+                                                            <>
+                                                                <p className="text-xs font-mono text-primary">
+                                                                    Matches cluster: {c.cluster_name}
+                                                                </p>
+                                                                {c.medoid_title && (
+                                                                    <p className="text-[11px] font-mono text-zinc-500">
+                                                                        Anchored to: {c.medoid_title}
+                                                                    </p>
+                                                                )}
+                                                            </>
+                                                        )}
+                                                        {(c.type === "vibe" || c.type === "auteur" || c.type === "crowd") && (
+                                                            <div className="flex items-center justify-between gap-2">
+                                                                <p className="text-xs font-mono text-primary">{c.label}</p>
+                                                                {selectedContributors!.filter(
+                                                                    (x: Contributor) => ["vibe", "auteur", "crowd"].includes(x.type)
+                                                                ).length > 1 && (
+                                                                    <p className="text-[11px] font-mono text-zinc-500 shrink-0">
+                                                                        {Math.round((c.score ?? 0) * 100)}%
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        ) : (
+                                            <p className="text-zinc-400 text-[10px] uppercase mt-2">
+                                                <span className="text-primary opacity-80 mr-2">LOGIC:</span>
+                                                {getSectionReason(selectedSectionId)}
+                                            </p>
+                                        )}
                                     </div>
 
                                     {/* Actions */}

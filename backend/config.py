@@ -11,6 +11,7 @@ load_dotenv()
 
 # Security: Use async engine with connection pooling
 DATABASE_URL = os.getenv("DATABASE_URL", "").replace("postgresql://", "postgresql+asyncpg://")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 engine = create_async_engine(
     DATABASE_URL,
