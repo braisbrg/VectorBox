@@ -106,7 +106,7 @@ VectorBox uses a 3-signal hybrid recommendation engine (Trident):
   Identifies high-quality niche films directly from Postgres with DYNAMIC thresholds based on user's movie count:
     Cold start (<30 movies): score>60, popularity<40, votes>200
     Growing (30-99):         score>65, popularity<30, votes>300
-    Rich (100+):             score>75, popularity<20, votes>500
+    Rich (100+):             score>70, popularity<20, votes>500
   Uses an Exoticism Boost (`+15%`) for non-English films. Re-ranked using 30% vector similarity weight.
 
 - Picked For You (`hybrid_reranking`) — Trident RRF fusion of signals A (vibe), Auteur (director/actor), and C (hidden gems).
@@ -118,11 +118,13 @@ Results fused via RRF (Reciprocal Rank Fusion) +
 Sigmoid quality weighting on VectorBox Score (0–100).
 Magic Box intent `quality_gate_bypass` bypasses normal bounds (midpoint 65) explicitly allowing "trashy" responses by dropping the midpoint to 25.
 
-Feed orchestration: `FeedService.get_main_feed()` runs **11 tasks
+Feed orchestration: `FeedService.get_main_feed()` runs **10 tasks
 in parallel** via `asyncio.gather()`. Each task opens its own
 isolated `AsyncSessionLocal()` session — they NEVER share sessions.
 
-**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped `_invalidate_feed_cache()` (which scans and clears `section:*` keys) after RSS sync. The feed is cached on a per-section basis with discrete TTL limits targeting optimum freshness.
+**Anti-Vector Pre-Compute (FIX 4):** `anti_vector` is computed ONCE before the `asyncio.gather()` using a short-lived session, then threaded to Signal A and Signal B via the `precomputed_anti_vector` parameter. Signals skip `_get_anti_vector()` internally if this value is provided. Never compute it twice.
+
+**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped via `_invalidate_feed_cache()` after RSS sync — this sweeps BOTH `section:{FEED_CACHE_VERSION}:{user_id}:*` keys AND `signal_cache:{user_id}:*` keys (Trident signal 24h caches), so stale recommendations don't persist after new data arrives. The feed is cached on a per-section basis with discrete TTL limits targeting optimum freshness.
 
 
 
@@ -314,6 +316,12 @@ All of these have been found and fixed. Do not reintroduce.
     ❌  Including "is_liked": excluded.is_liked in on_conflict_do_update for RSS
         → RSS items never carry liked status, silently resets ZIP-imported likes to False
     ✅  Omit is_liked from RSS upsert SET; only ZIP upload controls is_liked
+
+16. AWAIT ON aioredis.from_url() (redis-py ≥4.2)
+    ❌  r = await aioredis.from_url(url, decode_responses=True)
+        → from_url() is SYNCHRONOUS in redis-py ≥4.2; await raises TypeError,
+          silently caught by except Exception, leaving r = None → all caching disabled
+    ✅  r = aioredis.from_url(url, decode_responses=True)  # no await
 
 13. REDIS r.keys() IN ASYNC CONTEXT
     ❌  keys = await r.keys("section:*")

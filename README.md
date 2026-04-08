@@ -1,6 +1,6 @@
 # VectorBox (Trident Engine)
 
-![Version](https://img.shields.io/badge/version-v1.7.1-acidgreen?style=flat-square)
+![Version](https://img.shields.io/badge/version-v1.7.2-acidgreen?style=flat-square)
 ![Last Updated](https://img.shields.io/badge/last_updated-2026--04--08-orange?style=flat-square)
 
 VectorBox is a premium movie recommendation engine designed to bridge the gap between social tracking (Letterboxd) and AI-driven cinematic discovery. 
@@ -432,7 +432,7 @@ VectorBox/
 
 ## 📜 License
 
-**Version:** v1.7.1  
+**Version:** v1.7.2  
 **Last Updated:** 2026-04-08  
 **Contact:** vectorbox.app@proton.me
 **License:** Proprietary & Confidential. All rights reserved.
