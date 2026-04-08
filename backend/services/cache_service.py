@@ -18,18 +18,23 @@ async def invalidate_user_cache(user_id: int):
         if hasattr(redis, "redis"):
             from services.feed_service import FEED_CACHE_VERSION
             r = redis.redis
-            cursor = 0
             deleted_count = 0
-            while True:
-                cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
-                if keys:
-                    await r.delete(*keys)
-                    deleted_count += len(keys)
-                if cursor == 0:
-                    break
+            patterns = [
+                f"section:{FEED_CACHE_VERSION}:{user_id}:*",
+                f"signal_cache:{user_id}:*",
+            ]
+            for pattern in patterns:
+                cursor = 0
+                while True:
+                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
+                    if keys:
+                        await r.delete(*keys)
+                        deleted_count += len(keys)
+                    if cursor == 0:
+                        break
             await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
             if deleted_count:
-                logger.info(f"Invalidated {deleted_count} feed cache keys for user_id={user_id}")
+                logger.info(f"Invalidated {deleted_count} feed/signal cache keys for user_id={user_id}")
         else:
             logger.warning("Redis backend does not expose raw redis client; cache invalidation skipped")
 

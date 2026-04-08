@@ -48,11 +48,6 @@ def get_scout_client():
     client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
     return instructor.from_openai(client, mode=instructor.Mode.TOOLS)
 
-def get_intelligence_client():
-    """Tier 2: Intelligence (Llama 3.3 70B)"""
-    return get_scout_client() # Same client, different model ID usage
-
-
 # 3. Core Functions
 
 async def parse_user_intent(user_query: str) -> MovieSearchIntent:
@@ -121,7 +116,7 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
     Tier 2: Uses Llama 3.3 70B for Deep Analysis (RAG Re-ranking).
     Analyzing Top 20 candidates to find the Top 5 that match the *nuance*.
     """
-    client = get_intelligence_client()
+    client = get_scout_client()
     if not client:
         return []
 

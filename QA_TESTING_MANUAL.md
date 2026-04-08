@@ -1,8 +1,8 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.7.0 (Trident v2 Optimization)
-> **Last Updated:** 2026-04-03
+> **Version:** 1.7.1 (Security Audit v2)
+> **Last Updated:** 2026-04-08
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
@@ -344,7 +344,7 @@ Click any movie → "Why Recommended".
 |:------|:---------|:-----:|
 | Signal A (Vector) | Shows similarity to watched movies | ☐ |
 | Signal Auteur | Shows director or cult actor match (if applicable) | ☐ |
-| Signal C (Crowd) | Shows crowd/popularity signal | ☐ |
+| Signal C (Hidden Gems) | Shows hidden gem discovery signal | ☐ |
 | Medoid Stability | For "Your Taste" cluster lists, verify the header uses a human-readable 2-4 word LLM label (e.g. "Neon-noir Revenge") rather than abstract math parameters | ☐ |
 
 ### Step 5.4: Magic Box NLP Query

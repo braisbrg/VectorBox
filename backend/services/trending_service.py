@@ -20,15 +20,8 @@ class TrendingService:
 
     async def _get_redis(self) -> aioredis.Redis:
         if not self._redis:
-            self._redis = await aioredis.from_url(
-                self._redis_url, decode_responses=True
-            )
+            self._redis = aioredis.from_url(self._redis_url, decode_responses=True)
         return self._redis
-
-    async def update_letterboxd_popular(self) -> int:
-        """Legacy method. Use popular_scraper.py instead."""
-        logger.warning("Using legacy internal scraper. Prefer running popular_scraper.py")
-        return 0
 
     async def get_popular_movie_ids(self) -> List[int]:
         """Fetch cached popular movie IDs from Redis."""
