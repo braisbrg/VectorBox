@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import type { Contributor } from "@/types/feed";
 import { LayoutList, Globe, Tv, Loader2, RotateCcw, Heart, User as UserIcon, LogOut } from "lucide-react";
 import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/constants";
 import { motion } from "framer-motion";
@@ -40,17 +41,11 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
     // View State
     const [currentView, setCurrentView] = useState("feed");
-    const [selectedClusterId, setSelectedClusterId] = useState<number | null>(null);
     const [scope, setScope] = useState<"watchlist" | "global">("global");
     const [countryCode, setCountryCode] = useState("ES");
     const [streamingProviders, setStreamingProviders] = useState<number[]>([]);
-    const [inspectedMovieId, setInspectedMovieId] = useState<number | null>(null);
+    const [inspectedMovie, setInspectedMovie] = useState<{ id: number; sectionId?: string; contributors?: Contributor[] } | null>(null);
 
-    const { data: clusters = [] } = useQuery({
-        queryKey: ["clusters", currentUserSession?.id],
-        queryFn: () => getUserClusters(currentUserSession!.id),
-        enabled: !!currentUserSession?.id,
-    });
 
     const { t } = useLanguage();
 
@@ -92,11 +87,9 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                     token: verifiedUser.token // or undefined, dependent on session type
                 };
 
-                // Merge with extended flags if we have them (like has_data)
-                // We know backend returns `has_data` in AuthResponse
-                const fullSession = { ...verifiedSession, has_data: (verifiedUser as any).has_data };
+                const fullSession: UserSession = { ...verifiedSession, has_data: verifiedUser.has_data };
 
-                setCurrentUserSession(fullSession as any as UserSession);
+                setCurrentUserSession(fullSession);
 
                 // Update Local Storage with fresh truth
                 localStorage.setItem("vectorbox_user", JSON.stringify(fullSession));
@@ -143,7 +136,6 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const clearFilters = () => {
         setStreamingProviders([]);
         setCountryCode("ES");
-        setSelectedClusterId(null);
     };
 
     // Show loading briefly during hydration
@@ -160,8 +152,16 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         return null;
     }
 
+    // Typed VectorboxUser derived from session (avoids double-cast)
+    const sessionAsVectorboxUser: VectorboxUser = {
+        id: currentUserSession.id,
+        username: currentUserSession.username,
+        has_data: currentUserSession.has_data,
+        letterboxd_username: currentUserSession.letterboxd_username,
+    };
+
     // ONBOARDING JAIL: If user has no data, lock them here
-    if (!(currentUserSession as any).has_data) {
+    if (!currentUserSession.has_data) {
         return (
             <div className="min-h-screen bg-black text-foreground flex flex-col items-center justify-center p-4 relative overflow-hidden">
                 <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10 pointer-events-none" />
@@ -184,7 +184,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
                         <div className="bg-background/50 rounded-lg p-4 border border-border/30">
                             <UploadZone
-                                registeredUsers={[currentUserSession as any as VectorboxUser]}
+                                registeredUsers={[sessionAsVectorboxUser]}
                                 activeSessionUserId={currentUserSession.id}
                                 onUploadSuccess={(userId) => {
                                     window.location.reload();
@@ -217,7 +217,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             <Sidebar
                 currentView={currentView}
                 onViewChange={setCurrentView}
-                users={[currentUserSession as any as VectorboxUser]}
+                users={[sessionAsVectorboxUser]}
                 currentUserId={currentUserSession.id}
                 onUserSelect={() => { }}
             />
@@ -225,7 +225,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             <MobileNav
                 currentView={currentView}
                 onViewChange={setCurrentView}
-                users={[currentUserSession as any as VectorboxUser]}
+                users={[sessionAsVectorboxUser]}
                 currentUserId={currentUserSession.id}
                 onUserSelect={() => { }}
             />
@@ -264,7 +264,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             username={currentUserSession.username}
                             countryCode={countryCode}
                             streamingProviders={streamingProviders}
-                            onInspect={setInspectedMovieId}
+                            onInspect={(id: number, sectionId?: string, contributors?: Contributor[]) => setInspectedMovie({ id, sectionId, contributors })}
                         />
                     ) : currentView === "settings" ? (
                         <SettingsView />
@@ -294,18 +294,17 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             streamingProviders={streamingProviders}
                             initialData={initialFeedData}
                             registeredUsers={users}
-                            onInspect={setInspectedMovieId}
+                            onInspect={(id: number, sectionId?: string, contributors?: Contributor[]) => setInspectedMovie({ id, sectionId, contributors })}
                         />
                     )}
                 </div>
             </div>
 
             <RightConsole
-                selectedMovieId={inspectedMovieId}
-                onCloseInspector={() => setInspectedMovieId(null)}
-                clusters={clusters}
-                selectedClusterId={selectedClusterId}
-                onSelectCluster={setSelectedClusterId}
+                selectedMovieId={inspectedMovie?.id ?? null}
+                selectedSectionId={inspectedMovie?.sectionId}
+                selectedContributors={inspectedMovie?.contributors}
+                onCloseInspector={() => setInspectedMovie(null)}
                 scope={scope}
                 onScopeChange={setScope}
                 countryCode={countryCode}
@@ -317,7 +316,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
             {/* Mobile Bottom Sheet for Inspector */}
             <AnimatePresence>
-                {inspectedMovieId && (
+                {inspectedMovie && (
                     <motion.div
                         initial={{ y: "100%" }}
                         animate={{ y: 0 }}
@@ -325,12 +324,12 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                         transition={{ type: "spring", damping: 25, stiffness: 200 }}
                         className="lg:hidden fixed inset-x-0 bottom-0 z-50 bg-[#0a0a0a] border-t border-zinc-800 rounded-t-2xl shadow-[0_-8px_30px_rgb(0,0,0,0.5)] max-h-[90vh] overflow-hidden flex flex-col"
                     >
-                        <div className="w-12 h-1.5 bg-zinc-800 rounded-full mx-auto my-4 shrink-0" onClick={() => setInspectedMovieId(null)} />
+                        <div className="w-12 h-1.5 bg-zinc-800 rounded-full mx-auto my-4 shrink-0" onClick={() => setInspectedMovie(null)} />
                         <div className="overflow-y-auto px-6 pb-12">
                             {/* Reusing Inspector logic or simplified version for mobile */}
                             <div className="flex justify-between items-start mb-6">
                                 <h2 className="text-xl font-bold uppercase font-mono tracking-tighter">DATA_INSPECTOR_MOB</h2>
-                                <button onClick={() => setInspectedMovieId(null)} className="p-2 text-zinc-500"><X /></button>
+                                <button onClick={() => setInspectedMovie(null)} className="p-2 text-zinc-500"><X /></button>
                             </div>
                             <div className="text-zinc-500 font-mono text-xs uppercase italic tracking-widest text-center py-20 border border-dashed border-zinc-800">
                                 [ INSPECTOR_VIEW_PORTED_FROM_CONSOLE ]

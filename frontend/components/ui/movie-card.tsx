@@ -3,7 +3,8 @@
 import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
-import { Info, Clock, Film } from "lucide-react";
+import type { Contributor } from "@/types/feed";
+import { Info, Clock, Film, X, Loader2 } from "lucide-react";
 import { getTMDBImageUrl } from "@/lib/api";
 import { useState } from "react";
 import { useLanguage } from "@/components/language-provider";
@@ -21,12 +22,13 @@ export interface MovieCardProps {
     overview?: string;
     overview_es?: string;
     genres?: string[];
-    onInspect?: (id: number) => void;
+    onInspect?: (id: number, contributors?: Contributor[]) => void;
+    onReject?: (id: number) => void;
     priority?: boolean;
     className?: string;
     badgeType?: string;
     providers?: string[];
-    contributors?: any[];
+    contributors?: Contributor[];
     forceVectorBoxScore?: boolean;
     imdb_rating?: number;
     metacritic_rating?: number;
@@ -34,6 +36,7 @@ export interface MovieCardProps {
     letterboxd_rating?: number;
     href?: string;
     variant?: "overlay" | "grid";
+    isRejecting?: boolean;
 }
 
 export function MovieCard({
@@ -46,9 +49,12 @@ export function MovieCard({
     vectorbox_score,
     title_es,
     onInspect,
+    onReject,
     priority = false,
     className = "",
     href,
+    isRejecting = false,
+    contributors,
 }: MovieCardProps) {
     const [imageError, setImageError] = useState(false);
     const { t, language } = useLanguage();
@@ -123,18 +129,39 @@ export function MovieCard({
 
             {/* Inspect Button - Absolute positioned to avoid Link click if desired, 
                 but keeping it in a way that we can intercept it */}
-            <button
-                onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onInspect?.(id);
-                }}
-                className="absolute bottom-3 right-3 z-30 text-zinc-500 hover:text-primary p-1 bg-black/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/btn"
-                title={t("movie.inspect") || "INSPECT"}
-            >
-                <Info size={10} className="group-hover/btn:animate-pulse" />
-                <span className="hidden group-hover/btn:inline text-[8px] uppercase font-mono">[i]</span>
-            </button>
+            {/* Action Buttons */}
+            <div className="absolute bottom-3 right-3 z-30 flex gap-1">
+                {onReject && (
+                    <button
+                        onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onReject(id);
+                        }}
+                        disabled={isRejecting}
+                        className={`text-zinc-500 hover:text-red-500 p-1 bg-black/50 border border-zinc-800 hover:border-red-500 transition-all flex items-center gap-1 group/rej ${isRejecting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title="Not Interested"
+                    >
+                        {isRejecting ? (
+                            <Loader2 size={10} className="animate-spin" />
+                        ) : (
+                            <X size={10} className="group-hover/rej:animate-pulse" />
+                        )}
+                    </button>
+                )}
+                <button
+                    onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onInspect?.(id, contributors);
+                    }}
+                    className="text-zinc-500 hover:text-primary p-1 bg-black/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/btn"
+                    title={t("movie.inspect") || "INSPECT"}
+                >
+                    <Info size={10} className="group-hover/btn:animate-pulse" />
+                    <span className="hidden group-hover/btn:inline text-[8px] uppercase font-mono">[i]</span>
+                </button>
+            </div>
 
             {/* Selection/Hover Frame */}
             <div className="absolute inset-0 border-2 border-primary opacity-0 group-hover:opacity-5 pointer-events-none transition-opacity z-10" />

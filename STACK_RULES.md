@@ -78,14 +78,41 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Bypass:** When `quality_gate_bypass` is true (e.g. user asks for "trashy"), midpoint drops to 25 and steepness to 0.10.
 
 ### Feed Generation
+- **Signal C (Discovery):** Signal C MUST use a **DB-first approach** for initial candidate discovery (quality/popularity filters in Postgres) before applying vector-weighted re-ranking. This prevents "similarity wash" where niche but high-quality films are eclipsed by mainstream items.
+- **Signal B (Rotation):** Cluster-based sections (Signal B) MUST implement **Redis-based counter rotation** to cycle through user taste clusters on each cache miss/refresh.
+- **Genre Coherence (Exclusion Pairs):** Genre coherence filtering (EXCLUSION_PAIRS) applies ONLY to `get_your_taste_section`. Movies with niche genres (Animation, Family, Horror) are excluded there if the user's cluster doesn't support those genres. This filter MUST NOT be applied in `hybrid_reranking` (Picked For You) — it was removed from there because it produced catastrophically small candidate pools.
+- **Quality Floor:** `because_you_watched` and `your_taste` sections MUST filter candidates with `vectorbox_score IS NOT NULL AND vectorbox_score >= 55`. This prevents unscored or low-quality films from surfacing.
+- **Coherence Threshold:** `because_you_watched` MUST use `score_threshold=0.25` (vector similarity) to ensure anchor-based recommendations are meaningfully similar to the seed film.
 - **Diversity:** Implement MMR (Maximal Marginal Relevance) across `because_you_watched`, `your_taste`, and `hidden_gems` to prevent similar vectors from crowding the results.
 - **Collection Collapsing:** Prevents domination by a single franchise (e.g. keeping only the top *Harry Potter* film).
 
+### Anti-Vector Logic
+- **Rule**: Movies with `UserRating.is_rejected.is_(True)` or `rating <= 2.0` MUST be included in the user's Anti-Vector.
+- **Rule**: All recommendation signals MUST exclude rejected movies by fetching both `is_watched` and `is_rejected` IDs from the database during initial candidate gathering.
+- **Filter**: All SQLAlchemy queries for recommendations MUST include `.where(UserRating.is_rejected.is_(False))` when joining on ratings.
 
-### Redis Caching (Completeness Guard)
+### Redis Caching (Completeness Guard & Per-Section TTL)
 - **Rule**: The Main Feed MUST NOT be cached if the result contains fewer than 3 sections.
-- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN.
-- **Implementation**: Verified in `FeedService.get_main_feed`.
+- **Implementation**: The feed utilizes **Per-Section TTL Caching**. Each unique section resolves to its own Redis key (`section:{FEED_CACHE_VERSION}:{user_id}:...`) instead of one monolithic payload blob, allowing sections like `random_picks` to skip caching (`TTL=0`) dynamically.
+- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN — sweeping BOTH `section:{FEED_CACHE_VERSION}:{user_id}:*` AND `signal_cache:{user_id}:*` keys so stale Trident signal caches (24h TTL) don't persist after new data arrives.
+
+### Redis Key Enumeration (SCAN, never KEYS)
+- **Ban:** `await r.keys("section:*")` — O(N) full-keyspace scan; blocks the Redis event loop under production load.
+- **Requirement:** Always use an async SCAN loop:
+  ```python
+  cursor = 0
+  while True:
+      cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
+      if keys:
+          await r.delete(*keys)
+      if cursor == 0:
+          break
+  ```
+
+### Redis Cache Key Versioning
+- **Rule:** All cache keys scoped to a feed version MUST include `FEED_CACHE_VERSION` (imported from `feed_service.py`) as a prefix.
+- **Applies to:** Both `section:{FEED_CACHE_VERSION}:{user_id}:...` keys AND `cluster_rotation:{FEED_CACHE_VERSION}:{user_id}`.
+- **Reason:** On a version bump, section keys are invalidated by pattern, but an unversioned `cluster_rotation:{user_id}` persists across versions, causing stale cluster cycling state.
 
 ### Streaming Availability (Spain)
 - **Strict Whitelist:** Filter providers to ONLY include:
@@ -115,6 +142,16 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Strict Engine:** `engine-strict=true`.
 - **Release Age Policy:** Differentiated cooldown rules are enforced at the repository level via `.github/dependabot.yml`. The former global `minimum-release-age` setting is deprecated for `pnpm`.
 - **Overrides:** Security-patched transitive deps (`minimatch>=10.2.1`, `ajv>=8.18.0`) enforced via `pnpm.overrides`.
+
+### TypeScript Type Safety
+- **Ban:** `(obj as any).field` — casting to `any` to access a known property. Fix: add the missing field to the proper interface.
+- **Ban:** `interface Foo { [key: string]: any }` — open index signatures on typed request/response models. Fix: declare every field explicitly, matching the backend Pydantic schema.
+- **Ban:** `setState(x as any as TargetType)` — double casts that force TypeScript to accept a wrong type. Fix: ensure the source type already has the required shape.
+- **Rule:** When the API returns a field that is not on a TypeScript interface, add it with the correct optional type (`field?: Type`). Do not cast the response object.
+- **Example:**
+  - ❌ `(verifiedUser as any).has_data` → ✅ `verifiedUser.has_data` (add `has_data?: boolean` to `AuthResponse`)
+  - ❌ `interface SearchIntent { [key: string]: any }` → ✅ explicit fields matching `MovieSearchIntent` Pydantic schema
+  - ❌ `(movie as any).poster_path` when API returns `poster_url` → ✅ remove dead fallback, use `movie.poster_url`
 
 ### Container & Data Persistence
 - **Rule:** Ephemeral Containers, Persistent Data.
@@ -248,5 +285,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-03-26
+**Last Updated:** 2026-04-08
 **Maintained By:** VectorBox Team

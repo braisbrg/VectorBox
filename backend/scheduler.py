@@ -14,7 +14,13 @@ async def run_trending_update():
     logger.info("Running scheduled job: Update Letterboxd Popular")
     async with AsyncSessionLocal() as db:
         service = TrendingService(db)
-        await service.update_letterboxd_popular()
+        try:
+            await service.update_letterboxd_popular()
+            await db.commit()
+        except Exception as e:
+            logger.error(f"Trending update failed: {e}")
+        finally:
+            await service.close()
 
 def start_scheduler():
     # Run every day at 00:00 UTC

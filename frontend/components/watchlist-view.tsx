@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import type { Contributor } from "@/types/feed";
 import { motion } from "framer-motion";
 import { Loader2, Filter, X, SortAsc, Tv } from "lucide-react";
 import { getTMDBImageUrl, type FeedItem, getWatchlist, getUserActivity } from "@/lib/api";
@@ -13,7 +14,7 @@ interface WatchlistViewProps {
     username: string;
     countryCode?: string;
     streamingProviders?: number[];
-    onInspect?: (id: number) => void;
+    onInspect?: (id: number, sectionId?: string, contributors?: Contributor[]) => void;
 }
 
 const WATCHLIST_FILTERS_KEY = "watchlist_filters";
@@ -391,7 +392,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                         vectorbox_score={item.vectorbox_score}
                                         metacritic_rating={item.metacritic_rating}
                                         rotten_tomatoes_rating={item.rotten_tomatoes_rating}
-                                        onInspect={onInspect}
+                                        onInspect={(id, contribs) => onInspect?.(id, undefined, contribs)}
                                     />
                                 </motion.div>
                             ))}

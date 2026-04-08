@@ -25,16 +25,20 @@ logger = logging.getLogger(__name__)
 from config import AsyncSessionLocal
 
 async def _enrich_movie_background(tmdb_id: int):
-    """Background-safe enrichment: creates its own DB session."""
+    """Background-safe enrichment: creates its own DB session. Never re-raises."""
     from services.movie_service import MovieService
     from models.database import Movie
     from sqlalchemy import select
     async with AsyncSessionLocal() as session:
-        result = await session.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
-        movie = result.scalar_one_or_none()
-        if movie:
-            movie_service = MovieService(session)
-            await movie_service.enrich_movie(movie)
+        try:
+            result = await session.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
+            movie = result.scalar_one_or_none()
+            if movie:
+                movie_service = MovieService(session)
+                await movie_service.enrich_movie(movie)
+                await session.commit()
+        except Exception as e:
+            logger.error(f"Background enrichment failed for tmdb_id={tmdb_id}: {e}")
 
 class ClusteringService:
     """Create and manage user taste clusters"""
@@ -105,10 +109,13 @@ class ClusteringService:
             )
             label = response.choices[0].message.content.strip().rstrip(".!,;:")
             if label and 1 < len(label) < 60:
+                logger.info(f"LLM cluster label generated: '{label}'")
                 return label
+            
+            logger.warning(f"LLM cluster label fell back to genres (invalid response: '{label}')")
             return fallback
         except Exception as e:
-            logger.warning(f"Groq cluster label generation failed: {e}")
+            logger.warning(f"LLM cluster label fell back to genres (Groq error: {e})")
             return fallback
     
     async def create_user_clusters(
@@ -201,24 +208,38 @@ class ClusteringService:
         now = datetime.now(timezone.utc)
         
         for i, r in enumerate(ratings):
-            if r >= 4.0:
+            if r >= 4.5:
                 w = 1.0
+            elif r >= 4.0:
+                w = 0.85
+            elif r >= 3.5:
+                w = 0.65
+            elif r >= 3.0:
+                w = 0.35
             elif r >= 2.0:
-                w = 0.5
+                w = 0.15
             else:
-                w = 0.1
-            
+                w = 0.05
+
+            rating_obj = ratings_movies[i][0]
+
             if use_recency_bias:
-                rating_obj = ratings_movies[i][0]
                 date = rating_obj.watched_date or rating_obj.created_at
-                
+
                 if date:
                     if date.tzinfo is None:
                         date = date.replace(tzinfo=timezone.utc)
-                    age_years = (now - date).days / 365.0
-                    decay = 1.0 / (1.0 + 0.5 * age_years)
+                    age_days = max(0, (now - date).days)
+                    decay = max(0.6, 0.5 ** (age_days / 730))
                     w *= decay
-            
+
+            # Rewatch boost: movies seen multiple times signal stronger preference
+            watch_count = getattr(rating_obj, 'watch_count', 1) or 1
+            if watch_count >= 3:
+                w = min(w * 1.5, 1.0)
+            elif watch_count == 2:
+                w = min(w * 1.2, 1.0)
+
             weights.append(w)
             
         weights_array = np.array(weights)
@@ -254,6 +275,20 @@ class ClusteringService:
         from sqlalchemy import delete
         await db.execute(delete(UserCluster).where(UserCluster.user_id == user_id))
         
+        # Part A: Compute globally dominant genres (appear in >50% of all movies)
+        total_movies = len(movies_data)
+        global_genre_movie_count: dict[str, int] = {}
+        for m in movies_data:
+            for g in set(m["genres"]):  # set() to count once per movie
+                global_genre_movie_count[g] = global_genre_movie_count.get(g, 0) + 1
+        
+        globally_dominant = {
+            g for g, count in global_genre_movie_count.items()
+            if count / total_movies > 0.50
+        }
+        if globally_dominant:
+            logger.info(f"User {user_id}: globally dominant genres (>50%): {globally_dominant}")
+        
         for cluster_id in range(n_clusters):
             cluster_indices = np.where(cluster_labels == cluster_id)[0]
             cluster_movies = [movies_data[i] for i in cluster_indices]
@@ -271,7 +306,10 @@ class ClusteringService:
                 all_genres.extend(m["genres"])
             
             genre_counts = Counter(all_genres)
-            dominant_genres = [g for g, c in genre_counts.most_common(3)]
+            # Filter out globally dominant genres from per-cluster labels
+            filtered_genres = [g for g, c in genre_counts.most_common(6) if g not in globally_dominant]
+            # Fall back to unfiltered if filtering removes everything
+            dominant_genres = filtered_genres[:3] if filtered_genres else [g for g, c in genre_counts.most_common(3)]
             
             years = [m["year"] for m in cluster_movies if m["year"]]
             if years:
@@ -329,68 +367,74 @@ class ClusteringService:
         filters: Dict = None,
         limit: int = 20,
         page: int = 1,
-        background_tasks = None
+        background_tasks = None,
+        query_vector_override: list[float] = None
     ) -> List[Dict]:
         """
         Get movie recommendations for a specific cluster (mood)
+        or use a custom query vector override (e.g. Profile Summary).
         """
         offset = (page - 1) * limit
         
-        result = await db.execute(
-            select(UserCluster)
-            .where(UserCluster.user_id == user_id)
-            .where(UserCluster.cluster_id == cluster_id)
-        )
-        cluster = result.scalar_one_or_none()
-        
-        if not cluster:
-            raise ValueError(f"Cluster {cluster_id} not found for user {user_id}")
-        
-        # Medoid-first: use the real film closest to the cluster center
-        cluster_center = None
-        if cluster.medoid_movie_id:
-            # Map medoid internal ID → tmdb_id
-            medoid_result = await db.execute(
-                select(Movie.tmdb_id).where(Movie.id == cluster.medoid_movie_id)
-            )
-            medoid_tmdb_id = medoid_result.scalar_one_or_none()
-            if medoid_tmdb_id:
-                medoid_vector = await self.qdrant.get_vector(medoid_tmdb_id)
-                if medoid_vector:
-                    cluster_center = medoid_vector if isinstance(medoid_vector, list) else medoid_vector.tolist()
-                else:
-                    logger.debug(f"Medoid vector not found in Qdrant for tmdb_id={medoid_tmdb_id}, falling back to centroid")
-            else:
-                logger.debug(f"Medoid movie_id={cluster.medoid_movie_id} not found in DB, falling back to centroid")
-        else:
-            logger.debug(f"No medoid_movie_id set for cluster {cluster_id}, falling back to centroid")
-        
-        # Fallback to centroid if medoid is unavailable
+        cluster_center = query_vector_override
+
         if cluster_center is None:
             result = await db.execute(
-                select(UserRating, Movie)
-                .join(Movie, UserRating.movie_id == Movie.id)
-                .where(UserRating.user_id == user_id)
-                .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+                select(UserCluster)
+                .where(UserCluster.user_id == user_id)
+                .where(UserCluster.cluster_id == cluster_id)
             )
-            all_ratings = result.all()
+            cluster = result.scalar_one_or_none()
             
-            sample_ids = cluster.sample_movie_ids or []
-            sample_tmdb_ids = [movie.tmdb_id for _, movie in all_ratings if movie.id in sample_ids]
-            vectors_map = await self.qdrant.get_vectors_batch(sample_tmdb_ids)
-            cluster_vectors = list(vectors_map.values())
+            if not cluster:
+                raise ValueError(f"Cluster {cluster_id} not found for user {user_id}")
             
-            if not cluster_vectors:
-                raise ValueError("No vectors found for cluster samples")
+            # Medoid-first: use the real film closest to the cluster center
+            if cluster.medoid_movie_id:
+                # Map medoid internal ID → tmdb_id
+                medoid_result = await db.execute(
+                    select(Movie.tmdb_id).where(Movie.id == cluster.medoid_movie_id)
+                )
+                medoid_tmdb_id = medoid_result.scalar_one_or_none()
+                if medoid_tmdb_id:
+                    medoid_vector = await self.qdrant.get_vector(medoid_tmdb_id)
+                    if medoid_vector:
+                        cluster_center = medoid_vector if isinstance(medoid_vector, list) else medoid_vector.tolist()
+                    else:
+                        logger.debug(f"Medoid vector not found in Qdrant for tmdb_id={medoid_tmdb_id}, falling back to centroid")
+                else:
+                    logger.debug(f"Medoid movie_id={cluster.medoid_movie_id} not found in DB, falling back to centroid")
+            else:
+                logger.debug(f"No medoid_movie_id set for cluster {cluster_id}, falling back to centroid")
             
-            cluster_center = np.mean(cluster_vectors, axis=0).tolist()
+            # Fallback to centroid if medoid is unavailable
+            if cluster_center is None:
+                result = await db.execute(
+                    select(UserRating, Movie)
+                    .join(Movie, UserRating.movie_id == Movie.id)
+                    .where(UserRating.user_id == user_id)
+                    .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+                )
+                all_ratings = result.all()
+                
+                sample_ids = cluster.sample_movie_ids or []
+                sample_tmdb_ids = [movie.tmdb_id for _, movie in all_ratings if movie.id in sample_ids]
+                vectors_map = await self.qdrant.get_vectors_batch(sample_tmdb_ids)
+                cluster_vectors = list(vectors_map.values())
+                
+                if not cluster_vectors:
+                    raise ValueError("No vectors found for cluster samples")
+                
+                cluster_center = np.mean(cluster_vectors, axis=0).tolist()
         
         search_filters = filters or {}
+        effective_threshold = 0.15 if query_vector_override is not None else 0.3
+
         results = await self.qdrant.search_similar(
             query_vector=cluster_center,
             limit=limit * 5,
             offset=offset,
-            score_threshold=0.3,
+            score_threshold=effective_threshold,
             filters=search_filters
         )
         

@@ -26,6 +26,7 @@ from services.provider_service import ProviderService
 from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_embedding_service
 from models.schemas import TokenResponse
 from services.embedding_service import EmbeddingService
+from utils.scoring import normalize_similarity_score
 
 router = APIRouter(
     tags=["recommendations"]
@@ -103,18 +104,7 @@ async def _enrich_recommendations(
                  logger.info(f"Dropped {movie.title}: Score {stats_score} < Min {request.min_rating}")
                  continue
         
-        # Normalize score
-        min_sim = 0.2
-        max_sim = 0.7
-        score = result["score"]
-        
-        if score > max_sim:
-            final_score = 90 + ((score - max_sim) * 100)
-            final_score = min(99, final_score)
-        else:
-            normalized = (score - min_sim) / (max_sim - min_sim)
-            normalized = max(0.0, min(1.0, normalized))
-            final_score = 60 + (normalized * 30)
+        final_score = normalize_similarity_score(result["score"])
 
         recommendations.append(RecommendationResponse(
             movie=MovieMetadata(
@@ -382,25 +372,20 @@ async def get_group_recommendations(
     """
     Get recommendations for a group of users.
     """
-    # Group recommendations implies user ids are passed.
-    # We should at least ensure the current user is IN the group?
     if current_user.user_id not in request.user_ids:
-         # Implicitly add or just warn?
-         # Let's add them to ensure they are part of it
-         pass 
-         # request.user_ids.append(current_user.user_id) # Optional logic
-    
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
-        # 1. Find Watchlist Intersection
-        watchlist_movies = {}
-        for user_id in request.user_ids:
-            result = await db.execute(
-                select(UserRating.movie_id)
-                .where((UserRating.user_id == user_id) & (UserRating.is_watchlist.is_(True)))
+        # 1. Find Watchlist Intersection — batch query instead of per-user loop
+        result = await db.execute(
+            select(UserRating.movie_id, UserRating.user_id).where(
+                UserRating.user_id.in_(request.user_ids),
+                UserRating.is_watchlist.is_(True)
             )
-            user_watchlist = set(result.scalars().all())
-            for movie_id in user_watchlist:
-                watchlist_movies[movie_id] = watchlist_movies.get(movie_id, 0) + 1
+        )
+        watchlist_movies: dict = {}
+        for movie_id, user_id in result.all():
+            watchlist_movies[movie_id] = watchlist_movies.get(movie_id, 0) + 1
         
         threshold = len(request.user_ids) if len(request.user_ids) <= 2 else len(request.user_ids) / 2
         intersection_ids = [mid for mid, count in watchlist_movies.items() if count >= threshold]
@@ -780,3 +765,67 @@ async def get_hidden_gems_row(
     except Exception as e:
         logger.error(f"Hidden gems failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate hidden gems")
+
+
+@router.post("/reject/{tmdb_id}")
+async def reject_movie(
+    tmdb_id: int,
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark a movie as 'Not Interested'. Upserts UserRating with is_rejected=True."""
+    user_id = current_user.user_id
+
+    # Find the internal movie by tmdb_id
+    movie_result = await db.execute(
+        select(Movie).where(Movie.tmdb_id == tmdb_id)
+    )
+    movie = movie_result.scalar_one_or_none()
+    if not movie:
+        raise HTTPException(status_code=404, detail="Movie not found")
+
+    # Upsert: check if rating row exists
+    existing_result = await db.execute(
+        select(UserRating).where(
+            UserRating.user_id == user_id,
+            UserRating.movie_id == movie.id
+        )
+    )
+    existing = existing_result.scalar_one_or_none()
+
+    if existing:
+        existing.is_rejected = True
+    else:
+        new_rating = UserRating(
+            user_id=user_id,
+            movie_id=movie.id,
+            is_rejected=True,
+            is_watched=False,
+        )
+        db.add(new_rating)
+
+    await db.commit()
+
+    # Invalidate feed cache for this user
+    try:
+        import redis.asyncio as aioredis
+        import os
+        r = aioredis.from_url(
+            os.getenv("REDIS_URL", "redis://redis:6379"),
+            decode_responses=True
+        )
+        from services.feed_service import FEED_CACHE_VERSION
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
+            if keys:
+                await r.delete(*keys)
+            if cursor == 0:
+                break
+        await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
+        await r.close()
+    except Exception as e:
+        logger.warning(f"Cache invalidation after reject failed: {e}")
+
+    return {"status": "ok", "tmdb_id": tmdb_id, "rejected": True}
+

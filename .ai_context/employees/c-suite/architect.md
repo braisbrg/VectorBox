@@ -2,7 +2,7 @@
 
 > **Role:** Chief Software Architect
 > **Authority:** Final say on technology choices, forbidden patterns, and async discipline.
-> **Last Updated:** 2026-03-19
+> **Last Updated:** 2026-04-08
 
 This file serves as the **strict enforcement layer** for the VectorBox project. All code modifications must comply with these rules.
 
@@ -45,7 +45,7 @@ This file serves as the **strict enforcement layer** for the VectorBox project. 
 **Requirement:** When running parallel tasks (e.g., `asyncio.gather`), you **MUST** create a fresh, isolated session for each task:
 
 ```python
-# ✅ CORRECT: Fresh session per concurrent task (e.g., FeedService 11 parallel tasks)
+# ✅ CORRECT: Fresh session per concurrent task (e.g., FeedService 10 parallel tasks)
 async def process_items(item_ids: list[int]):
     async def process_one(item_id: int):
         async with AsyncSessionLocal() as session:  # Fresh session!
@@ -113,13 +113,29 @@ providers = await session.execute(
 - No `time.sleep()` → Use `asyncio.sleep()`
 - No synchronous HTTP clients → Use `httpx.AsyncClient` or `AsyncOpenAI`
 - No `QdrantClient` → Use `AsyncQdrantClient`
+- No CPU-bound functions called directly inside `async def` → offload via `run_in_executor`:
+  ```python
+  # ❌ FORBIDDEN: blocks the event loop
+  vector = embedding_service.generate_embedding(payload).tolist()
+
+  # ✅ REQUIRED: offloaded to thread pool
+  loop = asyncio.get_event_loop()
+  vector = await loop.run_in_executor(
+      None,
+      lambda: embedding_service.generate_embedding(payload).tolist()
+  )
+  ```
+  Applies to: `EmbeddingService.generate_embedding()`, KMeans/K-Medoids fitting, MMR reranking.
 
 ### Hanging Server-Side Fetches (Frontend)
 - Next.js Server Components using `fetch` MUST include an `AbortController` bounded by `setTimeout`. Relying on default fetch infinite timeouts blocks internal worker threads and crashes deployments.
 
-### Caching Policy (Completeness Guard)
+### Caching Policy (Completeness Guard & Per-Section TTL)
 - **Rule**: Feeds with < 3 sections MUST NOT be cached in Redis.
-- **Reason**: Prevents cache poisoning from cold starts or SSR races. `rss.py` actively sweeps and deletes invalid caches `feed:*:{user_id}:*` after background syncs.
+- **Reason**: Prevents cache poisoning from cold starts or SSR races. `rss.py` actively sweeps and deletes invalid section cache keys (`section:{FEED_CACHE_VERSION}:{user_id}:*`) AND the `cluster_rotation:{FEED_CACHE_VERSION}:{user_id}` counter after background syncs.
+- **Key Versioning**: ALL cache keys scoped to a feed version MUST include `FEED_CACHE_VERSION` (imported from `feed_service.py`). This applies to both section keys **and** `cluster_rotation` keys. A bare `cluster_rotation:{user_id}` key is forbidden — it survives version bumps and poisons cluster cycling state.
+- **SCAN, not KEYS**: Cache invalidation MUST use an async `r.scan()` loop. `await r.keys(pattern)` is a blocking O(N) operation forbidden in production.
+- **Discovery (Signal C)**: Signal C MUST use **DB-first discovery** logic (Postgres quality/popularity filters) before similarity weighting. Direct Qdrant-first discovery for Signal C is forbidden as it washes out niche quality.
 
 ### Hardcoded Secrets & Console Leaks
 - All secrets must come from environment variables.

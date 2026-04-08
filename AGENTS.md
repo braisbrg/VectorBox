@@ -89,29 +89,44 @@ VectorBox uses a 3-signal hybrid recommendation engine (Trident):
   via EmbeddingService + Qdrant nearest-neighbor search.
   Embeddings are generated from **LLM-enriched cinematic descriptions** (tone, pacing, style) via Groq (Scout/70B/8B).
   Seeds from movies rated 4+ stars OR explicitly liked (is_liked). Applies anti-vector penalties.
+  **Quality floor:** candidates filtered by `vectorbox_score IS NOT NULL AND vectorbox_score >= 55`.
+  **Coherence threshold:** `score_threshold=0.25` (vector similarity) to keep results tightly anchored.
+  **Anchor pool:** fetches up to 100 candidates without ORDER BY (Python scoring selects best anchor).
+  **Contributors:** each result carries `[{"type": "anchor", "seed_title": ..., "seed_year": ..., "seed_rating": ..., "similarity": ...}]`.
 - Signal B `your_taste` — **K-Medoids cluster search**, pointing to a real movie (`medoid_movie_id`).
-  Clusters are labeled dynamically by Groq (e.g., "A24 Dread").
-  Penalized against Anti-vector of low-rated films, applying MMR based on dominant cluster genres.
+  Clusters are labeled dynamically by Groq (e.g., "A24 Dread") with dominant genre filtering.
+  **Automated Rotation**: Automatically cycles through user's clusters on each feed fetch using a Redis counter.
+  **Quality floor:** same `vectorbox_score >= 55` filter applied.
+  **Genre coherence (EXCLUSION_PAIRS):** niche genres (Animation, Family, Horror) excluded if cluster doesn't support them. This filter ONLY applies here — NOT in hybrid_reranking (Picked For You).
+  **Contributors:** each result carries `[{"type": "cluster", "cluster_name": ..., "medoid_title": ..., "similarity": ...}]`.
+  Penalized against Anti-vector of low-rated/rejected films, applying MMR based on dominant cluster genres.
 - Signal Auteur `get_signal_b_auteur` (Directors + Cast) — Director/Actor analysis
   Uses a `_compute_auteur_signal_raw()` helper applying a weighted point system (5★→2.0, 4.5★→1.5) triggering at 3.0 pts for directors, 2.5 pts for actors.
-- Signal C `hidden_gems` — Score-to-Hype ratio filtering
-  with DYNAMIC thresholds based on user's movie count:
+- Signal C `hidden_gems` — **DB-First Discovery**
+  Identifies high-quality niche films directly from Postgres with DYNAMIC thresholds based on user's movie count:
     Cold start (<30 movies): score>60, popularity<40, votes>200
     Growing (30-99):         score>65, popularity<30, votes>300
-    Rich (100+):             score>75, popularity<20, votes>500
-  Uses an Exoticism Boost (`+15%`) for non-English films.
+    Rich (100+):             score>70, popularity<20, votes>500
+  Uses an Exoticism Boost (`+15%`) for non-English films. Re-ranked using 30% vector similarity weight.
+
+- Picked For You (`hybrid_reranking`) — Trident RRF fusion of signals A (vibe), Auteur (director/actor), and C (hidden gems).
+  **Contributors:** normalized percentage breakdown per signal: `[{"type": "vibe"|"auteur"|"crowd", "label": ..., "score": 0.0-1.0}]` where scores sum to 1.0.
+  Percentage hidden in UI when only a single signal contributed (no "100%" shown).
+  EXCLUSION_PAIRS genre filter is ABSENT here — only MIN_QUALITY_SCORE=55 applies.
 
 Results fused via RRF (Reciprocal Rank Fusion) +
 Sigmoid quality weighting on VectorBox Score (0–100).
 Magic Box intent `quality_gate_bypass` bypasses normal bounds (midpoint 65) explicitly allowing "trashy" responses by dropping the midpoint to 25.
 
-Feed orchestration: `FeedService.get_main_feed()` runs **11 tasks
+Feed orchestration: `FeedService.get_main_feed()` runs **10 tasks
 in parallel** via `asyncio.gather()`. Each task opens its own
 isolated `AsyncSessionLocal()` session — they NEVER share sessions.
 
-**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped `_invalidate_feed_cache()` after RSS sync.
+**Anti-Vector Pre-Compute (FIX 4):** `anti_vector` is computed ONCE before the `asyncio.gather()` using a short-lived session, then threaded to Signal A and Signal B via the `precomputed_anti_vector` parameter. Signals skip `_get_anti_vector()` internally if this value is provided. Never compute it twice.
 
-Deep Dive now runs FULLY IN PARALLEL with the other feed tasks, applying a Trust Bucket filter (`vote_count` > 5k or high similarity) to drop obscure outliers.
+**Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped via `_invalidate_feed_cache()` after RSS sync — this sweeps BOTH `section:{FEED_CACHE_VERSION}:{user_id}:*` keys AND `signal_cache:{user_id}:*` keys (Trident signal 24h caches), so stale recommendations don't persist after new data arrives. The feed is cached on a per-section basis with discrete TTL limits targeting optimum freshness.
+
+
 
 ---
 
@@ -292,6 +307,52 @@ All of these have been found and fixed. Do not reintroduce.
     Note: HTTP clients (TMDBClient, QdrantService) ARE safe
     to share across gather tasks. Only DB sessions are not.
 
+11. EXCLUSION_PAIRS IN HYBRID_RERANKING
+    ❌  Applying EXCLUSION_PAIRS genre filter inside hybrid_reranking (Picked For You)
+        → reduces candidate pool to near zero ("5 movies remain" observed in logs)
+    ✅  EXCLUSION_PAIRS belongs ONLY in get_your_taste_section
+
+12. is_liked IN RSS UPSERT SET CLAUSE
+    ❌  Including "is_liked": excluded.is_liked in on_conflict_do_update for RSS
+        → RSS items never carry liked status, silently resets ZIP-imported likes to False
+    ✅  Omit is_liked from RSS upsert SET; only ZIP upload controls is_liked
+
+16. AWAIT ON aioredis.from_url() (redis-py ≥4.2)
+    ❌  r = await aioredis.from_url(url, decode_responses=True)
+        → from_url() is SYNCHRONOUS in redis-py ≥4.2; await raises TypeError,
+          silently caught by except Exception, leaving r = None → all caching disabled
+    ✅  r = aioredis.from_url(url, decode_responses=True)  # no await
+
+13. REDIS r.keys() IN ASYNC CONTEXT
+    ❌  keys = await r.keys("section:*")
+        → scans the entire keyspace in a single blocking O(N) call;
+          hangs the Redis event loop under production load
+    ✅  Use SCAN loop:
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
+            if keys:
+                await r.delete(*keys)
+            if cursor == 0:
+                break
+
+14. UNVERSIONED CACHE KEYS
+    ❌  cluster_rotation:{user_id}  (no version prefix)
+        → on FEED_CACHE_VERSION bump, section keys are wiped but the rotation
+          counter persists, causing stale cluster cycling state
+    ✅  cluster_rotation:{FEED_CACHE_VERSION}:{user_id}
+        Both sides of the cache (section keys AND cluster_rotation)
+        MUST use the same FEED_CACHE_VERSION prefix from feed_service.py.
+
+15. TYPESCRIPT TYPE ERASURE
+    ❌  (obj as any).field — casting to any to access a known property
+    ❌  interface Foo { [key: string]: any } — open index signature on typed models
+    ❌  setState(x as any as TargetType)   — double cast to force assignment
+    ✅  Add the missing field to the proper interface (e.g. has_data?: boolean on UserSession)
+    ✅  Declare all fields explicitly on request/response interfaces (e.g. SearchIntent)
+    ✅  Remove dead fallback paths driven by wrong types (e.g. (movie as any).poster_path
+        when the API always returns poster_url)
+
 ---
 
 ## Data Integrity — Letterboxd URI Normalization
@@ -305,6 +366,31 @@ CSVParser.normalize_letterboxd_uri() handles this:
   /tmdb/12345          → None         (rejected)
 
 Applied automatically in parse_ratings_csv and parse_watched_csv.
+
+## Data Integrity — CSV Key Normalization
+
+`DataProcessor._get_key(row)` builds the lookup key as `"{title}_{year}"`.
+**CRITICAL:** pandas promotes the Year column to float64 (e.g. 1991.0) when any
+row in the CSV has a missing year. Always normalize via `int(float(raw_year))`
+to prevent key mismatches between CSVs (e.g. "My Girl_1991.0" vs "My Girl_1991").
+The current implementation in `data_processor.py` handles this correctly.
+
+## Data Integrity — RSS Sync & is_liked
+
+The RSS upsert in `rss_service.py` MUST NOT include `is_liked` in the
+`on_conflict_do_update` SET clause. RSS feeds carry no liked-film data, so
+including it would overwrite ZIP-imported likes with False on every sync.
+Current implementation omits `is_liked` from the RSS upsert SET.
+
+## UserRating Schema
+
+`user_ratings` table columns include `watch_count INTEGER DEFAULT 1`:
+- Populated from `diary.csv` during ZIP import (each diary row = +1 watch)
+- Incremented by `rss_service.py` on rewatch detection (existing `is_watched` entry)
+- Used in clustering weight multiplier (watch_count≥3 → ×1.5, watch_count=2 → ×1.2)
+- Used in `_score_anchor_candidate` rewatch boost (up to ×1.4)
+- `create_user_clusters` in upload.py receives `groq_client=groq_client` (not None)
+  so LLM cluster labels are generated on initial upload.
 
 ---
 

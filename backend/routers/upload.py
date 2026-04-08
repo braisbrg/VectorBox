@@ -3,6 +3,7 @@ Upload router for CSV file processing
 Security: File validation, rate limiting, background tasks
 v1.1: Uses Redis-based TaskStore for progress tracking
 """
+import asyncio
 from fastapi import APIRouter, UploadFile, File, Depends, BackgroundTasks, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,7 +14,7 @@ from slowapi.util import get_remote_address
 import logging
 
 from config import get_db
-from dependencies import get_current_user, verify_user_ownership
+from dependencies import get_current_user, verify_user_ownership, get_embedding_service, get_qdrant_service
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.clustering_service import ClusteringService
@@ -42,7 +43,8 @@ async def get_upload_status(
 async def process_single_movie(
     movie_data: dict,
     user_id: int,
-    tmdb_client: "TMDBClient"
+    tmdb_client: "TMDBClient",
+    groq_client=None
 ):
     """
     Helper to process a single movie in a batch.
@@ -63,7 +65,7 @@ async def process_single_movie(
     try:
         # Fresh session per concurrent task (Architect Rule §2)
         async with AsyncSessionLocal() as session:
-            movie_service = MovieService(session, tmdb=tmdb_client)
+            movie_service = MovieService(session, tmdb=tmdb_client, groq_client=groq_client)
             try:
                 # --- Step 1: Local DB lookup by letterboxd_uri ---
                 if letterboxd_uri:
@@ -82,7 +84,13 @@ async def process_single_movie(
                 tmdb_result = await tmdb_client.search_movie(title, year)
 
                 if not tmdb_result:
-                    logger.warning(f"No TMDB result for '{title}' ({year})")
+                    logger.debug(f"No TMDB result for '{title}' ({year}) — may be a TV show or regional title")
+                    return None, False
+
+                # FIX 1: Reject TV show results — movies have release_date, TV shows have first_air_date.
+                # search_movie calls /search/movie so this is defensive; guards against future /search/multi use.
+                if tmdb_result.get("first_air_date") and not tmdb_result.get("release_date"):
+                    logger.debug(f"Skipping TV show result for '{title}' ({year})")
                     return None, False
 
                 # Strict year validation: reject if difference > 1
@@ -142,8 +150,8 @@ async def enrich_movies_background(
     from config import AsyncSessionLocal
     from services.movie_service import MovieService
 
-    embedding_service = EmbeddingService()
-    qdrant = QdrantService()
+    embedding_service = await get_embedding_service()
+    qdrant = await get_qdrant_service()
     task_store = get_task_store()
 
     total_movies = len(movies_data)
@@ -169,6 +177,16 @@ async def enrich_movies_background(
         from services.tmdb_client import TMDBClient
         tmdb_client = TMDBClient()
 
+        # FIX 5: Create groq_client once for LLM-enriched embeddings
+        import os
+        from openai import AsyncOpenAI
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        groq_client = AsyncOpenAI(
+            api_key=groq_api_key,
+            base_url="https://api.groq.com/openai/v1",
+            max_retries=0
+        ) if groq_api_key else None
+
         try:
             async with AsyncSessionLocal() as db:
                 # Process in Chunks
@@ -187,9 +205,11 @@ async def enrich_movies_background(
                         await task_store.update_progress(task_id, progress, msg)
 
                     # 1. Parallel Resolve & Ingest (each task owns its own session)
+                    # FIX 5: Skip Scout enrichment during bulk upload to preserve quota.
+                    # The nightly enrich_vectors.py --enrich-embeddings script handles enrichment.
                     tasks = []
                     for m_data in chunk:
-                        tasks.append(process_single_movie(m_data, user_id, tmdb_client))
+                        tasks.append(process_single_movie(m_data, user_id, tmdb_client, groq_client=None))
 
                     # Results: list of (movie_id | None, needs_vector)
                     results = await asyncio.gather(*tasks)
@@ -197,11 +217,9 @@ async def enrich_movies_background(
                     # 2. Update User Ratings — SERIAL on main session (safe)
                     movies_to_vectorize_ids = []
 
-                    for idx, (movie_id, needs_vector) in enumerate(results):
+                    for movie_data, (movie_id, needs_vector) in zip(chunk, results):
                         if not movie_id:
                             continue
-
-                        movie_data = chunk[idx]
 
                         try:
                             # 3. UPSERT Rating Safely
@@ -213,7 +231,8 @@ async def enrich_movies_background(
                                 is_liked=movie_data.get("is_liked", False),
                                 is_watched=movie_data.get("is_watched", False),
                                 watched_date=movie_data.get("watched_date"),
-                                review=movie_data.get("review")
+                                review=movie_data.get("review"),
+                                watch_count=movie_data.get("watch_count", 1),
                             ).on_conflict_do_update(
                                 index_elements=["user_id", "movie_id"],
                                 set_={
@@ -222,7 +241,8 @@ async def enrich_movies_background(
                                     "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
                                     "is_watched": getattr(insert(UserRating).excluded, "is_watched"),
                                     "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
-                                    "review": getattr(insert(UserRating).excluded, "review")
+                                    "review": getattr(insert(UserRating).excluded, "review"),
+                                    "watch_count": getattr(insert(UserRating).excluded, "watch_count"),
                                 }
                             )
                             await db.execute(stmt)
@@ -262,8 +282,12 @@ async def enrich_movies_background(
                                     "keywords": m.keywords or []
                                 })
 
-                            # Generate Batch Embeddings (Fast)
-                            vectors = embedding_service.generate_batch_embeddings(data_for_embedding)
+                            # Generate Batch Embeddings (non-blocking)
+                            loop = asyncio.get_event_loop()
+                            vectors = await loop.run_in_executor(
+                                None,
+                                lambda: embedding_service.generate_batch_embeddings(data_for_embedding)
+                            )
 
                             # Prepare Qdrant Points
                             from qdrant_client.models import PointStruct
@@ -306,7 +330,7 @@ async def enrich_movies_background(
 
                 try:
                     clustering = ClusteringService(qdrant=qdrant)
-                    await clustering.create_user_clusters(user_id, db)
+                    await clustering.create_user_clusters(user_id, db, groq_client=groq_client)
                     logger.info(f"Created clusters for user {user_id}")
                 except Exception as e:
                     logger.error(f"Failed to create clusters: {e}")
@@ -326,6 +350,9 @@ async def enrich_movies_background(
         finally:
             # Close the shared TMDB HTTP client
             await tmdb_client.aclose()
+            # FIX 5: Close the shared Groq client
+            if groq_client:
+                await groq_client.close()
 
         # Mark as complete (outside the session context — uses in-memory dict + Redis)
         upload_status[user_id] = {

@@ -7,6 +7,7 @@ from collections import Counter
 import random
 import math
 import json
+import hashlib
 import redis.asyncio as redis
 
 from models.database import UserRating, Movie, UserCluster, User
@@ -38,7 +39,7 @@ class RecommendationService:
         self.clustering = ClusteringService(qdrant=qdrant)
         self.movie_service = MovieService(db, tmdb=tmdb)
 
-    @safe_execution(fallback_return=FeedSection(id="hybrid_picks", title="Hybrid Picks (Signal Lost)", items=[]))
+    @safe_execution(fallback_return=FeedSection(id="picked_for_you", title="Picked For You (Signal Lost)", items=[]))
     async def get_hybrid_picks_section(
         self, 
         user_id: int, 
@@ -88,25 +89,35 @@ class RecommendationService:
                 candidates_lists.append(res)
                 
         signal_a, signal_b, signal_c = candidates_lists
-        
+
         logger.info(f"[TRIDENT] Signal Counts -> A: {len(signal_a)}, Auteur: {len(signal_b)}, C: {len(signal_c)}")
-        
+
+        # Build per-signal score maps for contributor provenance (A3)
+        signal_a_ids = {m.id: 1 / (60 + i) for i, m in enumerate(signal_a)}
+        signal_b_ids = {m.id: 1 / (60 + i) for i, m in enumerate(signal_b)}
+        signal_c_ids = {m.id: 1 / (60 + i) for i, m in enumerate(signal_c)}
+
         # 2. Fusion (RRF)
         # We assume candidates are Movie objects (or dicts representing them)
         # We need uniform ID access. Let's make sure signals return Movie objects.
-        
+
         rrf_scores = self.reciprocal_rank_fusion([signal_a, signal_b, signal_c])
-        
+
         # 3. Post-Processing (Quality & Diversity)
-        final_items = await self.hybrid_reranking(rrf_scores, user_id, country, provider_service)
+        final_items = await self.hybrid_reranking(
+            rrf_scores, user_id, country, provider_service,
+            signal_a_ids=signal_a_ids,
+            signal_b_ids=signal_b_ids,
+            signal_c_ids=signal_c_ids
+        )
         
         # Update seen_ids
         for item in final_items:
             seen_ids.add(item.id)
             
         return FeedSection(
-            id="hybrid_picks",
-            title="Hybrid Picks for You",
+            id="picked_for_you",
+            title="Picked For You",
             items=final_items
         )
 
@@ -119,7 +130,11 @@ class RecommendationService:
             logger.warning(f"Redis client not available for {signal_type} signal. Computing without cache/lock.")
             return await compute_method(user.id, **params)
 
-        cache_key = f"signal_cache:{user.id}:{signal_type}:{json.dumps(params, sort_keys=True)}"
+        # Strip non-serializable params (e.g. BackgroundTasks) from the cache key
+        serializable_params = {k: v for k, v in params.items() if k != "background_tasks"}
+        # FIX 4: Hash params to avoid multi-KB Redis keys from large exclude_ids lists
+        params_hash = hashlib.md5(json.dumps(serializable_params, sort_keys=True).encode()).hexdigest()[:12]
+        cache_key = f"signal_cache:{user.id}:{signal_type}:{params_hash}"
         
         # Try to get from cache first
         cached = await self.redis.get(cache_key)
@@ -430,8 +445,27 @@ class RecommendationService:
         rrf_scores: Dict[int, float],
         user_id: int,
         country: str,
-        provider_service: ProviderService
+        provider_service: ProviderService,
+        signal_a_ids: Dict[int, float] = None,
+        signal_b_ids: Dict[int, float] = None,
+        signal_c_ids: Dict[int, float] = None,
     ) -> List[FeedItem]:
+        def build_contributors(movie_id, sa, sb, sc):
+            sa, sb, sc = sa or {}, sb or {}, sc or {}
+            raw = []
+            if movie_id in sa:
+                raw.append(("vibe", "Semantic Match", sa[movie_id]))
+            if movie_id in sb:
+                raw.append(("auteur", "Director/Actor You Follow", sb[movie_id]))
+            if movie_id in sc:
+                raw.append(("crowd", "Hidden Gem Signal", sc[movie_id]))
+            if not raw:
+                return []
+            total = sum(s for _, _, s in raw)
+            return sorted([
+                {"type": t, "label": l, "score": round(s / total, 3)}
+                for t, l, s in raw
+            ], key=lambda x: x["score"], reverse=True)
         """
         Final polish: RRF Score * Quality Score -> Collection Collapsing -> Batch Provider Fetch
         """
@@ -444,13 +478,17 @@ class RecommendationService:
         result = await self.db.execute(stmt)
         movies = result.scalars().all()
 
+        # Minimum quality filter — no movie below 55 VB score in Picked For You
+        MIN_QUALITY_SCORE = 55
+        movies = [m for m in movies if (m.vectorbox_score or 50) >= MIN_QUALITY_SCORE]
+
         # 2. Score = RRF * Sigmoid Quality Weight
         candidates = []
         for m in movies:
             rrf_score = rrf_scores.get(m.id, 0)
             vb_score = m.vectorbox_score or 50
             quality_weight = self.clustering.calculate_quality_weight(vb_score)
-            candidates.append({"movie": m, "score": rrf_score * quality_weight})
+            candidates.append({"movie": m, "movie_id": m.id, "score": rrf_score * quality_weight})
 
         candidates.sort(key=lambda x: x["score"], reverse=True)
 
@@ -527,7 +565,7 @@ class RecommendationService:
                 letterboxd_uri=movie.letterboxd_uri,
                 rating=movie.vote_average,
                 overview=movie.overview,
-                contributors=[],
+                contributors=build_contributors(movie.id, signal_a_ids, signal_b_ids, signal_c_ids),
                 vectorbox_score=movie.vectorbox_score,
                 imdb_rating=movie.imdb_rating,
                 metacritic_rating=movie.metacritic_rating,

@@ -35,8 +35,16 @@ interface SearchResult {
 import { useLanguage } from "@/components/language-provider";
 
 interface SearchIntent {
-    summary?: string;
-    [key: string]: any;
+    semantic_query: string;
+    year_min?: number;
+    year_max?: number;
+    include_genres?: string[];
+    max_runtime_minutes?: number;
+    popularity_vibe?: "blockbuster" | "hidden_gem" | "any";
+    original_language?: string;
+    reference_movie?: string;
+    quality_gate_bypass?: boolean;
+    reasoning: string;
 }
 
 export function MagicSearch({ userId }: MagicSearchProps) {
@@ -55,7 +63,6 @@ export function MagicSearch({ userId }: MagicSearchProps) {
             const { api } = await import("@/lib/api");
             const res = await api.post("/api/search/natural", {
                 query: text,
-                user_id: userId,
                 use_deep_analysis: isDeepAnalysis,
                 country_code: "ES",
             });
@@ -63,7 +70,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
         },
         onSuccess: (data) => {
             // Deduplicate results
-            const uniqueResults = data.results ? Array.from(new Map(data.results.map((item: any) => [item.movie_id, item])).values()) : [];
+            const uniqueResults = data.results ? Array.from(new Map((data.results as SearchResult[]).map((item: SearchResult) => [item.movie_id, item])).values()) : [];
             setResults(uniqueResults as SearchResult[]);
             setIntent(data.intent);
             setShowResults(true);
@@ -197,47 +204,60 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
-                            {results.slice(page * MESSAGES_PER_PAGE, (page + 1) * MESSAGES_PER_PAGE).map((movie, index) => (
-                                <motion.div
-                                    key={movie.movie_id}
-                                    initial={{ opacity: 0, scale: 0.9 }}
-                                    animate={{ opacity: 1, scale: 1 }}
-                                    transition={{ delay: index * 0.05 }}
-                                    className="relative group"
-                                >
-                                    <MovieCard
-                                        id={movie.movie_id}
-                                        title={movie.title}
-                                        posterPath={movie.poster_path}
-                                        year={movie.year}
-                                        matchScore={movie.score ? Math.round(movie.score) : undefined}
-                                        overview={movie.overview}
-                                        genres={movie.genres}
-                                        href={`https://letterboxd.com/tmdb/${movie.movie_id}`}
-                                        variant="grid"
-                                        rating={movie.vote_average}
-                                        runtime={movie.runtime}
-                                        providers={movie.streaming_providers}
-                                        // Phase 12 Props
-                                        vectorbox_score={movie.vectorbox_score}
-                                        imdb_rating={movie.imdb_rating}
-                                        metacritic_rating={movie.metacritic_rating}
-                                        rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
-                                        title_es={movie.title_es}
-                                        overview_es={movie.overview_es}
-                                        onInspect={() => {}} // Placeholder or pass from Dashboard
-                                    />
-                                    {/* AI Reason Overlay for Deep Analysis */}
-                                    {movie.ai_reason && (
-                                        <div className="absolute bottom-0 left-0 right-0 bg-black/90 border-t border-primary p-3 transform translate-y-full group-hover:translate-y-0 transition-transform z-20">
-                                            <p className="text-[10px] text-primary font-mono leading-tight">
-                                                <BrainCircuit className="w-3 h-3 inline mr-1" />
-                                                {movie.ai_reason}
-                                            </p>
-                                        </div>
-                                    )}
-                                </motion.div>
-                            ))}
+                            {results.slice(page * MESSAGES_PER_PAGE, (page + 1) * MESSAGES_PER_PAGE).map((movie, index) => {
+                                const handleReject = async (tmdbId: number) => {
+                                    try {
+                                        const { rejectMovie } = await import("@/lib/api");
+                                        await rejectMovie(tmdbId);
+                                        setResults(prev => prev.filter(r => r.movie_id !== tmdbId));
+                                    } catch (error) {
+                                        console.error("Failed to reject movie from search:", error);
+                                    }
+                                };
+
+                                return (
+                                    <motion.div
+                                        key={movie.movie_id}
+                                        initial={{ opacity: 0, scale: 0.9 }}
+                                        animate={{ opacity: 1, scale: 1 }}
+                                        transition={{ delay: index * 0.05 }}
+                                        className="relative group"
+                                    >
+                                        <MovieCard
+                                            id={movie.movie_id}
+                                            title={movie.title}
+                                            posterPath={movie.poster_path}
+                                            year={movie.year}
+                                            matchScore={movie.score ? Math.round(movie.score) : undefined}
+                                            overview={movie.overview}
+                                            genres={movie.genres}
+                                            href={`https://letterboxd.com/tmdb/${movie.movie_id}`}
+                                            variant="grid"
+                                            rating={movie.vote_average}
+                                            runtime={movie.runtime}
+                                            providers={movie.streaming_providers}
+                                            // Phase 12 Props
+                                            vectorbox_score={movie.vectorbox_score}
+                                            imdb_rating={movie.imdb_rating}
+                                            metacritic_rating={movie.metacritic_rating}
+                                            rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
+                                            title_es={movie.title_es}
+                                            overview_es={movie.overview_es}
+                                            onInspect={() => { }} // Placeholder or pass from Dashboard
+                                            onReject={handleReject}
+                                        />
+                                        {/* AI Reason Overlay for Deep Analysis */}
+                                        {movie.ai_reason && (
+                                            <div className="absolute bottom-0 left-0 right-0 bg-black/90 border-t border-primary p-3 transform translate-y-full group-hover:translate-y-0 transition-transform z-20">
+                                                <p className="text-[10px] text-primary font-mono leading-tight">
+                                                    <BrainCircuit className="w-3 h-3 inline mr-1" />
+                                                    {movie.ai_reason}
+                                                </p>
+                                            </div>
+                                        )}
+                                    </motion.div>
+                                );
+                            })}
                         </div>
 
                         {results.length > MESSAGES_PER_PAGE && (

@@ -1,12 +1,11 @@
 import logging
 import asyncio
-import os
 import redis.asyncio as aioredis
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from config import AsyncSessionLocal
+from config import AsyncSessionLocal, REDIS_URL
 from models.database import UserRating, Movie
 from models.schemas import FeedSection, FeedItem, FeedResponse
 from services.tmdb_client import TMDBClient
@@ -23,21 +22,66 @@ logger = logging.getLogger(__name__)
 # Bump when FeedItem/FeedSection schema changes to auto-invalidate Redis cache
 FEED_CACHE_VERSION = "v2"
 
+SECTION_CACHE_TTLS: dict[str, int] = {
+    "popular_letterboxd":  86400,  # 24h — changes once daily via scraper
+    "available_now":       3600,   # 1h — provider availability
+    "because_you_watched": 7200,   # 2h
+    "your_taste":          7200,   # 2h
+    "hidden_gems":         7200,   # 2h
+    "picked_for_you":      7200,   # 2h
+    "wildcard":            3600,   # 1h — some randomness desired
+    "random_picks":        0,      # never cache — random by design
+    "cult_actor":          7200,   # 2h
+    "auteur":              7200,   # 2h
+}
+DEFAULT_SECTION_TTL = 3600
+
+async def _get_cached_section(
+    r, user_id: int, section_id: str, country_code: str, prov_str: str
+) -> FeedSection | None:
+    if not r:
+        return None
+    ttl = SECTION_CACHE_TTLS.get(section_id, DEFAULT_SECTION_TTL)
+    if ttl == 0:
+        return None  # never cache
+    key = f"section:{FEED_CACHE_VERSION}:{user_id}:{section_id}:{country_code}:{prov_str}"
+    try:
+        cached = await r.get(key)
+        if cached:
+            return FeedSection.model_validate_json(cached)
+    except Exception:
+        pass
+    return None
+
+async def _cache_section(
+    r, user_id: int, section: FeedSection, country_code: str, prov_str: str
+) -> None:
+    if not r:
+        return
+    ttl = SECTION_CACHE_TTLS.get(section.id, DEFAULT_SECTION_TTL)
+    if ttl == 0:
+        return
+    key = f"section:{FEED_CACHE_VERSION}:{user_id}:{section.id}:{country_code}:{prov_str}"
+    try:
+        await r.setex(key, ttl, section.model_dump_json())
+    except Exception:
+        pass
+
 class FeedService:
     def __init__(self, qdrant: QdrantService = None, embedding_service: EmbeddingService = None):
         self.engine = RecommendationEngine(qdrant=qdrant, embedding_service=embedding_service)
 
     @safe_execution(fallback_return=FeedSection(id="because_you_watched", title="Recommended for You", items=[]))
     async def get_because_you_watched_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, qdrant: QdrantService, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, qdrant: QdrantService, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, precomputed_anti_vector = None
     ) -> FeedSection:
-        return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks)
+        return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
 
     @safe_execution(fallback_return=FeedSection(id="your_taste", title="Your Taste", items=[]))
     async def get_your_taste_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, precomputed_anti_vector = None
     ) -> FeedSection:
-        return await self.engine.get_your_taste_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks)
+        return await self.engine.get_your_taste_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
 
     @safe_execution(fallback_return=FeedSection(id="hidden_gems", title="Hidden Gems", items=[]))
     async def get_hidden_gems_section(
@@ -51,11 +95,7 @@ class FeedService:
     ) -> FeedSection:
         return await self.engine.get_available_now_section(user_id, db, tmdb, seen_ids, country, streaming_providers)
 
-    @safe_execution(fallback_return=FeedSection(id="deep_dive", title="Deep Dive", items=[]))
-    async def get_deep_dive_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, include_low_quality: bool = False, background_tasks = None
-    ) -> FeedSection:
-        return await self.engine.get_deep_dive_section(user_id, db, tmdb, seen_ids, country, provider_service, include_low_quality, background_tasks=background_tasks)
+
 
     @safe_execution(fallback_return=None)
     async def get_wildcard_section(
@@ -160,18 +200,10 @@ class FeedService:
         
         return FeedResponse(feed=feed)
 
-    async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None) -> Optional[FeedSection]:
+    async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None, redis_client = None) -> Optional[FeedSection]:
         tmdb = provider_service.tmdb if provider_service else None
-        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
+        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
         return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service, background_tasks=background_tasks)
-
-    async def get_auteur_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None) -> Optional[FeedSection]:
-        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
-        return await recommender.get_auteur_section(user_id, country, seen_ids, provider_service=provider_service)
-
-    async def get_cult_actor_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None) -> Optional[FeedSection]:
-        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant)
-        return await recommender.get_cult_actor_section(user_id, country, seen_ids, provider_service=provider_service)
 
     async def get_main_feed(
         self,
@@ -188,21 +220,25 @@ class FeedService:
         Includes high-level Redis caching for blazing fast loads.
         """
         # --- CACHE INTERCEPT BLOCK ---
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        redis_url = REDIS_URL
         r = None
+        prov_str = ",".join(map(str, sorted(streaming_providers)))
         try:
-            r = await aioredis.from_url(redis_url, decode_responses=True)
-            prov_str = ",".join(map(str, sorted(streaming_providers)))
-            cache_key = f"feed:{FEED_CACHE_VERSION}:{user_id}:{country_code}:global:{include_low_quality}:{prov_str}"
-            
-            cached = await r.get(cache_key)
-            if cached:
-                logger.info(f"Feed Cache HIT for User {user_id} (0.05s response)")
-                await r.close()
-                return FeedResponse.model_validate_json(cached)
+            r = aioredis.from_url(redis_url, decode_responses=True)
         except Exception as e:
-            logger.warning(f"Redis feed cache read failed: {e}")
+            logger.warning(f"Redis connection failed: {e}")
         # --- END CACHE INTERCEPT ---
+
+        # --- FIX 4: Pre-compute anti_vector once — Signal A and Signal B both need it ---
+        precomputed_anti_vector = None
+        try:
+            async with AsyncSessionLocal() as session:
+                precomputed_anti_vector = await self.engine._get_anti_vector(user_id, session, qdrant)
+            if precomputed_anti_vector:
+                logger.info(f"Pre-computed anti_vector for user_id={user_id} ({len(precomputed_anti_vector)} dims)")
+        except Exception as e:
+            logger.warning(f"Anti-vector pre-compute failed for user_id={user_id}: {e}")
+        # --- END FIX 4 ---
 
         # --- PRE-POPULATE watched tmdb_ids so every signal excludes them ---
         watched_tmdb_ids: Set[int] = set()
@@ -226,6 +262,9 @@ class FeedService:
         # --- END PRE-POPULATE ---
 
         async def task_popular():
+            cached = await _get_cached_section(r, user_id, "popular_letterboxd", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -235,24 +274,37 @@ class FeedService:
                 return None
 
         async def task_watched():
+            cached = await _get_cached_section(r, user_id, "because_you_watched", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks)
+                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Watched]: {e}")
                 return None
 
         async def task_taste():
+            cached = await _get_cached_section(r, user_id, "your_taste", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_your_taste_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks)
+                    return await self.get_your_taste_section(
+                        user_id, session, tmdb, watched_tmdb_ids.copy(),
+                        country_code, local_provider, background_tasks=background_tasks,
+                        precomputed_anti_vector=precomputed_anti_vector
+                    )
             except Exception as e:
                 logger.error(f"Feed Task Failed [Taste]: {e}")
                 return None
 
         async def task_wildcard():
+            cached = await _get_cached_section(r, user_id, "wildcard", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -262,6 +314,9 @@ class FeedService:
                 return None
 
         async def task_random():
+            cached = await _get_cached_section(r, user_id, "random_picks", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -271,6 +326,9 @@ class FeedService:
                 return None
 
         async def task_hidden():
+            cached = await _get_cached_section(r, user_id, "hidden_gems", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
@@ -280,6 +338,9 @@ class FeedService:
                 return None
 
         async def task_available():
+            cached = await _get_cached_section(r, user_id, "available_now", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     return await self.get_available_now_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, streaming_providers)
@@ -288,46 +349,44 @@ class FeedService:
                 return None
 
         async def task_hybrid():
+            cached = await _get_cached_section(r, user_id, "picked_for_you", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_hybrid_picks_section(user_id, session, country_code, watched_tmdb_ids.copy(), local_provider, qdrant=qdrant, background_tasks=background_tasks)
+                    return await self.get_hybrid_picks_section(user_id, session, country_code, watched_tmdb_ids.copy(), local_provider, qdrant=qdrant, background_tasks=background_tasks, redis_client=r)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hybrid]: {e}")
                 return None
 
         async def task_auteur():
+            cached = await _get_cached_section(r, user_id, "auteur", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant)
+                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
                     return await recommender.get_auteur_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Auteur]: {e}")
                 return None
 
         async def task_cult_actor():
+            cached = await _get_cached_section(r, user_id, "cult_actor", country_code, prov_str)
+            if cached:
+                return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant)
+                    recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
                     return await recommender.get_cult_actor_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Cult Actor]: {e}")
                 return None
 
-        async def task_deep_dive():
-            try:
-                async with AsyncSessionLocal() as session:
-                    local_provider = ProviderService(session, tmdb)
-                    return await self.get_deep_dive_section(
-                        user_id, session, tmdb, watched_tmdb_ids.copy(), country_code,
-                        local_provider, include_low_quality=include_low_quality,
-                        background_tasks=background_tasks
-                    )
-            except Exception as e:
-                logger.error(f"Feed Task Failed [Deep Dive]: {e}")
-                return None
+
 
         tasks =[
             task_popular(),
@@ -340,7 +399,6 @@ class FeedService:
             task_auteur(),
             task_cult_actor(),
             task_available(),
-            task_deep_dive(),
         ]
         
         results = await asyncio.gather(*tasks)
@@ -356,7 +414,6 @@ class FeedService:
             section_auteur,
             section_cult_actor,
             section_d,
-            section_deep_dive,
         ) = results
 
         # Deduplicate and assemble in display order
@@ -364,8 +421,8 @@ class FeedService:
         final_sections = []
 
         ordered_results =[
-            section_hybrid,
             section_popular,
+            section_hybrid,
             section_a,
             section_b,
             section_auteur,
@@ -388,14 +445,6 @@ class FeedService:
                 section.items = unique_items
                 final_sections.append(section)
 
-        if section_deep_dive and section_deep_dive.items:
-            unique_items =[item for item in section_deep_dive.items if item.id not in seen_ids]
-            for item in unique_items:
-                seen_ids.add(item.id)
-            if unique_items:
-                section_deep_dive.items = unique_items
-                insert_pos = min(len(final_sections), 5)
-                final_sections.insert(insert_pos, section_deep_dive)
 
         final_resp = FeedResponse(feed=final_sections, status="ok")
 
@@ -405,8 +454,10 @@ class FeedService:
                 # Defense: only cache if feed is "complete" (>= 3 sections)
                 # to avoid poisoning cache during cold starts/warmups.
                 if len(final_sections) >= 3:
-                    await r.setex(cache_key, 3600, final_resp.model_dump_json())
-                    logger.info(f"Feed Cache MISS. Computed and saved for User {user_id}")
+                    for section in ordered_results:
+                        if section and section.items:
+                            await _cache_section(r, user_id, section, country_code, prov_str)
+                    logger.info(f"Per-section cache saved for User {user_id}")
                 else:
                     logger.warning(
                         f"Feed too thin ({len(final_sections)} sections) for User {user_id}. SKIPPING CACHE."

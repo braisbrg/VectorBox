@@ -177,3 +177,65 @@ async def generate_cinematic_description(
 
     logger.warning(f"All Groq models exhausted for '{title}', using legacy fallback")
     return fallback, None
+
+
+async def generate_profile_summary(
+    top_rated_films: list[dict],  # [{"title": str, "year": int, "rating": float, "genres": list[str]}]
+    dominant_genres: list[str],
+    groq_client,
+) -> str | None:
+    """
+    Based on these highly-rated films and genres, extract the cinematic keywords that define this person's taste profile.
+
+    Top rated films: {film_list}
+    Dominant genres: {genres}
+
+    Respond with ONLY a comma-separated list of 12-15 keywords. No sentences, no explanations, no punctuation other than commas.
+    Focus on: tone (e.g. melancholic, darkly comedic), themes (e.g. moral ambiguity, identity), visual style (e.g. handheld gritty, long takes), pacing (e.g. slow burn, frenetic), and cinematic movements or affinities (e.g. French New Wave, A24, Korean revenge).
+    Example format: slow burn, melancholic, morally complex, atmospheric, character-driven, contemplative, humanist, European art house, naturalistic lighting, existential themes, quiet intensity, bittersweet
+    Uses llama-4-scout-17b exclusively for high-fidelity profiling.
+    """
+    if not groq_client or not top_rated_films:
+        return None
+
+    films_str = "\n".join([
+        f"- {f['title']} ({f['year']}) [{f['rating']} stars] - Genres: {', '.join(f.get('genres', []))}"
+        for f in top_rated_films[:10]
+    ])
+    genres_str = ", ".join(dominant_genres) if dominant_genres else "Various"
+
+    prompt = (
+        "USER PROFILE DATA:\n"
+        f"Top Rated Films:\n{films_str}\n\n"
+        f"Dominant Genres: {genres_str}\n\n"
+        "TASK:\n"
+        "Extract 12-15 keywords that define this user's cinematic taste. "
+        "Respond with ONLY a comma-separated list. No sentences, no explanation.\n"
+        "Focus on: tone, themes, visual style, pacing, cinematic movements.\n"
+        "Example: slow burn, melancholic, morally complex, atmospheric, character-driven, "
+        "contemplative, humanist, European art house, naturalistic lighting, existential themes, "
+        "quiet intensity, bittersweet"
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": "You are a film critic. Respond ONLY with a comma-separated list of keywords. No sentences, no markdown, no explanation.",
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+    try:
+        response = await groq_client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=messages,
+            temperature=0.5,
+            max_tokens=250,
+        )
+        summary = response.choices[0].message.content.strip()
+        if summary and len(summary) > 30:
+            return summary
+    except Exception as e:
+        logger.error(f"Profile summary generation failed: {e}")
+    
+    return None
