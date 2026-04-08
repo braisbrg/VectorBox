@@ -1,7 +1,7 @@
 # PROJECT MASTER GUIDE: VectorBox
 
 > **Project:** VectorBox (codename: *Trident*)
-> **Version:** `v1.7.1`
+> **Version:** `v1.7.2`
 > **Last Updated:** 2026-04-08
 > **Owner:** Lead Architect
 > **Confidentiality:** Proprietary
@@ -153,8 +153,8 @@ The feed is composed of multiple "Sections", generated largely in parallel by `F
 | **Your Taste ([Cluster])** | **Cluster Rotation.** Automatically cycles through user's taste clusters on every feed fetch using a Redis counter. Quality floor: `vectorbox_score >= 55`. Genre coherence (EXCLUSION_PAIRS) applied here only — NOT in Picked For You. Contributors carry `{type: "cluster", cluster_name, medoid_title, similarity}`. |
 | **Hidden Gems** | **DB-First Discovery.** Identifies high-quality, low-popularity films directly from Postgres using dynamic thresholds. Re-ranked using **30% Vector Similarity** weight to maintain user-centricity without "similarity wash". |
 
-| **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres *do not overlap* with the user's dominant cluster genres. Also serves as a Cold-Start Fallback (using `Movie.genres.overlap()`) if Signal A or B fail to populate. |
-| **Random Picks** | Random selection from top 500 "VectorBox Scored" movies in DB. |
+| **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres don't overlap with the user's dominant clusters. Filter pushed to DB via `~genres.overlap() + func.random() LIMIT 50`. |
+| **Random Picks** | DB-random selection via `func.random() LIMIT 30` from VectorBox-scored unwatched movies. |
 
 ### B. The "Magic Box" (NLP Search)
 A natural language search interface powered by `nlp_search.py` with a 3-Tier Cascading Fallback Architecture.
@@ -252,7 +252,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 4. **Cluster Rotation**: Redis persists the current cluster index for each user, rotating through their K-Medoid clusters on every feed fetch.
 5. **Qdrant (Vectors)**: 384-dimensional dense vectors with payload indexes for scores, popularity, and genres.
 - **ProviderService:** Caches availability (Netflix/Prime) to avoid hitting TMDB API limit.
-- **Invalidation:** `reset_profiles.py` and `ClusteringService` have logic to wipe cache keys when user data changes significantly.
+- **Invalidation:** `_invalidate_feed_cache()` sweeps BOTH `section:{FEED_CACHE_VERSION}:{user_id}:*` and `signal_cache:{user_id}:*` keys after RSS sync, so stale 24h Trident signal caches don't persist after new data. `reset_profiles.py` and `ClusteringService` also wipe cache keys when user data changes significantly.
 
 ---
 
@@ -372,5 +372,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-04-07 (v1.7.1 / Contributors provenance, watch_count, quality floor 55, coherence threshold 0.25, is_liked fix, EXCLUSION_PAIRS scope fix)
+**Last Updated:** 2026-04-08 (v1.7.2 / Optimization sprint: Redis caching fix, signal cache invalidation, anti-vector pre-compute, DB-level wildcard/random, TrendingService close, hidden gems MMR dedup, scoring utility, dead code removal)
 **Maintained By:** VectorBox Team

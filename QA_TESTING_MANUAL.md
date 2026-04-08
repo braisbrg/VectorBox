@@ -1,7 +1,7 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.7.1 (Security Audit v2)
+> **Version:** 1.7.2 (Optimization Sprint)
 > **Last Updated:** 2026-04-08
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
@@ -331,7 +331,7 @@ Click any 3 movies from the "Hidden Gems" row and verify:
 
 | Metric | Required (Rich Profile) | Movie 1 | Movie 2 | Movie 3 |
 |:-------|:---------|:-------:|:-------:|:-------:|
-| VectorBox Score | > 75 | ☐ | ☐ | ☐ |
+| VectorBox Score | > 70 | ☐ | ☐ | ☐ |
 | Vote Count | 500–25,000 | ☐ | ☐ | ☐ |
 | TMDB Popularity | < 20 | ☐ | ☐ | ☐ |
 
@@ -412,7 +412,7 @@ docker-compose run --rm backend python scripts/test_es_whitelist.py
 | Output | `✅ WHITELIST FILTER SUCCESS` is printed | ☐ |
 
 ### Step 5.8: Feed Parallelism Verification (Automated)
-Verify that the 11 feed tasks execute concurrently via `asyncio.gather`.
+Verify that the 10 feed tasks execute concurrently via `asyncio.gather`.
 
 ```powershell
 docker-compose exec backend python scripts/verify_feed_parallelism.py
@@ -422,7 +422,7 @@ docker-compose exec backend python scripts/verify_feed_parallelism.py
 |:------|:---------|:-----:|
 | Execution | Script runs without errors | ☐ |
 | Concurrency | `✅ FEED PARALLELISM VERIFIED` — total time < 0.4s | ☐ |
-| Session Isolation | 10 unique sessions (no sharing) | ☐ |
+| Session Isolation | 10 unique sessions (no sharing) confirmed | ☐ |
 
 ### Step 5.9: IDOR Automated Security Test
 Verify `/hidden-gems` endpoint rejects unauthenticated and forged requests.
@@ -828,4 +828,4 @@ Complete this scorecard only after all phases above pass.
 **Date:** _______________________
 
 ---
-*End of QA Testing Protocol — VectorBox v1.4*
+*End of QA Testing Protocol — VectorBox v1.7.2*

@@ -94,7 +94,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 ### Redis Caching (Completeness Guard & Per-Section TTL)
 - **Rule**: The Main Feed MUST NOT be cached if the result contains fewer than 3 sections.
 - **Implementation**: The feed utilizes **Per-Section TTL Caching**. Each unique section resolves to its own Redis key (`section:{FEED_CACHE_VERSION}:{user_id}:...`) instead of one monolithic payload blob, allowing sections like `random_picks` to skip caching (`TTL=0`) dynamically.
-- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN.
+- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN — sweeping BOTH `section:{FEED_CACHE_VERSION}:{user_id}:*` AND `signal_cache:{user_id}:*` keys so stale Trident signal caches (24h TTL) don't persist after new data arrives.
 
 ### Redis Key Enumeration (SCAN, never KEYS)
 - **Ban:** `await r.keys("section:*")` — O(N) full-keyspace scan; blocks the Redis event loop under production load.

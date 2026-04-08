@@ -168,13 +168,6 @@ export default function PrivacyPage() {
                             necessary cookie, it is exempt from consent requirements under
                             GDPR Article 5(3) of the ePrivacy Directive.
                         </p>
-                        <p className="text-sm text-zinc-500 leading-relaxed mt-4 italic">
-                            Note: A future update will integrate Clerk for authentication.
-                            Clerk may introduce additional session and security cookies.
-                            This policy will be updated accordingly before that change
-                            is deployed, and a consent mechanism will be added if any
-                            non-essential cookies are introduced.
-                        </p>
                     </section>
 
                     {/* 6. INTERNATIONAL DATA TRANSFERS */}
@@ -275,7 +268,7 @@ export default function PrivacyPage() {
                             encourage you to review this page periodically.
                         </p>
                         <p className="text-sm text-zinc-500 mt-4 font-[var(--font-mono-acid)]">
-                            Last updated: March 26, 2026
+                            Last updated: April 8, 2026
                         </p>
                     </section>
                 </div>
