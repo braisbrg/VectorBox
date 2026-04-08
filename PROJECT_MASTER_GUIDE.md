@@ -1,8 +1,8 @@
 # PROJECT MASTER GUIDE: VectorBox
 
 > **Project:** VectorBox (codename: *Trident*)
-> **Version:** `v1.7.0`
-> **Last Updated:** 2026-04-03
+> **Version:** `v1.7.1`
+> **Last Updated:** 2026-04-08
 > **Owner:** Lead Architect
 > **Confidentiality:** Proprietary
 

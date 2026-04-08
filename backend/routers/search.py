@@ -16,6 +16,7 @@ from services.tmdb_client import TMDBClient
 from services.provider_service import ProviderService
 from models.database import UserRating, Movie
 from sqlalchemy import select, or_
+from utils.scoring import normalize_similarity_score
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,15 +55,7 @@ async def _item_to_item_search(
     results = []
     for r in raw_results:
         metadata = r.get("metadata", {})
-        # Normalized scoring (same formula as Tier 1 semantic search)
-        min_sim, max_sim = 0.2, 0.7
-        raw_score = r["score"]
-        if raw_score > max_sim:
-            final_score = min(99, 90 + ((raw_score - max_sim) * 100))
-        else:
-            normalized = max(0.0, min(1.0,
-                (raw_score - min_sim) / (max_sim - min_sim)))
-            final_score = 60 + (normalized * 30)
+        final_score = normalize_similarity_score(r["score"])
         results.append({
             "movie_id": metadata.get("tmdb_id") or r["movie_id"],
             "title": metadata.get("title", "Unknown"),
@@ -282,18 +275,7 @@ async def natural_language_search(
                     if not metadata.get("overview"):
                         metadata["overview"] = details.get("overview", "")
 
-            # Normalize score
-            min_sim = 0.2
-            max_sim = 0.7
-            raw_score = r["score"]
-            
-            if raw_score > max_sim:
-                final_score = 90 + ((raw_score - max_sim) * 100)
-                final_score = min(99, final_score)
-            else:
-                normalized = (raw_score - min_sim) / (max_sim - min_sim)
-                normalized = max(0.0, min(1.0, normalized))
-                final_score = 60 + (normalized * 30)
+            final_score = normalize_similarity_score(r["score"])
 
             # Title Match Boost (Weighted Average)
             # If query is very similar to title, blend the scores
@@ -354,8 +336,6 @@ async def natural_language_search(
             providers_map = await provider_service.get_providers_batch(
                 result_ids, search_req.country_code or "ES"
             )
-            
-            es_whitelist = {"Netflix", "Amazon Prime Video", "HBO Max", "Disney+", "Apple TV", "Movistar+", "Filmin"}
             
             # Attach to results
             for r in results:

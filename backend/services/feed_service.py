@@ -1,6 +1,5 @@
 import logging
 import asyncio
-import os
 import redis.asyncio as aioredis
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -74,15 +73,15 @@ class FeedService:
 
     @safe_execution(fallback_return=FeedSection(id="because_you_watched", title="Recommended for You", items=[]))
     async def get_because_you_watched_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, qdrant: QdrantService, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, qdrant: QdrantService, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, precomputed_anti_vector = None
     ) -> FeedSection:
-        return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks)
+        return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
 
     @safe_execution(fallback_return=FeedSection(id="your_taste", title="Your Taste", items=[]))
     async def get_your_taste_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, groq_client = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, precomputed_anti_vector = None
     ) -> FeedSection:
-        return await self.engine.get_your_taste_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks)
+        return await self.engine.get_your_taste_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
 
     @safe_execution(fallback_return=FeedSection(id="hidden_gems", title="Hidden Gems", items=[]))
     async def get_hidden_gems_section(
@@ -206,14 +205,6 @@ class FeedService:
         recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
         return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service, background_tasks=background_tasks)
 
-    async def get_auteur_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None, redis_client = None) -> Optional[FeedSection]:
-        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
-        return await recommender.get_auteur_section(user_id, country, seen_ids, provider_service=provider_service)
-
-    async def get_cult_actor_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], tmdb: TMDBClient = None, qdrant: QdrantService = None, provider_service: ProviderService = None, redis_client = None) -> Optional[FeedSection]:
-        recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
-        return await recommender.get_cult_actor_section(user_id, country, seen_ids, provider_service=provider_service)
-
     async def get_main_feed(
         self,
         user_id: int,
@@ -233,10 +224,21 @@ class FeedService:
         r = None
         prov_str = ",".join(map(str, sorted(streaming_providers)))
         try:
-            r = await aioredis.from_url(redis_url, decode_responses=True)
+            r = aioredis.from_url(redis_url, decode_responses=True)
         except Exception as e:
             logger.warning(f"Redis connection failed: {e}")
         # --- END CACHE INTERCEPT ---
+
+        # --- FIX 4: Pre-compute anti_vector once — Signal A and Signal B both need it ---
+        precomputed_anti_vector = None
+        try:
+            async with AsyncSessionLocal() as session:
+                precomputed_anti_vector = await self.engine._get_anti_vector(user_id, session, qdrant)
+            if precomputed_anti_vector:
+                logger.info(f"Pre-computed anti_vector for user_id={user_id} ({len(precomputed_anti_vector)} dims)")
+        except Exception as e:
+            logger.warning(f"Anti-vector pre-compute failed for user_id={user_id}: {e}")
+        # --- END FIX 4 ---
 
         # --- PRE-POPULATE watched tmdb_ids so every signal excludes them ---
         watched_tmdb_ids: Set[int] = set()
@@ -259,17 +261,6 @@ class FeedService:
             logger.error(f"Failed to pre-populate watched_tmdb_ids: {e}")
         # --- END PRE-POPULATE ---
 
-        # --- GROQ CLIENT INJECTION (Phase 12: Profile Summary) ---
-        groq_api_key = os.getenv("GROQ_API_KEY")
-        groq_client = None
-        if groq_api_key:
-            try:
-                from openai import AsyncOpenAI
-                groq_client = AsyncOpenAI(api_key=groq_api_key, base_url="https://api.groq.com/openai/v1")
-            except ImportError:
-                logger.warning("openai package not found, Groq features disabled")
-        # --- END GROQ CLIENT ---
-
         async def task_popular():
             cached = await _get_cached_section(r, user_id, "popular_letterboxd", country_code, prov_str)
             if cached:
@@ -289,7 +280,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks)
+                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Watched]: {e}")
                 return None
@@ -302,8 +293,9 @@ class FeedService:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
                     return await self.get_your_taste_section(
-                        user_id, session, tmdb, watched_tmdb_ids.copy(), 
-                        country_code, local_provider, background_tasks=background_tasks
+                        user_id, session, tmdb, watched_tmdb_ids.copy(),
+                        country_code, local_provider, background_tasks=background_tasks,
+                        precomputed_anti_vector=precomputed_anti_vector
                     )
             except Exception as e:
                 logger.error(f"Feed Task Failed [Taste]: {e}")
@@ -409,13 +401,7 @@ class FeedService:
             task_available(),
         ]
         
-        results = []
-        try:
-            results = await asyncio.gather(*tasks)
-        finally:
-            if groq_client:
-                await groq_client.close()
-                logger.info("Groq client closed after feed generation")
+        results = await asyncio.gather(*tasks)
 
         (
             section_popular,

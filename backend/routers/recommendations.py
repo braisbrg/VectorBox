@@ -26,6 +26,7 @@ from services.provider_service import ProviderService
 from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_embedding_service
 from models.schemas import TokenResponse
 from services.embedding_service import EmbeddingService
+from utils.scoring import normalize_similarity_score
 
 router = APIRouter(
     tags=["recommendations"]
@@ -103,18 +104,7 @@ async def _enrich_recommendations(
                  logger.info(f"Dropped {movie.title}: Score {stats_score} < Min {request.min_rating}")
                  continue
         
-        # Normalize score
-        min_sim = 0.2
-        max_sim = 0.7
-        score = result["score"]
-        
-        if score > max_sim:
-            final_score = 90 + ((score - max_sim) * 100)
-            final_score = min(99, final_score)
-        else:
-            normalized = (score - min_sim) / (max_sim - min_sim)
-            normalized = max(0.0, min(1.0, normalized))
-            final_score = 60 + (normalized * 30)
+        final_score = normalize_similarity_score(result["score"])
 
         recommendations.append(RecommendationResponse(
             movie=MovieMetadata(
@@ -820,7 +810,7 @@ async def reject_movie(
     try:
         import redis.asyncio as aioredis
         import os
-        r = await aioredis.from_url(
+        r = aioredis.from_url(
             os.getenv("REDIS_URL", "redis://redis:6379"),
             decode_responses=True
         )
