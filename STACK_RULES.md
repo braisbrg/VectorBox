@@ -93,8 +93,26 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ### Redis Caching (Completeness Guard & Per-Section TTL)
 - **Rule**: The Main Feed MUST NOT be cached if the result contains fewer than 3 sections.
-- **Implementation**: The feed utilizes **Per-Section TTL Caching**. Each unique section resolves to its own Redis key (`section:v2:user_id:...`) instead of one monolithic payload blob, allowing sections like `random_picks` to skip caching (`TTL=0`) dynamically.
-- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN `section:*`.
+- **Implementation**: The feed utilizes **Per-Section TTL Caching**. Each unique section resolves to its own Redis key (`section:{FEED_CACHE_VERSION}:{user_id}:...`) instead of one monolithic payload blob, allowing sections like `random_picks` to skip caching (`TTL=0`) dynamically.
+- **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN.
+
+### Redis Key Enumeration (SCAN, never KEYS)
+- **Ban:** `await r.keys("section:*")` — O(N) full-keyspace scan; blocks the Redis event loop under production load.
+- **Requirement:** Always use an async SCAN loop:
+  ```python
+  cursor = 0
+  while True:
+      cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
+      if keys:
+          await r.delete(*keys)
+      if cursor == 0:
+          break
+  ```
+
+### Redis Cache Key Versioning
+- **Rule:** All cache keys scoped to a feed version MUST include `FEED_CACHE_VERSION` (imported from `feed_service.py`) as a prefix.
+- **Applies to:** Both `section:{FEED_CACHE_VERSION}:{user_id}:...` keys AND `cluster_rotation:{FEED_CACHE_VERSION}:{user_id}`.
+- **Reason:** On a version bump, section keys are invalidated by pattern, but an unversioned `cluster_rotation:{user_id}` persists across versions, causing stale cluster cycling state.
 
 ### Streaming Availability (Spain)
 - **Strict Whitelist:** Filter providers to ONLY include:
@@ -124,6 +142,16 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Strict Engine:** `engine-strict=true`.
 - **Release Age Policy:** Differentiated cooldown rules are enforced at the repository level via `.github/dependabot.yml`. The former global `minimum-release-age` setting is deprecated for `pnpm`.
 - **Overrides:** Security-patched transitive deps (`minimatch>=10.2.1`, `ajv>=8.18.0`) enforced via `pnpm.overrides`.
+
+### TypeScript Type Safety
+- **Ban:** `(obj as any).field` — casting to `any` to access a known property. Fix: add the missing field to the proper interface.
+- **Ban:** `interface Foo { [key: string]: any }` — open index signatures on typed request/response models. Fix: declare every field explicitly, matching the backend Pydantic schema.
+- **Ban:** `setState(x as any as TargetType)` — double casts that force TypeScript to accept a wrong type. Fix: ensure the source type already has the required shape.
+- **Rule:** When the API returns a field that is not on a TypeScript interface, add it with the correct optional type (`field?: Type`). Do not cast the response object.
+- **Example:**
+  - ❌ `(verifiedUser as any).has_data` → ✅ `verifiedUser.has_data` (add `has_data?: boolean` to `AuthResponse`)
+  - ❌ `interface SearchIntent { [key: string]: any }` → ✅ explicit fields matching `MovieSearchIntent` Pydantic schema
+  - ❌ `(movie as any).poster_path` when API returns `poster_url` → ✅ remove dead fallback, use `movie.poster_url`
 
 ### Container & Data Persistence
 - **Rule:** Ephemeral Containers, Persistent Data.
@@ -257,5 +285,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-04-07
+**Last Updated:** 2026-04-08
 **Maintained By:** VectorBox Team
