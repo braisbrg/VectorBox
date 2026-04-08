@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, or_
 import numpy as np
 
+from utils.scoring import normalize_similarity_score
+
 from models.database import UserRating, Movie, UserCluster
 from models.schemas import FeedSection, FeedItem
 from services.tmdb_client import TMDBClient
@@ -264,18 +266,8 @@ class RecommendationEngine:
                         if provider_type in providers_data:
                             streaming_providers.extend([p["provider_name"] for p in providers_data[provider_type]])
         
-        # Scale match score
-        min_sim = 0.2
-        max_sim = 0.7
-        
-        if score > max_sim:
-            final_score = 90 + ((score - max_sim) * 100)
-            final_score = min(99, final_score)
-        else:
-            normalized = (score - min_sim) / (max_sim - min_sim)
-            normalized = max(0.0, min(1.0, normalized))
-            final_score = 60 + (normalized * 30)
-        
+        final_score = normalize_similarity_score(score)
+
         return FeedItem(
             id=movie.tmdb_id,
             title=movie.title,
@@ -306,7 +298,8 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
-        background_tasks = None
+        background_tasks = None,
+        precomputed_anti_vector = None
     ) -> FeedSection:
         """Signal A: Because you watched [Movie X] — Item-Item Collaborative Filtering"""
         with _tracer.start_as_current_span("trident.signal_a.because_you_watched") as span:
@@ -349,8 +342,8 @@ class RecommendationEngine:
 
             scored_candidates.sort(key=lambda x: x[0], reverse=True)
 
-            # Imp 5: Compute anti-vector once for this section
-            anti_vector = await self._get_anti_vector(user_id, db, qdrant)
+            # FIX 4: Reuse precomputed anti-vector if available (avoids second Qdrant/DB round-trip)
+            anti_vector = precomputed_anti_vector if precomputed_anti_vector is not None else await self._get_anti_vector(user_id, db, qdrant)
             anti_vector_np = np.array(anti_vector) if anti_vector else None
 
             for _, user_rating, anchor_movie in scored_candidates:
@@ -538,7 +531,8 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
-        background_tasks = None
+        background_tasks = None,
+        precomputed_anti_vector = None
     ) -> FeedSection:
         """Signal B: Your Taste: [Cluster Name] — Centroid Search"""
         with _tracer.start_as_current_span("trident.signal_b.your_taste") as span:
@@ -563,7 +557,7 @@ class RecommendationEngine:
             from services.feed_service import FEED_CACHE_VERSION
             cluster_index = 0
             try:
-                r = await aioredis.from_url(REDIS_URL, decode_responses=True)
+                r = aioredis.from_url(REDIS_URL, decode_responses=True)
                 rotation_key = f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}"
                 raw_index = await r.get(rotation_key)
                 
@@ -650,8 +644,8 @@ class RecommendationEngine:
                 else:
                     logger.debug(f"Genre filter too aggressive for cluster '{cluster.cluster_label}', skipping ({len(genre_filtered_ids)} results)")
 
-            # Imp 5: Compute anti-vector once for this section
-            anti_vector = await self._get_anti_vector(user_id, db, self.qdrant)
+            # FIX 4: Reuse precomputed anti-vector if available (avoids second Qdrant/DB round-trip)
+            anti_vector = precomputed_anti_vector if precomputed_anti_vector is not None else await self._get_anti_vector(user_id, db, self.qdrant)
             anti_vector_np = np.array(anti_vector) if anti_vector else None
 
             # Apply anti-vector penalty if available
@@ -845,13 +839,11 @@ class RecommendationEngine:
             mmr_candidates.sort(key=lambda x: x["score"], reverse=True)
             mmr_candidates = mmr_candidates[:50] # Limit for MMR pool
 
-            # Step 5: Apply MMR Diversity
+            # Step 5: Apply MMR Diversity — reuse candidate_vectors_map from Step 4 (FIX 7)
             try:
-                mmr_tmdb_ids = [c["tmdb_id"] for c in mmr_candidates]
-                mmr_vectors_raw = await self.qdrant.get_vectors_batch(mmr_tmdb_ids)
                 vectors_map_mmr = {
-                    c["movie_id"]: np.array(mmr_vectors_raw[c["tmdb_id"]])
-                    for c in mmr_candidates if c["tmdb_id"] in mmr_vectors_raw
+                    c["movie_id"]: np.array(candidate_vectors_map[c["tmdb_id"]])
+                    for c in mmr_candidates if c["tmdb_id"] in candidate_vectors_map
                 }
                 
                 loop = asyncio.get_running_loop()
@@ -987,34 +979,31 @@ class RecommendationEngine:
         if not excluded_genres:
             return None
 
-        result = await db.execute(
-            select(Movie)
-            .where(Movie.vectorbox_score.isnot(None))
-            .where(Movie.vote_average > 7.0)
-            .where(Movie.vote_count > 100)
-            .order_by(desc(Movie.vectorbox_score))
-            .limit(1000)
-        )
-        candidates = result.scalars().all()
-        
+        # FIX 5: Push genre exclusion and watched filter to DB; use func.random() to avoid 1000-row scan
         watched_result = await db.execute(
             select(UserRating.movie_id)
             .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
         )
-        watched_ids = set(watched_result.scalars().all())
-        
-        wildcard_candidates = []
-        for m in candidates:
-            if m.tmdb_id in seen_ids or m.id in watched_ids:
-                continue
-            movie_genres = set(m.genres or [])
-            if movie_genres.isdisjoint(excluded_genres):
-                wildcard_candidates.append(m)
-        
+        watched_internal_ids = set(watched_result.scalars().all())
+
+        excluded_array = list(excluded_genres)
+        q = (
+            select(Movie)
+            .where(Movie.vectorbox_score.isnot(None))
+            .where(Movie.vote_average > 7.0)
+            .where(Movie.vote_count > 100)
+            .where(~Movie.genres.overlap(excluded_array))
+        )
+        if watched_internal_ids:
+            q = q.where(Movie.id.notin_(watched_internal_ids))
+        q = q.order_by(func.random()).limit(50)
+        result = await db.execute(q)
+        wildcard_candidates = [m for m in result.scalars().all() if m.tmdb_id not in seen_ids]
+
         if not wildcard_candidates:
             return None
-            
-        sample = random.sample(wildcard_candidates, min(10, len(wildcard_candidates)))
+
+        sample = wildcard_candidates[:10]
         
         if provider_service:
             sample_ids = [m.id for m in sample]
@@ -1046,35 +1035,26 @@ class RecommendationEngine:
         provider_service: ProviderService = None
     ) -> Optional[FeedSection]:
         """Random Picks"""
-        result = await db.execute(
-            select(Movie)
-            .where(Movie.vectorbox_score.isnot(None))
-            .order_by(desc(Movie.vectorbox_score))
-            .limit(500)
-        )
-        candidates = result.scalars().all()
-        
-        if not candidates:
-            result = await db.execute(
-                select(Movie)
-                .where(Movie.vote_average > 7.0)
-                .order_by(desc(Movie.vote_average))
-                .limit(500)
-            )
-            candidates = result.scalars().all()
-        
+        # FIX 5: Push watched filter to DB and use func.random() — avoids 500-row scan
         watched_result = await db.execute(
             select(UserRating.movie_id)
             .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
         )
-        watched_ids = set(watched_result.scalars().all())
-        
-        unseen_candidates = [m for m in candidates if m.tmdb_id not in seen_ids and m.id not in watched_ids]
-        
+        watched_internal_ids = set(watched_result.scalars().all())
+
+        q = select(Movie).where(Movie.vectorbox_score.isnot(None))
+        if watched_internal_ids:
+            q = q.where(Movie.id.notin_(watched_internal_ids))
+        q = q.order_by(func.random()).limit(30)
+        result = await db.execute(q)
+        candidates = result.scalars().all()
+
+        unseen_candidates = [m for m in candidates if m.tmdb_id not in seen_ids]
+
         if not unseen_candidates:
             return None
-            
-        sample = random.sample(unseen_candidates, min(10, len(unseen_candidates)))
+
+        sample = unseen_candidates[:10]
         
         if provider_service:
             sample_ids = [m.id for m in sample]
@@ -1106,8 +1086,11 @@ class RecommendationEngine:
     ) -> Optional[FeedSection]:
         """Popular on Letterboxd"""
         trending_service = TrendingService(db)
-        popular_ids = await trending_service.get_popular_movie_ids()
-        
+        try:
+            popular_ids = await trending_service.get_popular_movie_ids()
+        finally:
+            await trending_service.close()
+
         if not popular_ids:
             return None
             

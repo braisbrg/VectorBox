@@ -290,16 +290,6 @@ All of these have been found and fixed. Do not reintroduce.
    ❌  setState after async call with no isMounted check
    ✅  Use isMounted ref + cleanup useEffect
 
-11. EXCLUSION_PAIRS IN HYBRID_RERANKING
-    ❌  Applying EXCLUSION_PAIRS genre filter inside hybrid_reranking (Picked For You)
-        → reduces candidate pool to near zero ("5 movies remain" observed in logs)
-    ✅  EXCLUSION_PAIRS belongs ONLY in get_your_taste_section
-
-12. is_liked IN RSS UPSERT SET CLAUSE
-    ❌  Including "is_liked": excluded.is_liked in on_conflict_do_update for RSS
-        → RSS items never carry liked status, silently resets ZIP-imported likes to False
-    ✅  Omit is_liked from RSS upsert SET; only ZIP upload controls is_liked
-
 10. SHARED SESSION IN TRIDENT / SIGNAL GATHER
     ❌  asyncio.gather(signal_a(db), signal_b(db), signal_c(db))
         where db is a single shared AsyncSession
@@ -314,6 +304,46 @@ All of these have been found and fixed. Do not reintroduce.
         )
     Note: HTTP clients (TMDBClient, QdrantService) ARE safe
     to share across gather tasks. Only DB sessions are not.
+
+11. EXCLUSION_PAIRS IN HYBRID_RERANKING
+    ❌  Applying EXCLUSION_PAIRS genre filter inside hybrid_reranking (Picked For You)
+        → reduces candidate pool to near zero ("5 movies remain" observed in logs)
+    ✅  EXCLUSION_PAIRS belongs ONLY in get_your_taste_section
+
+12. is_liked IN RSS UPSERT SET CLAUSE
+    ❌  Including "is_liked": excluded.is_liked in on_conflict_do_update for RSS
+        → RSS items never carry liked status, silently resets ZIP-imported likes to False
+    ✅  Omit is_liked from RSS upsert SET; only ZIP upload controls is_liked
+
+13. REDIS r.keys() IN ASYNC CONTEXT
+    ❌  keys = await r.keys("section:*")
+        → scans the entire keyspace in a single blocking O(N) call;
+          hangs the Redis event loop under production load
+    ✅  Use SCAN loop:
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
+            if keys:
+                await r.delete(*keys)
+            if cursor == 0:
+                break
+
+14. UNVERSIONED CACHE KEYS
+    ❌  cluster_rotation:{user_id}  (no version prefix)
+        → on FEED_CACHE_VERSION bump, section keys are wiped but the rotation
+          counter persists, causing stale cluster cycling state
+    ✅  cluster_rotation:{FEED_CACHE_VERSION}:{user_id}
+        Both sides of the cache (section keys AND cluster_rotation)
+        MUST use the same FEED_CACHE_VERSION prefix from feed_service.py.
+
+15. TYPESCRIPT TYPE ERASURE
+    ❌  (obj as any).field — casting to any to access a known property
+    ❌  interface Foo { [key: string]: any } — open index signature on typed models
+    ❌  setState(x as any as TargetType)   — double cast to force assignment
+    ✅  Add the missing field to the proper interface (e.g. has_data?: boolean on UserSession)
+    ✅  Declare all fields explicitly on request/response interfaces (e.g. SearchIntent)
+    ✅  Remove dead fallback paths driven by wrong types (e.g. (movie as any).poster_path
+        when the API always returns poster_url)
 
 ---
 

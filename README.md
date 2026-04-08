@@ -1,7 +1,7 @@
 # VectorBox (Trident Engine)
 
-![Version](https://img.shields.io/badge/version-v1.7.0-acidgreen?style=flat-square)
-![Last Updated](https://img.shields.io/badge/last_updated-2026--04--07-orange?style=flat-square)
+![Version](https://img.shields.io/badge/version-v1.7.1-acidgreen?style=flat-square)
+![Last Updated](https://img.shields.io/badge/last_updated-2026--04--08-orange?style=flat-square)
 
 VectorBox is a premium movie recommendation engine designed to bridge the gap between social tracking (Letterboxd) and AI-driven cinematic discovery. 
 
@@ -27,7 +27,7 @@ VectorBox ingests a user's Letterboxd history (CSV export, RSS feed, or scraper)
 |--------|------|-----------|
 | A | Vibe / Vector | `sentence-transformers` embeddings on LLM-enriched cinematic descriptions via Groq |
 | B | Your Taste / Medoids | K-Medoids semantic clustering of vectors, mapped to actual films + Groq dynamic labels |
-| C | Crowd / TMDB | Popularity, vote average, and trending data from TMDB API |
+| C | Hidden Gems (DB-First Discovery) | High-quality niche films discovered via dynamic Postgres thresholds (quality/popularity), re-ranked with 30% vector similarity weight |
 | Auteur | Directors & Cast | In-memory director/actor frequency weighting (`Counter` over `movie.directors` / `movie.cast`) |
 
 Scores from all signals are fused with RRF, then re-ranked through a Sigmoid quality function that discounts low-vote-count outliers.
@@ -433,6 +433,6 @@ VectorBox/
 ## 📜 License
 
 **Version:** v1.7.1  
-**Last Updated:** 2026-04-07  
+**Last Updated:** 2026-04-08  
 **Contact:** vectorbox.app@proton.me
 **License:** Proprietary & Confidential. All rights reserved.

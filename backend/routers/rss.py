@@ -32,29 +32,35 @@ class GroupVibeRequest(BaseModel):
     usernames: List[str]
 
 async def _invalidate_feed_cache(user_id: int) -> None:
-    """Imp 10: Delete all cached feed keys for this user after RSS sync."""
+    """Delete all cached feed keys for this user after RSS sync or upload."""
     try:
         import redis.asyncio as aioredis
         import os
-        
+
         redis_url = os.environ.get("REDIS_URL", "redis://redis:6379")
         r = aioredis.from_url(redis_url, decode_responses=True)
         try:
             from services.feed_service import FEED_CACHE_VERSION
-            cursor = 0
             deleted_count = 0
-            while True:
-                cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
-                if keys:
-                    await r.delete(*keys)
-                    deleted_count += len(keys)
-                if cursor == 0:
-                    break
-            # Delete cluster rotation counter (versioned to match recommendation_engine.py)
+            # Sweep all key patterns that encode user-specific feed state
+            patterns = [
+                f"section:{FEED_CACHE_VERSION}:{user_id}:*",
+                f"signal_cache:{user_id}:*",
+            ]
+            for pattern in patterns:
+                cursor = 0
+                while True:
+                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
+                    if keys:
+                        await r.delete(*keys)
+                        deleted_count += len(keys)
+                    if cursor == 0:
+                        break
+            # Delete cluster rotation counter
             await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
-            
+
             if deleted_count:
-                logger.info(f"Invalidated {deleted_count} feed cache keys and rotation for user_id={user_id}")
+                logger.info(f"Invalidated {deleted_count} feed/signal cache keys and rotation for user_id={user_id}")
         finally:
             await r.close()
     except Exception as e:
@@ -79,7 +85,8 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
                     film_slug = item["film_slug"]
                     film_year = item.get("year")
 
-                    tmdb_id = await scraper.get_tmdb_id(film_slug)
+                    page_tmdb_id = await scraper.get_tmdb_id(film_slug)
+                    tmdb_id = page_tmdb_id
                     if tmdb_id:
                         logger.info(f"Found authoritative TMDB ID {tmdb_id} for {film_slug}")
                     else:
@@ -104,9 +111,8 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
                     if not movie:
                         continue
 
-                    # Year check only for fuzzy matches
-                    scraped_id = await scraper.get_tmdb_id(film_slug)
-                    if not scraped_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
+                    # Year check only for fuzzy matches — reuse page_tmdb_id from first call, no second HTTP request
+                    if not page_tmdb_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
                         logger.warning(f"Year mismatch for {film_slug}: {film_year} vs {movie.year}. Skipping.")
                         continue
 

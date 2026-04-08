@@ -226,22 +226,6 @@ class ErrorResponse(BaseModel):
     error_code: Optional[str] = None
 
 
-class MovieCardSchema(BaseModel):
-    """Lightweight schema for list views to prevent over-fetching"""
-    id: int
-    title: str
-    poster_url: Optional[str] = None
-    match_score: confloat(ge=0, le=100)
-    year: Optional[int] = None
-    streaming_providers: List[str] = []
-    vectorbox_score: Optional[float] = None
-    
-    # Minimal fields for UI badges
-    imdb_rating: Optional[float] = None
-    rotten_tomatoes_rating: Optional[int] = None
-    release_dates: Optional[Dict[str, str]] = None
-
-
 class FeedItem(BaseModel):
     """Individual item in a feed section"""
     id: int  # Movie TMDB ID
