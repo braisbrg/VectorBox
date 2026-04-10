@@ -556,20 +556,21 @@ class RecommendationEngine:
             
             from services.feed_service import FEED_CACHE_VERSION
             cluster_index = 0
+            r = aioredis.from_url(REDIS_URL, decode_responses=True)
             try:
-                r = aioredis.from_url(REDIS_URL, decode_responses=True)
                 rotation_key = f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}"
                 raw_index = await r.get(rotation_key)
-                
+
                 if raw_index is not None:
                     cluster_index = (int(raw_index) + 1) % len(clusters)
-                
+
                 # Save next index with 7 day TTL
                 await r.setex(rotation_key, 60 * 60 * 24 * 7, cluster_index)
-                await r.close()
             except Exception as e:
                 logger.warning(f"Cluster rotation failed for User {user_id}, falling back to top cluster: {e}")
                 cluster_index = 0
+            finally:
+                await r.close()
             
             cluster = clusters[cluster_index]
             logger.info(f"Rotating to Cluster {cluster_index} ('{cluster.cluster_label}') for User {user_id}")
@@ -1164,13 +1165,13 @@ class RecommendationEngine:
                 UserRating.is_watchlist.is_(True),
                 UserRating.is_watched.is_(False)
             )
+            .order_by(func.random())
+            .limit(20)
         )
-        candidates = result.scalars().all()
-        
-        if not candidates:
+        selected_movies = result.scalars().all()
+
+        if not selected_movies:
             return None
-            
-        selected_movies = random.sample(candidates, min(20, len(candidates)))
 
         # Batch-fetch providers (no N+1 / no per-movie TMDB calls)
         if provider_service and selected_movies:

@@ -7,8 +7,12 @@ import redis.asyncio as aioredis
 
 from services.scraper_service import ScraperService
 from services.movie_service import MovieService
+from config import FEED_CACHE_VERSION
 
 logger = logging.getLogger(__name__)
+
+POPULAR_IDS_KEY = f"cache:{FEED_CACHE_VERSION}:popular_letterboxd:ids"
+TRENDING_WEEK_KEY = f"trending:{FEED_CACHE_VERSION}:letterboxd:week"
 
 class TrendingService:
     def __init__(self, db: AsyncSession):
@@ -26,11 +30,10 @@ class TrendingService:
     async def get_popular_movie_ids(self) -> List[int]:
         """Fetch cached popular movie IDs from Redis."""
         r = await self._get_redis()
-        key = "cache:feed:popular_letterboxd:ids"
-        data = await r.get(key)
+        data = await r.get(POPULAR_IDS_KEY)
 
         if not data:
-            legacy_ids = await r.lrange("trending:letterboxd:week", 0, -1)
+            legacy_ids = await r.lrange(TRENDING_WEEK_KEY, 0, -1)
             return [int(x) for x in legacy_ids]
 
         try:
