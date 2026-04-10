@@ -248,9 +248,9 @@ class RSSService:
                 
                 try:
                     result = await self.db.execute(stmt)
-                    # Check if a row was inserted or updated
+                    # Check if a row was inserted or updated using pre-fetched existing_rating
                     if result.rowcount > 0:
-                        if result.is_insert: # This attribute might not be directly available on result for asyncpg
+                        if existing_rating is None:
                             stats["new_ratings"] += 1
                         else:
                             stats["updated_ratings"] += 1
