@@ -5,7 +5,7 @@ from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 
-from config import AsyncSessionLocal, REDIS_URL
+from config import AsyncSessionLocal, REDIS_URL, FEED_CACHE_VERSION
 from models.database import UserRating, Movie
 from models.schemas import FeedSection, FeedItem, FeedResponse
 from services.tmdb_client import TMDBClient
@@ -18,9 +18,6 @@ from services.embedding_service import EmbeddingService
 from utils.decorators import safe_execution
 
 logger = logging.getLogger(__name__)
-
-# Bump when FeedItem/FeedSection schema changes to auto-invalidate Redis cache
-FEED_CACHE_VERSION = "v2"
 
 SECTION_CACHE_TTLS: dict[str, int] = {
     "popular_letterboxd":  86400,  # 24h — changes once daily via scraper

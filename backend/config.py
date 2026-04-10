@@ -13,6 +13,9 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL", "").replace("postgresql://", "postgresql+asyncpg://")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
+# Cache versioning — bump to auto-invalidate all section/signal Redis keys on schema changes
+FEED_CACHE_VERSION = "v2"
+
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,  # Disable SQL logging in production

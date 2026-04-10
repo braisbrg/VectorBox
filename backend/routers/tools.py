@@ -188,14 +188,12 @@ from config import AsyncSessionLocal
 
 async def run_popular_update_task():
     """Background task to run the update"""
-    async with AsyncSessionLocal() as db:
-        try:
-            from services.trending_service import TrendingService
-            service = TrendingService(db)
-            count = await service.update_letterboxd_popular()
-            logger.info(f"Background update finished: {count} movies")
-        except Exception as e:
-            logger.error(f"Background update failed: {e}")
+    try:
+        from scripts.popular_scraper import scrape_letterboxd_popular
+        await scrape_letterboxd_popular()
+        logger.info("Background popular update finished")
+    except Exception as e:
+        logger.error(f"Background update failed: {e}")
 
 @router.post("/update-popular")
 async def update_popular_movies(

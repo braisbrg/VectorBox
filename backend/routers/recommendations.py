@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, or_
+from sqlalchemy import select, desc, or_, func
 from typing import List, Optional, Set, Dict
 import random
 import logging
@@ -525,72 +525,67 @@ async def get_watchlist(
         )
     )
 
+    # Push scalar filters to DB
     if runtime_min: stmt = stmt.where(Movie.runtime >= runtime_min)
     if runtime_max: stmt = stmt.where(Movie.runtime <= runtime_max)
     if year_min: stmt = stmt.where(Movie.year >= year_min)
     if year_max: stmt = stmt.where(Movie.year <= year_max)
     if min_rating: stmt = stmt.where(Movie.vectorbox_score >= min_rating)
-    
-    result = await db.execute(stmt)
-    movies = result.scalars().all()
-    
-    filtered_movies = []
+
+    # Push genre filter to DB using PostgreSQL array overlap
+    if genres:
+        genre_list = [g.strip() for g in genres.split(",")]
+        stmt = stmt.where(Movie.genres.overlap(genre_list))
+
+    # Push sort to DB
+    if sort_by == "date_added":
+        stmt = stmt.order_by(Movie.id.desc())
+    elif sort_by == "title":
+        stmt = stmt.order_by(Movie.title)
+    elif sort_by == "rating":
+        stmt = stmt.order_by(Movie.vectorbox_score.desc().nulls_last())
+
+    final_items = []
+    provider_service = ProviderService(db, tmdb)
+
     provider_ids = []
     if streaming_providers:
         provider_ids = [int(x) for x in streaming_providers.split(",") if x.strip()]
 
-    for movie in movies:
-        if genres:
-            movie_genres = [g.lower() for g in movie.genres] if movie.genres else []
-            if not any(g.lower() in movie_genres for g in genres.split(",")):
-                continue
-        filtered_movies.append(movie)
-
-    final_items = []
-    start = (page - 1) * limit
-    end = start + limit
-    
-    provider_service = ProviderService(db, tmdb)
-    
     if provider_ids:
-        candidates = filtered_movies[:500] 
-        movie_ids = [m.id for m in candidates]
-        providers_map = await provider_service.get_providers_batch(movie_ids, country_code)
-        
+        # Streaming path: load bounded candidates, filter by provider, paginate in Python
+        result = await db.execute(stmt.limit(500))
+        candidates = result.scalars().all()
+
+        providers_map = await provider_service.get_providers_batch([m.id for m in candidates], country_code)
+
         available_movies = []
         for movie in candidates:
             movie_providers = providers_map.get(movie.id, [])
-            has_provider = False
-            for p in movie_providers:
-                if p["provider_id"] in provider_ids:
-                    has_provider = True
-                    break
-            if has_provider:
+            if any(p["provider_id"] in provider_ids for p in movie_providers):
                 flat_providers = [p["provider_name"] for p in movie_providers]
                 available_movies.append((movie, flat_providers))
-        
-        if sort_by == "date_added": available_movies.sort(key=lambda x: x[0].id, reverse=True)
-        elif sort_by == "title": available_movies.sort(key=lambda x: x[0].title)
-        elif sort_by == "rating": available_movies.sort(key=lambda x: x[0].vectorbox_score or 0, reverse=True)
-        
+
         total_items = len(available_movies)
-        paginated = available_movies[start:end]
-        
+        start = (page - 1) * limit
+        paginated = available_movies[start:start + limit]
+
         for movie, providers in paginated:
             item = await feed_service.engine.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=providers)
             final_items.append(item)
-        
+
     else:
-        if sort_by == "date_added": filtered_movies.sort(key=lambda x: x.id, reverse=True)
-        elif sort_by == "title": filtered_movies.sort(key=lambda x: x.title)
-        elif sort_by == "rating": filtered_movies.sort(key=lambda x: x.vectorbox_score or 0, reverse=True)
-        
-        total_items = len(filtered_movies)
-        paginated_movies = filtered_movies[start:end]
-        
+        # No streaming filter: count + DB-level pagination
+        count_result = await db.execute(select(func.count()).select_from(stmt.subquery()))
+        total_items = count_result.scalar_one()
+
+        paginated_stmt = stmt.limit(limit).offset((page - 1) * limit)
+        result = await db.execute(paginated_stmt)
+        paginated_movies = result.scalars().all()
+
         movie_ids = [m.id for m in paginated_movies]
         providers_map = await provider_service.get_providers_batch(movie_ids, country_code)
-        
+
         for movie in paginated_movies:
             movie_providers = providers_map.get(movie.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
@@ -810,20 +805,22 @@ async def reject_movie(
     try:
         import redis.asyncio as aioredis
         import os
+        from services.feed_service import FEED_CACHE_VERSION
         r = aioredis.from_url(
             os.getenv("REDIS_URL", "redis://redis:6379"),
             decode_responses=True
         )
-        from services.feed_service import FEED_CACHE_VERSION
-        cursor = 0
-        while True:
-            cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
-            if keys:
-                await r.delete(*keys)
-            if cursor == 0:
-                break
-        await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
-        await r.close()
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
+                if keys:
+                    await r.delete(*keys)
+                if cursor == 0:
+                    break
+            await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
+        finally:
+            await r.close()
     except Exception as e:
         logger.warning(f"Cache invalidation after reject failed: {e}")
 
