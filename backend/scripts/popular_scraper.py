@@ -11,14 +11,14 @@ import redis.asyncio as redis
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services.tmdb_client import TMDBClient
-from config import AsyncSessionLocal
+from config import AsyncSessionLocal, FEED_CACHE_VERSION
 from services.movie_service import MovieService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-REDIS_KEY_POPULAR = "cache:feed:popular_letterboxd:ids"
+REDIS_KEY_POPULAR = f"cache:{FEED_CACHE_VERSION}:popular_letterboxd:ids"
 
 # TRUCO: Usamos directamente la URL AJAX que contiene los datos crudos
 # Esta URL devuelve HTML puro con los posters, no una app React vacía.

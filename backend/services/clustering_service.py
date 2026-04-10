@@ -12,7 +12,6 @@ import logging
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, desc, func
-from fastapi_cache.decorator import cache
 import asyncio
 import time
 import functools
@@ -148,9 +147,6 @@ class ClusteringService:
         # FIX: Never block the feed path with inline enrichment.
         # Vectors already exist in Qdrant at ingest time — keywords are optional metadata.
         # Only schedule as background task if context is available.
-        from services.movie_service import MovieService
-        movie_service = MovieService(db)
-        
         for _, movie in ratings_movies:
             if movie.keywords is None and background_tasks:
                 background_tasks.add_task(_enrich_movie_background, movie.tmdb_id)
@@ -358,7 +354,6 @@ class ClusteringService:
         
         return cluster_objects
     
-    @cache(expire=3600)
     async def get_cluster_recommendations(
         self,
         user_id: int,
@@ -452,7 +447,6 @@ class ClusteringService:
         
         return recommendations
 
-    @cache(expire=3600)
     async def get_user_centric_recommendations(
         self,
         user_id: int,
@@ -477,8 +471,6 @@ class ClusteringService:
         all_ratings = result.all()
         
         # FIX: Never block path with inline enrichment — background only.
-        from services.movie_service import MovieService
-        movie_service = MovieService(db)
         for _, movie in all_ratings:
             if movie.keywords is None and background_tasks:
                 background_tasks.add_task(_enrich_movie_background, movie.tmdb_id)
@@ -546,7 +538,6 @@ class ClusteringService:
         x0 = 65
         return 1 / (1 + math.exp(-k * (score - x0)))
 
-    @cache(expire=3600)
     async def get_item_based_recommendations(
         self,
         user_id: int,
@@ -556,7 +547,6 @@ class ClusteringService:
         include_low_quality: bool = False,
         page: int = 1,
         background_tasks = None,
-        tmdb: 'TMDBClient' = None
     ) -> List[Dict]:
         """
         Get recommendations using Weighted Item-Item Collaborative Filtering.
@@ -577,8 +567,6 @@ class ClusteringService:
             return []
 
         # FIX: Background-only enrichment, never inline.
-        from services.movie_service import MovieService
-        movie_service = MovieService(db)
         for _, movie in raw_seeds:
             if movie.keywords is None and background_tasks:
                 background_tasks.add_task(_enrich_movie_background, movie.tmdb_id)
@@ -774,46 +762,7 @@ class ClusteringService:
 
         # Streaming Filter (Pre-selection)
         valid_candidates = pre_mmr_candidates
-        
-        if filters and filters.get("streaming_providers"):
-            logger.info("Applying Streaming Filters (Pre-MMR)...")
-            allowed_provider_ids = set(filters["streaming_providers"])
-            country_code = filters.get("country_code", "ES")
-            
-            pool_size = 300
-            candidates_pool = pre_mmr_candidates[:pool_size]
-            
-            candidate_ids = [c["movie_id"] for c in candidates_pool]
-            stmt = select(Movie.id, Movie.tmdb_id).where(Movie.id.in_(candidate_ids))
-            tmdb_map_result = await db.execute(stmt)
-            id_map = {row.id: row.tmdb_id for row in tmdb_map_result.all()}
-            
-            from services.provider_service import ProviderService
-            
-            if not tmdb:
-                logger.warning("Streaming filter skipped: no TMDBClient injected.")
-            else:
-                provider_service = ProviderService(db, tmdb)
-                
-                providers_map = await provider_service.get_providers_batch(candidate_ids, country_code)
-                
-                filtered_pool = []
-                for cand in candidates_pool:
-                     mid = cand["movie_id"]
-                     movie_providers = providers_map.get(mid, [])
-                     
-                     has_provider = False
-                     for p in movie_providers:
-                         if p["provider_id"] in allowed_provider_ids:
-                             has_provider = True
-                             break
-                     
-                     if has_provider:
-                         filtered_pool.append(cand)
-                
-                logger.info(f"Streaming Filter: {len(filtered_pool)} candidates available out of {len(candidates_pool)} checked.")
-                valid_candidates = filtered_pool
-        
+
         # MMR Reranking
         pool_size = max(50, limit)
         top_candidates = valid_candidates[:pool_size]
@@ -914,14 +863,25 @@ class ClusteringService:
         """
         import os
         import redis.asyncio as redis
-        
+
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        r = None
         try:
-            r = await redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
-            keys = await r.keys("fastapi-cache:*")
-            if keys:
-                 await r.delete(*keys)
-                 logger.info(f"Cleared {len(keys)} cache keys due to cluster regeneration.")
-            await r.close()
+            r = redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+            # Use SCAN instead of KEYS to avoid blocking Redis
+            total_deleted = 0
+            cursor = 0
+            while True:
+                cursor, keys = await r.scan(cursor, match="fastapi-cache:*", count=100)
+                if keys:
+                    await r.delete(*keys)
+                    total_deleted += len(keys)
+                if cursor == 0:
+                    break
+            if total_deleted:
+                logger.info(f"Cleared {total_deleted} cache keys due to cluster regeneration.")
         except Exception as e:
             logger.error(f"Failed to clear user cache: {e}")
+        finally:
+            if r:
+                await r.close()

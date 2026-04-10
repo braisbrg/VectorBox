@@ -214,46 +214,17 @@ async def get_group_recommendations(
         tmdb_id = res['tmdb_id']
         movie = movie_map.get(tmdb_id)
         
-        # If missing in DB, try to ingest
+        # If missing in DB, ingest via MovieService (full enrichment: TMDB + OMDb + embedding + Qdrant)
         if not movie:
             try:
-                # Fetch details
-                details = await rss_service.tmdb.get_movie_details(tmdb_id)
-                
-                if not details:
-                    logger.warning(f"TMDB ID {tmdb_id} not found (404). Deleting from Qdrant...")
-                    await rss_service.qdrant.delete_movie(tmdb_id)
+                from services.movie_service import MovieService
+                movie_svc = MovieService(db, tmdb=tmdb)
+                movie = await movie_svc.get_or_create_movie(tmdb_id)
+                if not movie:
+                    logger.warning(f"Could not ingest TMDB ID {tmdb_id} for group vibe — skipping")
                     continue
-                    
-                # Create Movie object
-                new_movie = Movie(
-                    tmdb_id=tmdb_id,
-                    title=details.get('title'),
-                    original_title=details.get('original_title'),
-                    year=int(details.get('release_date', '0000')[:4]) if details.get('release_date') else None,
-                    runtime=details.get('runtime'),
-                    genres=[g['name'] for g in details.get('genres', [])],
-                    overview=details.get('overview'),
-                    poster_path=details.get('poster_path'),
-                    backdrop_path=details.get('backdrop_path'),
-                    vote_average=details.get('vote_average'),
-                    vote_count=details.get('vote_count'),
-                    popularity=details.get('popularity'),
-                    original_language=details.get('original_language')
-                )
-                db.add(new_movie)
-                try:
-                    await db.commit()
-                    await db.refresh(new_movie)
-                except Exception as e:
-                    await db.rollback()
-                    logger.error(f"DB commit failed during missing movie ingestion: {e}")
-                    raise
-                movie = new_movie
-                logger.info(f"Ingested missing movie: {new_movie.title}")
-                
             except Exception as e:
-                logger.error(f"Failed to ingest/clean movie {tmdb_id}: {e}")
+                logger.error(f"Group vibe movie ingest failed for tmdb_id={tmdb_id}: {e}")
                 continue
 
         if movie:

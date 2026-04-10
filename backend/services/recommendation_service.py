@@ -22,6 +22,18 @@ from utils.decorators import safe_execution
 
 logger = logging.getLogger(__name__)
 
+
+async def _ingest_movie_rs_background(tmdb_id: int) -> None:
+    """Background task: ingest a missing movie using its own DB session."""
+    from config import AsyncSessionLocal
+    async with AsyncSessionLocal() as session:
+        try:
+            movie_service = MovieService(session)
+            await movie_service.get_or_create_movie(tmdb_id)
+            await session.commit()
+        except Exception as e:
+            logger.error(f"Background ingest failed for tmdb_id={tmdb_id}: {e}")
+
 class RecommendationService:
     """
     The "Trident" Hybrid Recommender System.
@@ -405,7 +417,7 @@ class RecommendationService:
         for tid in missing_ids:
             try:
                 if background_tasks:
-                    background_tasks.add_task(self.movie_service.get_or_create_movie, tid)
+                    background_tasks.add_task(_ingest_movie_rs_background, tid)
                     logger.debug(f"[Signal C] Queued background ingest for TMDB {tid}")
                 else:
                     logger.debug(f"[Signal C] Skipping auto-ingest for {tid} — no background_tasks")
