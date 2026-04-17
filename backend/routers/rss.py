@@ -157,17 +157,17 @@ async def sync_user_data(
     tmdb: TMDBClient = Depends(get_tmdb_client),
     current_user: TokenResponse = Depends(get_current_user)
 ):
-    stmt = select(User).where(User.username == username)
+# Fetch the authenticated user
+    stmt = select(User).where(User.id == current_user.user_id)
     result = await db.execute(stmt)
     user = result.scalar_one_or_none()
-
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user.id != current_user.user_id:
-        raise HTTPException(status_code=403, detail="Cannot sync another user's account")
-
+    # Verify the requested letterboxd username matches the authenticated user's linked account
     letterboxd_profile = user.letterboxd_username or username
+    if letterboxd_profile != username:
+        raise HTTPException(status_code=403, detail="Cannot sync another user's Letterboxd account")
     background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb)
 
     return {
