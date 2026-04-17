@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, constr
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 class SearchRequest(BaseModel):
-    query: str
+    query: constr(min_length=1, max_length=500)  # M-4: Prevent abuse via long queries
     use_deep_analysis: Optional[bool] = False
     country_code: Optional[str] = "ES"
 

@@ -1,8 +1,8 @@
 # PROJECT MASTER GUIDE: VectorBox
 
 > **Project:** VectorBox (codename: *Trident*)
-> **Version:** `v1.7.2`
-> **Last Updated:** 2026-04-08
+> **Version:** `v1.7.3`
+> **Last Updated:** 2026-04-10
 > **Owner:** Lead Architect
 > **Confidentiality:** Proprietary
 
@@ -53,7 +53,7 @@ For detailed rules and context, see the **Agentic Team Structure** in `.ai_conte
 We use a modern, high-performance stack optimizing for **async concurrency** (Backend) and **visual fluidity** (Frontend).
 
 ### Frontend
-- **Framework:** **Next.js 16.1.6** (App Router). Used for server-side rendering and static optimization.
+- **Framework:** **Next.js 16.2.3** (App Router). Used for server-side rendering and static optimization.
 - **Library:** **React 19.2.4**. Leveraging the latest concurrent features (Suspense, Transitions).
 - **Styling:**
   - **Tailwind CSS 4.1.18**: **CSS-First Architecture**.
@@ -76,7 +76,7 @@ We use a modern, high-performance stack optimizing for **async concurrency** (Ba
   - **Location:** `frontend/components/tweak/`.
 
 ### Backend
-- **Framework:** **FastAPI 0.122.0**. Chosen for native async support and high throughput.
+- **Framework:** **FastAPI 0.135.1**. Chosen for native async support and high throughput.
 - **Runtime:** **Python 3.11-slim**.
 - **Server:** **Uvicorn** (Standard Worker).
 - **ORM:** **SQLAlchemy 2.0.44 (Async)**. Uses `asyncpg` + `psycopg` drivers.
@@ -253,6 +253,7 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 5. **Qdrant (Vectors)**: 384-dimensional dense vectors with payload indexes for scores, popularity, and genres.
 - **ProviderService:** Caches availability (Netflix/Prime) to avoid hitting TMDB API limit.
 - **Invalidation:** `_invalidate_feed_cache()` sweeps BOTH `section:{FEED_CACHE_VERSION}:{user_id}:*` and `signal_cache:{user_id}:*` keys after RSS sync, so stale 24h Trident signal caches don't persist after new data. `reset_profiles.py` and `ClusteringService` also wipe cache keys when user data changes significantly.
+- **`FEED_CACHE_VERSION`:** Defined in `config.py` (single source of truth). All services import it from there — never redefine it locally. Bump only in `config.py` to auto-invalidate all versioned Redis keys project-wide.
 
 ---
 
@@ -372,5 +373,5 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-04-08 (v1.7.2 / Optimization sprint: Redis caching fix, signal cache invalidation, anti-vector pre-compute, DB-level wildcard/random, TrendingService close, hidden gems MMR dedup, scoring utility, dead code removal)
+**Last Updated:** 2026-04-10 (v1.7.3 / Second-pass optimization: P0 crashes fixed, Redis resource leaks sealed, background task session ownership enforced, watchlist and random-watchlist queries DB-paginated, dead @cache decorators removed from clustering, Group Vibe enrichment corrected, FEED_CACHE_VERSION moved to config.py, Next.js 16.2.3 + axios 1.15.0 security patches)
 **Maintained By:** VectorBox Team

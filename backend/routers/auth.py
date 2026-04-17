@@ -203,10 +203,35 @@ async def login(
 
 
 @router.post("/logout")
-async def logout(response: Response):
+async def logout(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Clear session cookie.
+    Invalidate session: rotate DB token so any extracted Bearer tokens
+    become permanently invalid, then clear the cookie.
+    NOTE: Will be replaced by Clerk session management in a future update.
     """
+    # Best-effort token invalidation — don't fail if token is already invalid
+    token = request.cookies.get("vectorbox_token")
+    if not token:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+
+    if token:
+        try:
+            token_uuid = uuid.UUID(token)
+            result = await db.execute(select(User).where(User.secret_token == token_uuid))
+            user = result.scalar_one_or_none()
+            if user:
+                user.secret_token = uuid.uuid4()  # Rotate — old token permanently invalid
+                await db.commit()
+                logger.info(f"Session invalidated for user: {user.username}")
+        except Exception as e:
+            logger.warning(f"Token invalidation during logout failed (non-fatal): {e}")
+
     response.delete_cookie(key="vectorbox_token")
     return {"message": "Logged out successfully"}
 
