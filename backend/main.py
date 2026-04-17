@@ -121,7 +121,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Security: Trusted Host Middleware (prevent host header attacks)
 # Dynamically load from env for Cloudflare Tunnel and production domains
-allowed_hosts_str = os.getenv("TRUSTED_HOSTS", "*")
+allowed_hosts_str = os.getenv("TRUSTED_HOSTS", "localhost")
 allowed_hosts = [h.strip() for h in allowed_hosts_str.split(",") if h.strip()]
 logger.info(f"Trusted hosts: {allowed_hosts}")
 
@@ -140,7 +140,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "Authorization"],
     max_age=600,  # Cache preflight for 10 minutes
 )

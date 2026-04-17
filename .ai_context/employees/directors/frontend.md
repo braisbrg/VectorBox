@@ -2,7 +2,7 @@
 
 > **Role:** Frontend Technical Lead
 > **Domain:** React, Next.js, Styling, Animation, Mobile UX
-> **Last Updated:** 2026-04-07
+> **Last Updated:** 2026-04-10
 
 This file contains all frontend-specific rules, design system specifications, and mobile guidelines for the VectorBox project.
 
@@ -13,7 +13,7 @@ This file contains all frontend-specific rules, design system specifications, an
 ### Core Framework
 | Technology | Version | Purpose |
 | :--- | :--- | :--- |
-| **Next.js** | `16.1.6` | App Router, SSR, Static Optimization |
+| **Next.js** | `16.2.3` | App Router, SSR, Static Optimization |
 | **React** | `19.2.4` | Concurrent features (Suspense, Transitions) |
 | **pnpm** | Latest | Package manager (**required**) |
 
