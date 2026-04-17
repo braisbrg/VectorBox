@@ -14,7 +14,7 @@ interface WatchlistViewProps {
     username: string;
     countryCode?: string;
     streamingProviders?: number[];
-    onInspect?: (id: number, sectionId?: string, contributors?: Contributor[]) => void;
+    onInspect?: (movie: import("@/lib/api").FeedItem, sectionId?: string) => void;
 }
 
 const WATCHLIST_FILTERS_KEY = "watchlist_filters";
@@ -392,7 +392,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                         vectorbox_score={item.vectorbox_score}
                                         metacritic_rating={item.metacritic_rating}
                                         rotten_tomatoes_rating={item.rotten_tomatoes_rating}
-                                        onInspect={(id, contribs) => onInspect?.(id, undefined, contribs)}
+                                        onInspect={() => onInspect?.(item, undefined)}
                                     />
                                 </motion.div>
                             ))}

@@ -942,7 +942,11 @@ class RecommendationEngine:
                         rotten_tomatoes_rating=movie.rotten_tomatoes_rating,
                         title_es=movie.title_es,
                         overview_es=movie.overview_es,
-                        overview=movie.overview
+                        overview=movie.overview,
+                        contributors=[{
+                            "type": "watchlist",
+                            "label": "In your watchlist",
+                        }],
                     ))
                     seen_ids.add(movie.tmdb_id)
                     if len(items) >= 20:
