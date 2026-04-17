@@ -25,7 +25,10 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 | **`reconcile_letterboxd_movies.py`** | **Data Reconciliation.** Audits all movies with `letterboxd_uri`, verifies their `tmdb_id` against TMDB search (year tolerance ≤1), and optionally fixes mismatches with `--fix` by re-ingesting the correct movie and migrating `UserRating` records. | `docker-compose exec backend python scripts/reconcile_letterboxd_movies.py [--fix]` |
 | **`fix_movies_manual.py`** | **Manual Corrections.** Reads a CSV (`corrections.csv`) of `letterboxd_uri,correct_tmdb_id,old_tmdb_id` corrections, re-ingests the correct movie via `MovieService`, migrates `UserRating` records, and deletes orphans. Supports `--dry-run` and `--file`. | `docker-compose exec backend python scripts/fix_movies_manual.py [--dry-run] [--file path]` |
 | **`reenrich_movies.py`** | **Metadata Recovery.** Targets movies with existing VectorBox scores that are missing critical metadata (IMDb rating, etc) and re-runs the full enrichment pipeline. | `docker-compose exec -e PYTHONPATH=/app backend python -m scripts.reenrich_movies [--limit 100]` |
-| **`verify_scoring.py`** | **Scoring QA.** Validates `normalize_similarity_score()` (from `utils/scoring.py`) output distribution against the expected 60–99 display scale. | `docker-compose exec backend python scripts/verify_scoring.py` |
+| **`create_qdrant_indexes.py`** | **Index Setup.** Creates payload indexes on the Qdrant `movies` collection (genres, year, popularity, etc.) to accelerate filtered vector searches. | `docker-compose exec backend python scripts/create_qdrant_indexes.py` |
+| **`heal_vectors.py`** | **Vector Recovery.** Scans all movies in Postgres, identifies those missing Qdrant vectors, re-generates embeddings via `EmbeddingService`, and upserts them. | `docker-compose exec backend python scripts/heal_vectors.py` |
+| **`migrate_release_dates.py`** | **Schema Migration.** One-time migration that adds the `release_dates JSONB` column to the `movies` table. Safe to re-run (`ADD COLUMN IF NOT EXISTS`). | `docker-compose exec backend python scripts/migrate_release_dates.py` |
+| **`verify_qa_pt2.py`** | **QA Certification (Phase 5).** End-to-end HTTP check against a running stack: logs in as `qa_vecbox` and validates the `/api/recommendations/feed` response. | `docker-compose exec backend python scripts/verify_qa_pt2.py` |
 
 ## 📦 Frontend Utility Scripts
 Commands defined in `frontend/package.json`. Run these from the host machine inside the `frontend/` directory.
@@ -76,4 +79,4 @@ Standard auditing protocols for this project.
     ```
 
 ---
-**Last Updated:** 2026-04-08
+**Last Updated:** 2026-04-10

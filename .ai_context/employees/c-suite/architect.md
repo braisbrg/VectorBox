@@ -2,7 +2,7 @@
 
 > **Role:** Chief Software Architect
 > **Authority:** Final say on technology choices, forbidden patterns, and async discipline.
-> **Last Updated:** 2026-04-08
+> **Last Updated:** 2026-04-10
 
 This file serves as the **strict enforcement layer** for the VectorBox project. All code modifications must comply with these rules.
 
@@ -13,7 +13,7 @@ This file serves as the **strict enforcement layer** for the VectorBox project. 
 ### Frontend Stack
 | Package | Version | Notes |
 | :--- | :--- | :--- |
-| **Next.js** | `16.1.6` | App Router only |
+| **Next.js** | `16.2.3` | App Router only |
 | **React** | `19.2.4` | Concurrent features enabled |
 | **Tailwind CSS** | `4.1.18` | CSS-First Architecture (`@theme`) |
 | **Framer Motion** | `12.34.0` | All complex animations |
@@ -22,7 +22,7 @@ This file serves as the **strict enforcement layer** for the VectorBox project. 
 ### Backend Stack
 | Package | Version | Notes |
 | :--- | :--- | :--- |
-| **FastAPI** | `0.122.0` | Async-first |
+| **FastAPI** | `0.135.1` | Async-first |
 | **SQLAlchemy** | `2.0.44` | Async mode only |
 | **Pydantic** | `2.x` | V2 syntax required |
 | **Sentence-Transformers** | `all-MiniLM-L6-v2` | CPU-optimized |
@@ -133,7 +133,7 @@ providers = await session.execute(
 ### Caching Policy (Completeness Guard & Per-Section TTL)
 - **Rule**: Feeds with < 3 sections MUST NOT be cached in Redis.
 - **Reason**: Prevents cache poisoning from cold starts or SSR races. `rss.py` actively sweeps and deletes invalid section cache keys (`section:{FEED_CACHE_VERSION}:{user_id}:*`) AND the `cluster_rotation:{FEED_CACHE_VERSION}:{user_id}` counter after background syncs.
-- **Key Versioning**: ALL cache keys scoped to a feed version MUST include `FEED_CACHE_VERSION` (imported from `feed_service.py`). This applies to both section keys **and** `cluster_rotation` keys. A bare `cluster_rotation:{user_id}` key is forbidden — it survives version bumps and poisons cluster cycling state.
+- **Key Versioning**: ALL cache keys scoped to a feed version MUST include `FEED_CACHE_VERSION` (imported from `config.py`). This applies to both section keys **and** `cluster_rotation` keys. A bare `cluster_rotation:{user_id}` key is forbidden — it survives version bumps and poisons cluster cycling state.
 - **SCAN, not KEYS**: Cache invalidation MUST use an async `r.scan()` loop. `await r.keys(pattern)` is a blocking O(N) operation forbidden in production.
 - **Discovery (Signal C)**: Signal C MUST use **DB-first discovery** logic (Postgres quality/popularity filters) before similarity weighting. Direct Qdrant-first discovery for Signal C is forbidden as it washes out niche quality.
 

@@ -68,7 +68,7 @@ class ClusterInfo(BaseModel):
 
 class RecommendationRequest(BaseModel):
     """Request for movie recommendations with filters"""
-    user_id: int
+    # L-1: user_id removed — always derived from JWT token server-side
     cluster_id: Optional[int] = None  # Mood selection
     year_min: Optional[conint(ge=1800, le=2100)] = None
     year_max: Optional[conint(ge=1800, le=2100)] = None
@@ -263,4 +263,9 @@ class FeedResponse(BaseModel):
     """Complete feed response with multiple sections"""
     feed: List[FeedSection]
     status: str = "ok"  # "ok", "incomplete", "error"
+
+
+class LinkLetterboxdRequest(BaseModel):
+    """L-3: Request body for linking a Letterboxd username"""
+    letterboxd_username: constr(min_length=1, max_length=40, pattern=r'^[a-zA-Z0-9_-]+$')
 

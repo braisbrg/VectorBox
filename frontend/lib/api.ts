@@ -17,26 +17,9 @@ export const api = axios.create({
     withCredentials: true,
 });
 
-// Request interceptor: Attach Token from LocalStorage
-api.interceptors.request.use(
-    (config) => {
-        if (typeof window !== "undefined") {
-            const userStr = localStorage.getItem("vectorbox_user");
-            if (userStr) {
-                try {
-                    const user = JSON.parse(userStr);
-                    if (user.token) {
-                        config.headers.Authorization = `Bearer ${user.token}`;
-                    }
-                } catch (e) {
-                    // console.error("Invalid user in localStorage", e); // Removed as per instruction
-                }
-            }
-        }
-        return config;
-    },
-    (error) => Promise.reject(error)
-);
+// Security: Auth is handled exclusively via httponly cookie (withCredentials: true).
+// No Bearer token is attached from localStorage — prevents XSS token theft.
+// NOTE: Will be replaced by Clerk session management in a future update.
 
 // Response interceptor for error handling
 api.interceptors.response.use(
@@ -129,7 +112,7 @@ export interface RecommendationResponse {
 }
 
 export interface RecommendationRequest {
-    user_id: number;
+    // L-1: user_id removed — derived from JWT server-side
     cluster_id?: number;
     year_min?: number;
     year_max?: number;
@@ -283,21 +266,12 @@ export interface GroupRecommendationRequest {
     limit?: number;
 }
 
-export interface UserCreate {
-    username: string;
-    email?: string;
-    country_code?: string;
-}
+// M-1: createUser removed — use POST /api/auth/register instead
 
 export interface FeedResponse {
     feed: FeedSection[];
     status?: "ok" | "incomplete" | "error";
 }
-
-export const createUser = async (user: UserCreate): Promise<VectorboxUser> => {
-    const response = await api.post("/api/users/", user);
-    return response.data;
-};
 
 // v1.1: Authentication API
 export interface AuthResponse {
@@ -345,8 +319,10 @@ export const linkLetterboxd = async (
     userId: number,
     letterboxdUsername: string
 ): Promise<{ message: string; letterboxd_username: string }> => {
+    // L-3: Username sent in body, not query param (privacy + CORS fix)
     const response = await api.patch(
-        `/api/users/${userId}/link-letterboxd?letterboxd_username=${encodeURIComponent(letterboxdUsername)}`
+        `/api/users/${userId}/link-letterboxd`,
+        { letterboxd_username: letterboxdUsername }
     );
     return response.data;
 };

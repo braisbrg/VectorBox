@@ -1,7 +1,7 @@
 """
 Additional tools: Group watchlist, compatibility test
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import List
@@ -183,8 +183,23 @@ async def calculate_compatibility(
     )
 
 
-from fastapi import BackgroundTasks
-from config import AsyncSessionLocal
+from limiter import limiter
+from fastapi import Request
+
+@router.post("/update-popular")
+@limiter.limit("1/hour")
+async def update_popular_movies(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    current_user: TokenResponse = Depends(get_current_user)
+):
+    """
+    Manually trigger the 'Popular on Letterboxd' scraper in the background.
+    H-3: Rate-limited to 1/hour to prevent TMDB API exhaustion.
+    """
+    background_tasks.add_task(run_popular_update_task)
+    return {"status": "success", "message": "Popular movies update started in background"}
+
 
 async def run_popular_update_task():
     """Background task to run the update"""
@@ -194,14 +209,3 @@ async def run_popular_update_task():
         logger.info("Background popular update finished")
     except Exception as e:
         logger.error(f"Background update failed: {e}")
-
-@router.post("/update-popular")
-async def update_popular_movies(
-    background_tasks: BackgroundTasks,
-    current_user: TokenResponse = Depends(get_current_user)
-):
-    """
-    Manually trigger the 'Popular on Letterboxd' scraper in the background.
-    """
-    background_tasks.add_task(run_popular_update_task)
-    return {"status": "success", "message": "Popular movies update started in background"}
