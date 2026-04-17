@@ -14,6 +14,10 @@ class ScraperService:
         # No self.client — cada método crea su propio AsyncClient
         # (correcto para uso en contexto async, evita estado compartido)
 
+    async def close(self) -> None:
+        """No-op — ScraperService creates HTTP sessions per-request."""
+        pass
+
     async def scrape_watchlist_recent(self, username: str) -> List[dict]:
         """
         Scrapes the first page of a user's watchlist to get recent additions.

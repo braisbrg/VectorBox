@@ -219,14 +219,9 @@ export const getGroupVibe = async (usernames: string[]): Promise<RecommendationR
 
 export const syncRSS = async (username: string): Promise<{
     status: string;
-    stats: {
-        rss_new_movies: number;
-        rss_new_ratings: number;
-        rss_updated_ratings: number;
-        rss_errors: number;
-        watchlist_added: number;
-    };
+    stats: Record<string, unknown>;
     message: string;
+    task_id?: string | null;
 }> => {
     const response = await api.post(`/api/rss/sync/${username}`);
     return response.data;
