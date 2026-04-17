@@ -342,7 +342,9 @@ All of these have been found and fixed. Do not reintroduce.
           counter persists, causing stale cluster cycling state
     ✅  cluster_rotation:{FEED_CACHE_VERSION}:{user_id}
         Both sides of the cache (section keys AND cluster_rotation)
-        MUST use the same FEED_CACHE_VERSION prefix from feed_service.py.
+        MUST use the same FEED_CACHE_VERSION prefix.
+        Import it from config.py — never redefine it locally.
+        from config import FEED_CACHE_VERSION
 
 15. TYPESCRIPT TYPE ERASURE
     ❌  (obj as any).field — casting to any to access a known property
@@ -352,6 +354,48 @@ All of these have been found and fixed. Do not reintroduce.
     ✅  Declare all fields explicitly on request/response interfaces (e.g. SearchIntent)
     ✅  Remove dead fallback paths driven by wrong types (e.g. (movie as any).poster_path
         when the API always returns poster_url)
+
+17. result.is_insert ON asyncpg RESULTS
+    ❌  if result.is_insert:           (CursorResult from asyncpg has no is_insert)
+        → AttributeError silently swallowed; stats counters never increment
+    ✅  Pre-fetch the row before the upsert, then use existence to decide:
+        existing = await db.execute(select(UserRating).where(...)).scalar_one_or_none()
+        ...execute upsert...
+        if existing is None:
+            stats["new_ratings"] += 1
+        else:
+            stats["updated_ratings"] += 1
+
+18. @cache DECORATOR ON METHODS TAKING AsyncSession
+    ❌  @cache(expire=3600)
+        async def get_cluster_recommendations(self, user_id, db: AsyncSession, ...):
+        → fastapi-cache2 serializes ALL args including db. AsyncSession serializes
+          to its memory address (unique per call) → cache key is always unique → 0% hit rate.
+          The decorator wastes CPU and provides zero benefit.
+    ✅  Remove @cache from any method that receives AsyncSession.
+        Section-level caching in feed_service.py (SECTION_CACHE_TTLS) handles
+        caching at the correct boundary.
+
+19. DEAD SERVICE INSTANTIATION FOR BACKGROUND DISPATCH
+    ❌  from services.movie_service import MovieService
+        movie_service = MovieService(db)            # assigned but never called
+        for movie in items:
+            background_tasks.add_task(_enrich_movie_background, movie.tmdb_id)
+        → MovieService.__init__ creates QdrantService() + EmbeddingService()
+          (heavy singletons) that are immediately discarded. Pure construction waste.
+    ✅  Delete the MovieService assignment. The background function receives
+        only the tmdb_id and creates its own session + service internally.
+
+20. BARE MOVIE CONSTRUCTION BYPASSING MovieService
+    ❌  new_movie = Movie(tmdb_id=..., title=..., poster_path=..., ...)
+        db.add(new_movie)
+        await db.commit()
+        → No Qdrant upsert, no embedding, no OMDb enrichment, no vectorbox_score.
+          The movie is permanently invisible to vector search.
+    ✅  Use MovieService.get_or_create_movie(tmdb_id) which handles the full
+        enrichment pipeline (TMDB → OMDb → embedding → Qdrant upsert):
+        movie_svc = MovieService(db, tmdb=tmdb)
+        movie = await movie_svc.get_or_create_movie(tmdb_id)
 
 ---
 

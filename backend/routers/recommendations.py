@@ -146,8 +146,8 @@ async def get_general_recommendations(
     Get general movie recommendations based on user's taste profile
     """
     try:
-        # IDOR Protection
-        request.user_id = current_user.user_id
+        # L-1: user_id always derived from JWT (no more request.user_id)
+        user_id = current_user.user_id
         
         clustering = ClusteringService(qdrant=qdrant)
         
@@ -177,7 +177,7 @@ async def get_general_recommendations(
             filters["country_code"] = request.country_code
             
         results = await clustering.get_item_based_recommendations(
-            user_id=request.user_id,
+            user_id=user_id,
             db=db,
             filters=filters,
             limit=request.limit,
@@ -185,7 +185,7 @@ async def get_general_recommendations(
             page=request.page # Pagination
         )
         
-        return await _enrich_recommendations(results, request.user_id, db, request, tmdb)
+        return await _enrich_recommendations(results, user_id, db, request, tmdb)
         
     except Exception as e:
         logger.error(f"General recommendation failed: {e}")
@@ -268,7 +268,8 @@ async def get_recommendations_by_mood(
         raise HTTPException(status_code=400, detail="cluster_id is required")
     
     # IDOR Protection
-    request.user_id = current_user.user_id
+    # L-1: user_id always derived from JWT
+    user_id = current_user.user_id
 
     try:
         clustering = ClusteringService(qdrant=qdrant)
@@ -300,15 +301,15 @@ async def get_recommendations_by_mood(
         
         # Get recommendations
         results = await clustering.get_cluster_recommendations(
-            user_id=request.user_id,
-            cluster_id=request.cluster_id,
+            user_id=user_id,
             db=db,
+            cluster_id=request.cluster_id,
             filters=filters,
             limit=request.limit,
             page=request.page # Pagination
         )
         
-        return await _enrich_recommendations(results, request.user_id, db, request, tmdb)
+        return await _enrich_recommendations(results, user_id, db, request, tmdb)
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -330,7 +331,8 @@ async def get_random_recommendation(
     """
     try:
         # IDOR Protection
-        request.user_id = current_user.user_id
+        # L-1: user_id always derived from JWT
+        user_id = current_user.user_id
         
         # Reuse general recommendations logic but pick one
         clustering = ClusteringService(qdrant=qdrant)
@@ -397,7 +399,6 @@ async def get_group_recommendations(
             raw_results = [{"movie_id": m.id, "score": 1.0} for m in movies]
             
             enrich_req = RecommendationRequest(
-                user_id=request.user_ids[0],
                 limit=request.limit
             )
             recommendations = await _enrich_recommendations(raw_results, request.user_ids[0], db, enrich_req, tmdb)
@@ -412,7 +413,7 @@ async def get_group_recommendations(
                 limit=remaining_limit
             )
             
-            enrich_req = RecommendationRequest(user_id=request.user_ids[0], limit=remaining_limit)
+            enrich_req = RecommendationRequest(limit=remaining_limit)
             general_recs = await _enrich_recommendations(general_results, request.user_ids[0], db, enrich_req, tmdb)
             
             existing_ids = {r.movie.tmdb_id for r in recommendations}

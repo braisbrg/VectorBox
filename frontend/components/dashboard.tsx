@@ -91,8 +91,9 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
                 setCurrentUserSession(fullSession);
 
-                // Update Local Storage with fresh truth
-                localStorage.setItem("vectorbox_user", JSON.stringify(fullSession));
+                // H-5 Security: Strip token before persisting — auth uses httponly cookie only
+                const { token: _discarded, ...safeSession } = fullSession;
+                localStorage.setItem("vectorbox_user", JSON.stringify(safeSession));
             })
             .catch(async (err) => {
                 console.error("Session verification failed:", err);

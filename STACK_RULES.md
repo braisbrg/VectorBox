@@ -96,6 +96,22 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 - **Implementation**: The feed utilizes **Per-Section TTL Caching**. Each unique section resolves to its own Redis key (`section:{FEED_CACHE_VERSION}:{user_id}:...`) instead of one monolithic payload blob, allowing sections like `random_picks` to skip caching (`TTL=0`) dynamically.
 - **Reason**: Prevents "cold start" queries from SSR or early login from poisoning the cache with incomplete feeds. `rss.py` actively invalidates existing user feed caches after a successful sync via SCAN — sweeping BOTH `section:{FEED_CACHE_VERSION}:{user_id}:*` AND `signal_cache:{user_id}:*` keys so stale Trident signal caches (24h TTL) don't persist after new data arrives.
 
+### Redis Connection Safety
+- **Rule:** All ad-hoc Redis connections (outside of a long-lived pool) MUST be opened and closed inside a `try/finally` block to guarantee the connection is released even if a Redis operation raises.
+  ```python
+  r = aioredis.from_url(redis_url, decode_responses=True)  # sync, no await
+  try:
+      # ... Redis operations ...
+  finally:
+      await r.close()
+  ```
+- **Ban:** `await aioredis.from_url(...)` — `from_url()` is synchronous in redis-py ≥4.2. Awaiting it raises `TypeError` at runtime, silently swallowed by broad `except Exception`, leaving `r = None` and all caching disabled.
+
+### fastapi-cache2 Decorator Safety
+- **Ban:** `@cache(expire=N)` on service methods that accept `AsyncSession` as a parameter.
+- **Reason:** fastapi-cache2 builds the cache key by serializing all arguments. An `AsyncSession` serializes to its memory address (unique per request), so every call gets a unique key — the cache never hits. These decorators only waste CPU on key generation.
+- **Correct approach:** Caching is handled at the feed section level in `feed_service.py` via `SECTION_CACHE_TTLS`. Service methods that receive a session do NOT need their own cache decorator.
+
 ### Redis Key Enumeration (SCAN, never KEYS)
 - **Ban:** `await r.keys("section:*")` — O(N) full-keyspace scan; blocks the Redis event loop under production load.
 - **Requirement:** Always use an async SCAN loop:
@@ -110,9 +126,10 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
   ```
 
 ### Redis Cache Key Versioning
-- **Rule:** All cache keys scoped to a feed version MUST include `FEED_CACHE_VERSION` (imported from `feed_service.py`) as a prefix.
+- **Rule:** All cache keys scoped to a feed version MUST include `FEED_CACHE_VERSION` (imported from `config.py` — the single source of truth) as a prefix.
 - **Applies to:** Both `section:{FEED_CACHE_VERSION}:{user_id}:...` keys AND `cluster_rotation:{FEED_CACHE_VERSION}:{user_id}`.
 - **Reason:** On a version bump, section keys are invalidated by pattern, but an unversioned `cluster_rotation:{user_id}` persists across versions, causing stale cluster cycling state.
+- **Ban:** Never redefine `FEED_CACHE_VERSION` locally in a service file. Import it from `config.py` so all services share one version constant with no divergence risk.
 
 ### Streaming Availability (Spain)
 - **Strict Whitelist:** Filter providers to ONLY include:
@@ -285,5 +302,5 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ---
 
-**Last Updated:** 2026-04-08
+**Last Updated:** 2026-04-10
 **Maintained By:** VectorBox Team

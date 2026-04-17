@@ -2,7 +2,7 @@
 
 > **Role:** Backend Technical Lead
 > **Domain:** API Design, Database, Async Patterns, Authentication
-> **Last Updated:** 2026-04-07
+> **Last Updated:** 2026-04-10
 
 This file contains all backend-specific rules, database patterns, and API guidelines for the VectorBox project.
 
@@ -13,7 +13,7 @@ This file contains all backend-specific rules, database patterns, and API guidel
 ### Core Framework
 | Technology | Version | Purpose |
 | :--- | :--- | :--- |
-| **FastAPI** | `0.122.0` | Async-first web framework |
+| **FastAPI** | `0.135.1` | Async-first web framework |
 | **Uvicorn** | Standard Worker | ASGI server |
 | **Pydantic** | `V2` | Request/response validation |
 
