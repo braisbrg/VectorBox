@@ -2,13 +2,12 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import type { Contributor } from "@/types/feed";
 import { LayoutList, Globe, Tv, Loader2, RotateCcw, Heart, User as UserIcon, LogOut } from "lucide-react";
 import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/constants";
 import { motion } from "framer-motion";
 import Image from "next/image";
 import { useLanguage } from "@/components/language-provider";
-import { logout, VectorboxUser, UserSession, getCurrentUser, getUsers } from "@/lib/api";
+import { logout, VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem } from "@/lib/api";
 
 import { FeedContainer } from "@/components/feed-container";
 import { UploadZone } from "@/components/upload-zone";
@@ -44,7 +43,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const [scope, setScope] = useState<"watchlist" | "global">("global");
     const [countryCode, setCountryCode] = useState("ES");
     const [streamingProviders, setStreamingProviders] = useState<number[]>([]);
-    const [inspectedMovie, setInspectedMovie] = useState<{ id: number; sectionId?: string; contributors?: Contributor[] } | null>(null);
+    const [inspectedMovie, setInspectedMovie] = useState<{ movie: FeedItem; sectionId?: string } | null>(null);
 
 
     const { t } = useLanguage();
@@ -264,7 +263,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             username={currentUserSession.username}
                             countryCode={countryCode}
                             streamingProviders={streamingProviders}
-                            onInspect={(id: number, sectionId?: string, contributors?: Contributor[]) => setInspectedMovie({ id, sectionId, contributors })}
+                            onInspect={(movie: FeedItem, sectionId?: string) => setInspectedMovie({ movie, sectionId })}
                         />
                     ) : currentView === "settings" ? (
                         <SettingsView />
@@ -294,16 +293,15 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             streamingProviders={streamingProviders}
                             initialData={initialFeedData}
                             registeredUsers={users}
-                            onInspect={(id: number, sectionId?: string, contributors?: Contributor[]) => setInspectedMovie({ id, sectionId, contributors })}
+                            onInspect={(movie: FeedItem, sectionId?: string) => setInspectedMovie({ movie, sectionId })}
                         />
                     )}
                 </div>
             </div>
 
             <RightConsole
-                selectedMovieId={inspectedMovie?.id ?? null}
+                selectedMovie={inspectedMovie?.movie ?? null}
                 selectedSectionId={inspectedMovie?.sectionId}
-                selectedContributors={inspectedMovie?.contributors}
                 onCloseInspector={() => setInspectedMovie(null)}
                 scope={scope}
                 onScopeChange={setScope}
