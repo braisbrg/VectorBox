@@ -40,7 +40,6 @@ async def get_movie_details(
         
         if movie:
             return {
-                "id": movie.id,
                 "tmdb_id": movie.tmdb_id,
                 "title": movie.title,
                 "year": movie.year,
@@ -65,7 +64,6 @@ async def get_movie_details(
             raise HTTPException(status_code=404, detail="Movie not found in external provider.")
             
         return {
-            "id": None,
             "tmdb_id": tmdb_id,
             "title": details.get("title"),
             "year": int(details["release_date"][:4]) if details.get("release_date") else None,
@@ -157,4 +155,4 @@ async def rate_movie(
     except Exception as e:
         logger.error(f"Failed to rate movie {tmdb_id}: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to update rating: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to update rating")

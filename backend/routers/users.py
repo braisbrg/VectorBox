@@ -10,78 +10,13 @@ import logging
 from config import get_db
 from dependencies import get_current_user, verify_user_ownership
 from models.database import User
-from models.schemas import UserCreate, UserResponse, TokenResponse
+from models.schemas import UserResponse, TokenResponse, LinkLetterboxdRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(
-    user: UserCreate,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Create a new user profile
-    """
-    try:
-        # Check if username exists in DB
-        result = await db.execute(select(User).where(User.username == user.username))
-        if result.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already taken"
-            )
-
-        # Validate existence on Letterboxd
-        import httpx
-        async with httpx.AsyncClient() as client:
-            try:
-                lb_response = await client.get(f"https://letterboxd.com/{user.username}/", follow_redirects=True)
-                if lb_response.status_code != 200:
-                     raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"Letterboxd user '{user.username}' not found"
-                    )
-            except HTTPException:
-                raise # Re-raise the 404/400 we just created
-            except Exception as e:
-                logger.error(f"Error validating Letterboxd user: {e}")
-                # Fallback: If network fails (e.g. Letterboxd down), we might still allow creation 
-                # or we could fail. For now, let's FAIL to be safe as requested.
-                # If we want to allow offline creation, we'd pass. 
-                # But the user specifically wants to catch invalid users.
-                # So let's only pass if it's a connection error, but maybe it's safer to just warn.
-                # Actually, if the user wants security, we should probably fail if we can't verify.
-                # But let's stick to the previous plan: Fail on 404, warn on network error.
-                pass
-
-        new_user = User(
-            username=user.username,
-            email=user.email,
-            country_code=user.country_code
-        )
-        
-        db.add(new_user)
-        await db.commit()
-        await db.refresh(new_user)
-        
-        logger.info(f"Created new user: {new_user.username} (ID: {new_user.id})")
-        return new_user
-
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User creation failed due to database constraint"
-        )
-    except Exception as e:
-        logger.error(f"Error creating user: {e}")
-        await db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Internal server error"
-        )
+# M-1: Legacy POST /api/users removed. Use POST /api/auth/register instead.
 
 
 @router.get("", response_model=list[UserResponse])
@@ -113,13 +48,13 @@ async def list_users(
     # Transform to response model
     response = []
     for user, count in users_with_counts:
+        # M-2: letterboxd_username stripped from public listing to prevent enumeration
         user_dict = {
             "id": user.id,
             "username": user.username,
             "country_code": user.country_code,
             "created_at": user.created_at,
-            "has_data": count > 0,
-            "letterboxd_username": user.letterboxd_username
+            "has_data": count > 0
         }
         response.append(user_dict)
         
@@ -129,15 +64,15 @@ async def list_users(
 @router.patch("/{user_id}/link-letterboxd")
 async def link_letterboxd(
     user_id: int,
-    letterboxd_username: str,
+    body: LinkLetterboxdRequest,
     current_user: TokenResponse = Depends(verify_user_ownership),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Link a Letterboxd profile to a VectorBox user.
-    This sets the data source for RSS sync and scrapers.
-    No ownership verification - we trust the user.
+    L-3: Username moved from query param to request body for privacy.
     """
+    letterboxd_username = body.letterboxd_username
     # Find user
     result = await db.execute(select(User).where(User.id == user_id))
     user = result.scalar_one_or_none()
@@ -192,9 +127,14 @@ async def get_user_activity(
     current_user: TokenResponse = Depends(get_current_user)
 ):
     """
-    Get user's last watched and last rated movies
+    Get user's last watched and last rated movies.
+    H-1: Only the profile owner can access their activity.
     """
     from models.database import UserRating, Movie
+    
+    # H-1: Ownership check — users can only view their own activity
+    if username != current_user.username:
+        raise HTTPException(status_code=403, detail="Access denied: cannot view another user's activity")
     
     # Get User ID
     stmt = select(User).where(User.username == username)

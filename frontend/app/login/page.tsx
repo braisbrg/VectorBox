@@ -28,13 +28,11 @@ export default function LoginPage() {
         try {
             const user = await login(username, pin);
 
-            // 1. Save user to localStorage for Client Components
-            localStorage.setItem("vectorbox_user", JSON.stringify(user));
+            // H-5 Security: Strip token before persisting — auth uses httponly cookie only
+            const { token: _discarded, ...safeUser } = user;
+            localStorage.setItem("vectorbox_user", JSON.stringify(safeUser));
 
-            // 2. Set Cookie for Server Components (Gatekeeper)
-            document.cookie = `vectorbox_token=${user.token || "valid"}; path=/; max-age=86400; SameSite=Lax`;
-
-            // Redirect to home
+            // Redirect to home (httponly cookie already set by backend response)
             router.push("/");
         } catch (err: any) {
             const status = err.response?.status;

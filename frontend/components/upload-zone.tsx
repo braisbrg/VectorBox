@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { Upload, FileText, Loader2, FileArchive, Plus, User as UserIcon, RefreshCw, Check, AlertCircle, Link as LinkIcon, Save, ArrowRight } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
-import { uploadExportZIP, createUser, syncRSS, linkLetterboxd, VectorboxUser } from "@/lib/api";
+import { uploadExportZIP, syncRSS, linkLetterboxd, VectorboxUser } from "@/lib/api";
 import { motion } from "framer-motion";
 import { ProgressModal } from "./progress-modal";
 import { useLanguage } from "@/components/language-provider";

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from typing import List, Dict
@@ -14,6 +14,7 @@ from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from config import get_db
 from dependencies import get_tmdb_client, get_current_user, get_qdrant_service
+from limiter import limiter
 import logging
 
 logger = logging.getLogger(__name__)
@@ -150,8 +151,10 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
 
 
 @router.post("/sync/{username}", response_model=SyncResponse)
+@limiter.limit("2/hour")
 async def sync_user_data(
     username: str,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
@@ -186,7 +189,11 @@ async def get_group_recommendations(
 ):
     """
     Get recommendations based on the 'Group Vibe' (centroid of multiple users).
+    H-2: Requesting user must be one of the group members.
     """
+    # H-2: Ownership check — user must be in the group
+    if current_user.username not in request.usernames:
+        raise HTTPException(status_code=403, detail="Access denied: you must be a member of the group")
     rss_service = RSSService(db, tmdb=tmdb, qdrant=qdrant)
     
     # Get Hybrid Recommendations
