@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import delete, cast, select, Date
+from sqlalchemy import delete, cast, select, Date, func, case
 import numpy as np
 
 from models.database import User, Movie, UserRating
@@ -233,7 +233,8 @@ class RSSService:
                     is_watched=True, # Always True for RSS items
                     is_liked=item.get('is_liked', False),
                     watched_date=item.get('watched_date'),
-                    review=item.get('review')
+                    review=item.get('review'),
+                    watch_count=1,  # initial value for new rows
                 ).on_conflict_do_update(
                     index_elements=["user_id", "movie_id"],
                     set_={
@@ -243,9 +244,16 @@ class RSSService:
                         # Overwriting with False would erase likes set by ZIP upload.
                         "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
                         "review": getattr(insert(UserRating).excluded, "review"),
+                        # Rewatch detection: only bump watch_count if the row was
+                        # already marked as watched (genuine rewatch), otherwise leave it.
+                        "watch_count": case(
+                            (UserRating.is_watched.is_(True),
+                             func.coalesce(UserRating.watch_count, 1) + 1),
+                            else_=func.coalesce(UserRating.watch_count, 1),
+                        ),
                     }
                 )
-                
+
                 try:
                     result = await self.db.execute(stmt)
                     # Check if a row was inserted or updated using pre-fetched existing_rating
@@ -254,9 +262,6 @@ class RSSService:
                             stats["new_ratings"] += 1
                         else:
                             stats["updated_ratings"] += 1
-                    # Increment watch_count for rewatches (existing watched entry)
-                    if existing_rating and existing_rating.is_watched:
-                        existing_rating.watch_count = (existing_rating.watch_count or 1) + 1
                     await self.db.commit()
                 except Exception as e:
                     await self.db.rollback()

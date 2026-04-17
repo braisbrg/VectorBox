@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from typing import List, Dict, Set, Optional, Any
+from typing import List, Dict, Set, Optional, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_, func, text, cast, String
 from collections import Counter
@@ -608,8 +608,14 @@ class RecommendationService:
         for m in candidates:
              p_data = providers_map.get(m.id, [])
              flat_providers = [p["provider_name"] for p in p_data]
-             
-             # Basic FeedItem creation
+             director_name = (m.directors or [None])[0]
+             auteur_contrib = {
+                "type": "auteur",
+                "label": f"Director you follow: {director_name}" if director_name else "Director you follow",
+             }
+             if director_name:
+                 auteur_contrib["director"] = director_name
+
              items.append(FeedItem(
                 id=m.tmdb_id,
                 title=m.title,
@@ -618,7 +624,8 @@ class RecommendationService:
                 streaming_providers=flat_providers,
                 year=m.year,
                 overview=m.overview,
-                vectorbox_score=m.vectorbox_score
+                vectorbox_score=m.vectorbox_score,
+                contributors=[auteur_contrib],
              ))
              seen_ids.add(m.tmdb_id)
              
@@ -690,33 +697,33 @@ class RecommendationService:
                 Movie.cast.any(actor),
                 Movie.vectorbox_score.isnot(None)
             ).order_by(desc(Movie.vectorbox_score)).limit(15)
-            
+
             candidates = (await self.db.execute(stmt)).scalars().all()
-            
+
             for m in candidates:
                 if m.tmdb_id in seen_ids or m.id in watched_ids:
                     continue
-                all_items.append(m)
+                all_items.append((m, actor))
 
-        # Deduplicate
+        # Deduplicate (keep the first actor match for each movie)
         seen_local: Set[int] = set()
-        unique_movies = []
-        for m in all_items:
+        unique_movies: List[Tuple[Movie, str]] = []
+        for m, actor in all_items:
             if m.id not in seen_local:
-                unique_movies.append(m)
+                unique_movies.append((m, actor))
                 seen_local.add(m.id)
 
         unique_movies = unique_movies[:15]
 
         # Batch fetch providers
         if provider_service and unique_movies:
-            movie_ids = [m.id for m in unique_movies]
+            movie_ids = [m.id for m, _ in unique_movies]
             providers_map = await provider_service.get_providers_batch(movie_ids, country)
         else:
             providers_map = {}
 
         items = []
-        for m in unique_movies:
+        for m, matched_actor in unique_movies:
             p_data = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in p_data]
             items.append(FeedItem(
@@ -727,7 +734,12 @@ class RecommendationService:
                 streaming_providers=flat_providers,
                 year=m.year,
                 overview=m.overview,
-                vectorbox_score=m.vectorbox_score
+                vectorbox_score=m.vectorbox_score,
+                contributors=[{
+                    "type": "cult_actor",
+                    "label": f"Actor you follow: {matched_actor}",
+                    "actor": matched_actor,
+                }],
             ))
             seen_ids.add(m.tmdb_id)
 

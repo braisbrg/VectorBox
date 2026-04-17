@@ -1,5 +1,5 @@
 export interface Contributor {
-    type: "anchor" | "cluster" | "vibe" | "auteur" | "crowd";
+    type: "anchor" | "cluster" | "vibe" | "auteur" | "crowd" | "cult_actor" | "watchlist";
     label?: string;
     seed_title?: string;
     seed_year?: number;
@@ -8,4 +8,6 @@ export interface Contributor {
     medoid_title?: string;
     similarity?: number;
     score?: number;
+    director?: string;
+    actor?: string;
 }
