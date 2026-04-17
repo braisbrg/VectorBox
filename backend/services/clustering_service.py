@@ -859,27 +859,37 @@ class ClusteringService:
 
     async def clear_user_cache(self, user_id: int):
         """
-        Manually invalidate the Redis cache for this user's recommendations.
+        Manually invalidate the Redis cache for this user's recommendations
+        after cluster regeneration. Covers feed sections, signal cache, and
+        cluster rotation key. Uses SCAN to avoid blocking.
         """
         import os
         import redis.asyncio as redis
+        from config import FEED_CACHE_VERSION
 
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
         r = None
         try:
             r = redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
-            # Use SCAN instead of KEYS to avoid blocking Redis
+            patterns = [
+                f"fastapi-cache:*{user_id}*",
+                f"section:{FEED_CACHE_VERSION}:{user_id}:*",
+                f"signal_cache:{user_id}:*",
+            ]
             total_deleted = 0
-            cursor = 0
-            while True:
-                cursor, keys = await r.scan(cursor, match="fastapi-cache:*", count=100)
-                if keys:
-                    await r.delete(*keys)
-                    total_deleted += len(keys)
-                if cursor == 0:
-                    break
+            for pattern in patterns:
+                cursor = 0
+                while True:
+                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
+                    if keys:
+                        await r.delete(*keys)
+                        total_deleted += len(keys)
+                    if cursor == 0:
+                        break
+            # Direct-key deletions (no scan needed)
+            await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
             if total_deleted:
-                logger.info(f"Cleared {total_deleted} cache keys due to cluster regeneration.")
+                logger.info(f"Cleared {total_deleted} cache keys due to cluster regeneration (user_id={user_id}).")
         except Exception as e:
             logger.error(f"Failed to clear user cache: {e}")
         finally:

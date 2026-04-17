@@ -1,18 +1,16 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { X, Globe, Tv, RotateCcw, Info, CheckCircle2, Lock } from "lucide-react";
 import type { Contributor } from "@/types/feed";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { useLanguage } from "@/components/language-provider";
 import { COUNTRIES, getProvidersForCountry } from "@/lib/constants";
-import { ClusterInfo, FeedItem, api } from "@/lib/api";
+import { FeedItem, getTMDBImageUrl } from "@/lib/api";
 
 interface RightConsoleProps {
-    selectedMovieId: number | null;
+    selectedMovie: FeedItem | null;
     selectedSectionId?: string;
-    selectedContributors?: Contributor[];
     onCloseInspector: () => void;
     scope: "watchlist" | "global";
     onScopeChange: (scope: "watchlist" | "global") => void;
@@ -24,9 +22,8 @@ interface RightConsoleProps {
 }
 
 export function RightConsole({
-    selectedMovieId,
+    selectedMovie,
     selectedSectionId,
-    selectedContributors,
     onCloseInspector,
     scope,
     onScopeChange,
@@ -37,8 +34,8 @@ export function RightConsole({
     onClearFilters,
 }: RightConsoleProps) {
     const { t } = useLanguage();
-    const [inspectedMovie, setInspectedMovie] = useState<FeedItem | null>(null);
-    const [isLoadingMovie, setIsLoadingMovie] = useState(false);
+    const inspectedMovie = selectedMovie;
+    const selectedContributors = selectedMovie?.contributors;
 
     const getSectionReason = (sectionId?: string) => {
         if (!sectionId) return "MATRIX GENERAL ALGORITHM";
@@ -54,28 +51,12 @@ export function RightConsole({
         return "STANDARD VECTORBOX MATCH";
     };
 
-    useEffect(() => {
-        if (selectedMovieId) {
-            setIsLoadingMovie(true);
-            // Fetch movie details - utilizing existing search/detail logic pattern
-            // For Phase 1, we might use a mock or fetch if endpoint exists.
-            // Assuming we can get minimal info from recommendations cached if we had it, 
-            // but for a clean Inspector, we fetch.
-            api.get(`/api/movies/${selectedMovieId}`)
-                .then(res => setInspectedMovie(res.data))
-                .catch(() => setInspectedMovie(null))
-                .finally(() => setIsLoadingMovie(false));
-        } else {
-            setInspectedMovie(null);
-        }
-    }, [selectedMovieId]);
-
     const activeProvidersCount = streamingProviders.length;
 
     return (
         <aside className="hidden lg:flex fixed right-0 top-0 w-80 h-screen bg-[#050505] border-l border-zinc-800 flex-col z-40 overflow-hidden font-mono text-xs">
             <AnimatePresence mode="wait">
-                {!selectedMovieId ? (
+                {!selectedMovie ? (
                     <motion.div
                         key="global-controls"
                         initial={{ opacity: 0, x: 20 }}
@@ -187,19 +168,16 @@ export function RightConsole({
                         </div>
 
                         <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
-                            {isLoadingMovie ? (
-                                <div className="flex items-center justify-center h-40">
-                                    <div className="w-1 h-1 bg-primary animate-ping" />
-                                </div>
-                            ) : inspectedMovie ? (
+                            {inspectedMovie ? (
                                 <>
-                                    {/* Mock Poster / Visual Area */}
+                                    {/* Poster */}
                                     <div className="relative aspect-[2/3] w-48 mx-auto border border-zinc-800 grayscale hover:grayscale-0 transition-all">
                                         {inspectedMovie.poster_url ? (
                                             <Image
-                                                src={inspectedMovie.poster_url}
+                                                src={getTMDBImageUrl(inspectedMovie.poster_url, "w342")}
                                                 alt={inspectedMovie.title ?? "Movie poster"}
                                                 fill
+                                                sizes="192px"
                                                 className="object-cover"
                                             />
                                         ) : (
@@ -275,11 +253,11 @@ export function RightConsole({
                                                                 )}
                                                             </>
                                                         )}
-                                                        {(c.type === "vibe" || c.type === "auteur" || c.type === "crowd") && (
+                                                        {(c.type === "vibe" || c.type === "auteur" || c.type === "crowd" || c.type === "cult_actor" || c.type === "watchlist") && (
                                                             <div className="flex items-center justify-between gap-2">
                                                                 <p className="text-xs font-mono text-primary">{c.label}</p>
                                                                 {selectedContributors!.filter(
-                                                                    (x: Contributor) => ["vibe", "auteur", "crowd"].includes(x.type)
+                                                                    (x: Contributor) => ["vibe", "auteur", "crowd", "cult_actor", "watchlist"].includes(x.type)
                                                                 ).length > 1 && (
                                                                     <p className="text-[11px] font-mono text-zinc-500 shrink-0">
                                                                         {Math.round((c.score ?? 0) * 100)}%

@@ -2,7 +2,6 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { MovieCarousel } from "./movie-carousel";
-import type { Contributor } from "@/types/feed";
 import { UploadZone } from "@/components/upload-zone";
 import { AcidError } from "@/components/ui/acid-error";
 import { InfoTooltip } from "./info-tooltip";
@@ -17,7 +16,7 @@ interface FeedContainerProps {
     streamingProviders?: number[];
     initialData?: FeedResponse | null; // SSR Prefetched Data
     registeredUsers?: VectorboxUser[];
-    onInspect?: (id: number, sectionId?: string, contributors?: Contributor[]) => void;
+    onInspect?: (movie: import("@/lib/api").FeedItem, sectionId?: string) => void;
 }
 
 const SECTION_DESCRIPTIONS: Record<string, string> = {
