@@ -19,7 +19,7 @@ interface UploadZoneProps {
 function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSuccess: () => void }) {
     const [isLoading, setIsLoading] = useState(false);
     const [status, setStatus] = useState<"idle" | "success" | "error">("idle");
-    const [stats, setStats] = useState<any>(null);
+    const [syncTaskId, setSyncTaskId] = useState<string | null>(null);
     const { t } = useLanguage();
 
     const handleSync = async () => {
@@ -28,61 +28,74 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
         setStatus("idle");
         try {
             const result = await syncRSS(username);
-            setStats(result.stats);
-            setStatus("success");
-            onSyncSuccess();
+            if (result.task_id) {
+                setSyncTaskId(result.task_id);
+            } else {
+                setStatus("success");
+                setIsLoading(false);
+                onSyncSuccess();
+            }
         } catch (error) {
             console.error(error);
             setStatus("error");
-        } finally {
             setIsLoading(false);
         }
     };
 
+    const handleSyncComplete = () => {
+        setSyncTaskId(null);
+        setIsLoading(false);
+        setStatus("success");
+        onSyncSuccess();
+    };
+
+    const handleSyncError = () => {
+        setSyncTaskId(null);
+        setIsLoading(false);
+        setStatus("error");
+    };
+
     return (
-        <div className="flex flex-col items-center gap-4 w-full max-w-md mx-auto">
-            <div className="flex items-center gap-2">
-                <button
-                    onClick={handleSync}
-                    disabled={isLoading}
-                    className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 disabled:opacity-50 flex items-center gap-2 transition-colors"
-                >
-                    {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-                    {t("rss.sync_btn")} {username}
-                </button>
-            </div>
+        <>
+            <ProgressModal
+                taskId={syncTaskId}
+                onComplete={handleSyncComplete}
+                onError={handleSyncError}
+            />
+            <div className="flex flex-col items-center gap-4 w-full max-w-md mx-auto">
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleSync}
+                        disabled={isLoading}
+                        className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 disabled:opacity-50 flex items-center gap-2 transition-colors"
+                    >
+                        {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                        {t("rss.sync_btn")} {username}
+                    </button>
+                </div>
 
-            {/* Info Box */}
-            <div className="text-xs text-muted-foreground bg-muted/50 p-3 rounded border w-full text-center">
-                <p>
-                    {t("rss.info")}
-                </p>
-            </div>
+                {/* Info Box */}
+                <div className="text-xs text-muted-foreground bg-muted/50 p-3 rounded border w-full text-center">
+                    <p>
+                        {t("rss.info")}
+                    </p>
+                </div>
 
-            {status === "success" && stats && (
-                <div className="flex flex-col gap-1">
+                {status === "success" && (
                     <div className="text-xs text-green-500 flex items-center gap-1.5 bg-green-500/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
                         <Check className="w-3 h-3" />
-                        <span>
-                            {t("rss.synced")} {stats.rss_new_movies || 0} {t("rss.new")}, {stats.rss_new_ratings || 0} {t("rss.watched")}, {stats.rss_updated_ratings || 0} {t("rss.updated")}, {stats.watchlist_added || 0} {t("rss.watchlist")}
-                        </span>
+                        <span>{t("rss.synced")}</span>
                     </div>
-                    {stats.rss_errors > 0 && (
-                        <div className="text-xs text-orange-500 flex items-center gap-1.5 bg-orange-500/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
-                            <AlertCircle className="w-3 h-3" />
-                            <span>{stats.rss_errors} errors occurred (check console)</span>
-                        </div>
-                    )}
-                </div>
-            )}
+                )}
 
-            {status === "error" && (
-                <div className="text-xs text-destructive flex items-center gap-1.5 bg-destructive/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
-                    <AlertCircle className="w-3 h-3" />
-                    <span>{t("rss.error")}</span>
-                </div>
-            )}
-        </div>
+                {status === "error" && (
+                    <div className="text-xs text-destructive flex items-center gap-1.5 bg-destructive/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
+                        <AlertCircle className="w-3 h-3" />
+                        <span>{t("rss.error")}</span>
+                    </div>
+                )}
+            </div>
+        </>
     );
 }
 
