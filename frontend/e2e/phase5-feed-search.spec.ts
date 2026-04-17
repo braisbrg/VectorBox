@@ -56,22 +56,12 @@ test.describe('Phase 5 — Feed & NLP Search', () => {
   });
 
   test('NLP search returns results for semantic query', async ({ page }) => {
-    // TODO Sprint 1: unificar auth — endpoint debe derivar user_id
-    // del token via Depends(get_current_user), no del body.
-    const meResponse = await page.context().request.get(
-      `${API}/api/auth/me`
-    );
-    expect(meResponse.status()).toBe(200);
-    const me = await meResponse.json();
-    const userId = me.user_id;
-
     const response = await page.context().request.post(
       `${API}/api/search/natural`,
       {
         headers: { 'Content-Type': 'application/json' },
         data: {
           query: 'melancholic 70s road trip',
-          user_id: userId,
           country_code: 'ES',
         },
       }
@@ -80,22 +70,12 @@ test.describe('Phase 5 — Feed & NLP Search', () => {
   });
 
   test('Item-to-item search parses intent correctly', async ({ page }) => {
-    // TODO Sprint 1: unificar auth — endpoint debe derivar user_id
-    // del token via Depends(get_current_user), no del body.
-    const meResponse = await page.context().request.get(
-      `${API}/api/auth/me`
-    );
-    expect(meResponse.status()).toBe(200);
-    const me = await meResponse.json();
-    const userId = me.user_id;
-
     const response = await page.context().request.post(
       `${API}/api/search/natural`,
       {
         headers: { 'Content-Type': 'application/json' },
         data: {
           query: 'Movies like Blade Runner',
-          user_id: userId,
           country_code: 'ES',
         },
       }

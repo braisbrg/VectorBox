@@ -1,8 +1,8 @@
 # VectorBox QA Testing Protocol
 
 > **Role:** QA Lead / Release Certification
-> **Version:** 1.7.2 (Optimization Sprint)
-> **Last Updated:** 2026-04-08
+> **Version:** 1.7.3 (Optimization Sprint)
+> **Last Updated:** 2026-04-10
 
 This document is the **complete verification script** for the VectorBox application. Each phase must be completed in order. A **single FAIL** in a critical check blocks the release.
 
@@ -828,4 +828,4 @@ Complete this scorecard only after all phases above pass.
 **Date:** _______________________
 
 ---
-*End of QA Testing Protocol — VectorBox v1.7.2*
+*End of QA Testing Protocol — VectorBox v1.7.3*

@@ -1,7 +1,7 @@
 # VectorBox (Trident Engine)
 
-![Version](https://img.shields.io/badge/version-v1.7.2-acidgreen?style=flat-square)
-![Last Updated](https://img.shields.io/badge/last_updated-2026--04--08-orange?style=flat-square)
+![Version](https://img.shields.io/badge/version-v1.7.3-acidgreen?style=flat-square)
+![Last Updated](https://img.shields.io/badge/last_updated-2026--04--10-orange?style=flat-square)
 
 VectorBox is a premium movie recommendation engine designed to bridge the gap between social tracking (Letterboxd) and AI-driven cinematic discovery. 
 
@@ -38,25 +38,25 @@ Scores from all signals are fused with RRF, then re-ranked through a Sigmoid qua
 
 | Layer | Technology | Version | Purpose |
 |-------|-----------|---------|---------|
-| Frontend | Next.js | 16.1.6 | App router, SSR, i18n |
+| Frontend | Next.js | 16.2.3 | App router, SSR, i18n |
 | Frontend | React | 19.2.4 | UI components |
 | Frontend | Tailwind CSS | 4.x | Styling |
 | Frontend | TypeScript | 5.9.3 | Type safety |
 | Frontend | Framer Motion | 12.34.0 | Animations |
 | Frontend | TanStack Query | 5.90.21 | Server-state management |
-| Backend | FastAPI | 0.122.0 | Async REST API |
-| Backend | SQLAlchemy | 2.0.44 | ORM / async DB access |
-| Backend | Pydantic | 2.12.4 | Request/response validation |
-| Backend | Alembic | 1.13.3 | Schema migrations |
-| Backend | APScheduler | 3.10.4 | Background task scheduling |
+| Backend | FastAPI | 0.135.1 | Async REST API |
+| Backend | SQLAlchemy | 2.0.48 | ORM / async DB access |
+| Backend | Pydantic | 2.12.5 | Request/response validation |
+| Backend | Alembic | 1.18.4 | Schema migrations |
+| Backend | APScheduler | 3.11.2 | Background task scheduling |
 | Database | PostgreSQL | 15-alpine | Relational data store |
 | Database | Qdrant | latest | Vector similarity search |
 | Cache | Redis | 7-alpine | Response cache, session store |
-| AI/ML | sentence-transformers | 3.0.1 | Embedding generation |
-| AI/ML | scikit-learn | 1.7.2 | K-Means clustering |
-| AI/ML | Groq SDK | 0.36.0 | LLM NLP (primary) |
-| AI/ML | OpenAI SDK | 2.8.1 | LLM NLP (fallback) |
-| AI/ML | Instructor | 1.13.0 | Structured LLM output |
+| AI/ML | sentence-transformers | 3.4.1 | Embedding generation |
+| AI/ML | scikit-learn | 1.8.0 | K-Means clustering |
+| AI/ML | Groq SDK | 0.37.1 | LLM NLP (primary) |
+| AI/ML | OpenAI SDK | 2.26.0 | LLM NLP (fallback) |
+| AI/ML | Instructor | 1.14.5 | Structured LLM output |
 | Observability | Jaeger (all-in-one) | latest | Distributed tracing (OTLP) |
 | Observability | OpenTelemetry | 1.29.0 | Instrumentation SDK |
 | Infrastructure | Docker Compose | — | Container orchestration |

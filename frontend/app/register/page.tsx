@@ -46,8 +46,9 @@ export default function RegisterPage() {
             // Fix: Wrap in try/catch to prevent hang if rate limited
             try {
                 const user = await login(username, pin);
-                localStorage.setItem("vectorbox_user", JSON.stringify(user));
-                document.cookie = `vectorbox_token=${user.token || "valid"}; path=/; max-age=86400; SameSite=Lax`;
+                // H-5 Security: Strip token before persisting — auth uses httponly cookie only
+                const { token: _discarded, ...safeUser } = user;
+                localStorage.setItem("vectorbox_user", JSON.stringify(safeUser));
 
                 setTimeout(() => {
                     router.push("/");
