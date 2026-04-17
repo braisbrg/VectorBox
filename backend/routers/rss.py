@@ -12,10 +12,12 @@ from services.rss_service import RSSService
 from services.scraper_service import ScraperService
 from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
+from services.task_store import get_task_store
 from config import get_db
 from dependencies import get_tmdb_client, get_current_user, get_qdrant_service
 from limiter import limiter
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +28,9 @@ router = APIRouter(
 
 class SyncResponse(BaseModel):
     status: str
-    stats: Dict[str, int]
+    stats: Dict[str, object]
     message: str
+    task_id: str | None = None
 
 class GroupVibeRequest(BaseModel):
     usernames: List[str]
@@ -67,16 +70,36 @@ async def _invalidate_feed_cache(user_id: int) -> None:
     except Exception as e:
         logger.error(f"Feed cache invalidation failed for user_id={user_id}: {e}")
 
-async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDBClient) -> None:
+async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDBClient, task_id: str) -> None:
     """Background task — owns its own session. Never re-raises."""
     from config import AsyncSessionLocal
+    task_store = get_task_store()
+
+    # Scout-enrichment client for new movies (watchlist path)
+    groq_api_key = os.getenv("GROQ_API_KEY")
+    groq_client = None
+    if groq_api_key:
+        try:
+            from openai import AsyncOpenAI
+            groq_client = AsyncOpenAI(
+                api_key=groq_api_key,
+                base_url="https://api.groq.com/openai/v1",
+                max_retries=0,
+            )
+        except ImportError:
+            logger.warning("openai package not found; Scout enrichment disabled for RSS watchlist")
+
     async with AsyncSessionLocal() as db:
         try:
+            await task_store.update_progress(task_id, 10, "Syncing Letterboxd ratings...")
+
             rss_service = RSSService(db, tmdb=tmdb)
             await rss_service.sync_user_rss(letterboxd_profile, user_id)
 
+            await task_store.update_progress(task_id, 40, "Ratings synced. Fetching watchlist...")
+
             scraper = ScraperService()
-            movie_service = MovieService(db)
+            movie_service = MovieService(db, tmdb=tmdb, groq_client=groq_client)
             watchlist_added = 0
 
             try:
@@ -135,19 +158,33 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
                 # tmdb is the injected singleton — never close it
 
             await db.commit()
-            
+
+            await task_store.update_progress(task_id, 80, "Watchlist synced. Refreshing feed...")
+
             # Imp 10: Invalidate feed cache after sync completes
             await _invalidate_feed_cache(user_id)
-            
+
             # Invalidate profile summary cache for LLM regeneration
             from services.profile_cache import invalidate_profile_summary
             from config import REDIS_URL
             await invalidate_profile_summary(user_id, REDIS_URL)
-            
+
             logger.info(f"Background sync complete for user_id={user_id}. Watchlist added: {watchlist_added}")
+
+            await task_store.complete_task(task_id, "Sync complete")
 
         except Exception as e:
             logger.error(f"Background sync failed for user_id={user_id}: {e}")
+            try:
+                await task_store.fail_task(task_id, f"Sync failed: {str(e)}")
+            except Exception:
+                pass
+        finally:
+            if groq_client:
+                try:
+                    await groq_client.close()
+                except Exception:
+                    pass
 
 
 @router.post("/sync/{username}", response_model=SyncResponse)
@@ -171,12 +208,18 @@ async def sync_user_data(
         raise HTTPException(status_code=403, detail="Cannot sync another user's account")
 
     letterboxd_profile = user.letterboxd_username or username
-    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb)
+
+    task_store = get_task_store()
+    task_id = task_store.generate_task_id()
+    await task_store.create_task(task_id, 100, "Starting Letterboxd sync...", user_id=current_user.user_id)
+
+    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb, task_id)
 
     return {
         "status": "started",
         "stats": {},
-        "message": f"Sync started for {letterboxd_profile}"
+        "message": f"Sync started for {letterboxd_profile}",
+        "task_id": task_id,
     }
 
 @router.post("/group/vibe")

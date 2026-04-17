@@ -91,6 +91,14 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - Use `Depends()` for singletons in route handlers
 - `generate_embedding()` is CPU-bound → always `run_in_executor`
 
+**Git workflow**
+- ALWAYS branch from `develop` — never from `main`
+- Branch naming: `feature/description-kebab-case`
+- After completing work: merge to `develop`, push, delete the feature branch
+- NEVER push directly to `main` — only via develop
+- CLAUDE.md must exist in every branch — if missing, copy from develop before doing anything else
+- After any `git checkout` or `git pull`, verify CLAUDE.md exists: `ls CLAUDE.md`
+
 **Redis**
 - `aioredis.from_url()` is SYNC in redis-py >= 4.2 — NEVER `await` it
 - Always `await r.close()` in a `finally` block
