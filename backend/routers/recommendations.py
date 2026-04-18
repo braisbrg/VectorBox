@@ -827,3 +827,55 @@ async def reject_movie(
 
     return {"status": "ok", "tmdb_id": tmdb_id, "rejected": True}
 
+
+@router.post("/feed/reroll-cluster")
+async def reroll_cluster(
+    current_user: TokenResponse = Depends(get_current_user),
+):
+    """Invalidate your_taste section + rotation counter so the next feed load shows the next cluster."""
+    user_id = current_user.user_id
+    deleted = 0
+    try:
+        import redis.asyncio as aioredis
+        import os
+        from services.feed_service import FEED_CACHE_VERSION
+        r = aioredis.from_url(
+            os.getenv("REDIS_URL", "redis://redis:6379"),
+            decode_responses=True,
+        )
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = await r.scan(
+                    cursor,
+                    match=f"section:{FEED_CACHE_VERSION}:{user_id}:your_taste:*",
+                    count=100,
+                )
+                if keys:
+                    await r.delete(*keys)
+                    deleted += len(keys)
+                if cursor == 0:
+                    break
+            # Do NOT delete rotation key — the stored value is the currently-displayed cluster.
+            # Section compute does `(raw_index + 1) % len(clusters)`, so leaving it ensures the
+            # next compute advances to the next cluster. Deleting would reset to cluster 0.
+            # Also invalidate the full feed snapshot so the UI refetches sections
+            feed_cursor = 0
+            while True:
+                feed_cursor, keys = await r.scan(
+                    feed_cursor,
+                    match=f"feed:{FEED_CACHE_VERSION}:{user_id}:*",
+                    count=100,
+                )
+                if keys:
+                    await r.delete(*keys)
+                if feed_cursor == 0:
+                    break
+            logger.info(f"Cluster reroll user {user_id}: deleted {deleted} your_taste keys")
+        finally:
+            await r.close()
+    except Exception as e:
+        logger.warning(f"Cluster reroll failed: {e}")
+
+    return {"status": "ok", "message": "Cluster will rotate on next feed load"}
+

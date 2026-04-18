@@ -424,14 +424,26 @@ class RecommendationService:
             except Exception as e:
                 logger.warning(f"[Signal C] Could not queue ingest TMDB {tid}: {e}")
 
-        # 5. Filter and deduplicate
+        # 5. Dynamic quality threshold based on profile richness.
+        # Mirrors Hidden Gems: rich profiles (>=100 watched) deserve stricter floor (70).
+        watch_count_stmt = select(func.count()).select_from(UserRating).where(
+            UserRating.user_id == user_id,
+            UserRating.is_watched.is_(True),
+        )
+        user_watch_count = (await self.db.execute(watch_count_stmt)).scalar() or 0
+        signal_c_min_score = 70 if user_watch_count >= 100 else 55
+
+        # 6. Filter and deduplicate
         seen_local: Set[int] = set()
         unique: List[Movie] = []
         for m in existing_movies:
-            if m.id not in seen_local and m.tmdb_id not in exclude_ids:
-                unique.append(m)
-                seen_local.add(m.id)
-                
+            if m.id in seen_local or m.tmdb_id in exclude_ids:
+                continue
+            if (m.vectorbox_score or 0) < signal_c_min_score:
+                continue
+            unique.append(m)
+            seen_local.add(m.id)
+
         return unique
 
     def reciprocal_rank_fusion(self, candidate_lists: List[List[Movie]], k=60) -> Dict[int, float]:
