@@ -1,5 +1,13 @@
 # CLAUDE.md
 
+## Documentation — read before starting any task
+- `AGENTS.md` — architecture rules and anti-patterns (MANDATORY)
+- `STACK_RULES.md` — forbidden patterns (MANDATORY)
+- `PROJECT_MASTER_GUIDE.md` — full system overview
+- `SCRIPTS_GUIDE.md` — available scripts and when to use them
+- `DEPLOYMENT.md` — deployment configuration
+- `.ai_context/employees/c-suite/architect.md` — enforcement layer
+
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
 **Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.

@@ -234,7 +234,15 @@ async def natural_language_search(
         )
         
         logger.info(f"Qdrant returned {len(raw_results)} results")
-        
+
+        # Minimum quality gate — drop movies with no TMDB signal (e.g. vote_count=0)
+        raw_results = [
+            r for r in raw_results
+            if (r.get("metadata", {}).get("vote_count") or 0) >= 10
+            and (r.get("metadata", {}).get("vote_average") or 0) >= 4.0
+        ]
+        logger.info(f"After quality gate: {len(raw_results)} results")
+
         # 5. Transform results for frontend
         results = []
         
