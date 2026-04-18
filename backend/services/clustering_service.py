@@ -178,7 +178,8 @@ class ClusteringService:
                     "title": movie.title,
                     "year": movie.year,
                     "genres": movie.genres or [],
-                    "rating": effective_rating
+                    "rating": effective_rating,
+                    "vectorbox_score": movie.vectorbox_score or 0,
                 })
         
         if len(vectors) < 5:
@@ -314,9 +315,34 @@ class ClusteringService:
             else:
                 decade = "Various"
             
-            # Compute medoid: find the real film closest to the cluster center
+            # Compute medoid: find the real film closest to the cluster center,
+            # filtered by quality floor and genre coherence with dominant_genres.
             cluster_vectors = X_normalized[cluster_indices]
-            _, medoid_local_idx = self._compute_medoid(cluster_vectors)
+            centroid = np.mean(cluster_vectors, axis=0)
+            distances = np.linalg.norm(cluster_vectors - centroid, axis=1)
+            ranked_local_idxs = np.argsort(distances).tolist()
+
+            MIN_MEDOID_SCORE = 55
+            GENERIC_GENRES = {"Action", "Drama", "Comedy", "Adventure", "Thriller"}
+            cluster_genres_set = set(dominant_genres or [])
+            distinctive_genres = cluster_genres_set - GENERIC_GENRES
+            filter_genres = distinctive_genres if distinctive_genres else cluster_genres_set
+
+            def _qualifies(m, require_genre: bool) -> bool:
+                if (m.get("vectorbox_score") or 0) < MIN_MEDOID_SCORE:
+                    return False
+                if require_genre and filter_genres:
+                    if not (set(m.get("genres") or []) & filter_genres):
+                        return False
+                return True
+
+            qualified = [i for i in ranked_local_idxs if _qualifies(cluster_movies[i], require_genre=True)]
+            if len(qualified) < 3:
+                qualified = [i for i in ranked_local_idxs if _qualifies(cluster_movies[i], require_genre=False)]
+            if not qualified:
+                qualified = ranked_local_idxs
+
+            medoid_local_idx = qualified[0]
             medoid_movie_data = cluster_movies[medoid_local_idx]
             medoid_movie_id = medoid_movie_data["id"]
 

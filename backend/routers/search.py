@@ -9,7 +9,7 @@ from difflib import SequenceMatcher
 from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user
 from models.schemas import TokenResponse
-from services.nlp_search import parse_user_intent, search_with_reasoning
+from services.nlp_search import parse_user_intent, search_with_reasoning, MovieSearchIntent
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
@@ -131,7 +131,14 @@ async def natural_language_search(
                 return result
 
         # 1. Parse Intent with Advanced LLM (Fallback to Semantic Search)
-        intent = await parse_user_intent(search_req.query)
+        try:
+            intent = await parse_user_intent(search_req.query)
+        except Exception as e:
+            logger.warning(f"Groq intent parsing failed, falling back to pure vector search: {e}")
+            intent = MovieSearchIntent(
+                semantic_query=search_req.query,
+                reasoning="Groq unavailable — direct vector search",
+            )
         logger.info(f"Parsed intent: {intent}")
         logger.info(f"Reasoning: {intent.reasoning}")
         
@@ -207,7 +214,11 @@ async def natural_language_search(
             select(Movie.tmdb_id)
             .join(UserRating, Movie.id == UserRating.movie_id)
             .where(UserRating.user_id == current_user.user_id)
-            .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+            .where(or_(
+                UserRating.rating.isnot(None),
+                UserRating.is_liked.is_(True),
+                UserRating.is_watched.is_(True),
+            ))
         )
         watched_tmdb_ids = [row[0] for row in result.all() if row[0] is not None]
         
