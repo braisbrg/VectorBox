@@ -386,6 +386,15 @@ All of these have been found and fixed. Do not reintroduce.
     ✅  Delete the MovieService assignment. The background function receives
         only the tmdb_id and creates its own session + service internally.
 
+21. SELF-BOUND METHOD IN BACKGROUND TASK
+    ❌  background_tasks.add_task(self.enrich_movie, tmdb_id)
+        where `self` holds a request-scoped AsyncSession or references one
+        → the task runs after the response returns; the bound session is
+          already closed → MissingGreenlet / connection-closed errors
+    ✅  Extract a module-level function that opens its own AsyncSessionLocal():
+        background_tasks.add_task(_enrich_movie_background, tmdb_id)
+        (see §5 and the Background Tasks section)
+
 20. BARE MOVIE CONSTRUCTION BYPASSING MovieService
     ❌  new_movie = Movie(tmdb_id=..., title=..., poster_path=..., ...)
         db.add(new_movie)
@@ -451,6 +460,13 @@ Current implementation omits `is_liked` from the RSS upsert SET.
 
 - Never accept user_id from request body/query on protected
   endpoints — always extract from JWT via get_current_user()
+
+- Every endpoint touching user data requires `Depends(get_current_user)`.
+  Endpoints that take a Letterboxd username as path/query param MUST
+  verify the authenticated user owns that username before returning data:
+    ✅  if user.letterboxd_username != current_user.letterboxd_username: raise 403
+    ❌  looking up a User by `letterboxd_username` and trusting the result
+       (allows enumerating other users' data)
 
 - Release age policy:
 

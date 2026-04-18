@@ -326,10 +326,8 @@ class QdrantService:
                         filter_params["must_not"] = must_not_conditions
                     qdrant_filter = Filter(**filter_params)
             
-            # If filters are present, lower the threshold
+            # Score threshold is independent of filters — do not reset when filters are present
             effective_threshold = score_threshold
-            if qdrant_filter:
-                effective_threshold = 0.0 
             
             from qdrant_client.http import models
 
