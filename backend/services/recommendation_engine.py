@@ -614,8 +614,10 @@ class RecommendationEngine:
                 movie_map = {}
                 providers_map = {}
 
-            # FIX 2: Apply genre coherence filter — only keep movies that share at least 1 genre with the cluster
+            # FIX 2: Apply genre coherence filter — prefer distinctive (non-generic) genres
             cluster_genres = set(cluster.dominant_genres or [])
+            distinctive_cluster_genres = cluster_genres - GENERIC_GENRES
+            filter_genres = distinctive_cluster_genres if distinctive_cluster_genres else cluster_genres
             if cluster_genres and movie_map:
                 genre_filtered_ids = []
                 for mid, movie in movie_map.items():
@@ -623,7 +625,11 @@ class RecommendationEngine:
                         genre_filtered_ids.append(mid)  # no genre info, include by default
                         continue
                     movie_genre_set = set(movie.genres)
-                    if not (movie_genre_set & cluster_genres):  # no genre in common → skip
+                    # Hard exclusion: zero overlap with ANY dominant genre
+                    if not (movie_genre_set & cluster_genres):
+                        continue
+                    # Distinctive-genre filter: must share a non-generic genre when available
+                    if filter_genres and not (movie_genre_set & filter_genres):
                         continue
 
                     # FIX 1: EXCLUSION_PAIRS — prevent niche genre mismatches

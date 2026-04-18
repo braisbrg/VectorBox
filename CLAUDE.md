@@ -73,6 +73,12 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - **Dev:** Docker Compose, Windows 11 PowerShell host, Uvicorn auto-reloads on save
 - **Branch:** feature/* → develop → main (tags semver)
 
+## Documentation — read before starting any task
+- `AGENTS.md` — architecture rules and anti-patterns (MANDATORY)
+- `STACK_RULES.md` — forbidden patterns (MANDATORY)  
+- `CLAUDE.md` — this file, project state and context
+- `README.md` — project overview
+
 ### Critical rules — violations break production
 
 **ID types — never confuse**
