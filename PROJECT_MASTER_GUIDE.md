@@ -1,8 +1,8 @@
 # PROJECT MASTER GUIDE: VectorBox
 
 > **Project:** VectorBox (codename: *Trident*)
-> **Version:** `v1.7.3`
-> **Last Updated:** 2026-04-10
+> **Version:** `v1.8.1`
+> **Last Updated:** 2026-04-18
 > **Owner:** Lead Architect
 > **Confidentiality:** Proprietary
 
@@ -16,14 +16,14 @@ VectorBox is a high-performance, AI-driven movie recommendation engine. It bridg
 ## 2. Feature Catalogue
 
 ### Core Experience
-- **Personalized Home Feed**: 10 parallel-generated sections including Signal A (Vibe), Signal B (Your Taste Clusters), and Signal C (Hidden Gems).
+- **Personalized Home Feed**: 10 parallel-generated sections including Signal A (Vibe / Because You Watched), Signal B (Niche Picks — rotating global themes), and Signal C (Hidden Gems).
 - **Magic Box (NL Search)**: Natural language movie search powered by Groq (Scout/70B) with intent parsing and quality-gate-bypass logic.
 - **Letterboxd Sync**: Automatic RSS-based synchronization of watched history, ratings, and likes.
 - **RightConsole**: simplified side-panel focused on global filters, data inspection, and profile management (manual cluster selection removed in v1.7).
 
 ### Smart Discovery (Trident v2)
 - **Signal A (Vibe)**: Item-Item Collaborative Filtering via embeddings.
-- **Signal B (Your Taste)**: K-Medoids cluster analysis (e.g., "A24 Dread", "Neon-Noir Revenge") with **Automated Cluster Rotation** via Redis counters.
+- **Signal B (Niche Picks)**: 9 globally-defined evocative themes (Sleep Optional, Slow Burn, Subtitles Required, Based on True Crime, …) rotating one forward per feed fetch via a Redis counter. Each theme owns its own genre, era, runtime, and language filters. Score randomization (`vectorbox_score × U(0.7, 1.3)`) prevents staleness. Clusters are still built internally for Trident medoid and anti-vector purposes, but the cluster-rotation section is removed. See `GLOBAL_THEMES` in `backend/services/recommendation_engine.py`.
 - **Signal C (Hidden Gems)**: **DB-first quality discovery** for high-quality niche films followed by vector-weighted similarity re-ranking.
 - **Movie Rejection**: Support for "Not interested" movies to prune the recommendation engine. Uses **anti-vector penalties** to actively avoid disliked 1-2★ films.
 - **user_clusters**: K-Medoid assignments and LLM-generated labels.
@@ -150,8 +150,8 @@ The feed is composed of multiple "Sections", generated largely in parallel by `F
 | **Popular on Letterboxd** | Fetches trending movies from TMDB/Letterboxd (cached via `ThreadingService`). |
 | **Because you watched [X]** | **Item-Item Collaborative Filtering.** Picks the best anchor from up to 100 candidates (Python scoring: rating × recency decay × rewatch boost), generates an *LLM-enriched* content vector, and finds similar vectors in Qdrant. Coherence threshold: 0.25. Quality floor: `vectorbox_score >= 55`. Re-ranked via MMR. Contributors carry `{type: "anchor", seed_title, seed_year, seed_rating, similarity}`. |
 | **Cult Actors (Auteur 2.0)** | **Cast CF.** Finds cult actors by weighting the top 3 actors of highly rated movies and boosting those thresholding >= 2.5 points. |
-| **Your Taste ([Cluster])** | **Cluster Rotation.** Automatically cycles through user's taste clusters on every feed fetch using a Redis counter. Quality floor: `vectorbox_score >= 55`. Genre coherence (EXCLUSION_PAIRS) applied here only — NOT in Picked For You. Contributors carry `{type: "cluster", cluster_name, medoid_title, similarity}`. |
-| **Hidden Gems** | **DB-First Discovery.** Identifies high-quality, low-popularity films directly from Postgres using dynamic thresholds. Re-ranked using **30% Vector Similarity** weight to maintain user-centricity without "similarity wash". |
+| **Niche Picks ([Theme])** | **Global Theme Rotation.** Cycles through 9 curated themes in `GLOBAL_THEMES` (Sleep Optional, Comfort Watch, Your Brain Called, Your Parents Haven't Seen Either, Slow Burn, Beautiful Chaos, Bring Tissues, Subtitles Required, Based on True Crime). Redis counter `niche_theme_rotation:{FEED_CACHE_VERSION}:{user_id}` advances one theme forward per feed fetch. Global `MOVIE_QUALITY_GATE` + per-theme thresholds (score ≥ 65/68, votes ≥ 50/100, `vote_average >= 5.0`) + each theme's `include_genres` / `exclude_genres` / optional `max_year` / `min_runtime` / `original_language_not`. Score-randomized to prevent staleness. Contributors carry `{type: "cluster", cluster_name: <theme>, label: "Curated thematic pick"}`. |
+| **Hidden Gems** | **DB-First Discovery.** Identifies high-quality, low-popularity films directly from Postgres using dynamic thresholds. Re-ranked using **30% Vector Similarity** weight to maintain user-centricity without "similarity wash". Runs before Niche Picks in the `ordered_results` dedup pass so Signal C gets first pick of the unseen pool. |
 
 | **Comfort Zone (Wildcard)** | **Anti-Recommendation.** Finds highly-rated movies whose genres don't overlap with the user's dominant clusters. Filter pushed to DB via `~genres.overlap() + func.random() LIMIT 50`. |
 | **Random Picks** | DB-random selection via `func.random() LIMIT 30` from VectorBox-scored unwatched movies. |
@@ -209,8 +209,21 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
     - **Effect:** Movies with a score > 65 get a boost. Movies < 50 get a heavy penalty. This prevents "relevant trash" from appearing.
     - **Bypass:** When the Magic Box natural language intent triggers a `quality_gate_bypass` (users specifically asking for trashy or campy films), the sigmoid midpoint relaxes entirely (`midpoint=25`, `steepness=0.10`).
 
+### Global Quality Gate
+- **Single source of truth:** `MOVIE_QUALITY_GATE` — a module-level SQLAlchemy-expression list in `backend/services/recommendation_engine.py`:
+  ```python
+  MOVIE_QUALITY_GATE = [
+      Movie.vote_count >= 10,
+      Movie.year.isnot(None),
+      Movie.vectorbox_score.isnot(None),
+  ]
+  ```
+- **Application:** Every DB query that fetches movie candidates for recommendation must splat this list into its `.where(*MOVIE_QUALITY_GATE)` clause. Applied across Signal A candidate lookups, Signal C (Hidden Gems), Niche Picks, Wildcard, Random Picks, Popular on Letterboxd, Auteur, Cult Actor, and genre fallbacks.
+- **Exceptions:** `get_watchlist_feed` (user-curated — users keep what they put there) and `get_available_now_section`.
+- **score=99 anomaly clamp:** `get_random_recommendations_section` adds `Movie.vectorbox_score.between(1, 98)` to exclude the score=99 spike that historically concentrated the random-picks output on a handful of films. `_calculate_vectorbox_score` is already upper-bounded by construction (weighted sum of sources each clamped 0–100), so no additional cap is required.
+
 ### Diversity: MMR & Collection Collapsing
-- **MMR (Maximal Marginal Relevance):** Prominently used across `because_you_watched`, `your_taste`, and `hidden_gems`. It re-ranks the top results from `clustering_service.mmr_rerank` (`lambda=0.7`) to penalize items that are too similar to items *already selected* for the list based on their dense 384d vectors.
+- **MMR (Maximal Marginal Relevance):** Prominently used across `because_you_watched` and `hidden_gems`. It re-ranks the top results from `clustering_service.mmr_rerank` (`lambda=0.7`) to penalize items that are too similar to items *already selected* for the list based on their dense 384d vectors.
 - **Collection Collapsing:** In `get_item_based_recommendations`, multiple movies from the same franchise (e.g., *Harry Potter 1, 2, 3*) are collapsed into a single "Super Seed" (the highest-rated one). This prevents a single franchise from flooding the recommendation inputs.
 
 ### Clustering Logic (`ClusteringService`)
@@ -364,7 +377,7 @@ VectorBox uses **OpenTelemetry SDK** with a **Jaeger All-in-One** backend for di
 - **Deep Health Checks:** `/health` endpoint performs active ping checks on Postgres, Redis, and Qdrant, returning `503 Service Unavailable` with specific failure details if any dependency is down.
 
 ### Span Attributes
-All Trident spans include: `user_id`, `country`, `result_count`. Signal A also includes `anchor_movie`. Signal B includes `cluster_id`.
+All Trident spans include: `user_id`, `country`, `result_count`. Signal A also includes `anchor_movie`. Signal B includes `theme_id` (active `GLOBAL_THEMES` entry).
 
 ### Access
 - **Jaeger UI:** `http://localhost:16686`
@@ -373,5 +386,6 @@ All Trident spans include: `user_id`, `country`, `result_count`. Signal A also i
 
 ---
 
-**Last Updated:** 2026-04-10 (v1.7.3 / Second-pass optimization: P0 crashes fixed, Redis resource leaks sealed, background task session ownership enforced, watchlist and random-watchlist queries DB-paginated, dead @cache decorators removed from clustering, Group Vibe enrichment corrected, FEED_CACHE_VERSION moved to config.py, Next.js 16.2.3 + axios 1.15.0 security patches)
+**Last Updated:** 2026-04-18 (v1.8.1 / Niche Picks now rotates 9 global evocative themes via `GLOBAL_THEMES` instead of user clusters; Hidden Gems runs before Niche Picks in the dedup pass; global `MOVIE_QUALITY_GATE` applied across all recommendation DB queries; random-picks clamps `vectorbox_score BETWEEN 1 AND 98` to exclude the score=99 anomaly)
+**Previous:** 2026-04-10 (v1.7.3 / Second-pass optimization: P0 crashes fixed, Redis resource leaks sealed, background task session ownership enforced, watchlist and random-watchlist queries DB-paginated, dead @cache decorators removed from clustering, Group Vibe enrichment corrected, FEED_CACHE_VERSION moved to config.py, Next.js 16.2.3 + axios 1.15.0 security patches)
 **Maintained By:** VectorBox Team

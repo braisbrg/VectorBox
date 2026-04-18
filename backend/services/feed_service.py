@@ -388,25 +388,25 @@ class FeedService:
             task_popular(),
             task_hybrid(),
             task_watched(),
+            task_hidden(),
             task_niche(),
             task_wildcard(),
             task_random(),
-            task_hidden(),
             task_auteur(),
             task_cult_actor(),
             task_available(),
         ]
-        
+
         results = await asyncio.gather(*tasks)
 
         (
             section_popular,
             section_hybrid,
             section_a,
+            section_c,
             section_niche,
             section_wildcard,
             section_random,
-            section_c,
             section_auteur,
             section_cult_actor,
             section_d,
@@ -420,12 +420,12 @@ class FeedService:
             section_popular,
             section_hybrid,
             section_a,
+            section_c,
             section_niche,
             section_auteur,
             section_cult_actor,
             section_wildcard,
             section_random,
-            section_c,
             section_d,
         ]
 
