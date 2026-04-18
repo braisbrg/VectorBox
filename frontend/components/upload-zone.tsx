@@ -157,15 +157,43 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
         onSuccess: (data) => {
             if (data.task_id) {
                 setTaskId(data.task_id);
+                if (typeof window !== "undefined" && activeSessionUserId) {
+                    localStorage.setItem("vectorbox_upload_task_id", data.task_id);
+                    localStorage.setItem("vectorbox_upload_user_id", String(activeSessionUserId));
+                }
             } else {
                 if (activeSessionUserId) onUploadSuccess(activeSessionUserId);
             }
         },
     });
 
+    // Recover in-flight upload after tab reload
+    useEffect(() => {
+        if (typeof window === "undefined" || !activeSessionUserId) return;
+        const savedTaskId = localStorage.getItem("vectorbox_upload_task_id");
+        const savedUserId = localStorage.getItem("vectorbox_upload_user_id");
+        if (savedTaskId && savedUserId && Number(savedUserId) === activeSessionUserId) {
+            setTaskId(savedTaskId);
+        }
+    }, [activeSessionUserId]);
+
+    const clearUploadTaskStorage = () => {
+        if (typeof window !== "undefined") {
+            localStorage.removeItem("vectorbox_upload_task_id");
+            localStorage.removeItem("vectorbox_upload_user_id");
+        }
+    };
+
     const handleProgressComplete = () => {
         setTaskId(null);
+        clearUploadTaskStorage();
         if (activeSessionUserId) onUploadSuccess(activeSessionUserId);
+    };
+
+    const handleProgressError = (error: string) => {
+        console.error("Upload error:", error);
+        setTaskId(null);
+        clearUploadTaskStorage();
     };
 
     const handleDrop = useCallback((e: React.DragEvent) => {
@@ -201,7 +229,7 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
             <ProgressModal
                 taskId={taskId}
                 onComplete={handleProgressComplete}
-                onError={(error) => console.error("Upload error:", error)}
+                onError={handleProgressError}
             />
 
             <div className="space-y-6">
