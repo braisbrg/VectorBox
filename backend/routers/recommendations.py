@@ -832,18 +832,25 @@ async def reject_movie(
 async def reroll_cluster(
     current_user: TokenResponse = Depends(get_current_user),
 ):
-    """Invalidate niche_picks section so the next feed load shows the next theme."""
+    """Advance niche_theme_rotation and invalidate niche_picks cache."""
     user_id = current_user.user_id
     deleted = 0
     try:
         import redis.asyncio as aioredis
         import os
         from services.feed_service import FEED_CACHE_VERSION
+        from services.recommendation_engine import GLOBAL_THEMES
         r = aioredis.from_url(
             os.getenv("REDIS_URL", "redis://redis:6379"),
             decode_responses=True,
         )
         try:
+            rotation_key = f"niche_theme_rotation:{FEED_CACHE_VERSION}:{user_id}"
+            current = await r.get(rotation_key)
+            n_themes = len(GLOBAL_THEMES)
+            next_index = ((int(current) + 1) if current is not None else 1) % n_themes
+            await r.setex(rotation_key, 60 * 60 * 24 * 7, str(next_index))
+
             cursor = 0
             while True:
                 cursor, keys = await r.scan(
@@ -868,8 +875,10 @@ async def reroll_cluster(
                     await r.delete(*keys)
                 if feed_cursor == 0:
                     break
-            await r.delete(f"niche_theme_rotation:{FEED_CACHE_VERSION}:{user_id}")
-            logger.info(f"Niche theme reroll user {user_id}: deleted {deleted} niche_picks keys")
+            logger.info(
+                f"Niche theme reroll user {user_id}: theme → {next_index} "
+                f"({GLOBAL_THEMES[next_index]['title']}), deleted {deleted} niche_picks keys"
+            )
         finally:
             await r.close()
     except Exception as e:

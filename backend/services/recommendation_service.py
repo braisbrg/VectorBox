@@ -311,15 +311,41 @@ class RecommendationService:
             return []
 
         # Build weighted director scores
+        # Recency decay (half-life 730 days) + saga penalty to prevent franchise
+        # directors (MCU, long-running sagas) from dominating via accumulated weight.
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+
+        director_appearances: Dict[str, int] = {}
+        for _, movie in rated_movies:
+            if not movie.directors:
+                continue
+            for director in movie.directors:
+                director_appearances[director] = director_appearances.get(director, 0) + 1
+
         director_scores: Dict[str, float] = {}
         for rating_obj, movie in rated_movies:
             if not movie.directors:
                 continue
             effective_rating = rating_obj.rating or 4.5  # liked = 4.5
-            weight = _director_weight(effective_rating)
-            if weight > 0:
-                for director in movie.directors:
-                    director_scores[director] = director_scores.get(director, 0) + weight
+            base_weight = _director_weight(effective_rating)
+            if base_weight == 0:
+                continue
+
+            wd = rating_obj.watched_date
+            if wd is not None:
+                if wd.tzinfo is None:
+                    wd = wd.replace(tzinfo=timezone.utc)
+                days_ago = max(0, (now - wd).days)
+            else:
+                days_ago = 730
+            decay = 0.5 ** (days_ago / 730)
+
+            for director in movie.directors:
+                appearances = director_appearances.get(director, 1)
+                saga_penalty = 1.0 / (1.0 + max(0, appearances - 3) * 0.3)
+                final_weight = base_weight * decay * saga_penalty
+                director_scores[director] = director_scores.get(director, 0) + final_weight
 
         # Imp 8: Director activates at >= 3.0 points
         top_directors = [name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True) if score >= 3.0][:5]
@@ -672,15 +698,42 @@ class RecommendationService:
             return FeedSection(id="cult_actor", title="Cast Picks", items=[])
 
         # 2. Build weighted frequency counter over first 3 billed actors
+        # Recency decay (half-life 730 days) + saga penalty to prevent franchise actors
+        # (e.g. Harry Potter cast) from dominating via accumulated appearances.
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+
+        # Count appearances per actor first (for saga penalty)
+        actor_appearances: Dict[str, int] = {}
+        for _, movie in rated_movies:
+            if not movie.cast:
+                continue
+            for actor in movie.cast[:3]:
+                actor_appearances[actor] = actor_appearances.get(actor, 0) + 1
+
         actor_scores: Dict[str, float] = {}
         for rating_obj, movie in rated_movies:
             if not movie.cast:
                 continue
             effective_rating = rating_obj.rating or 4.5  # liked = 4.5
-            weight = _director_weight(effective_rating)
-            if weight > 0:
-                for actor in movie.cast[:3]:  # First 3 billed only
-                    actor_scores[actor] = actor_scores.get(actor, 0) + weight
+            base_weight = _director_weight(effective_rating)
+            if base_weight == 0:
+                continue
+
+            wd = rating_obj.watched_date
+            if wd is not None:
+                if wd.tzinfo is None:
+                    wd = wd.replace(tzinfo=timezone.utc)
+                days_ago = max(0, (now - wd).days)
+            else:
+                days_ago = 730
+            decay = 0.5 ** (days_ago / 730)
+
+            for actor in movie.cast[:3]:
+                appearances = actor_appearances.get(actor, 1)
+                saga_penalty = 1.0 / (1.0 + max(0, appearances - 3) * 0.3)
+                final_weight = base_weight * decay * saga_penalty
+                actor_scores[actor] = actor_scores.get(actor, 0) + final_weight
 
         # Threshold: actor must have >= 2.5 points
         qualifying_actors = [

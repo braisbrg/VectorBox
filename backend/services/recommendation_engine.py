@@ -61,6 +61,7 @@ GLOBAL_THEMES = [
         "id": "sleep_optional",
         "title": "Sleep Optional",
         "include_genres": ["Horror", "Thriller"],
+        "require_any": ["Horror"],
         "exclude_genres": ["Family", "Animation", "Comedy"],
         "min_score": 65,
         "min_votes": 50,
@@ -679,11 +680,14 @@ class RecommendationEngine:
         candidates = candidates_result.scalars().all()
 
         exclude_genres = set(theme.get("exclude_genres", []))
+        require_any = set(theme.get("require_any", []))
         filtered = []
         for movie in candidates:
             if movie.tmdb_id in seen_ids:
                 continue
             if exclude_genres and set(movie.genres or []) & exclude_genres:
+                continue
+            if require_any and not (set(movie.genres or []) & require_any):
                 continue
             filtered.append(movie)
 
