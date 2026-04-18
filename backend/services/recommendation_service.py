@@ -328,7 +328,9 @@ class RecommendationService:
             return []
             
         # 2. Query DB for matches
+        from services.recommendation_engine import MOVIE_QUALITY_GATE
         stmt = select(Movie).where(
+            *MOVIE_QUALITY_GATE,
             Movie.vectorbox_score > 70,
             Movie.directors.overlap(top_directors)
         ).limit(100)
@@ -705,9 +707,10 @@ class RecommendationService:
 
         for actor in actor_names:
             # Query movies where cast contains this actor, not watched
+            from services.recommendation_engine import MOVIE_QUALITY_GATE
             stmt = select(Movie).where(
+                *MOVIE_QUALITY_GATE,
                 Movie.cast.any(actor),
-                Movie.vectorbox_score.isnot(None)
             ).order_by(desc(Movie.vectorbox_score)).limit(15)
 
             candidates = (await self.db.execute(stmt)).scalars().all()

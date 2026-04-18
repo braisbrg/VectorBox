@@ -21,7 +21,7 @@ interface FeedContainerProps {
 
 const SECTION_DESCRIPTIONS: Record<string, string> = {
     because_you_watched: "Recommendations based on specific movies you've rated highly (4+ stars).",
-    your_taste: "Movies that align with your overall taste profile and preferred genres.",
+    niche_picks: "Genre-coherent niche recommendations based on your taste clusters.",
     wildcard: "Unexpected recommendations to help you discover something new.",
     random_picks: "A diverse selection of highly-rated movies from our database.",
     hidden_gems: "Critically acclaimed movies that you might have missed (fewer than 5k votes).",
@@ -136,7 +136,7 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
                 <MovieCarousel
                     key={section.id}
                     title={
-                        (section.id === "your_taste" || section.id === "because_you_watched" || section.type === "wildcard")
+                        (section.id === "niche_picks" || section.id === "because_you_watched" || section.type === "wildcard")
                             ? section.title
                             : (t(TITLE_MAP[section.id] || `sections.${section.id}`) || section.title)
                     }

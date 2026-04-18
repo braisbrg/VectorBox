@@ -40,7 +40,7 @@ export function RightConsole({
     const getSectionReason = (sectionId?: string) => {
         if (!sectionId) return "MATRIX GENERAL ALGORITHM";
         if (sectionId.startsWith("because_you_watched")) return "Item-to-Item Semantic Similarity from Anchors";
-        if (sectionId === "your_taste") return "Matches User Medoid Cluster Profiling";
+        if (sectionId === "niche_picks") return "Matches User Cluster Taste Profile";
         if (sectionId === "picked_for_you") return "Hybrid RRF Signal Fusion Mechanism";
         if (sectionId === "available_now") return "Streaming Availability Cross-reference";
         if (sectionId === "hidden_gems") return "Algorithmically Detected Discovery Metrics";
