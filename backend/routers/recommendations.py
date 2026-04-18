@@ -832,7 +832,7 @@ async def reject_movie(
 async def reroll_cluster(
     current_user: TokenResponse = Depends(get_current_user),
 ):
-    """Invalidate your_taste section + rotation counter so the next feed load shows the next cluster."""
+    """Invalidate niche_picks section + rotation counter so the next feed load shows the next cluster."""
     user_id = current_user.user_id
     deleted = 0
     try:
@@ -848,7 +848,7 @@ async def reroll_cluster(
             while True:
                 cursor, keys = await r.scan(
                     cursor,
-                    match=f"section:{FEED_CACHE_VERSION}:{user_id}:your_taste:*",
+                    match=f"section:{FEED_CACHE_VERSION}:{user_id}:niche_picks:*",
                     count=100,
                 )
                 if keys:
@@ -871,7 +871,7 @@ async def reroll_cluster(
                     await r.delete(*keys)
                 if feed_cursor == 0:
                     break
-            logger.info(f"Cluster reroll user {user_id}: deleted {deleted} your_taste keys")
+            logger.info(f"Cluster reroll user {user_id}: deleted {deleted} niche_picks keys")
         finally:
             await r.close()
     except Exception as e:

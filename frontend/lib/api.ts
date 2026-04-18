@@ -450,7 +450,7 @@ export const rejectMovie = async (tmdbId: number): Promise<{ status: string; tmd
 };
 
 /**
- * Reroll the "Your Taste" cluster — advances to the next cluster on the next feed load.
+ * Reroll the "Niche Picks" cluster — advances to the next cluster on the next feed load.
  */
 export const rerollCluster = async (): Promise<void> => {
     await api.post("/api/recommendations/feed/reroll-cluster");

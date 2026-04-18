@@ -23,7 +23,7 @@ SECTION_CACHE_TTLS: dict[str, int] = {
     "popular_letterboxd":  86400,  # 24h — changes once daily via scraper
     "available_now":       3600,   # 1h — provider availability
     "because_you_watched": 7200,   # 2h
-    "your_taste":          7200,   # 2h
+    "niche_picks":         7200,   # 2h
     "hidden_gems":         7200,   # 2h
     "picked_for_you":      7200,   # 2h
     "wildcard":            3600,   # 1h — some randomness desired
@@ -74,11 +74,11 @@ class FeedService:
     ) -> FeedSection:
         return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
 
-    @safe_execution(fallback_return=FeedSection(id="your_taste", title="Your Taste", items=[]))
-    async def get_your_taste_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, precomputed_anti_vector = None
+    @safe_execution(fallback_return=FeedSection(id="niche_picks", title="Niche Picks", items=[]))
+    async def get_niche_picks_section(
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
     ) -> FeedSection:
-        return await self.engine.get_your_taste_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
+        return await self.engine.get_niche_picks_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks)
 
     @safe_execution(fallback_return=FeedSection(id="hidden_gems", title="Hidden Gems", items=[]))
     async def get_hidden_gems_section(
@@ -282,20 +282,19 @@ class FeedService:
                 logger.error(f"Feed Task Failed [Watched]: {e}")
                 return None
 
-        async def task_taste():
-            cached = await _get_cached_section(r, user_id, "your_taste", country_code, prov_str)
+        async def task_niche():
+            cached = await _get_cached_section(r, user_id, "niche_picks", country_code, prov_str)
             if cached:
                 return cached
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_your_taste_section(
+                    return await self.get_niche_picks_section(
                         user_id, session, tmdb, watched_tmdb_ids.copy(),
                         country_code, local_provider, background_tasks=background_tasks,
-                        precomputed_anti_vector=precomputed_anti_vector
                     )
             except Exception as e:
-                logger.error(f"Feed Task Failed [Taste]: {e}")
+                logger.error(f"Feed Task Failed [Niche]: {e}")
                 return None
 
         async def task_wildcard():
@@ -389,7 +388,7 @@ class FeedService:
             task_popular(),
             task_hybrid(),
             task_watched(),
-            task_taste(),
+            task_niche(),
             task_wildcard(),
             task_random(),
             task_hidden(),
@@ -404,7 +403,7 @@ class FeedService:
             section_popular,
             section_hybrid,
             section_a,
-            section_b,
+            section_niche,
             section_wildcard,
             section_random,
             section_c,
@@ -421,7 +420,7 @@ class FeedService:
             section_popular,
             section_hybrid,
             section_a,
-            section_b,
+            section_niche,
             section_auteur,
             section_cult_actor,
             section_wildcard,

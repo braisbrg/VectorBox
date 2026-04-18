@@ -182,7 +182,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             <RefreshCw className={`w-4 h-4 ${isRerolling ? "animate-spin" : ""}`} />
                         </button>
                     )}
-                    {sectionId === "your_taste" && (
+                    {sectionId === "niche_picks" && (
                         <button
                             onClick={async () => {
                                 if (isRerolling) return;

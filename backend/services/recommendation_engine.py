@@ -48,6 +48,13 @@ async def _ingest_movie_background(tmdb_id: int) -> None:
         except Exception as e:
             logger.error(f"Background auto-ingest failed for tmdb_id={tmdb_id}: {e}")
 
+# Minimum quality requirements for any movie to appear in recommendations
+MOVIE_QUALITY_GATE = [
+    Movie.vote_count >= 10,
+    Movie.year.isnot(None),
+    Movie.vectorbox_score.isnot(None),
+]
+
 # Genres too generic to be useful discriminators for cluster filtering
 GENERIC_GENRES = {"Action", "Drama", "Comedy", "Adventure", "Thriller"}
 
@@ -215,8 +222,8 @@ class RecommendationEngine:
         # Query DB for high-score unwatched films matching genres (array overlap)
         candidates_result = await db.execute(
             select(Movie)
+            .where(*MOVIE_QUALITY_GATE)
             .where(
-                Movie.vectorbox_score.isnot(None),
                 Movie.vectorbox_score > 70,
                 Movie.genres.overlap(fallback_genres)
             )
@@ -413,7 +420,7 @@ class RecommendationEngine:
                     movies_result = await db.execute(
                         select(Movie)
                         .where(Movie.tmdb_id.in_(target_ids))
-                        .where(Movie.vectorbox_score.isnot(None))
+                        .where(*MOVIE_QUALITY_GATE)
                         .where(Movie.vectorbox_score >= 55)
                     )
                     fetched_movies = movies_result.scalars().all()
@@ -523,7 +530,7 @@ class RecommendationEngine:
             # Imp 9: Cold start fallback instead of empty section
             return await self._get_genre_fallback_section(user_id, db, tmdb, seen_ids, country, provider_service)
 
-    async def get_your_taste_section(
+    async def get_niche_picks_section(
         self,
         user_id: int,
         db: AsyncSession,
@@ -531,225 +538,128 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
-        background_tasks = None,
-        precomputed_anti_vector = None
+        background_tasks=None
     ) -> FeedSection:
-        """Signal B: Your Taste: [Cluster Name] — Centroid Search"""
-        with _tracer.start_as_current_span("trident.signal_b.your_taste") as span:
-            span.set_attribute("user_id", user_id)
-            span.set_attribute("country", country)
+        """
+        Genre-coherent niche recommendations based on user's taste clusters.
+        Rotates between clusters. DB-first, genre-strict, quality-gated.
+        """
+        import redis.asyncio as aioredis
+        from config import REDIS_URL, FEED_CACHE_VERSION
 
-            clusters_result = await db.execute(
-                select(UserCluster)
-                .where(UserCluster.user_id == user_id)
-                .order_by(desc(UserCluster.movie_count))
-            )
-            clusters = clusters_result.scalars().all()
-            
-            if not clusters:
-                span.set_attribute("result_count", 0)
-                # Imp 9: Cold start fallback
-                return await self._get_genre_fallback_section(user_id, db, tmdb, seen_ids, country, provider_service)
-            
-            # --- CLUSTER ROTATION LOGIC ---
-            import redis.asyncio as aioredis
-            
-            from services.feed_service import FEED_CACHE_VERSION
-            cluster_index = 0
+        clusters_result = await db.execute(
+            select(UserCluster)
+            .where(UserCluster.user_id == user_id)
+            .order_by(desc(UserCluster.movie_count))
+        )
+        clusters = clusters_result.scalars().all()
+        if not clusters:
+            return FeedSection(id="niche_picks", title="Niche Picks", items=[])
+
+        r = None
+        cluster_index = 0
+        try:
             r = aioredis.from_url(REDIS_URL, decode_responses=True)
-            try:
-                rotation_key = f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}"
-                raw_index = await r.get(rotation_key)
-
-                if raw_index is not None:
-                    cluster_index = (int(raw_index) + 1) % len(clusters)
-
-                # Save next index with 7 day TTL
-                await r.setex(rotation_key, 60 * 60 * 24 * 7, cluster_index)
-            except Exception as e:
-                logger.warning(f"Cluster rotation failed for User {user_id}, falling back to top cluster: {e}")
-                cluster_index = 0
-            finally:
+            rotation_key = f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}"
+            raw = await r.get(rotation_key)
+            if raw is not None:
+                cluster_index = (int(raw) + 1) % len(clusters)
+            await r.setex(rotation_key, 60 * 60 * 24 * 7, str(cluster_index))
+        except Exception as e:
+            logger.warning(f"Redis cluster rotation failed: {e}")
+        finally:
+            if r:
                 await r.close()
-            
-            cluster = clusters[cluster_index]
-            logger.info(f"Rotating to Cluster {cluster_index} ('{cluster.cluster_label}') for User {user_id}")
-            
-            # 2. Get Cluster Recommendations (Standard medoid path)
-            results = await self.clustering.get_cluster_recommendations(
-                user_id=user_id,
-                cluster_id=cluster.cluster_id,
-                db=db,
-                filters=None,
-                limit=500,
-                background_tasks=background_tasks
+
+        cluster = clusters[cluster_index]
+
+        dominant_genres = cluster.dominant_genres or []
+        if not dominant_genres:
+            return FeedSection(id="niche_picks", title="Niche Picks", items=[])
+
+        watched_result = await db.execute(
+            select(UserRating.movie_id)
+            .where(UserRating.user_id == user_id)
+            .where(UserRating.is_watched.is_(True))
+        )
+        watched_ids = set(watched_result.scalars().all())
+
+        from sqlalchemy.dialects.postgresql import ARRAY
+        from sqlalchemy import cast, String
+
+        dominant_array = cast(dominant_genres, ARRAY(String))
+
+        q = select(Movie).where(Movie.genres.overlap(dominant_array))
+        if watched_ids:
+            q = q.where(Movie.id.notin_(watched_ids))
+        q = (
+            q.where(Movie.vectorbox_score >= 65)
+            .where(Movie.vote_count >= 50)
+            .where(Movie.vote_average >= 5.0)
+            .where(Movie.year.isnot(None))
+            .where(Movie.vectorbox_score.isnot(None))
+            .order_by(desc(Movie.vectorbox_score))
+            .limit(100)
+        )
+        candidates_result = await db.execute(q)
+        candidates = candidates_result.scalars().all()
+
+        NICHE_EXCLUSIONS = [
+            ({"Family", "Animation"}, {"Family", "Animation"}),
+            ({"Documentary"}, {"Documentary"}),
+        ]
+
+        cluster_genre_set = set(dominant_genres)
+        filtered = []
+        for movie in candidates:
+            if movie.tmdb_id in seen_ids:
+                continue
+            movie_genres = set(movie.genres or [])
+            exclude = False
+            for movie_niche, cluster_must_have in NICHE_EXCLUSIONS:
+                if bool(movie_genres & movie_niche) and not bool(cluster_genre_set & cluster_must_have):
+                    exclude = True
+                    break
+            if not exclude:
+                filtered.append(movie)
+
+        if not filtered:
+            return FeedSection(id="niche_picks", title=cluster.cluster_label or "Niche Picks", items=[])
+
+        import random
+        top_pool = filtered[:40]
+        selected = random.sample(top_pool, min(20, len(top_pool)))
+        selected.sort(key=lambda m: m.vectorbox_score or 0, reverse=True)
+
+        providers_map = {}
+        if provider_service:
+            provider_ids = [m.id for m in selected]
+            providers_map = await provider_service.get_providers_batch(provider_ids, country)
+
+        items = []
+        for movie in selected:
+            if movie.tmdb_id in seen_ids:
+                continue
+            movie_providers = providers_map.get(movie.id, [])
+            flat_providers = [p["provider_name"] for p in movie_providers]
+            item = await self.create_feed_item(
+                movie, 1.0, country, tmdb,
+                streaming_providers=flat_providers,
+                contributors=[{
+                    "type": "cluster",
+                    "cluster_name": cluster.cluster_label,
+                    "label": "Matches your taste profile"
+                }]
             )
-            
-            target_ids = [res["movie_id"] for res in results if res["movie_id"] not in seen_ids][:100]
+            seen_ids.add(movie.tmdb_id)
+            items.append(item)
 
-            # A2: Fetch medoid title for contributor provenance
-            medoid_movie_title = None
-            if cluster.medoid_movie_id:
-                medoid_result = await db.execute(
-                    select(Movie.title).where(Movie.id == cluster.medoid_movie_id)
-                )
-                medoid_movie_title = medoid_result.scalar_one_or_none()
+        return FeedSection(
+            id="niche_picks",
+            title=cluster.cluster_label or "Niche Picks",
+            items=items
+        )
 
-            if target_ids:
-                movies_result = await db.execute(
-                    select(Movie)
-                    .where(Movie.id.in_(target_ids))
-                    .where(Movie.vectorbox_score.isnot(None))
-                    .where(Movie.vectorbox_score >= 55)
-                )
-                fetched_movies = movies_result.scalars().all()
-                movie_map = {m.id: m for m in fetched_movies}
-                
-                if provider_service:
-                    valid_ids = [m.id for m in fetched_movies]
-                    providers_map = await provider_service.get_providers_batch(valid_ids, country)
-                else:
-                    providers_map = {}
-            else:
-                movie_map = {}
-                providers_map = {}
-
-            # FIX 2: Apply genre coherence filter — only when cluster has distinctive (non-generic) genres.
-            # When all dominant genres are generic (e.g. ['Drama','Comedy','Thriller']), trust vector
-            # similarity alone — applying a generic filter is meaningless and over-excludes.
-            cluster_genres = set(cluster.dominant_genres or [])
-            distinctive_cluster_genres = cluster_genres - GENERIC_GENRES
-            if distinctive_cluster_genres and movie_map:
-                genre_filtered_ids = []
-                for mid, movie in movie_map.items():
-                    if not movie.genres:
-                        genre_filtered_ids.append(mid)  # no genre info, include by default
-                        continue
-                    movie_genre_set = set(movie.genres)
-                    # Hard exclusion: zero overlap with ANY dominant genre (only when we have
-                    # a distinctive genre signal to trust).
-                    if not (movie_genre_set & cluster_genres):
-                        continue
-                    # Distinctive-genre filter: must share a non-generic genre
-                    if not (movie_genre_set & distinctive_cluster_genres):
-                        continue
-
-                    # FIX 1: EXCLUSION_PAIRS — prevent niche genre mismatches
-                    exclude = False
-                    for movie_genres_to_check, cluster_must_have in EXCLUSION_PAIRS:
-                        movie_has = bool(movie_genre_set & movie_genres_to_check)
-                        cluster_has = bool(cluster_genres & cluster_must_have)
-                        if movie_has and not cluster_has:
-                            exclude = True
-                            break
-                    if exclude:
-                        continue
-
-                    genre_filtered_ids.append(mid)
-                # Only apply filter if it leaves enough results (min 5)
-                if len(genre_filtered_ids) >= 5:
-                    results = [r for r in results if r["movie_id"] in genre_filtered_ids or r["movie_id"] not in movie_map]
-                    logger.info(f"Genre filter for cluster '{cluster.cluster_label}': {len(movie_map)} → {len(genre_filtered_ids)} movies (genres: {cluster_genres})")
-                else:
-                    logger.debug(f"Genre filter too aggressive for cluster '{cluster.cluster_label}', skipping ({len(genre_filtered_ids)} results)")
-
-            # FIX 4: Reuse precomputed anti-vector if available (avoids second Qdrant/DB round-trip)
-            anti_vector = precomputed_anti_vector if precomputed_anti_vector is not None else await self._get_anti_vector(user_id, db, self.qdrant)
-            anti_vector_np = np.array(anti_vector) if anti_vector else None
-
-            # Apply anti-vector penalty if available
-            scores_map = {res["movie_id"]: res["score"] for res in results}
-            if anti_vector_np is not None and target_ids:
-                # Map internal IDs → tmdb_ids for Qdrant batch fetch
-                internal_to_tmdb = {m.id: m.tmdb_id for m in movie_map.values()}
-                tmdb_ids_for_anti = list(internal_to_tmdb.values())
-                if tmdb_ids_for_anti:
-                    candidate_vectors = await self.qdrant.get_vectors_batch(tmdb_ids_for_anti)
-                    tmdb_to_internal = {v: k for k, v in internal_to_tmdb.items()}
-                    for tid, vec in candidate_vectors.items():
-                        vec_np = np.array(vec)
-                        norm_product = np.linalg.norm(vec_np) * np.linalg.norm(anti_vector_np)
-                        if norm_product > 0:
-                            cos_sim = np.dot(vec_np, anti_vector_np) / norm_product
-                            internal_id = tmdb_to_internal.get(tid)
-                            if internal_id and internal_id in scores_map:
-                                if cos_sim > 0.80:
-                                    scores_map[internal_id] = scores_map[internal_id] * 0.3
-                                elif cos_sim > 0.65:
-                                    scores_map[internal_id] = scores_map[internal_id] * 0.6
-
-            # Build intermediate candidate dicts for MMR (Imp 6)
-            mmr_candidates = []
-            for res in results:
-                movie_id = res["movie_id"]
-                if movie_id in seen_ids:
-                    continue
-                
-                movie = movie_map.get(movie_id)
-                if movie:
-                    penalized_score = scores_map.get(movie_id, res["score"])
-                    mmr_candidates.append({
-                        "movie_id": movie.id,  # internal ID for MMR
-                        "tmdb_id": movie.tmdb_id,
-                        "score": penalized_score,
-                        "movie": movie,
-                    })
-                    if len(mmr_candidates) >= 50:
-                        break
-
-            # Imp 6: Apply MMR reranking
-            if mmr_candidates:
-                try:
-                    mmr_tmdb_ids = [c["tmdb_id"] for c in mmr_candidates]
-                    mmr_vectors_raw = await self.qdrant.get_vectors_batch(mmr_tmdb_ids)
-                    tmdb_to_internal = {c["tmdb_id"]: c["movie_id"] for c in mmr_candidates}
-                    vectors_map_mmr = {
-                        tmdb_to_internal[tid]: np.array(v)
-                        for tid, v in mmr_vectors_raw.items()
-                        if tid in tmdb_to_internal
-                    }
-                    
-                    loop = asyncio.get_running_loop()
-                    mmr_func = functools.partial(
-                        self.clustering.mmr_rerank,
-                        mmr_candidates, vectors_map_mmr, 15, lambda_param=0.5
-                    )
-                    mmr_results = await loop.run_in_executor(None, mmr_func)
-                except Exception as e:
-                    logger.error(f"MMR failed in Your Taste, falling back to top-15: {e}")
-                    mmr_results = mmr_candidates[:15]
-            else:
-                mmr_results = []
-
-            items = []
-            for cand in mmr_results:
-                movie = cand["movie"]
-                p_data = providers_map.get(movie.id, [])
-                s_providers = [p["provider_name"] for p in p_data]
-
-                item = await self.create_feed_item(
-                    movie, cand["score"], country, tmdb,
-                    provider_service=provider_service,
-                    streaming_providers=s_providers,
-                    contributors=[{
-                        "type": "cluster",
-                        "cluster_name": cluster.cluster_label,
-                        "medoid_title": medoid_movie_title,
-                        "similarity": round(cand["score"], 3)
-                    }]
-                )
-                items.append(item)
-                seen_ids.add(movie.tmdb_id)
-
-            title = cluster.cluster_label or "Your Taste"
-
-            span.set_attribute("result_count", len(items))
-            span.set_attribute("cluster_id", cluster.cluster_id)
-            return FeedSection(
-                id="your_taste",
-                title=title,
-                items=items
-            )
 
     async def get_hidden_gems_section(
         self,
@@ -783,6 +693,7 @@ class RecommendationEngine:
             
             result = await db.execute(
                 select(Movie)
+                .where(*MOVIE_QUALITY_GATE)
                 .where(Movie.vectorbox_score >= thresholds["min_score"])
                 .where(Movie.popularity <= thresholds["max_popularity"])
                 .where(Movie.vote_count >= thresholds["min_votes"])
@@ -1002,7 +913,7 @@ class RecommendationEngine:
         excluded_array = list(excluded_genres)
         q = (
             select(Movie)
-            .where(Movie.vectorbox_score.isnot(None))
+            .where(*MOVIE_QUALITY_GATE)
             .where(Movie.vote_average > 7.0)
             .where(Movie.vote_count > 100)
             .where(~Movie.genres.overlap(excluded_array))
@@ -1055,7 +966,11 @@ class RecommendationEngine:
         )
         watched_internal_ids = set(watched_result.scalars().all())
 
-        q = select(Movie).where(Movie.vectorbox_score.isnot(None))
+        q = (
+            select(Movie)
+            .where(*MOVIE_QUALITY_GATE)
+            .where(Movie.vectorbox_score.between(1, 98))
+        )
         if watched_internal_ids:
             q = q.where(Movie.id.notin_(watched_internal_ids))
         q = q.order_by(func.random()).limit(30)
@@ -1108,7 +1023,9 @@ class RecommendationEngine:
             return None
             
         result = await db.execute(
-            select(Movie).where(Movie.tmdb_id.in_(popular_ids))
+            select(Movie)
+            .where(Movie.tmdb_id.in_(popular_ids))
+            .where(*MOVIE_QUALITY_GATE)
         )
         fetched_movies = result.scalars().all()
         movies_map = {m.tmdb_id: m for m in fetched_movies}
