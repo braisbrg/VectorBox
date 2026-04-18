@@ -407,7 +407,7 @@ class RecommendationEngine:
                     if mid not in seen_ids and mid != anchor_movie.tmdb_id:
                         target_ids.append(mid)
                 
-                target_ids = target_ids[:30] 
+                target_ids = target_ids[:100]
                 
                 if target_ids:
                     movies_result = await db.execute(
@@ -461,7 +461,7 @@ class RecommendationEngine:
                             "score": penalized_score,
                             "movie": movie,
                         })
-                        if len(mmr_candidates) >= 20:
+                        if len(mmr_candidates) >= 50:
                             break
 
                 if not mmr_candidates:
@@ -482,12 +482,12 @@ class RecommendationEngine:
                     loop = asyncio.get_running_loop()
                     mmr_func = functools.partial(
                         self.clustering.mmr_rerank,
-                        mmr_candidates, vectors_map_mmr, 10, lambda_param=0.7
+                        mmr_candidates, vectors_map_mmr, 15, lambda_param=0.5
                     )
                     mmr_results = await loop.run_in_executor(None, mmr_func)
                 except Exception as e:
-                    logger.error(f"MMR failed in Signal A, falling back to top-10: {e}")
-                    mmr_results = mmr_candidates[:10]
+                    logger.error(f"MMR failed in Signal A, falling back to top-15: {e}")
+                    mmr_results = mmr_candidates[:15]
 
                 items = []
                 for cand in mmr_results:
@@ -585,7 +585,7 @@ class RecommendationEngine:
                 background_tasks=background_tasks
             )
             
-            target_ids = [res["movie_id"] for res in results if res["movie_id"] not in seen_ids][:30]
+            target_ids = [res["movie_id"] for res in results if res["movie_id"] not in seen_ids][:100]
 
             # A2: Fetch medoid title for contributor provenance
             medoid_movie_title = None
@@ -614,22 +614,24 @@ class RecommendationEngine:
                 movie_map = {}
                 providers_map = {}
 
-            # FIX 2: Apply genre coherence filter — prefer distinctive (non-generic) genres
+            # FIX 2: Apply genre coherence filter — only when cluster has distinctive (non-generic) genres.
+            # When all dominant genres are generic (e.g. ['Drama','Comedy','Thriller']), trust vector
+            # similarity alone — applying a generic filter is meaningless and over-excludes.
             cluster_genres = set(cluster.dominant_genres or [])
             distinctive_cluster_genres = cluster_genres - GENERIC_GENRES
-            filter_genres = distinctive_cluster_genres if distinctive_cluster_genres else cluster_genres
-            if cluster_genres and movie_map:
+            if distinctive_cluster_genres and movie_map:
                 genre_filtered_ids = []
                 for mid, movie in movie_map.items():
                     if not movie.genres:
                         genre_filtered_ids.append(mid)  # no genre info, include by default
                         continue
                     movie_genre_set = set(movie.genres)
-                    # Hard exclusion: zero overlap with ANY dominant genre
+                    # Hard exclusion: zero overlap with ANY dominant genre (only when we have
+                    # a distinctive genre signal to trust).
                     if not (movie_genre_set & cluster_genres):
                         continue
-                    # Distinctive-genre filter: must share a non-generic genre when available
-                    if filter_genres and not (movie_genre_set & filter_genres):
+                    # Distinctive-genre filter: must share a non-generic genre
+                    if not (movie_genre_set & distinctive_cluster_genres):
                         continue
 
                     # FIX 1: EXCLUSION_PAIRS — prevent niche genre mismatches
@@ -692,7 +694,7 @@ class RecommendationEngine:
                         "score": penalized_score,
                         "movie": movie,
                     })
-                    if len(mmr_candidates) >= 20:
+                    if len(mmr_candidates) >= 50:
                         break
 
             # Imp 6: Apply MMR reranking
@@ -710,12 +712,12 @@ class RecommendationEngine:
                     loop = asyncio.get_running_loop()
                     mmr_func = functools.partial(
                         self.clustering.mmr_rerank,
-                        mmr_candidates, vectors_map_mmr, 10, lambda_param=0.7
+                        mmr_candidates, vectors_map_mmr, 15, lambda_param=0.5
                     )
                     mmr_results = await loop.run_in_executor(None, mmr_func)
                 except Exception as e:
-                    logger.error(f"MMR failed in Your Taste, falling back to top-10: {e}")
-                    mmr_results = mmr_candidates[:10]
+                    logger.error(f"MMR failed in Your Taste, falling back to top-15: {e}")
+                    mmr_results = mmr_candidates[:15]
             else:
                 mmr_results = []
 
