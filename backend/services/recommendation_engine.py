@@ -55,6 +55,85 @@ MOVIE_QUALITY_GATE = [
     Movie.vectorbox_score.isnot(None),
 ]
 
+# Global evocative themes rotating independently of user clusters
+GLOBAL_THEMES = [
+    {
+        "id": "sleep_optional",
+        "title": "Sleep Optional",
+        "include_genres": ["Horror", "Thriller"],
+        "exclude_genres": ["Family", "Animation", "Comedy"],
+        "min_score": 65,
+        "min_votes": 50,
+    },
+    {
+        "id": "comfort_watch",
+        "title": "Comfort Watch",
+        "include_genres": ["Comedy", "Romance", "Animation"],
+        "exclude_genres": ["Horror", "War", "Crime"],
+        "min_score": 65,
+        "min_votes": 50,
+    },
+    {
+        "id": "your_brain_called",
+        "title": "Your Brain Called",
+        "include_genres": ["Science Fiction", "Mystery", "Thriller"],
+        "exclude_genres": ["Family", "Animation"],
+        "min_score": 65,
+        "min_votes": 50,
+    },
+    {
+        "id": "parents_havent_seen",
+        "title": "Your Parents Haven't Seen Either",
+        "include_genres": ["Drama", "Crime", "Western"],
+        "exclude_genres": [],
+        "min_score": 68,
+        "min_votes": 100,
+        "max_year": 1990,
+    },
+    {
+        "id": "slow_burn",
+        "title": "Slow Burn",
+        "include_genres": ["Drama", "Mystery", "Thriller"],
+        "exclude_genres": ["Family", "Animation", "Comedy"],
+        "min_score": 65,
+        "min_votes": 50,
+        "min_runtime": 130,
+    },
+    {
+        "id": "beautiful_chaos",
+        "title": "Beautiful Chaos",
+        "include_genres": ["Action", "Crime", "Adventure"],
+        "exclude_genres": ["Family", "Animation"],
+        "min_score": 65,
+        "min_votes": 50,
+    },
+    {
+        "id": "bring_tissues",
+        "title": "Bring Tissues",
+        "include_genres": ["Drama", "War", "History"],
+        "exclude_genres": ["Comedy", "Animation"],
+        "min_score": 65,
+        "min_votes": 50,
+    },
+    {
+        "id": "subtitles_required",
+        "title": "Subtitles Required",
+        "include_genres": ["Drama", "Romance", "Crime"],
+        "exclude_genres": [],
+        "min_score": 65,
+        "min_votes": 50,
+        "original_language_not": "en",
+    },
+    {
+        "id": "based_on_true_crime",
+        "title": "Based on True Crime",
+        "include_genres": ["Crime", "Thriller", "Drama"],
+        "exclude_genres": ["Family", "Animation"],
+        "min_score": 68,
+        "min_votes": 100,
+    },
+]
+
 # Genres too generic to be useful discriminators for cluster filtering
 GENERIC_GENRES = {"Action", "Drama", "Comedy", "Adventure", "Thriller"}
 
@@ -541,41 +620,29 @@ class RecommendationEngine:
         background_tasks=None
     ) -> FeedSection:
         """
-        Genre-coherent niche recommendations based on user's taste clusters.
-        Rotates between clusters. DB-first, genre-strict, quality-gated.
+        Global evocative theme recommendations. Rotates through GLOBAL_THEMES.
+        DB-first, genre-strict, quality-gated, with score randomization for variety.
         """
         import redis.asyncio as aioredis
         from config import REDIS_URL, FEED_CACHE_VERSION
-
-        clusters_result = await db.execute(
-            select(UserCluster)
-            .where(UserCluster.user_id == user_id)
-            .order_by(desc(UserCluster.movie_count))
-        )
-        clusters = clusters_result.scalars().all()
-        if not clusters:
-            return FeedSection(id="niche_picks", title="Niche Picks", items=[])
+        import random
 
         r = None
-        cluster_index = 0
+        theme_index = 0
         try:
             r = aioredis.from_url(REDIS_URL, decode_responses=True)
-            rotation_key = f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}"
+            rotation_key = f"niche_theme_rotation:{FEED_CACHE_VERSION}:{user_id}"
             raw = await r.get(rotation_key)
             if raw is not None:
-                cluster_index = (int(raw) + 1) % len(clusters)
-            await r.setex(rotation_key, 60 * 60 * 24 * 7, str(cluster_index))
+                theme_index = (int(raw) + 1) % len(GLOBAL_THEMES)
+            await r.setex(rotation_key, 60 * 60 * 24 * 7, str(theme_index))
         except Exception as e:
-            logger.warning(f"Redis cluster rotation failed: {e}")
+            logger.warning(f"Redis niche theme rotation failed: {e}")
         finally:
             if r:
                 await r.close()
 
-        cluster = clusters[cluster_index]
-
-        dominant_genres = cluster.dominant_genres or []
-        if not dominant_genres:
-            return FeedSection(id="niche_picks", title="Niche Picks", items=[])
+        theme = GLOBAL_THEMES[theme_index]
 
         watched_result = await db.execute(
             select(UserRating.movie_id)
@@ -587,49 +654,48 @@ class RecommendationEngine:
         from sqlalchemy.dialects.postgresql import ARRAY
         from sqlalchemy import cast, String
 
-        dominant_array = cast(dominant_genres, ARRAY(String))
+        include_array = cast(theme["include_genres"], ARRAY(String))
 
-        q = select(Movie).where(Movie.genres.overlap(dominant_array))
-        if watched_ids:
-            q = q.where(Movie.id.notin_(watched_ids))
-        q = (
-            q.where(Movie.vectorbox_score >= 65)
-            .where(Movie.vote_count >= 50)
+        query = (
+            select(Movie)
+            .where(Movie.genres.overlap(include_array))
+            .where(Movie.vectorbox_score >= theme["min_score"])
+            .where(Movie.vote_count >= theme["min_votes"])
             .where(Movie.vote_average >= 5.0)
             .where(Movie.year.isnot(None))
             .where(Movie.vectorbox_score.isnot(None))
-            .order_by(desc(Movie.vectorbox_score))
-            .limit(100)
         )
-        candidates_result = await db.execute(q)
+        if watched_ids:
+            query = query.where(Movie.id.notin_(watched_ids))
+
+        if "max_year" in theme:
+            query = query.where(Movie.year <= theme["max_year"])
+        if "min_runtime" in theme:
+            query = query.where(Movie.runtime >= theme["min_runtime"])
+        if "original_language_not" in theme:
+            query = query.where(Movie.original_language != theme["original_language_not"])
+
+        candidates_result = await db.execute(query.limit(200))
         candidates = candidates_result.scalars().all()
 
-        NICHE_EXCLUSIONS = [
-            ({"Family", "Animation"}, {"Family", "Animation"}),
-            ({"Documentary"}, {"Documentary"}),
-        ]
-
-        cluster_genre_set = set(dominant_genres)
+        exclude_genres = set(theme.get("exclude_genres", []))
         filtered = []
         for movie in candidates:
             if movie.tmdb_id in seen_ids:
                 continue
-            movie_genres = set(movie.genres or [])
-            exclude = False
-            for movie_niche, cluster_must_have in NICHE_EXCLUSIONS:
-                if bool(movie_genres & movie_niche) and not bool(cluster_genre_set & cluster_must_have):
-                    exclude = True
-                    break
-            if not exclude:
-                filtered.append(movie)
+            if exclude_genres and set(movie.genres or []) & exclude_genres:
+                continue
+            filtered.append(movie)
 
         if not filtered:
-            return FeedSection(id="niche_picks", title=cluster.cluster_label or "Niche Picks", items=[])
+            return FeedSection(id="niche_picks", title=theme["title"], items=[])
 
-        import random
-        top_pool = filtered[:40]
-        selected = random.sample(top_pool, min(20, len(top_pool)))
-        selected.sort(key=lambda m: m.vectorbox_score or 0, reverse=True)
+        scored = [
+            (movie, (movie.vectorbox_score or 0) * random.uniform(0.7, 1.3))
+            for movie in filtered
+        ]
+        scored.sort(key=lambda x: x[1], reverse=True)
+        selected = [movie for movie, _ in scored[:20]]
 
         providers_map = {}
         if provider_service:
@@ -647,8 +713,8 @@ class RecommendationEngine:
                 streaming_providers=flat_providers,
                 contributors=[{
                     "type": "cluster",
-                    "cluster_name": cluster.cluster_label,
-                    "label": "Matches your taste profile"
+                    "cluster_name": theme["title"],
+                    "label": "Curated thematic pick"
                 }]
             )
             seen_ids.add(movie.tmdb_id)
@@ -656,7 +722,7 @@ class RecommendationEngine:
 
         return FeedSection(
             id="niche_picks",
-            title=cluster.cluster_label or "Niche Picks",
+            title=theme["title"],
             items=items
         )
 

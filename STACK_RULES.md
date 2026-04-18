@@ -79,11 +79,13 @@ FinalScore = Similarity (Cosine) * QualityWeight (Sigmoid)
 
 ### Feed Generation
 - **Signal C (Discovery):** Signal C MUST use a **DB-first approach** for initial candidate discovery (quality/popularity filters in Postgres) before applying vector-weighted re-ranking. This prevents "similarity wash" where niche but high-quality films are eclipsed by mainstream items.
-- **Signal B (Rotation):** Cluster-based sections (Signal B) MUST implement **Redis-based counter rotation** to cycle through user taste clusters on each cache miss/refresh.
-- **Genre Coherence (Exclusion Pairs):** Genre coherence filtering (EXCLUSION_PAIRS) applies ONLY to `get_your_taste_section`. Movies with niche genres (Animation, Family, Horror) are excluded there if the user's cluster doesn't support those genres. This filter MUST NOT be applied in `hybrid_reranking` (Picked For You) — it was removed from there because it produced catastrophically small candidate pools.
-- **Quality Floor:** `because_you_watched` and `your_taste` sections MUST filter candidates with `vectorbox_score IS NOT NULL AND vectorbox_score >= 55`. This prevents unscored or low-quality films from surfacing.
+- **Signal B (Rotation):** The `niche_picks` section MUST implement **Redis-based counter rotation** over `GLOBAL_THEMES` (key: `niche_theme_rotation:{FEED_CACHE_VERSION}:{user_id}`) so each feed fetch advances to the next curated theme.
+- **Genre Coherence (Niche Picks):** Per-theme `include_genres` / `exclude_genres` in `GLOBAL_THEMES` own the genre shaping for `niche_picks`. Cluster-based `EXCLUSION_PAIRS` is NOT used in any live feed path and MUST NOT be re-introduced into `hybrid_reranking` (it historically collapsed the candidate pool to near zero).
+- **Global Quality Gate:** `MOVIE_QUALITY_GATE` (`vote_count >= 10`, `year IS NOT NULL`, `vectorbox_score IS NOT NULL`) MUST be splatted into every recommendation DB query via `.where(*MOVIE_QUALITY_GATE)`. Exceptions: `get_watchlist_feed` and `get_available_now_section`. `get_random_recommendations_section` additionally clamps `Movie.vectorbox_score.between(1, 98)` to exclude the score=99 anomaly.
+- **Quality Floor (Signal A/B):** `because_you_watched` MUST additionally filter `vectorbox_score >= 55`. `niche_picks` MUST additionally filter by each theme's `min_score` (65 or 68) and `min_votes` (50 or 100), plus `vote_average >= 5.0`.
 - **Coherence Threshold:** `because_you_watched` MUST use `score_threshold=0.25` (vector similarity) to ensure anchor-based recommendations are meaningfully similar to the seed film.
-- **Diversity:** Implement MMR (Maximal Marginal Relevance) across `because_you_watched`, `your_taste`, and `hidden_gems` to prevent similar vectors from crowding the results.
+- **Section Order (dedup):** In `feed_service.py`, `ordered_results` runs Hidden Gems (`section_c`) **before** Niche Picks (`section_niche`) so Signal C gets first pick of the unseen pool.
+- **Diversity:** Implement MMR (Maximal Marginal Relevance) across `because_you_watched` and `hidden_gems` to prevent similar vectors from crowding the results.
 - **Collection Collapsing:** Prevents domination by a single franchise (e.g. keeping only the top *Harry Potter* film).
 
 ### Anti-Vector Logic

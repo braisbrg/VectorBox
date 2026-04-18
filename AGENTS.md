@@ -93,13 +93,14 @@ VectorBox uses a 3-signal hybrid recommendation engine (Trident):
   **Coherence threshold:** `score_threshold=0.25` (vector similarity) to keep results tightly anchored.
   **Anchor pool:** fetches up to 100 candidates without ORDER BY (Python scoring selects best anchor).
   **Contributors:** each result carries `[{"type": "anchor", "seed_title": ..., "seed_year": ..., "seed_rating": ..., "similarity": ...}]`.
-- Signal B `your_taste` — **K-Medoids cluster search**, pointing to a real movie (`medoid_movie_id`).
-  Clusters are labeled dynamically by Groq (e.g., "A24 Dread") with dominant genre filtering.
-  **Automated Rotation**: Automatically cycles through user's clusters on each feed fetch using a Redis counter.
-  **Quality floor:** same `vectorbox_score >= 55` filter applied.
-  **Genre coherence (EXCLUSION_PAIRS):** niche genres (Animation, Family, Horror) excluded if cluster doesn't support them. This filter ONLY applies here — NOT in hybrid_reranking (Picked For You).
-  **Contributors:** each result carries `[{"type": "cluster", "cluster_name": ..., "medoid_title": ..., "similarity": ...}]`.
-  Penalized against Anti-vector of low-rated/rejected films, applying MMR based on dominant cluster genres.
+- Signal B `niche_picks` — **Global evocative themes** (replaces the cluster-based `your_taste` section).
+  9 curated themes defined in `GLOBAL_THEMES` (recommendation_engine.py): Sleep Optional, Comfort Watch, Your Brain Called, Your Parents Haven't Seen Either, Slow Burn, Beautiful Chaos, Bring Tissues, Subtitles Required, Based on True Crime.
+  Each theme carries its own `include_genres`, `exclude_genres`, `min_score`, `min_votes`, and optional `max_year` / `min_runtime` / `original_language_not` filters.
+  **Automated Rotation**: rotates one theme forward per feed fetch via Redis key `niche_theme_rotation:{FEED_CACHE_VERSION}:{user_id}`.
+  **Quality floor:** every candidate passes `MOVIE_QUALITY_GATE` plus the theme's own thresholds (score ≥ 65/68, votes ≥ 50/100, `vote_average >= 5.0`).
+  **Score randomization:** candidates sorted by `vectorbox_score * random.uniform(0.7, 1.3)` so the same 20 films don't always dominate.
+  **Contributors:** each result carries `[{"type": "cluster", "cluster_name": <theme title>, "label": "Curated thematic pick"}]`.
+  Clusters are still built and used internally for Trident auxiliary purposes (medoid and anti-vector) — the `your_taste` cluster-rotation section is removed.
 - Signal Auteur `get_signal_b_auteur` (Directors + Cast) — Director/Actor analysis
   Uses a `_compute_auteur_signal_raw()` helper applying a weighted point system (5★→2.0, 4.5★→1.5) triggering at 3.0 pts for directors, 2.5 pts for actors.
 - Signal C `hidden_gems` — **DB-First Discovery**
@@ -122,7 +123,19 @@ Feed orchestration: `FeedService.get_main_feed()` runs **10 tasks
 in parallel** via `asyncio.gather()`. Each task opens its own
 isolated `AsyncSessionLocal()` session — they NEVER share sessions.
 
-**Anti-Vector Pre-Compute (FIX 4):** `anti_vector` is computed ONCE before the `asyncio.gather()` using a short-lived session, then threaded to Signal A and Signal B via the `precomputed_anti_vector` parameter. Signals skip `_get_anti_vector()` internally if this value is provided. Never compute it twice.
+**Anti-Vector Pre-Compute (FIX 4):** `anti_vector` is computed ONCE before the `asyncio.gather()` using a short-lived session, then threaded to Signal A via the `precomputed_anti_vector` parameter. Signal A skips `_get_anti_vector()` internally if this value is provided. Never compute it twice. (Signal B `niche_picks` does not use the anti-vector — it is a DB-only filter pipeline.)
+
+**Section ordering (seen_ids dedup):** `ordered_results` in `feed_service.py` runs Hidden Gems (`section_c`) **before** Niche Picks (`section_niche`) so Signal C gets first pick of the unseen pool. Niche Picks is a themed discovery row that tolerates losing candidates to Hidden Gems more than vice versa.
+
+**Global Quality Gate:** `MOVIE_QUALITY_GATE` (module-level list in `recommendation_engine.py`) is the single source of truth for minimum-quality candidate filters:
+```python
+MOVIE_QUALITY_GATE = [
+    Movie.vote_count >= 10,
+    Movie.year.isnot(None),
+    Movie.vectorbox_score.isnot(None),
+]
+```
+Apply via splat: `.where(*MOVIE_QUALITY_GATE)`. Every DB query fetching movie candidates for recommendation **must** include it, except `get_watchlist_feed` (user-curated) and `get_available_now_section`. `get_random_recommendations_section` additionally clamps `Movie.vectorbox_score.between(1, 98)` to exclude the score=99 anomaly.
 
 **Cache Guard**: Feeds with < 3 sections are NOT saved to Redis. Feed caches are explicitly wiped via `_invalidate_feed_cache()` after RSS sync — this sweeps BOTH `section:{FEED_CACHE_VERSION}:{user_id}:*` keys AND `signal_cache:{user_id}:*` keys (Trident signal 24h caches), so stale recommendations don't persist after new data arrives. The feed is cached on a per-section basis with discrete TTL limits targeting optimum freshness.
 
@@ -310,7 +323,10 @@ All of these have been found and fixed. Do not reintroduce.
 11. EXCLUSION_PAIRS IN HYBRID_RERANKING
     ❌  Applying EXCLUSION_PAIRS genre filter inside hybrid_reranking (Picked For You)
         → reduces candidate pool to near zero ("5 movies remain" observed in logs)
-    ✅  EXCLUSION_PAIRS belongs ONLY in get_your_taste_section
+    ✅  EXCLUSION_PAIRS is cluster-coherence tooling for internal use only.
+        With the removal of get_your_taste_section, it no longer ships in a
+        feed path — use each theme's own `exclude_genres` list in GLOBAL_THEMES
+        for the niche_picks section instead.
 
 12. is_liked IN RSS UPSERT SET CLAUSE
     ❌  Including "is_liked": excluded.is_liked in on_conflict_do_update for RSS

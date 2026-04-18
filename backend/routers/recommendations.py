@@ -832,7 +832,7 @@ async def reject_movie(
 async def reroll_cluster(
     current_user: TokenResponse = Depends(get_current_user),
 ):
-    """Invalidate niche_picks section + rotation counter so the next feed load shows the next cluster."""
+    """Invalidate niche_picks section so the next feed load shows the next theme."""
     user_id = current_user.user_id
     deleted = 0
     try:
@@ -856,10 +856,7 @@ async def reroll_cluster(
                     deleted += len(keys)
                 if cursor == 0:
                     break
-            # Do NOT delete rotation key — the stored value is the currently-displayed cluster.
-            # Section compute does `(raw_index + 1) % len(clusters)`, so leaving it ensures the
-            # next compute advances to the next cluster. Deleting would reset to cluster 0.
-            # Also invalidate the full feed snapshot so the UI refetches sections
+            # Invalidate the full feed snapshot so the UI refetches sections
             feed_cursor = 0
             while True:
                 feed_cursor, keys = await r.scan(
@@ -871,11 +868,12 @@ async def reroll_cluster(
                     await r.delete(*keys)
                 if feed_cursor == 0:
                     break
-            logger.info(f"Cluster reroll user {user_id}: deleted {deleted} niche_picks keys")
+            await r.delete(f"niche_theme_rotation:{FEED_CACHE_VERSION}:{user_id}")
+            logger.info(f"Niche theme reroll user {user_id}: deleted {deleted} niche_picks keys")
         finally:
             await r.close()
     except Exception as e:
-        logger.warning(f"Cluster reroll failed: {e}")
+        logger.warning(f"Niche theme reroll failed: {e}")
 
-    return {"status": "ok", "message": "Cluster will rotate on next feed load"}
+    return {"status": "ok", "message": "Niche theme will rotate on next feed load"}
 
