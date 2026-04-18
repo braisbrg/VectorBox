@@ -2,7 +2,7 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
-import { getTMDBImageUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie } from "@/lib/api";
+import { getTMDBImageUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie, rerollCluster } from "@/lib/api";
 import type { Contributor } from "@/types/feed";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { useRef, useState, useEffect, useCallback } from "react";
@@ -180,6 +180,27 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             aria-label={isWildcard ? t("aria.reroll_wildcard") : t("aria.reroll_random")}
                         >
                             <RefreshCw className={`w-4 h-4 ${isRerolling ? "animate-spin" : ""}`} />
+                        </button>
+                    )}
+                    {sectionId === "your_taste" && (
+                        <button
+                            onClick={async () => {
+                                if (isRerolling) return;
+                                setIsRerolling(true);
+                                try {
+                                    await rerollCluster();
+                                    await queryClient.invalidateQueries({ queryKey: ["feed"] });
+                                } catch (error) {
+                                    console.error("Failed to reroll cluster:", error);
+                                } finally {
+                                    if (isMounted.current) setIsRerolling(false);
+                                }
+                            }}
+                            disabled={isRerolling}
+                            className={`text-[10px] font-mono text-zinc-600 hover:text-primary border border-zinc-800 hover:border-primary px-2 py-0.5 transition-colors ${isRerolling ? "opacity-50 cursor-not-allowed" : ""}`}
+                            title="Show next cluster"
+                        >
+                            [ REROLL ]
                         </button>
                     )}
                 </div>
