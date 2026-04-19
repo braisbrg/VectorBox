@@ -43,7 +43,8 @@ async def recalculate_all():
                 # Calculate new score
                 score_obj = omdb.calculate_vectorbox_score(
                     omdb_data,
-                    movie.vote_average
+                    movie.vote_average,
+                    tmdb_vote_count=movie.vote_count,
                 )
                 
                 if score_obj.score is not None and score_obj.score > 0:

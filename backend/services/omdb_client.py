@@ -91,12 +91,21 @@ class OMDbClient:
                 self.cb_state = "OPEN"
                 logger.warning("OMDb Circuit Open. Skipping external calls.")
 
-    def calculate_vectorbox_score(self, omdb_data: Optional[OMDbResponse], tmdb_vote_average: float) -> VectorBoxScore:
+    def calculate_vectorbox_score(
+        self,
+        omdb_data: Optional[OMDbResponse],
+        tmdb_vote_average: float,
+        tmdb_vote_count: Optional[int] = None,
+    ) -> VectorBoxScore:
         """
         Calculates VectorBox score from three sources:
         IMDb (40%), Metacritic (35%), TMDB (25%).
         Rotten Tomatoes excluded — binary consensus metric,
         prone to review bombing, not a quality signal.
+
+        tmdb_vote_count guards against noise: under 10 votes, TMDB's average
+        is one rater's opinion — we drop TMDB from the weighting rather than
+        scale it as a full 0.25 contributor.
         """
         scores = {}
         weights = {}
@@ -123,8 +132,10 @@ class OMDbClient:
             except (ValueError, TypeError):
                 pass
 
-        # TMDB: same scale as IMDb, same normalization
-        if tmdb_vote_average is not None:
+        # TMDB: same scale as IMDb, same normalization. Skip when vote_count < 10 —
+        # a single 10/10 vote would otherwise yield score=100 for obscure films.
+        tmdb_has_enough_votes = tmdb_vote_count is None or tmdb_vote_count >= 10
+        if tmdb_vote_average is not None and tmdb_has_enough_votes:
             raw_scores["tmdb"] = tmdb_vote_average
             scores["tmdb"] = max(0.0, min(100.0,
                 (tmdb_vote_average - 4.0) / 6.0 * 100
@@ -161,6 +172,10 @@ class OMDbClient:
             # Normalized weight = original_weight / total_weight
             final_score += norm_score * (weights[source] / total_weight)
             
+        # Cap at 98 — matches the random-picks anomaly filter
+        # (Movie.vectorbox_score.between(1, 98)) and prevents 100.0 outliers.
+        final_score = min(final_score, 98.0)
+
         return VectorBoxScore(
             score=round(final_score, 1),
             breakdown=breakdown

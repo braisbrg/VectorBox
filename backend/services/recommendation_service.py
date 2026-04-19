@@ -349,7 +349,11 @@ class RecommendationService:
 
         # Imp 8: Director activates at >= 3.0 points
         top_directors = [name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True) if score >= 3.0][:5]
-        
+
+        logger.info(
+            f"[Signal Auteur] user={user_id} rated_movies={len(rated_movies)} "
+            f"directors_scored={len(director_scores)} top_directors={top_directors}"
+        )
         if not top_directors:
             return []
             
@@ -370,11 +374,17 @@ class RecommendationService:
         watched_ids = set((await self.db.execute(watched_stmt)).scalars().all())
         
         final_list = []
+        dropped = 0
         for m in candidates:
             if m.tmdb_id in exclude_ids or m.id in watched_ids:
+                dropped += 1
                 continue
             final_list.append(m)
-            
+
+        logger.info(
+            f"[Signal Auteur] user={user_id} db_candidates={len(candidates)} "
+            f"dropped_watched_or_excluded={dropped} kept={len(final_list[:50])}"
+        )
         return final_list[:50]
 
     async def get_signal_c_crowd(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
@@ -412,7 +422,8 @@ class RecommendationService:
             .limit(3)
             
         seeds = (await self.db.execute(stmt)).scalars().all()
-        
+
+        logger.info(f"[Signal C] user={user_id} seeds_5star={len(seeds)}")
         if not seeds:
             return []
             
@@ -464,14 +475,23 @@ class RecommendationService:
         # 6. Filter and deduplicate
         seen_local: Set[int] = set()
         unique: List[Movie] = []
+        dropped_excluded = dropped_quality = 0
         for m in existing_movies:
             if m.id in seen_local or m.tmdb_id in exclude_ids:
+                dropped_excluded += 1
                 continue
             if (m.vectorbox_score or 0) < signal_c_min_score:
+                dropped_quality += 1
                 continue
             unique.append(m)
             seen_local.add(m.id)
 
+        logger.info(
+            f"[Signal C] user={user_id} tmdb_recs={len(all_tmdb_ids)} "
+            f"in_db={len(existing_movies)} queued_ingest={len(missing_ids)} "
+            f"min_score={signal_c_min_score} dropped_excluded={dropped_excluded} "
+            f"dropped_quality={dropped_quality} kept={len(unique)}"
+        )
         return unique
 
     def reciprocal_rank_fusion(self, candidate_lists: List[List[Movie]], k=60) -> Dict[int, float]:
@@ -532,7 +552,12 @@ class RecommendationService:
 
         # Minimum quality filter — no movie below 55 VB score in Picked For You
         MIN_QUALITY_SCORE = 55
+        pre_quality = len(movies)
         movies = [m for m in movies if (m.vectorbox_score or 50) >= MIN_QUALITY_SCORE]
+        logger.info(
+            f"[Trident rerank] user={user_id} rrf_ids={len(movie_ids)} "
+            f"pre_quality={pre_quality} post_quality={len(movies)}"
+        )
 
         # 2. Score = RRF * Sigmoid Quality Weight
         candidates = []
@@ -565,6 +590,10 @@ class RecommendationService:
             if tmdb_to_internal.get(c["movie"].tmdb_id) in vectors_map
         ]
 
+        logger.info(
+            f"[Trident rerank] user={user_id} top_candidates={len(top_candidates)} "
+            f"with_vectors={len(mmr_candidates_with_vectors)}"
+        )
         if len(mmr_candidates_with_vectors) < 3:
             # No hay suficientes vectores, usar top-10 directo
             final_list = top_candidates[:10]

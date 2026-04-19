@@ -6,6 +6,7 @@ import { useMobileNav } from "@/components/mobile-nav-context";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
 import { VectorboxUser } from "@/lib/api";
+import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
 
 interface MobileNavProps {
     currentView: string;
@@ -18,6 +19,7 @@ interface MobileNavProps {
 export function MobileNav({ currentView, onViewChange, users, currentUserId, onUserSelect }: MobileNavProps) {
     const { isOpen, setIsOpen } = useMobileNav();
     const { t } = useLanguage();
+    const handleLogout = useVectorboxLogout();
 
     const menuItems = [
         { id: "feed", label: t("sidebar.feed"), icon: LayoutList },
@@ -108,11 +110,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                                     </button>
                                     
                                     <button
-                                        onClick={async () => {
-                                            const { logout } = await import("@/lib/api");
-                                            await logout();
-                                            window.location.href = "/login";
-                                        }}
+                                        onClick={handleLogout}
                                         className="flex flex-col items-center gap-2 p-4 bg-white/5 border border-white/10 hover:border-red-500 transition-colors group"
                                     >
                                         <LogOut className="w-5 h-5 text-red-500 group-hover:text-red-400" />

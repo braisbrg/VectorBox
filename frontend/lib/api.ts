@@ -17,29 +17,19 @@ export const api = axios.create({
     withCredentials: true,
 });
 
-// Security: Auth is handled exclusively via httponly cookie (withCredentials: true).
-// No Bearer token is attached from localStorage — prevents XSS token theft.
-// NOTE: Will be replaced by Clerk session management in a future update.
+// Auth: primary path is the Clerk session JWT (attached by AuthBridge's request
+// interceptor). Legacy httponly `vectorbox_token` cookie remains valid during
+// the Clerk migration — `withCredentials: true` keeps it flowing.
 
-// Response interceptor for error handling
 api.interceptors.response.use(
     (response) => response,
     (error: AxiosError) => {
         if (error.response) {
-            // Server responded with error
             console.error("API Error:", error.response.data);
-
-            // v1.1: Auto-logout on 401 Unauthorized (Invalid/Expire Token)
-            if (error.response.status === 401) {
-                if (typeof window !== "undefined") {
-                    localStorage.removeItem("vectorbox_user");
-                    if (!window.location.pathname.includes("/login")) {
-                        window.location.href = "/login";
-                    }
-                }
+            if (error.response.status === 401 && typeof window !== "undefined") {
+                localStorage.removeItem("vectorbox_user");
             }
         } else if (error.request) {
-            // Request made but no response
             console.error("Network Error:", error.message);
         }
         return Promise.reject(error);

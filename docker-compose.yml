@@ -78,6 +78,8 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OMDB_API_KEY=${OMDB_API_KEY}
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+      - CLERK_JWKS_URL=${CLERK_JWKS_URL}
       # Observability
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - OTEL_SERVICE_NAME=vectorbox-backend
@@ -109,6 +111,8 @@ services:
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - BACKEND_URL=http://backend:8000
+      - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
+      - NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
     depends_on:
       - backend
 

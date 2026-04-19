@@ -50,11 +50,19 @@ class MovieFactory:
                 omdb_data = await self.omdb.fetch_movie_data(imdb_id)
             
             # Returns VectorBoxScore object
-            vb_score_data = self.omdb.calculate_vectorbox_score(omdb_data, details.get("vote_average"))
+            vb_score_data = self.omdb.calculate_vectorbox_score(
+                omdb_data,
+                details.get("vote_average"),
+                tmdb_vote_count=details.get("vote_count"),
+            )
 
-            # Fallback: TMDB-only score if OMDb unavailable
+            # Fallback: TMDB-only score if OMDb unavailable and vote pool is trustworthy.
             vectorbox_score = vb_score_data.score
-            if not vectorbox_score and details.get("vote_average"):
+            if (
+                not vectorbox_score
+                and details.get("vote_average")
+                and (details.get("vote_count") or 0) >= 10
+            ):
                 vectorbox_score = round((details["vote_average"] / 10) * 100 * 0.6, 1)
 
             # 3. Process Release Dates

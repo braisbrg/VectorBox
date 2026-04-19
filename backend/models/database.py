@@ -25,6 +25,10 @@ class User(Base):
     pin_hash = Column(String(255), nullable=True)  # bcrypt hash of 4-digit PIN
     secret_token = Column(UUID(as_uuid=True), unique=True, nullable=True, index=True)  # Session token
     letterboxd_username = Column(String(50), nullable=True, index=True)  # Linked Letterboxd profile
+
+    # Clerk auth (dual-auth transitional — legacy cookie still works while clerk_user_id is NULL)
+    clerk_user_id = Column(String(255), unique=True, nullable=True, index=True)
+    is_anonymous = Column(Boolean, nullable=False, server_default="false")
     
     # Relationships
     ratings = relationship("UserRating", back_populates="user", cascade="all, delete-orphan")
