@@ -171,8 +171,8 @@ def _get_signal_c_thresholds(user_movie_count: int) -> dict:
         # Rich profile — full fidelity
         return {
             "min_score": 70,
-            "max_popularity": 20,
-            "min_votes": 500,
+            "max_popularity": 35,
+            "min_votes": 300,
         }
 
 def _score_anchor_candidate(rating, watched_date, now, watch_count: int = 1) -> float:

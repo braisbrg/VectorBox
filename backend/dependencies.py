@@ -223,13 +223,19 @@ async def get_current_user(
             is_anonymous = clerk_user_id.startswith("anon_")
             email = _extract_clerk_email(payload)
 
-            # TEMP DEBUG: surface which claims Clerk is shipping until email reliably arrives.
-            logger.info(
-                f"[CLERK] sub={clerk_user_id[:12]}... claims={list(payload.keys())} email={'yes' if email else 'no'}"
-            )
-
             result = await db.execute(select(User).where(User.clerk_user_id == clerk_user_id))
             user = result.scalar_one_or_none()
+
+            # Fallback: legacy user exists by email without clerk_user_id — adopt it.
+            if user is None and email and not is_anonymous:
+                result = await db.execute(select(User).where(User.email == email))
+                user = result.scalar_one_or_none()
+                if user is not None:
+                    user.clerk_user_id = clerk_user_id
+                    if user.username.startswith("guest_"):
+                        user.username = await _allocate_username(db, email.split("@")[0])
+                    await db.commit()
+                    await db.refresh(user)
 
             if user is None:
                 user = await _create_clerk_user(db, clerk_user_id, email, is_anonymous)

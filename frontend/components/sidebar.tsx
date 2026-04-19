@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { useUser } from "@clerk/nextjs";
 import { AppTooltip } from "@/components/info-tooltip";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
@@ -35,6 +36,8 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
     const [isCollapsed, setIsCollapsed] = useState(false);
     const { t } = useLanguage();
     const handleLogout = useVectorboxLogout();
+    const { user: clerkUser } = useUser();
+    const displayName = clerkUser?.fullName || clerkUser?.firstName || users?.find(u => u.id === currentUserId)?.username || "User";
 
     const menuItems = [
         {
@@ -157,7 +160,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                                 <button className="w-full flex items-center gap-2 px-3 py-2 bg-zinc-900 border border-zinc-800 hover:border-primary/50 transition-colors group cursor-pointer outline-none">
                                     <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
                                     <span className="text-xs font-mono text-zinc-400 group-hover:text-primary uppercase tracking-wider truncate">
-                                        {users.find(u => u.id === currentUserId)?.username || "User"}
+                                        {displayName}
                                     </span>
                                 </button>
                             </DropdownMenu.Trigger>

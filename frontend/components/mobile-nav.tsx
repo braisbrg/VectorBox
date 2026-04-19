@@ -2,6 +2,7 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import { X, LayoutList, Calendar, Sparkles, Film, Users, Settings, User as UserIcon, LogOut } from "lucide-react";
+import { useUser } from "@clerk/nextjs";
 import { useMobileNav } from "@/components/mobile-nav-context";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
@@ -20,6 +21,8 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
     const { isOpen, setIsOpen } = useMobileNav();
     const { t } = useLanguage();
     const handleLogout = useVectorboxLogout();
+    const { user: clerkUser } = useUser();
+    const displayName = clerkUser?.fullName || clerkUser?.firstName || users?.find(u => u.id === currentUserId)?.username || "User";
 
     const menuItems = [
         { id: "feed", label: t("sidebar.feed"), icon: LayoutList },
@@ -94,7 +97,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                                         <UserIcon className="w-6 h-6 text-primary" />
                                     </div>
                                     <span className="text-lg font-mono text-white uppercase tracking-widest">
-                                        {users.find(u => u.id === currentUserId)?.username || "User"}
+                                        {displayName}
                                     </span>
                                 </div>
                                 

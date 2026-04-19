@@ -221,8 +221,12 @@ class DataProcessor:
 
             if key in movies_map:
                 movies_map[key]["is_watched"] = True
-                # Each diary entry = one watch; increment count for every entry beyond the first
-                movies_map[key]["watch_count"] = movies_map[key].get("watch_count", 1) + 1
+                # First diary entry for a movie already seeded by ratings.csv is the
+                # same viewing, not a rewatch. Only subsequent entries increment.
+                if movies_map[key].get("diary_seen"):
+                    movies_map[key]["watch_count"] = movies_map[key].get("watch_count", 1) + 1
+                else:
+                    movies_map[key]["diary_seen"] = True
                 # Use the most recent diary date
                 if watched_date and (not movies_map[key].get("watched_date") or watched_date > movies_map[key]["watched_date"]):
                     movies_map[key]["watched_date"] = watched_date
@@ -240,6 +244,7 @@ class DataProcessor:
                     "is_watchlist": False,
                     "is_liked": False,
                     "is_watched": True,
+                    "diary_seen": True,
                     "watch_count": 1,
                 }
 

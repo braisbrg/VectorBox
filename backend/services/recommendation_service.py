@@ -415,15 +415,25 @@ class RecommendationService:
             logger.warning("[Signal C] No TMDBClient injected, skipping crowd signal.")
             return []
         
-        # 1. Get 3 most recent 5-star movies
-        stmt = select(Movie).join(UserRating, Movie.id == UserRating.movie_id)\
-            .where(UserRating.user_id == user_id, UserRating.rating == 5.0)\
-            .order_by(desc(UserRating.watched_date))\
-            .limit(3)
-            
+        # 1. Get up to 5 high-quality seed movies: 4.5★+, liked, or rewatched
+        stmt = (
+            select(Movie)
+            .join(UserRating, Movie.id == UserRating.movie_id)
+            .where(UserRating.user_id == user_id)
+            .where(
+                or_(
+                    UserRating.rating >= 4.5,
+                    UserRating.is_liked.is_(True),
+                    UserRating.watch_count > 1,
+                )
+            )
+            .order_by(desc(UserRating.rating), desc(UserRating.watched_date))
+            .limit(5)
+        )
+
         seeds = (await self.db.execute(stmt)).scalars().all()
 
-        logger.info(f"[Signal C] user={user_id} seeds_5star={len(seeds)}")
+        logger.info(f"[Signal C] user={user_id} seeds_quality={len(seeds)}")
         if not seeds:
             return []
             
