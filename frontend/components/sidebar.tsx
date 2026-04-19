@@ -20,7 +20,8 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { AppTooltip } from "@/components/info-tooltip";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
-import { VectorboxUser, logout } from "@/lib/api";
+import { VectorboxUser } from "@/lib/api";
+import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
 
 interface SidebarProps {
     currentView: string;
@@ -33,6 +34,7 @@ interface SidebarProps {
 export function Sidebar({ currentView, onViewChange, users, currentUserId, onUserSelect }: SidebarProps) {
     const [isCollapsed, setIsCollapsed] = useState(false);
     const { t } = useLanguage();
+    const handleLogout = useVectorboxLogout();
 
     const menuItems = [
         {
@@ -179,10 +181,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                                     
                                     <DropdownMenu.Item
                                         className="flex items-center gap-2 px-3 py-2 text-xs font-mono text-red-500 hover:text-black hover:bg-red-500 outline-none cursor-pointer transition-colors uppercase tracking-wider"
-                                        onClick={async () => {
-                                            await logout();
-                                            window.location.href = "/login";
-                                        }}
+                                        onClick={handleLogout}
                                     >
                                         <LogOut className="w-4 h-4" />
                                         {t("app.logout")}

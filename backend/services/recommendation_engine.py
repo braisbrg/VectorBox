@@ -70,6 +70,7 @@ GLOBAL_THEMES = [
         "id": "comfort_watch",
         "title": "Comfort Watch",
         "include_genres": ["Comedy", "Romance", "Animation"],
+        "require_any": ["Comedy"],
         "exclude_genres": ["Horror", "War", "Crime"],
         "min_score": 65,
         "min_votes": 50,
@@ -90,6 +91,7 @@ GLOBAL_THEMES = [
         "min_score": 68,
         "min_votes": 100,
         "max_year": 1990,
+        "max_popularity": 30,
     },
     {
         "id": "slow_burn",
@@ -675,6 +677,8 @@ class RecommendationEngine:
             query = query.where(Movie.runtime >= theme["min_runtime"])
         if "original_language_not" in theme:
             query = query.where(Movie.original_language != theme["original_language_not"])
+        if "max_popularity" in theme:
+            query = query.where(Movie.popularity <= theme["max_popularity"])
 
         candidates_result = await db.execute(query.limit(200))
         candidates = candidates_result.scalars().all()

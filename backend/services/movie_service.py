@@ -163,7 +163,11 @@ class MovieService:
                 if details and details.get("imdb_id"):
                     imdb_id = details.get("imdb_id")
                     omdb_data = await self.omdb.fetch_movie_data(imdb_id)
-                    vb_score_obj = self.omdb.calculate_vectorbox_score(omdb_data, details.get("vote_average"))
+                    vb_score_obj = self.omdb.calculate_vectorbox_score(
+                        omdb_data,
+                        details.get("vote_average"),
+                        tmdb_vote_count=details.get("vote_count"),
+                    )
 
                     movie.imdb_id = imdb_id
                     movie.vectorbox_score = vb_score_obj.score

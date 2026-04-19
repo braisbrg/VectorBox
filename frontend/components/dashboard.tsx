@@ -6,8 +6,10 @@ import { LayoutList, Globe, Tv, Loader2, RotateCcw, Heart, User as UserIcon, Log
 import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/constants";
 import { motion } from "framer-motion";
 import Image from "next/image";
+import { useUser } from "@clerk/nextjs";
 import { useLanguage } from "@/components/language-provider";
-import { logout, VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem } from "@/lib/api";
+import { VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem } from "@/lib/api";
+import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
 
 import { FeedContainer } from "@/components/feed-container";
 import { UploadZone } from "@/components/upload-zone";
@@ -34,6 +36,8 @@ interface DashboardProps {
 
 export function Dashboard({ initialFeedData }: DashboardProps) {
     const router = useRouter();
+    const { user: clerkUser, isLoaded: isClerkLoaded } = useUser();
+    const handleLogout = useVectorboxLogout();
     const [currentUserSession, setCurrentUserSession] = useState<UserSession | null>(null);
     const [users, setUsers] = useState<VectorboxUser[]>([]);
     const [isLoadingAuth, setIsLoadingAuth] = useState(true);
@@ -50,25 +54,27 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
     // Client-side Hydration & Auth Check
     useEffect(() => {
-        // 1. OPTIMISTIC STRATEGY: access localStorage for instant UI
-        const storedUser = localStorage.getItem("vectorbox_user");
-        let optimisticSession: UserSession | null = null;
+        if (!isClerkLoaded) return;
 
+        if (!clerkUser) {
+            localStorage.removeItem("vectorbox_user");
+            router.push("/login");
+            return;
+        }
+
+        // Optimistic paint from cached session (Clerk JWT attached by AuthBridge)
+        const storedUser = localStorage.getItem("vectorbox_user");
         if (storedUser) {
             try {
                 const parsed = JSON.parse(storedUser);
-                const rawId = parsed.id || parsed.user_id;
-                const validId = Number(rawId);
-
+                const validId = Number(parsed.id || parsed.user_id);
                 if (validId && !isNaN(validId)) {
-                    optimisticSession = {
+                    setCurrentUserSession({
                         ...parsed,
                         id: validId,
                         username: parsed.username,
-                        letterboxd_username: parsed.letterboxd_username
-                    };
-                    // Set optimistic state immediately
-                    setCurrentUserSession(optimisticSession);
+                        letterboxd_username: parsed.letterboxd_username,
+                    });
                 }
             } catch (e) {
                 console.warn("Corrupt local session", e);
@@ -76,45 +82,30 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             }
         }
 
-        // 2. SECURITY CHECK: Verify with API (Source of Truth)
+        // Hydrate from backend /auth/me — source of truth for has_data + user_id.
         getCurrentUser()
             .then((verifiedUser) => {
-                const verifiedSession: UserSession = {
+                const fullSession: UserSession = {
                     id: verifiedUser.user_id,
                     username: verifiedUser.username,
                     letterboxd_username: verifiedUser.letterboxd_username,
-                    token: verifiedUser.token // or undefined, dependent on session type
+                    has_data: verifiedUser.has_data,
                 };
-
-                const fullSession: UserSession = { ...verifiedSession, has_data: verifiedUser.has_data };
-
                 setCurrentUserSession(fullSession);
-
-                // H-5 Security: Strip token before persisting — auth uses httponly cookie only
-                const { token: _discarded, ...safeSession } = fullSession;
-                localStorage.setItem("vectorbox_user", JSON.stringify(safeSession));
+                localStorage.setItem("vectorbox_user", JSON.stringify(fullSession));
             })
             .catch(async (err) => {
                 console.error("Session verification failed:", err);
-                // If API fails (401), we MUST clear local state and redirect
-                // But if it's just a network error (offline), we might keep optimistic state?
-                // Strictest security: Fail if we can't verify.
-                // Compromise: If 401, logout. If network error, maybe warn.
-                // Assuming interceptor handles 401 redirect, but let's be explicit.
-
                 if (err.response && err.response.status === 401) {
-                    await logout();
-                    localStorage.removeItem("vectorbox_user");
-                    router.push("/login");
+                    await handleLogout();
                 }
             })
             .finally(() => {
                 setIsLoadingAuth(false);
             });
 
-        // 3. User Sync: Fetch registered users to provide context to components
         getUsers().then(setUsers).catch(err => console.error("Failed to fetch users", err));
-    }, []);
+    }, [isClerkLoaded, clerkUser, router]);
 
     // Clear invalid providers when country changes
     useEffect(() => {
@@ -196,11 +187,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
                     <div className="text-center">
                         <button
-                            onClick={async () => {
-                                await logout();
-                                router.push('/login');
-                                setTimeout(() => window.location.reload(), 100);
-                            }}
+                            onClick={handleLogout}
                             className="text-xs text-red-500 hover:text-red-400 flex items-center justify-center gap-1 mx-auto transition-colors font-mono"
                         >
                             <LogOut className="w-3 h-3" /> {t("onboarding.abort")}

@@ -223,14 +223,20 @@ async def logout(
     if token:
         try:
             token_uuid = uuid.UUID(token)
-            result = await db.execute(select(User).where(User.secret_token == token_uuid))
-            user = result.scalar_one_or_none()
-            if user:
-                user.secret_token = uuid.uuid4()  # Rotate — old token permanently invalid
-                await db.commit()
-                logger.info(f"Session invalidated for user: {user.username}")
-        except Exception as e:
-            logger.warning(f"Token invalidation during logout failed (non-fatal): {e}")
+        except ValueError:
+            # Clerk JWT (or otherwise non-UUID Bearer): nothing to invalidate in legacy store.
+            token_uuid = None
+
+        if token_uuid is not None:
+            try:
+                result = await db.execute(select(User).where(User.secret_token == token_uuid))
+                user = result.scalar_one_or_none()
+                if user:
+                    user.secret_token = uuid.uuid4()  # Rotate — old token permanently invalid
+                    await db.commit()
+                    logger.info(f"Session invalidated for user: {user.username}")
+            except Exception as e:
+                logger.warning(f"Token invalidation during logout failed (non-fatal): {e}")
 
     response.delete_cookie(key="vectorbox_token")
     return {"message": "Logged out successfully"}

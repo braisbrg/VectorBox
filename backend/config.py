@@ -13,6 +13,9 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL", "").replace("postgresql://", "postgresql+asyncpg://")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
+# Clerk auth (per-instance JWKS URL, e.g. https://<instance>.clerk.accounts.dev/.well-known/jwks.json)
+CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
+
 # Cache versioning — bump to auto-invalidate all section/signal Redis keys on schema changes
 FEED_CACHE_VERSION = "v2"
 
