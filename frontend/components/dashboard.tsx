@@ -169,7 +169,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
                     <div className="bg-card border border-border/50 rounded-xl shadow-2xl overflow-hidden p-8 backdrop-blur-sm">
                         <div className="mb-6 space-y-2 text-center text-muted-foreground text-sm">
-                            <p>{t("onboarding.welcome_agent")}<span className="text-primary font-bold"> {clerkUser?.fullName || clerkUser?.firstName || currentUserSession.username}</span>.</p>
+                            <p>{t("onboarding.welcome_agent")}<span className="text-primary font-bold"> {clerkUser?.username || clerkUser?.firstName || clerkUser?.fullName || currentUserSession.username}</span>.</p>
                             <p>{t("onboarding.activation_msg")}</p>
                         </div>
 
@@ -231,7 +231,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                                     VECTOR<span className="text-primary">BOX</span>
                                 </h1>
                                 <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-[0.2em]">
-                                    {t("dashboard.system_ready")} <span className="text-primary">{clerkUser?.fullName || clerkUser?.firstName || currentUserSession.username}</span>
+                                    {t("dashboard.system_ready")} <span className="text-primary">{clerkUser?.username || clerkUser?.firstName || clerkUser?.fullName || currentUserSession.username}</span>
                                 </p>
                             </motion.div>
                         </div>

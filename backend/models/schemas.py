@@ -139,20 +139,6 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
-# v1.1: Auth Schemas
-class RegisterRequest(BaseModel):
-    """Register a new VectorBox user"""
-    username: constr(min_length=3, max_length=20, pattern=r'^[a-zA-Z0-9_-]+$', strip_whitespace=True)
-    pin: constr(min_length=4, max_length=4, pattern=r'^\d{4}$', strip_whitespace=True)
-    country_code: constr(min_length=2, max_length=2, strip_whitespace=True) = "ES"
-
-
-class LoginRequest(BaseModel):
-    """Login with username and PIN"""
-    username: constr(min_length=3, max_length=20, pattern=r'^[a-zA-Z0-9_-]+$', strip_whitespace=True)
-    pin: constr(min_length=4, max_length=4, pattern=r'^\d{4}$', strip_whitespace=True)
-
-
 class TokenResponse(BaseModel):
     """Auth token response"""
     token: str

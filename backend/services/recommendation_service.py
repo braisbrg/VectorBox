@@ -286,15 +286,14 @@ class RecommendationService:
             compute_method=self._compute_auteur_signal_raw
         )
 
-    async def _compute_auteur_signal_raw(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
+    async def _compute_director_scores(self, user_id: int) -> Dict[str, float]:
         """
-        Raw computation for Signal Auteur: The Auteur Expert (Metadata Graph)
-        Imp 8: Uses weighted point system instead of hard count threshold.
+        Weighted director scoring used by the Auteur signal and rotation logic.
+        Applies recency decay (730-day half-life) and saga penalty.
         """
         from services.recommendation_engine import _director_weight
+        from datetime import datetime, timezone
 
-        # 1. Analyze Top Directors with weighted scoring
-        # Get rated/liked movies (lowered threshold to 3.0 for weighted system)
         stmt = select(UserRating, Movie).join(Movie, UserRating.movie_id == Movie.id)\
         .where(
             UserRating.user_id == user_id,
@@ -303,19 +302,12 @@ class RecommendationService:
                 UserRating.is_liked.is_(True)
             )
         )
-            
         result = await self.db.execute(stmt)
         rated_movies = result.all()
-
         if not rated_movies:
-            return []
+            return {}
 
-        # Build weighted director scores
-        # Recency decay (half-life 730 days) + saga penalty to prevent franchise
-        # directors (MCU, long-running sagas) from dominating via accumulated weight.
-        from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
-
         director_appearances: Dict[str, int] = {}
         for _, movie in rated_movies:
             if not movie.directors:
@@ -327,7 +319,7 @@ class RecommendationService:
         for rating_obj, movie in rated_movies:
             if not movie.directors:
                 continue
-            effective_rating = rating_obj.rating or 4.5  # liked = 4.5
+            effective_rating = rating_obj.rating or 4.5
             base_weight = _director_weight(effective_rating)
             if base_weight == 0:
                 continue
@@ -347,11 +339,22 @@ class RecommendationService:
                 final_weight = base_weight * decay * saga_penalty
                 director_scores[director] = director_scores.get(director, 0) + final_weight
 
+        return director_scores
+
+    async def _compute_auteur_signal_raw(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
+        """
+        Raw computation for Signal Auteur: The Auteur Expert (Metadata Graph)
+        Imp 8: Uses weighted point system instead of hard count threshold.
+        """
+        director_scores = await self._compute_director_scores(user_id)
+        if not director_scores:
+            return []
+
         # Imp 8: Director activates at >= 3.0 points
         top_directors = [name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True) if score >= 3.0][:5]
 
         logger.info(
-            f"[Signal Auteur] user={user_id} rated_movies={len(rated_movies)} "
+            f"[Signal Auteur] user={user_id} "
             f"directors_scored={len(director_scores)} top_directors={top_directors}"
         )
         if not top_directors:
@@ -473,14 +476,19 @@ class RecommendationService:
             except Exception as e:
                 logger.warning(f"[Signal C] Could not queue ingest TMDB {tid}: {e}")
 
-        # 5. Dynamic quality threshold based on profile richness.
-        # Mirrors Hidden Gems: rich profiles (>=100 watched) deserve stricter floor (70).
+        # 5. Dynamic quality threshold — TMDB recs are inherently popular so max_popularity
+        # is not applied here; only vectorbox_score floor.
         watch_count_stmt = select(func.count()).select_from(UserRating).where(
             UserRating.user_id == user_id,
             UserRating.is_watched.is_(True),
         )
         user_watch_count = (await self.db.execute(watch_count_stmt)).scalar() or 0
-        signal_c_min_score = 70 if user_watch_count >= 100 else 55
+        if user_watch_count < 30:
+            signal_c_min_score = 60
+        elif user_watch_count < 100:
+            signal_c_min_score = 65
+        else:
+            signal_c_min_score = 68
 
         # 6. Filter and deduplicate
         seen_local: Set[int] = set()
@@ -670,32 +678,35 @@ class RecommendationService:
     @safe_execution(fallback_return=FeedSection(id="auteur_picks", title="From Your Favorite Directors", items=[]))
     async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
         """
-        Signal Auteur Only Row: "From Your Favorite Directors"
+        Signal Auteur Only Row — mixes films from top 3 directors combined.
         """
         candidates = await self.get_signal_b_auteur(user_id, seen_ids)
-        
-        # Batch fetch providers (no N+1)
-        if provider_service and candidates:
-            candidate_ids = [m.id for m in candidates]
-            providers_map = await provider_service.get_providers_batch(
-                candidate_ids, country
-            )
+
+        director_scores = await self._compute_director_scores(user_id)
+        top_directors = [
+            name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True)
+            if score >= 3.0
+        ][:3]
+        if not top_directors:
+            return FeedSection(id="auteur", title="From Your Favorite Directors", items=[])
+
+        filtered = [m for m in candidates if m.directors and any(d in m.directors for d in top_directors)]
+
+        if provider_service and filtered:
+            candidate_ids = [m.id for m in filtered]
+            providers_map = await provider_service.get_providers_batch(candidate_ids, country)
         else:
             providers_map = {}
-        
-        items = []
-        for m in candidates:
-             p_data = providers_map.get(m.id, [])
-             flat_providers = [p["provider_name"] for p in p_data]
-             director_name = (m.directors or [None])[0]
-             auteur_contrib = {
-                "type": "auteur",
-                "label": f"Director you follow: {director_name}" if director_name else "Director you follow",
-             }
-             if director_name:
-                 auteur_contrib["director"] = director_name
 
-             items.append(FeedItem(
+        directors_found = list({d for m in filtered for d in (m.directors or []) if d in top_directors})
+        title = ("Because You Love " + " & ".join(directors_found[:2])) if directors_found else "From Your Favorite Directors"
+
+        items = []
+        for m in filtered:
+            p_data = providers_map.get(m.id, [])
+            flat_providers = [p["provider_name"] for p in p_data]
+            label_dir = next((d for d in (m.directors or []) if d in top_directors), top_directors[0])
+            items.append(FeedItem(
                 id=m.tmdb_id,
                 title=m.title,
                 poster_url=m.poster_path,
@@ -704,15 +715,11 @@ class RecommendationService:
                 year=m.year,
                 overview=m.overview,
                 vectorbox_score=m.vectorbox_score,
-                contributors=[auteur_contrib],
-             ))
-             seen_ids.add(m.tmdb_id)
-             
-        return FeedSection(
-            id="auteur_picks",
-            title="From Your Favorite Directors",
-            items=items
-        )
+                contributors=[{"type": "auteur", "label": f"Director you follow: {label_dir}", "director": label_dir}],
+            ))
+            seen_ids.add(m.tmdb_id)
+
+        return FeedSection(id="auteur", title=title, items=items)
 
     @safe_execution(fallback_return=FeedSection(id="cult_actor", title="Cast Picks", items=[]))
     async def get_cult_actor_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:

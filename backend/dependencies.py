@@ -67,7 +67,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from functools import lru_cache
 import logging
-import uuid
 import jwt
 import httpx
 
@@ -139,9 +138,13 @@ async def _allocate_username(db: AsyncSession, base: str) -> str:
 
 
 async def _create_clerk_user(
-    db: AsyncSession, clerk_user_id: str, email: str, is_anonymous: bool
+    db: AsyncSession, clerk_user_id: str, email: str, is_anonymous: bool,
+    clerk_username: str = ""
 ) -> User:
-    if email and not is_anonymous:
+    # Priority: clerk username claim → email prefix → guest_
+    if clerk_username and not is_anonymous:
+        base_username = clerk_username
+    elif email and not is_anonymous:
         base_username = email.split("@")[0]
     else:
         base_username = f"guest_{clerk_user_id[-8:]}"
@@ -159,8 +162,14 @@ async def _create_clerk_user(
     return user
 
 
-async def _relink_clerk_user_email(db: AsyncSession, user: User, email: str) -> None:
-    base_username = email.split("@")[0]
+async def _relink_clerk_user_email(
+    db: AsyncSession, user: User, email: str, clerk_username: str = ""
+) -> None:
+    # Priority: clerk username claim → email prefix
+    if clerk_username:
+        base_username = clerk_username
+    else:
+        base_username = email.split("@")[0]
     new_username = await _allocate_username(db, base_username)
     user.username = new_username
     user.email = email
@@ -192,103 +201,76 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db)
 ) -> TokenResponse:
     """
-    Dual-auth: accepts Clerk JWT (new) and legacy vectorbox_token cookie/UUID Bearer.
-    Clerk JWT takes priority when present.
+    Clerk-only auth: requires a valid Clerk JWT in the Authorization header.
     """
     auth_header = request.headers.get("Authorization", "")
     bearer = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else ""
 
-    # Clerk path: JWT starts with "eyJ" and is much longer than a UUID (36 chars)
-    if bearer.startswith("eyJ") and len(bearer) > 100 and CLERK_JWKS_URL:
-        try:
-            public_key = _resolve_clerk_public_key(bearer)
-            if public_key is None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Unknown Clerk signing key",
-                )
-            payload = jwt.decode(
-                bearer,
-                public_key,
-                algorithms=["RS256"],
-                options={"verify_aud": False},
-            )
-            clerk_user_id = payload.get("sub")
-            if not clerk_user_id:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid Clerk token",
-                )
-
-            is_anonymous = clerk_user_id.startswith("anon_")
-            email = _extract_clerk_email(payload)
-
-            result = await db.execute(select(User).where(User.clerk_user_id == clerk_user_id))
-            user = result.scalar_one_or_none()
-
-            # Fallback: legacy user exists by email without clerk_user_id — adopt it.
-            if user is None and email and not is_anonymous:
-                result = await db.execute(select(User).where(User.email == email))
-                user = result.scalar_one_or_none()
-                if user is not None:
-                    user.clerk_user_id = clerk_user_id
-                    if user.username.startswith("guest_"):
-                        user.username = await _allocate_username(db, email.split("@")[0])
-                    await db.commit()
-                    await db.refresh(user)
-
-            if user is None:
-                user = await _create_clerk_user(db, clerk_user_id, email, is_anonymous)
-            elif (
-                not is_anonymous
-                and email
-                and user.username.startswith("guest_")
-                and not user.email
-            ):
-                # Lazy repair: user was provisioned before the email claim arrived.
-                await _relink_clerk_user_email(db, user, email)
-
-            return await _build_token_response(db, user, bearer)
-
-        except HTTPException:
-            raise
-        except Exception as e:
-            # Fall through to legacy auth on any Clerk verification failure.
-            logger.warning(f"Clerk JWT verification failed, falling back to legacy: {e}")
-
-    # Legacy path: vectorbox_token cookie, or UUID Bearer fallback.
-    token = request.cookies.get("vectorbox_token") or bearer
-
-    if not token:
+    if not (bearer.startswith("eyJ") and len(bearer) > 100 and CLERK_JWKS_URL):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
 
     try:
-        try:
-            token_uuid = uuid.UUID(token)
-        except ValueError:
+        public_key = _resolve_clerk_public_key(bearer)
+        if public_key is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid session token format",
+                detail="Unknown Clerk signing key",
+            )
+        payload = jwt.decode(
+            bearer,
+            public_key,
+            algorithms=["RS256"],
+            options={"verify_aud": False},
+        )
+        clerk_user_id = payload.get("sub")
+        if not clerk_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid Clerk token",
             )
 
-        result = await db.execute(select(User).where(User.secret_token == token_uuid))
+        is_anonymous = clerk_user_id.startswith("anon_")
+        email = _extract_clerk_email(payload)
+        clerk_username = payload.get("username", "") or ""
+
+        result = await db.execute(select(User).where(User.clerk_user_id == clerk_user_id))
         user = result.scalar_one_or_none()
 
-        if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid session",
-            )
+        # Fallback: legacy user exists by email without clerk_user_id — adopt it.
+        if user is None and email and not is_anonymous:
+            result = await db.execute(select(User).where(User.email == email))
+            user = result.scalar_one_or_none()
+            if user is not None:
+                user.clerk_user_id = clerk_user_id
+                if user.username.startswith("guest_"):
+                    # Priority: clerk username claim → email prefix
+                    base = clerk_username if clerk_username else email.split("@")[0]
+                    user.username = await _allocate_username(db, base)
+                await db.commit()
+                await db.refresh(user)
 
-        return await _build_token_response(db, user, str(user.secret_token))
+        if user is None:
+            user = await _create_clerk_user(
+                db, clerk_user_id, email, is_anonymous, clerk_username
+            )
+        elif (
+            not is_anonymous
+            and email
+            and user.username.startswith("guest_")
+            and not user.email
+        ):
+            # Lazy repair: user was provisioned before the email claim arrived.
+            await _relink_clerk_user_email(db, user, email, clerk_username)
+
+        return await _build_token_response(db, user, bearer)
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Auth check failed: {e}")
+        logger.error(f"Clerk JWT verification failed: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication failed",

@@ -21,9 +21,6 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     country_code = Column(String(2), default="ES")  # ISO 3166-1 alpha-2
     
-    # v1.1: Decoupled Auth columns
-    pin_hash = Column(String(255), nullable=True)  # bcrypt hash of 4-digit PIN
-    secret_token = Column(UUID(as_uuid=True), unique=True, nullable=True, index=True)  # Session token
     letterboxd_username = Column(String(50), nullable=True, index=True)  # Linked Letterboxd profile
 
     # Clerk auth (dual-auth transitional — legacy cookie still works while clerk_user_id is NULL)
