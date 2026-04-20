@@ -124,12 +124,9 @@ async def seed():
 
         if not user:
             print(f"User '{QA_USERNAME}' not found. Creating synthetic QA user...")
-            from passlib.context import CryptContext
-            pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
             user = User(
                 username=QA_USERNAME,
                 email="qa@vecbox.local",
-                pin_hash=pwd_context.hash("1234")  # Must match QA_USER.pin in auth.ts
             )
             db.add(user)
             await db.flush()

@@ -256,14 +256,11 @@ export interface GroupRecommendationRequest {
     limit?: number;
 }
 
-// M-1: createUser removed — use POST /api/auth/register instead
-
 export interface FeedResponse {
     feed: FeedSection[];
     status?: "ok" | "incomplete" | "error";
 }
 
-// v1.1: Authentication API
 export interface AuthResponse {
     token: string;
     user_id: number;
@@ -272,32 +269,11 @@ export interface AuthResponse {
     letterboxd_username?: string;
 }
 
-export const register = async (
-    username: string,
-    pin: string,
-    countryCode: string = "ES"
-): Promise<AuthResponse> => {
-    const response = await api.post("/api/auth/register", {
-        username,
-        pin,
-        country_code: countryCode,
-    });
-    return response.data;
-};
-
-export const login = async (
-    username: string,
-    pin: string
-): Promise<AuthResponse> => {
-    const response = await api.post("/api/auth/login", {
-        username: username.trim(),
-        pin: pin.toString(),
-    });
-    return response.data;
-};
-
 export const logout = async (): Promise<void> => {
-    await api.post("/api/auth/logout");
+    // Clerk's signOut() handles real session invalidation; clear local cache.
+    if (typeof window !== "undefined") {
+        localStorage.removeItem("vectorbox_user");
+    }
 };
 
 export const getCurrentUser = async (): Promise<AuthResponse> => {

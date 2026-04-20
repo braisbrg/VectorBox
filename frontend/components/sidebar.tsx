@@ -37,7 +37,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
     const { t } = useLanguage();
     const handleLogout = useVectorboxLogout();
     const { user: clerkUser } = useUser();
-    const displayName = clerkUser?.fullName || clerkUser?.firstName || users?.find(u => u.id === currentUserId)?.username || "User";
+    const displayName = clerkUser?.username || clerkUser?.firstName || clerkUser?.fullName || users?.find(u => u.id === currentUserId)?.username || "User";
 
     const menuItems = [
         {

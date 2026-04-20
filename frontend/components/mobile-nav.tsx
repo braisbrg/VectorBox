@@ -22,7 +22,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
     const { t } = useLanguage();
     const handleLogout = useVectorboxLogout();
     const { user: clerkUser } = useUser();
-    const displayName = clerkUser?.fullName || clerkUser?.firstName || users?.find(u => u.id === currentUserId)?.username || "User";
+    const displayName = clerkUser?.username || clerkUser?.firstName || clerkUser?.fullName || users?.find(u => u.id === currentUserId)?.username || "User";
 
     const menuItems = [
         { id: "feed", label: t("sidebar.feed"), icon: LayoutList },

@@ -1,7 +1,6 @@
 "use client";
 import { useClerk } from "@clerk/nextjs";
 import { useCallback } from "react";
-import { logout as legacyLogout } from "@/lib/api";
 
 const CLIENT_STATE_KEYS = [
     "vectorbox_user",
@@ -12,7 +11,6 @@ const CLIENT_STATE_KEYS = [
 export function useVectorboxLogout() {
     const { signOut } = useClerk();
     return useCallback(async () => {
-        await legacyLogout().catch(() => undefined);
         try {
             await signOut();
         } catch {
