@@ -223,7 +223,7 @@ async def get_current_user(
             bearer,
             public_key,
             algorithms=["RS256"],
-            options={"verify_aud": False},
+            options={"verify_aud": False, "leeway": 60},
         )
         clerk_user_id = payload.get("sub")
         if not clerk_user_id:
