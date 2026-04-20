@@ -678,34 +678,102 @@ class RecommendationService:
     @safe_execution(fallback_return=FeedSection(id="auteur_picks", title="From Your Favorite Directors", items=[]))
     async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
         """
-        Signal Auteur Only Row — mixes films from top 3 directors combined.
+        Signal Auteur Only Row — mixes films from top directors combined.
+        Uses only watched films as exclusion filter (not global seen_ids, which already
+        contains Picked For You results that would starve the auteur section).
+        Expands director list progressively until enough candidates are found.
         """
-        candidates = await self.get_signal_b_auteur(user_id, seen_ids)
+        from services.recommendation_engine import MOVIE_QUALITY_GATE
 
+        # Fetch watched IDs using internal IDs (for .notin_ on Movie.id)
+        watched_internal_result = await self.db.execute(
+            select(UserRating.movie_id)
+            .where(UserRating.user_id == user_id)
+            .where(UserRating.is_watched.is_(True))
+        )
+        watched_internal_ids = set(watched_internal_result.scalars().all())
+
+        # Fetch watched tmdb_ids (for .notin_ on Movie.tmdb_id)
+        watched_tmdb_result = await self.db.execute(
+            select(Movie.tmdb_id)
+            .join(UserRating, Movie.id == UserRating.movie_id)
+            .where(UserRating.user_id == user_id)
+            .where(UserRating.is_watched.is_(True))
+        )
+        auteur_seen_ids = set(watched_tmdb_result.scalars().all())
+
+        # All qualifying directors sorted by score, minimum threshold 2.0
         director_scores = await self._compute_director_scores(user_id)
-        top_directors = [
+        all_directors = [
             name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True)
-            if score >= 3.0
-        ][:3]
-        if not top_directors:
+            if score >= 2.0
+        ]
+
+        if not all_directors:
             return FeedSection(id="auteur", title="From Your Favorite Directors", items=[])
 
-        filtered = [m for m in candidates if m.directors and any(d in m.directors for d in top_directors)]
+        # Progressively expand director list until MIN_CANDIDATES found or MAX_DIRECTORS exhausted
+        MIN_CANDIDATES = 10
+        MAX_DIRECTORS = 10
+        active_directors: List[str] = []
+        candidates: List[Movie] = []
 
-        if provider_service and filtered:
-            candidate_ids = [m.id for m in filtered]
+        for director in all_directors[:MAX_DIRECTORS]:
+            active_directors.append(director)
+
+            where_clauses = [
+                *MOVIE_QUALITY_GATE,
+                Movie.vectorbox_score >= 55,
+                Movie.directors.overlap(active_directors),
+            ]
+            if watched_internal_ids:
+                where_clauses.append(Movie.id.notin_(watched_internal_ids))
+            if auteur_seen_ids:
+                where_clauses.append(Movie.tmdb_id.notin_(auteur_seen_ids))
+
+            candidates_result = await self.db.execute(
+                select(Movie)
+                .where(*where_clauses)
+                .order_by(desc(Movie.vectorbox_score))
+                .limit(50)
+            )
+            candidates = candidates_result.scalars().all()
+
+            logger.info(
+                f"[Auteur section] user={user_id} active_directors={len(active_directors)} "
+                f"last_added={director!r} candidates={len(candidates)}"
+            )
+
+            if len(candidates) >= MIN_CANDIDATES:
+                break
+
+        if not candidates:
+            return FeedSection(id="auteur", title="From Your Favorite Directors", items=[])
+
+        # Build title from directors actually present in results
+        directors_found = list({
+            d for m in candidates
+            for d in (m.directors or [])
+            if d in active_directors
+        })
+        if len(directors_found) == 1:
+            title = f"Because You Love {directors_found[0]}"
+        elif len(directors_found) == 2:
+            title = f"Because You Love {directors_found[0]} & {directors_found[1]}"
+        else:
+            title = f"Because You Love {directors_found[0]} & More"
+
+        if provider_service and candidates:
+            candidate_ids = [m.id for m in candidates]
             providers_map = await provider_service.get_providers_batch(candidate_ids, country)
         else:
             providers_map = {}
 
-        directors_found = list({d for m in filtered for d in (m.directors or []) if d in top_directors})
-        title = ("Because You Love " + " & ".join(directors_found[:2])) if directors_found else "From Your Favorite Directors"
-
         items = []
-        for m in filtered:
+        for m in candidates:
             p_data = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in p_data]
-            label_dir = next((d for d in (m.directors or []) if d in top_directors), top_directors[0])
+            label_dir = next((d for d in (m.directors or []) if d in active_directors), active_directors[0])
             items.append(FeedItem(
                 id=m.tmdb_id,
                 title=m.title,
