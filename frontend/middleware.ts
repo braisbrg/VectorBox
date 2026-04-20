@@ -1,10 +1,24 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-const isPublicRoute = createRouteMatcher(["/login(.*)", "/register(.*)"]);
+const isPublicRoute = createRouteMatcher([
+    "/login(.*)",
+    "/register(.*)",
+    "/privacy(.*)",
+    "/terms(.*)"
+]);
 
-export default clerkMiddleware((auth, request) => {
+export default clerkMiddleware(async (auth, request) => {
+    const { userId } = await auth();
+
+    // Si está logueado e intenta ir a /login o /register, redirigir a home
+    if (userId && (request.nextUrl.pathname.startsWith('/login') ||
+        request.nextUrl.pathname.startsWith('/register'))) {
+        return Response.redirect(new URL('/', request.url));
+    }
+
+    // Proteger rutas no públicas
     if (!isPublicRoute(request)) {
-        auth.protect();
+        await auth.protect();
     }
 });
 
