@@ -56,7 +56,7 @@ export function RightConsole({
     const { getToken } = useAuth();
     const [yearMin, setYearMin] = useState("");
     const [yearMax, setYearMax] = useState("");
-    const [minRuntime, setMinRuntime] = useState("");
+    const [maxRuntime, setMaxRuntime] = useState("");
     const [minScore, setMinScore] = useState("");
     const [filterResults, setFilterResults] = useState<FeedItem[]>([]);
     const [filterLoading, setFilterLoading] = useState(false);
@@ -70,8 +70,8 @@ export function RightConsole({
                 semantic_query: "quality films",
                 year_min: yearMin ? parseInt(yearMin) : null,
                 year_max: yearMax ? parseInt(yearMax) : null,
-                min_runtime_minutes: minRuntime ? parseInt(minRuntime) : null,
-                max_runtime_minutes: null,
+                min_runtime_minutes: null,
+                max_runtime_minutes: maxRuntime ? parseInt(maxRuntime) : null,
                 min_rating: minScore ? parseFloat(minScore) : null,
                 popularity_vibe: "any",
                 quality_gate_bypass: false,
@@ -88,7 +88,7 @@ export function RightConsole({
         } finally {
             setFilterLoading(false);
         }
-    }, [yearMin, yearMax, minRuntime, minScore, getToken]);
+    }, [yearMin, yearMax, maxRuntime, minScore, getToken]);
 
     const activeProvidersCount = streamingProviders.length;
 
@@ -207,12 +207,12 @@ export function RightConsole({
                                 </div>
                                 <div className="grid grid-cols-2 gap-2">
                                     <div>
-                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">MIN_RUNTIME</label>
+                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">MAX_RUNTIME</label>
                                         <input
                                             type="number"
-                                            placeholder="60"
-                                            value={minRuntime}
-                                            onChange={(e) => setMinRuntime(e.target.value)}
+                                            placeholder="120"
+                                            value={maxRuntime}
+                                            onChange={(e) => setMaxRuntime(e.target.value)}
                                             className="w-full bg-zinc-900/50 border border-zinc-800 p-2 focus:outline-none focus:border-primary text-[10px]"
                                         />
                                     </div>
