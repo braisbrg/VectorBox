@@ -32,6 +32,144 @@ limiter = Limiter(key_func=get_remote_address)
 # Legacy in-memory status (kept for backwards compatibility)
 upload_status = {}
 
+async def _enrich_user_movies_background(user_id: int) -> None:
+    """
+    Post-upload enrichment: enrich movies imported by this user that lack Scout embeddings.
+    Runs silently after upload completes. On finish, invalidates cache and re-clusters.
+    """
+    import os
+    from openai import AsyncOpenAI
+    from config import AsyncSessionLocal
+    from services.cinematic_enricher import generate_cinematic_description
+    from services.cache_service import invalidate_user_cache
+
+    async with AsyncSessionLocal() as db:
+        try:
+            stmt = (
+                select(Movie)
+                .join(UserRating, Movie.id == UserRating.movie_id)
+                .where(UserRating.user_id == user_id)
+                .where(Movie.has_enriched_embedding.is_(False))
+                .where(Movie.vectorbox_score.isnot(None))
+                .distinct()
+            )
+            result = await db.execute(stmt)
+            movies_to_enrich = result.scalars().all()
+
+            if not movies_to_enrich:
+                logger.info(f"[Enrichment] No movies to enrich for user {user_id}")
+                return
+
+            logger.info(f"[Enrichment] Starting enrichment of {len(movies_to_enrich)} movies for user {user_id}")
+
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            groq_key = os.getenv("GROQ_API_KEY")
+            if gemini_key:
+                llm_client = AsyncOpenAI(
+                    api_key=gemini_key,
+                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                )
+            elif groq_key:
+                llm_client = AsyncOpenAI(
+                    api_key=groq_key,
+                    base_url="https://api.groq.com/openai/v1",
+                    max_retries=0,
+                )
+            else:
+                logger.warning("[Enrichment] No LLM API key available, skipping enrichment")
+                return
+
+            qdrant = QdrantService()
+            embedding_service = await get_embedding_service()
+            enriched_count = 0
+            batch_size = 10
+
+            try:
+                for i in range(0, len(movies_to_enrich), batch_size):
+                    batch = movies_to_enrich[i:i + batch_size]
+
+                    for movie in batch:
+                        try:
+                            description, model_used = await generate_cinematic_description(
+                                title=movie.title or "",
+                                overview=movie.overview or "",
+                                genres=movie.genres or [],
+                                keywords=movie.keywords or [],
+                                directors=movie.directors or [],
+                                cast=movie.cast or [],
+                                year=movie.year or 0,
+                                groq_client=llm_client,
+                            )
+                            if not description or model_used is None:
+                                continue
+
+                            loop = asyncio.get_event_loop()
+                            vector = await loop.run_in_executor(
+                                None,
+                                lambda d=description, m=movie: embedding_service.generate_embedding(
+                                    {"title": m.title, "overview": m.overview, "genres": m.genres, "keywords": m.keywords or []},
+                                    text_override=d,
+                                )
+                            )
+                            if vector is None:
+                                continue
+
+                            payload = {
+                                "tmdb_id": movie.tmdb_id,
+                                "title": movie.title,
+                                "year": movie.year,
+                                "genres": movie.genres or [],
+                                "overview": movie.overview or "",
+                                "poster_path": movie.poster_path,
+                                "vote_average": movie.vote_average,
+                                "vote_count": movie.vote_count,
+                                "runtime": movie.runtime,
+                                "original_language": movie.original_language,
+                                "keywords": movie.keywords or [],
+                                "directors": movie.directors,
+                                "cast": movie.cast,
+                                "vectorbox_score": movie.vectorbox_score,
+                                "imdb_rating": movie.imdb_rating,
+                                "metacritic_rating": movie.metacritic_rating,
+                                "title_es": movie.title_es,
+                                "overview_es": movie.overview_es,
+                            }
+                            await qdrant.upsert_movie_vector(
+                                movie_id=movie.tmdb_id,
+                                vector=vector.tolist(),
+                                metadata=payload,
+                            )
+
+                            movie.has_enriched_embedding = True
+                            movie.enriched_by_model = model_used
+                            db.add(movie)
+                            enriched_count += 1
+
+                        except Exception as e:
+                            logger.warning(f"[Enrichment] Failed for movie {movie.id}: {e}")
+                            continue
+
+                    await db.commit()
+
+                    if i + batch_size < len(movies_to_enrich):
+                        await asyncio.sleep(1.0)
+
+                logger.info(f"[Enrichment] Completed: {enriched_count}/{len(movies_to_enrich)} enriched for user {user_id}")
+
+            finally:
+                await llm_client.close()
+
+            logger.info(f"[Enrichment] Re-clustering user {user_id} with enriched embeddings")
+            clustering = ClusteringService(qdrant=qdrant)
+            await clustering.create_user_clusters(user_id, db)
+
+            await invalidate_user_cache(user_id)
+            logger.info(f"[Enrichment] Pipeline complete for user {user_id}")
+
+        except Exception as e:
+            logger.error(f"[Enrichment] Pipeline failed for user {user_id}: {e}")
+
+
 @router.get("/status/{user_id}")
 async def get_upload_status(
     user_id: int,
@@ -374,6 +512,9 @@ async def enrich_movies_background(
 
         if task_id:
             await task_store.complete_task(task_id, "Upload complete!")
+
+        asyncio.create_task(_enrich_user_movies_background(user_id))
+        logger.info(f"[Upload] Scheduled post-upload enrichment for user {user_id}")
 
     except Exception as e:
         logger.error(f"Background enrichment failed for user {user_id}: {e}")

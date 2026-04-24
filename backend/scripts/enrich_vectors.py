@@ -209,8 +209,8 @@ async def enrich_embeddings_via_groq(limit: int = None, model_only: str = None):
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
         # Gemini paid tier: 1000 RPM — use larger batches and shorter delays
-        batch_size = 20
-        batch_delay = 0.5
+        batch_size = 30
+        batch_delay = 0.3
     elif groq_key:
         logger.info("Starting LLM-Enriched Embedding Generation via Groq (Gemini not configured)...")
         # max_retries=0: our fallback chain handles retries, not the SDK
