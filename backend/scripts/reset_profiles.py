@@ -85,16 +85,16 @@ async def reset_profiles(force: bool = False, recluster: bool = True):
 
     if recluster:
         logger.info("Starting Re-clustering for all users with ratings...")
-        if os.getenv("GEMINI_API_KEY"):
-            groq_client = AsyncOpenAI(
-                api_key=os.getenv("GEMINI_API_KEY"),
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            )
-        elif os.getenv("GROQ_API_KEY"):
+        if os.getenv("GROQ_API_KEY"):
             groq_client = AsyncOpenAI(
                 api_key=os.getenv("GROQ_API_KEY"),
                 base_url="https://api.groq.com/openai/v1",
                 max_retries=0,
+            )
+        elif os.getenv("GEMINI_API_KEY"):
+            groq_client = AsyncOpenAI(
+                api_key=os.getenv("GEMINI_API_KEY"),
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
             )
         else:
             groq_client = None

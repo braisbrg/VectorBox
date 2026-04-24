@@ -14,13 +14,15 @@ logger = logging.getLogger(__name__)
 
 def _get_model_chain() -> list[str]:
     """Return the LLM model chain based on available API keys."""
+    if os.getenv("GROQ_API_KEY"):
+        return [
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+        ]
     if os.getenv("GEMINI_API_KEY"):
         return ["gemini-2.5-flash"]
-    return [
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "llama-3.3-70b-versatile",
-        "llama-3.1-8b-instant",
-    ]
+    return []
 
 
 class DailyLimitExhausted(Exception):
