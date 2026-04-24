@@ -76,8 +76,8 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ### Stack
 - **Backend:** FastAPI + SQLAlchemy async + PostgreSQL 15 + Qdrant + Redis 7 + Python 3.11
-- **Frontend:** Next.js 16 App Router + React 19 + Tailwind v4
-- **Auth:** httponly cookie `vectorbox_token` (primary) + Bearer header (SSR fallback)
+- **Frontend:** Next.js 16 App Router + React 19 + Tailwind v4 + shadcn/ui (Radix UI + CVA + tailwind-merge, no components.json) + Framer Motion + TanStack React Query v5 + next-themes + lucide-react
+- **Auth:** Clerk (`@clerk/nextjs`) — ClerkProvider wraps app, `clerkMiddleware` protects routes, `AuthBridge` attaches Clerk JWT as Bearer on all API calls; httponly cookie `vectorbox_token` is legacy fallback only
 - **Dev:** Docker Compose, Windows 11 PowerShell host, Uvicorn auto-reloads on save
 - **Branch:** feature/* → develop → main (tags semver)
 
