@@ -4,9 +4,11 @@ import { X, Globe, Tv, RotateCcw, Info, CheckCircle2, Lock } from "lucide-react"
 import type { Contributor } from "@/types/feed";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
+import { useState, useCallback } from "react";
+import { useAuth } from "@clerk/nextjs";
 import { useLanguage } from "@/components/language-provider";
 import { COUNTRIES, getProvidersForCountry } from "@/lib/constants";
-import { FeedItem, getTMDBImageUrl } from "@/lib/api";
+import { FeedItem, getTMDBImageUrl, api } from "@/lib/api";
 
 interface RightConsoleProps {
     selectedMovie: FeedItem | null;
@@ -50,6 +52,43 @@ export function RightConsole({
         if (sectionId.includes("wildcard") || sectionId.includes("random")) return "Anti-Routine Parameter Matrix Injection";
         return "STANDARD VECTORBOX MATCH";
     };
+
+    const { getToken } = useAuth();
+    const [yearMin, setYearMin] = useState("");
+    const [yearMax, setYearMax] = useState("");
+    const [minRuntime, setMinRuntime] = useState("");
+    const [minScore, setMinScore] = useState("");
+    const [filterResults, setFilterResults] = useState<FeedItem[]>([]);
+    const [filterLoading, setFilterLoading] = useState(false);
+
+    const handleFilterSearch = useCallback(async () => {
+        setFilterLoading(true);
+        setFilterResults([]);
+        try {
+            const token = await getToken();
+            const forced_intent = {
+                semantic_query: "quality films",
+                year_min: yearMin ? parseInt(yearMin) : null,
+                year_max: yearMax ? parseInt(yearMax) : null,
+                min_runtime_minutes: minRuntime ? parseInt(minRuntime) : null,
+                max_runtime_minutes: null,
+                min_rating: minScore ? parseFloat(minScore) : null,
+                popularity_vibe: "any",
+                quality_gate_bypass: false,
+                reasoning: "Filter search from UI",
+            };
+            const res = await api.post(
+                "/api/search/natural",
+                { query: "quality films matching my filters", forced_intent },
+                { headers: { Authorization: `Bearer ${token}` } }
+            );
+            setFilterResults(res.data?.results ?? []);
+        } catch {
+            // silent fail
+        } finally {
+            setFilterLoading(false);
+        }
+    }, [yearMin, yearMax, minRuntime, minScore, getToken]);
 
     const activeProvidersCount = streamingProviders.length;
 
@@ -137,6 +176,78 @@ export function RightConsole({
                                         );
                                     })}
                                 </div>
+                            </div>
+
+                            {/* Query Filters */}
+                            <div className="space-y-4">
+                                <span className="text-zinc-500 uppercase tracking-widest text-[10px] block border-b border-zinc-800 pb-2">
+                                    {">"} QUERY_FILTERS
+                                </span>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">YEAR_MIN</label>
+                                        <input
+                                            type="number"
+                                            placeholder="1970"
+                                            value={yearMin}
+                                            onChange={(e) => setYearMin(e.target.value)}
+                                            className="w-full bg-zinc-900/50 border border-zinc-800 p-2 focus:outline-none focus:border-primary text-[10px]"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">YEAR_MAX</label>
+                                        <input
+                                            type="number"
+                                            placeholder="2025"
+                                            value={yearMax}
+                                            onChange={(e) => setYearMax(e.target.value)}
+                                            className="w-full bg-zinc-900/50 border border-zinc-800 p-2 focus:outline-none focus:border-primary text-[10px]"
+                                        />
+                                    </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-2">
+                                    <div>
+                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">MIN_RUNTIME</label>
+                                        <input
+                                            type="number"
+                                            placeholder="60"
+                                            value={minRuntime}
+                                            onChange={(e) => setMinRuntime(e.target.value)}
+                                            className="w-full bg-zinc-900/50 border border-zinc-800 p-2 focus:outline-none focus:border-primary text-[10px]"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">MIN_SCORE</label>
+                                        <input
+                                            type="number"
+                                            placeholder="6.0"
+                                            step="0.5"
+                                            min="0"
+                                            max="10"
+                                            value={minScore}
+                                            onChange={(e) => setMinScore(e.target.value)}
+                                            className="w-full bg-zinc-900/50 border border-zinc-800 p-2 focus:outline-none focus:border-primary text-[10px]"
+                                        />
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={handleFilterSearch}
+                                    disabled={filterLoading}
+                                    className="w-full py-2 border border-primary text-primary text-[10px] uppercase tracking-widest font-bold hover:bg-primary hover:text-black transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {filterLoading ? "SEARCHING..." : "> EXECUTE_QUERY"}
+                                </button>
+                                {filterResults.length > 0 && (
+                                    <div className="space-y-2">
+                                        <span className="text-[9px] text-zinc-600 uppercase block">RESULTS [{filterResults.length}]</span>
+                                        {filterResults.map((m) => (
+                                            <div key={m.id} className="border border-zinc-800 p-2 hover:border-zinc-600 transition-colors">
+                                                <p className="text-[10px] font-bold truncate uppercase">{m.title}</p>
+                                                <p className="text-[9px] text-zinc-600">{m.year} · VB {m.vectorbox_score ?? m.match_score}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                         </div>
 
