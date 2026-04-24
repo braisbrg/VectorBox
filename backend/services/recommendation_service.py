@@ -587,6 +587,19 @@ class RecommendationService:
 
         candidates.sort(key=lambda x: x["score"], reverse=True)
 
+        # Director diversity cap — max 2 films per director in Picked For You
+        MAX_PER_DIRECTOR = 2
+        director_count: Dict[str, int] = {}
+        director_capped = []
+        for c in candidates:
+            movie_directors = c["movie"].directors or []
+            if any(director_count.get(d, 0) >= MAX_PER_DIRECTOR for d in movie_directors):
+                continue
+            director_capped.append(c)
+            for d in movie_directors:
+                director_count[d] = director_count.get(d, 0) + 1
+        candidates = director_capped
+
         # 3. Batch-fetch Qdrant vectors for top 20 (single call, no N+1)
         import numpy as np
         import functools
@@ -858,9 +871,8 @@ class RecommendationService:
         if not qualifying_actors:
             return FeedSection(id="cult_actor", title="Cast Picks", items=[])
 
-        # 3. Top 2 cult actors
-        top_actors = qualifying_actors[:2]
-        actor_name = top_actors[0][0]  # Use top actor for title
+        # 3. Top 3 cult actors
+        top_actors = qualifying_actors[:3]
 
         # Get watched IDs
         watched_stmt = select(UserRating.movie_id).where(
@@ -868,34 +880,32 @@ class RecommendationService:
         )
         watched_ids = set((await self.db.execute(watched_stmt)).scalars().all())
 
-        # 4. Find their unwatched films
-        actor_names = [a[0] for a in top_actors]
+        # 4. Find top 3 unwatched films per actor (max 9 total)
+        from services.recommendation_engine import MOVIE_QUALITY_GATE
         all_items = []
+        seen_local: Set[int] = set()
 
-        for actor in actor_names:
-            # Query movies where cast contains this actor, not watched
-            from services.recommendation_engine import MOVIE_QUALITY_GATE
+        for actor, _ in top_actors:
             stmt = select(Movie).where(
                 *MOVIE_QUALITY_GATE,
                 Movie.cast.any(actor),
-            ).order_by(desc(Movie.vectorbox_score)).limit(15)
+                Movie.vectorbox_score >= 60,
+                Movie.vote_count >= 50,
+            ).order_by(desc(Movie.vectorbox_score)).limit(10)
 
             candidates = (await self.db.execute(stmt)).scalars().all()
 
+            per_actor = 0
             for m in candidates:
-                if m.tmdb_id in seen_ids or m.id in watched_ids:
+                if per_actor >= 3:
+                    break
+                if m.tmdb_id in seen_ids or m.id in watched_ids or m.id in seen_local:
                     continue
                 all_items.append((m, actor))
-
-        # Deduplicate (keep the first actor match for each movie)
-        seen_local: Set[int] = set()
-        unique_movies: List[Tuple[Movie, str]] = []
-        for m, actor in all_items:
-            if m.id not in seen_local:
-                unique_movies.append((m, actor))
                 seen_local.add(m.id)
+                per_actor += 1
 
-        unique_movies = unique_movies[:15]
+        unique_movies: List[Tuple[Movie, str]] = all_items[:9]
 
         # Batch fetch providers
         if provider_service and unique_movies:
@@ -927,7 +937,7 @@ class RecommendationService:
 
         return FeedSection(
             id="cult_actor",
-            title=f"Because you follow {actor_name}",
+            title="Cast Picks",
             items=items
         )
 

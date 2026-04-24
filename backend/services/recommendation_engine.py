@@ -988,6 +988,7 @@ class RecommendationEngine:
         q = (
             select(Movie)
             .where(*MOVIE_QUALITY_GATE)
+            .where(Movie.vectorbox_score >= 45)
             .where(Movie.vote_average > 7.0)
             .where(Movie.vote_count > 100)
             .where(~Movie.genres.overlap(excluded_array))

@@ -202,17 +202,8 @@ async def enrich_embeddings_via_groq(limit: int = None, model_only: str = None):
     gemini_key = os.environ.get("GEMINI_API_KEY")
     groq_key = os.environ.get("GROQ_API_KEY")
 
-    if gemini_key:
-        logger.info("Starting LLM-Enriched Embedding Generation via Gemini Flash 2.5...")
-        groq_client = AsyncOpenAI(
-            api_key=gemini_key,
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        )
-        # Gemini paid tier: 1000 RPM — use larger batches and shorter delays
-        batch_size = 20
-        batch_delay = 0.5
-    elif groq_key:
-        logger.info("Starting LLM-Enriched Embedding Generation via Groq (Gemini not configured)...")
+    if groq_key:
+        logger.info("Starting LLM-Enriched Embedding Generation via Groq...")
         # max_retries=0: our fallback chain handles retries, not the SDK
         groq_client = AsyncOpenAI(
             api_key=groq_key,
@@ -222,6 +213,15 @@ async def enrich_embeddings_via_groq(limit: int = None, model_only: str = None):
         # Groq ~30 RPM free tier — conservative pacing
         batch_size = 10
         batch_delay = 2.0
+    elif gemini_key:
+        logger.info("Starting LLM-Enriched Embedding Generation via Gemini Flash 2.5 (Groq not configured)...")
+        groq_client = AsyncOpenAI(
+            api_key=gemini_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+        # Gemini paid tier: 1000 RPM — use larger batches and shorter delays
+        batch_size = 30
+        batch_delay = 0.3
     else:
         logger.error("Neither GEMINI_API_KEY nor GROQ_API_KEY is set. Aborting.")
         return

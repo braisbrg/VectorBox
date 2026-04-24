@@ -94,7 +94,7 @@ class ClusteringService:
         )
 
         import os
-        model_name = "gemini-2.5-flash" if os.getenv("GEMINI_API_KEY") else "meta-llama/llama-4-scout-17b-16e-instruct"
+        model_name = "meta-llama/llama-4-scout-17b-16e-instruct" if os.getenv("GROQ_API_KEY") else "gemini-2.5-flash"
         try:
             response = await groq_client.chat.completions.create(
                 model=model_name,
