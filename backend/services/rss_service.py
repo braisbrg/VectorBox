@@ -35,20 +35,23 @@ class RSSService:
         self.omdb = omdb  # callers must pass — no fallback
         self.qdrant = qdrant
         self.embedding_service = embedding_service
-        # FIX 5: Create groq_client for LLM-enriched embeddings on new movies
         import os
-        groq_api_key = os.getenv("GROQ_API_KEY")
         self.groq_client = None
-        if groq_api_key:
-            try:
-                from openai import AsyncOpenAI
+        try:
+            from openai import AsyncOpenAI
+            if os.getenv("GEMINI_API_KEY"):
                 self.groq_client = AsyncOpenAI(
-                    api_key=groq_api_key,
-                    base_url="https://api.groq.com/openai/v1",
-                    max_retries=0
+                    api_key=os.getenv("GEMINI_API_KEY"),
+                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 )
-            except ImportError:
-                logger.warning("openai package not found, Groq features disabled for RSS")
+            elif os.getenv("GROQ_API_KEY"):
+                self.groq_client = AsyncOpenAI(
+                    api_key=os.getenv("GROQ_API_KEY"),
+                    base_url="https://api.groq.com/openai/v1",
+                    max_retries=0,
+                )
+        except ImportError:
+            logger.warning("openai package not found, LLM features disabled for RSS")
         self.movie_service = MovieService(db, tmdb=self.tmdb, groq_client=self.groq_client)
 
     async def fetch_user_rss(self, username: str) -> List[Dict]:

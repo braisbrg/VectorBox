@@ -16,6 +16,8 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 # Clerk auth (per-instance JWKS URL, e.g. https://<instance>.clerk.accounts.dev/.well-known/jwks.json)
 CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
 # Cache versioning — bump to auto-invalidate all section/signal Redis keys on schema changes
 FEED_CACHE_VERSION = "v2"
 

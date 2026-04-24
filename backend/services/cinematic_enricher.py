@@ -5,10 +5,22 @@ that replace the shallow title+genre concatenation for vector similarity.
 """
 import asyncio
 import logging
+import os
 import re
 from typing import List
 
 logger = logging.getLogger(__name__)
+
+
+def _get_model_chain() -> list[str]:
+    """Return the LLM model chain based on available API keys."""
+    if os.getenv("GEMINI_API_KEY"):
+        return ["gemini-2.5-flash"]
+    return [
+        "meta-llama/llama-4-scout-17b-16e-instruct",
+        "llama-3.3-70b-versatile",
+        "llama-3.1-8b-instant",
+    ]
 
 
 class DailyLimitExhausted(Exception):
@@ -107,15 +119,10 @@ async def generate_cinematic_description(
         "- Mood keywords (3-5 single words at the end)"
     )
 
-    # Model fallback chain: Scout → 70B → 8B → legacy
     if force_model:
         models = [force_model]
     else:
-        models = [
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-        ]
+        models = _get_model_chain()
     messages = [
         {
             "role": "system",
@@ -134,7 +141,7 @@ async def generate_cinematic_description(
                 model=model_id,
                 messages=messages,
                 temperature=0.4,
-                max_tokens=200,
+                max_tokens=1000,
             )
             description = response.choices[0].message.content.strip()
             if description and len(description) > 20:
@@ -163,7 +170,7 @@ async def generate_cinematic_description(
                                 model=model_id,
                                 messages=messages,
                                 temperature=0.4,
-                                max_tokens=200,
+                                max_tokens=1000,
                             )
                             description = response.choices[0].message.content.strip()
                             if description and len(description) > 20:
@@ -227,10 +234,10 @@ async def generate_profile_summary(
 
     try:
         response = await groq_client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model=_get_model_chain()[0],
             messages=messages,
             temperature=0.5,
-            max_tokens=250,
+            max_tokens=1000,
         )
         summary = response.choices[0].message.content.strip()
         if summary and len(summary) > 30:

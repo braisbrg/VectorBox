@@ -1,3 +1,4 @@
+from datetime import timedelta
 from typing import AsyncGenerator, Optional
 from services.tmdb_client import TMDBClient
 from services.omdb_client import OMDbClient
@@ -223,7 +224,8 @@ async def get_current_user(
             bearer,
             public_key,
             algorithms=["RS256"],
-            options={"verify_aud": False, "leeway": 60}
+            options={"verify_aud": False},
+            leeway=timedelta(seconds=60),
         )
         clerk_user_id = payload.get("sub")
         if not clerk_user_id:
