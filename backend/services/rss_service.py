@@ -39,16 +39,16 @@ class RSSService:
         self.groq_client = None
         try:
             from openai import AsyncOpenAI
-            if os.getenv("GEMINI_API_KEY"):
-                self.groq_client = AsyncOpenAI(
-                    api_key=os.getenv("GEMINI_API_KEY"),
-                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                )
-            elif os.getenv("GROQ_API_KEY"):
+            if os.getenv("GROQ_API_KEY"):
                 self.groq_client = AsyncOpenAI(
                     api_key=os.getenv("GROQ_API_KEY"),
                     base_url="https://api.groq.com/openai/v1",
                     max_retries=0,
+                )
+            elif os.getenv("GEMINI_API_KEY"):
+                self.groq_client = AsyncOpenAI(
+                    api_key=os.getenv("GEMINI_API_KEY"),
+                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 )
         except ImportError:
             logger.warning("openai package not found, LLM features disabled for RSS")

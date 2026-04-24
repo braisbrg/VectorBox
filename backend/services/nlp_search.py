@@ -19,7 +19,9 @@ class MovieSearchIntent(BaseModel):
     year_min: Optional[int] = Field(None, description="Start year. Interpret '80s' as 1980, 'Modern' as 2010, 'Recent' as 2020.")
     year_max: Optional[int] = Field(None, description="End year. Interpret 'Old/Classic' as 1985, '90s' as 1999.")
     include_genres: Optional[List[str]] = Field(None, description="Official TMDB genres to include.")
+    min_runtime_minutes: Optional[int] = Field(None, description="Min duration in minutes.")
     max_runtime_minutes: Optional[int] = Field(None, description="Max duration in minutes.")
+    min_rating: Optional[float] = Field(None, description="Minimum TMDB vote_average (0-10).")
     popularity_vibe: Literal["blockbuster", "hidden_gem", "any"] = Field("any", description="Select 'hidden_gem' for obscure/underrated, 'blockbuster' for famous/hits.")
     original_language: Optional[str] = Field(None, description="ISO 639-1 language code.")
     reference_movie: Optional[str] = Field(None, description="If user asks for movies 'like' X, extract title.")
@@ -38,18 +40,18 @@ class DeepAnalysisResponse(BaseModel):
 # 2. Dual-Model Architecture
 
 def get_scout_client():
-    """LLM client: Gemini Flash 2.5 preferred, Groq fallback."""
-    gemini_key = os.environ.get("GEMINI_API_KEY")
+    """LLM client: Groq preferred, Gemini fallback."""
     groq_key = os.environ.get("GROQ_API_KEY")
-    if gemini_key:
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    if groq_key:
+        client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+    elif gemini_key:
         client = AsyncOpenAI(
             api_key=gemini_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         )
-    elif groq_key:
-        client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
     else:
-        logger.warning("Neither GEMINI_API_KEY nor GROQ_API_KEY found.")
+        logger.warning("Neither GROQ_API_KEY nor GEMINI_API_KEY found.")
         return None
     return instructor.from_openai(client, mode=instructor.Mode.TOOLS)
 
@@ -83,8 +85,8 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
         {"role": "user", "content": f"### USER QUERY ###\n{user_query}\n### END USER QUERY ###"},
     ]
 
-    primary_model = "gemini-2.5-flash" if os.environ.get("GEMINI_API_KEY") else "meta-llama/llama-4-scout-17b-16e-instruct"
-    fallback_model = None if os.environ.get("GEMINI_API_KEY") else "llama-3.3-70b-versatile"
+    primary_model = "meta-llama/llama-4-scout-17b-16e-instruct" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
+    fallback_model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else None
 
     try:
         return await client.chat.completions.create(
@@ -142,7 +144,7 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
     For each selected movie, write a 1-sentence 'AI Reason' explaining why it fits this specific request perfectly.
     """
 
-    model = "gemini-2.5-flash" if os.environ.get("GEMINI_API_KEY") else "llama-3.3-70b-versatile"
+    model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
     try:
         response = await client.chat.completions.create(
             model=model,
