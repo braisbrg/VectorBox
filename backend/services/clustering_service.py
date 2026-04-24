@@ -93,9 +93,11 @@ class ClusteringService:
             "Respond with ONLY the label, no explanation, no punctuation at the end."
         )
 
+        import os
+        model_name = "gemini-2.5-flash" if os.getenv("GEMINI_API_KEY") else "meta-llama/llama-4-scout-17b-16e-instruct"
         try:
             response = await groq_client.chat.completions.create(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                model=model_name,
                 messages=[
                     {
                         "role": "system",
@@ -104,7 +106,7 @@ class ClusteringService:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.5,
-                max_tokens=20,
+                max_tokens=800,
             )
             label = response.choices[0].message.content.strip().rstrip(".!,;:")
             if label and 1 < len(label) < 60:

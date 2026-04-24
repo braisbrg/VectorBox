@@ -38,14 +38,19 @@ class DeepAnalysisResponse(BaseModel):
 # 2. Dual-Model Architecture
 
 def get_scout_client():
-    """Tier 1: Speed (Llama 4 Scout)"""
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        logger.warning("GROQ_API_KEY not found.")
+    """LLM client: Gemini Flash 2.5 preferred, Groq fallback."""
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if gemini_key:
+        client = AsyncOpenAI(
+            api_key=gemini_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+    elif groq_key:
+        client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+    else:
+        logger.warning("Neither GEMINI_API_KEY nor GROQ_API_KEY found.")
         return None
-    
-    # We use OpenAI client but point to Groq
-    client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key)
     return instructor.from_openai(client, mode=instructor.Mode.TOOLS)
 
 # 3. Core Functions
@@ -78,38 +83,37 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
         {"role": "user", "content": f"### USER QUERY ###\n{user_query}\n### END USER QUERY ###"},
     ]
 
+    primary_model = "gemini-2.5-flash" if os.environ.get("GEMINI_API_KEY") else "meta-llama/llama-4-scout-17b-16e-instruct"
+    fallback_model = None if os.environ.get("GEMINI_API_KEY") else "llama-3.3-70b-versatile"
+
     try:
-        # Tier 1 Model: Scout
         return await client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct", # Updated Model ID
+            model=primary_model,
             response_model=MovieSearchIntent,
             messages=messages,
             temperature=0.1,
         )
     except Exception as e:
-        logger.warning(f"Tier 1 (Scout) failed: {e}. Trying Tier 2 (70B).")
-        try:
-            return await client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                response_model=MovieSearchIntent,
-                messages=messages,
-                temperature=0.1,
-            )
-        except Exception as e2:
-            logger.warning(f"Tier 2 (70B) failed: {e2}. Trying Tertiary (OSS-120B).")
+        if fallback_model:
+            logger.warning(f"Primary model failed: {e}. Trying fallback.")
             try:
                 return await client.chat.completions.create(
-                    model="openai/gpt-oss-120b",
+                    model=fallback_model,
                     response_model=MovieSearchIntent,
                     messages=messages,
                     temperature=0.1,
                 )
-            except Exception as e3:
-                logger.warning(f"Tier 3 (OSS-120B) failed: {e3}.")
+            except Exception as e2:
+                logger.warning(f"Fallback model also failed: {e2}.")
                 return MovieSearchIntent(
                     semantic_query=user_query,
-                    reasoning=f"All Groq models failed: {e3}"
+                    reasoning=f"All models failed: {e2}"
                 )
+        logger.warning(f"Model failed: {e}.")
+        return MovieSearchIntent(
+            semantic_query=user_query,
+            reasoning=f"LLM unavailable: {e}"
+        )
 
 async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List[ReasonedMovie]:
     """
@@ -138,10 +142,10 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
     For each selected movie, write a 1-sentence 'AI Reason' explaining why it fits this specific request perfectly.
     """
 
+    model = "gemini-2.5-flash" if os.environ.get("GEMINI_API_KEY") else "llama-3.3-70b-versatile"
     try:
-        # Tier 2 Model: 70B Versatile
         response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=model,
             response_model=DeepAnalysisResponse,
             messages=[
                 {"role": "system", "content": system_prompt},
