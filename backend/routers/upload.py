@@ -177,18 +177,29 @@ async def enrich_movies_background(
         from services.tmdb_client import TMDBClient
         tmdb_client = TMDBClient()
 
-        # FIX 5: Create groq_client once for LLM-enriched embeddings
         import os
         from openai import AsyncOpenAI
-        groq_api_key = os.getenv("GROQ_API_KEY")
-        groq_client = AsyncOpenAI(
-            api_key=groq_api_key,
-            base_url="https://api.groq.com/openai/v1",
-            max_retries=0
-        ) if groq_api_key else None
+        if os.getenv("GEMINI_API_KEY"):
+            groq_client = AsyncOpenAI(
+                api_key=os.getenv("GEMINI_API_KEY"),
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            )
+        elif os.getenv("GROQ_API_KEY"):
+            groq_client = AsyncOpenAI(
+                api_key=os.getenv("GROQ_API_KEY"),
+                base_url="https://api.groq.com/openai/v1",
+                max_retries=0,
+            )
+        else:
+            groq_client = None
 
         try:
             async with AsyncSessionLocal() as db:
+                # Clear existing ratings for clean re-import
+                from sqlalchemy import delete as sa_delete
+                await db.execute(sa_delete(UserRating).where(UserRating.user_id == user_id))
+                await db.commit()
+
                 # Process in Chunks
                 for i in range(0, total_movies, CHUNK_SIZE):
                     chunk = movies_data[i : i + CHUNK_SIZE]

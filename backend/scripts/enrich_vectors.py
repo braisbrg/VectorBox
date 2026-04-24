@@ -183,32 +183,48 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
 
 
 MODEL_ALIASES = {
-    "scout": "meta-llama/llama-4-scout-17b-16e-instruct",
-    "70b":   "llama-3.3-70b-versatile",
-    "8b":    "llama-3.1-8b-instant",
+    "gemini": "gemini-2.5-flash",
+    "scout":  "meta-llama/llama-4-scout-17b-16e-instruct",
+    "70b":    "llama-3.3-70b-versatile",
+    "8b":     "llama-3.1-8b-instant",
 }
 
 
 async def enrich_embeddings_via_groq(limit: int = None, model_only: str = None):
     """
     Re-processes movies where has_enriched_embedding is False.
-    Generates cinematic descriptions via Groq and re-upserts vectors.
+    Generates cinematic descriptions via LLM (Gemini preferred, Groq fallback) and re-upserts vectors.
     """
-    import os
     import sys
     from openai import AsyncOpenAI
     from services.cinematic_enricher import generate_cinematic_description, DailyLimitExhausted
 
-    logger.info("Starting LLM-Enriched Embedding Generation via Groq...")
+    gemini_key = os.environ.get("GEMINI_API_KEY")
+    groq_key = os.environ.get("GROQ_API_KEY")
 
-    api_key = os.environ.get("GROQ_API_KEY")
-    if not api_key:
-        logger.error("GROQ_API_KEY not set. Aborting.")
+    if gemini_key:
+        logger.info("Starting LLM-Enriched Embedding Generation via Gemini Flash 2.5...")
+        groq_client = AsyncOpenAI(
+            api_key=gemini_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        )
+        # Gemini paid tier: 1000 RPM — use larger batches and shorter delays
+        batch_size = 20
+        batch_delay = 0.5
+    elif groq_key:
+        logger.info("Starting LLM-Enriched Embedding Generation via Groq (Gemini not configured)...")
+        # max_retries=0: our fallback chain handles retries, not the SDK
+        groq_client = AsyncOpenAI(
+            api_key=groq_key,
+            base_url="https://api.groq.com/openai/v1",
+            max_retries=0,
+        )
+        # Groq ~30 RPM free tier — conservative pacing
+        batch_size = 10
+        batch_delay = 2.0
+    else:
+        logger.error("Neither GEMINI_API_KEY nor GROQ_API_KEY is set. Aborting.")
         return
-
-    # Create Groq client ONCE at script start — max_retries=0 to prevent
-    # OpenAI SDK internal 429 retry sleeps (our fallback chain handles retries)
-    groq_client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=api_key, max_retries=0)
     qdrant = QdrantService()
     embedding_service = EmbeddingService()
 
@@ -238,9 +254,6 @@ async def enrich_embeddings_via_groq(limit: int = None, model_only: str = None):
             print("\n=== Enrichment Summary ===")
             print("No movies need enrichment.")
             return
-
-        # Process in batches of 10
-        batch_size = 10
 
         for batch_start in range(0, len(candidates), batch_size):
             batch = candidates[batch_start:batch_start + batch_size]
@@ -338,9 +351,9 @@ async def enrich_embeddings_via_groq(limit: int = None, model_only: str = None):
             # Commit after each batch
             await db.commit()
 
-            # Rate limit: 2s between batches to stay within ~30 req/min
+            # Pacing: Gemini=0.5s (1000 RPM), Groq=2.0s (~30 RPM free tier)
             if batch_start + batch_size < len(candidates):
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(batch_delay)
 
             logger.info(f"Batch {batch_start // batch_size + 1} complete ({min(batch_start + batch_size, len(candidates))}/{len(candidates)})")
 
@@ -381,14 +394,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true", help="Process ALL movies, not just those missing keywords")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of movies processed")
-    parser.add_argument("--enrich-embeddings", action="store_true", help="Re-process movies without LLM-enriched embeddings via Groq")
+    parser.add_argument("--enrich-embeddings", action="store_true", help="Re-process movies without LLM-enriched embeddings (Gemini preferred, Groq fallback)")
     parser.add_argument(
         "--model-only",
         type=str,
         default=None,
-        help="Restrict enrichment to a single Groq model. No fallback to other models. "
+        help="Restrict enrichment to a single model alias. No fallback to other models. "
              "Stops gracefully when the daily limit for that model is exhausted. "
-             "Example: --model-only scout"
+             "Example: --model-only gemini  OR  --model-only scout"
     )
     parser.add_argument(
         "--reset-enrichment",

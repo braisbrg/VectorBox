@@ -2,23 +2,35 @@
 
 import Link from "next/link";
 import { useState, useEffect } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RefreshCw } from "lucide-react";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
 import { Switch } from "@/components/ui/switch";
-import { syncRSS } from "@/lib/api";
+import { syncRSS, VectorboxUser } from "@/lib/api";
+import { UploadZone } from "@/components/upload-zone";
 
 export function SettingsView() {
     const { t } = useLanguage();
     const { settings, updateSettings, mounted } = useSettings();
     const [letterboxdUsername, setLetterboxdUsername] = useState<string | null>(null);
+    const [currentUser, setCurrentUser] = useState<VectorboxUser | null>(null);
     const [syncMessage, setSyncMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+    const [showReupload, setShowReupload] = useState(false);
+    const queryClient = useQueryClient();
 
     useEffect(() => {
         try {
             const user = JSON.parse(localStorage.getItem("vectorbox_user") || "{}");
             setLetterboxdUsername(user?.letterboxd_username ?? null);
+            if (user?.id) {
+                setCurrentUser({
+                    id: Number(user.id),
+                    username: user.username ?? "",
+                    has_data: user.has_data ?? true,
+                    letterboxd_username: user.letterboxd_username ?? null,
+                });
+            }
         } catch {
             setLetterboxdUsername(null);
         }
@@ -86,6 +98,43 @@ export function SettingsView() {
                             <p className={`text-sm ${syncMessage.type === "success" ? "text-primary" : "text-red-500"}`}>
                                 {syncMessage.text}
                             </p>
+                        )}
+                    </div>
+                )}
+
+                {/* Letterboxd Data — Re-upload */}
+                {currentUser && (
+                    <div className="border border-border p-4 font-mono">
+                        <h3 className="text-xs text-zinc-400 mb-2">LETTERBOXD DATA</h3>
+                        <p className="text-xs text-zinc-500 mb-3">
+                            Re-upload your Letterboxd export to sync your full history.
+                            This will replace your current data.
+                        </p>
+                        {!showReupload ? (
+                            <button
+                                onClick={() => setShowReupload(true)}
+                                className="text-xs font-mono border border-border px-3 py-1.5 hover:border-primary hover:text-primary transition-colors"
+                            >
+                                [ RE-UPLOAD EXPORT ]
+                            </button>
+                        ) : (
+                            <div className="mt-2 space-y-3">
+                                <button
+                                    onClick={() => setShowReupload(false)}
+                                    className="text-xs font-mono text-zinc-600 hover:text-zinc-400 transition-colors"
+                                >
+                                    [ CANCEL ]
+                                </button>
+                                <UploadZone
+                                    onUploadSuccess={() => {
+                                        setShowReupload(false);
+                                        queryClient.invalidateQueries({ queryKey: ["feed"] });
+                                    }}
+                                    registeredUsers={[currentUser]}
+                                    onUserCreated={() => {}}
+                                    activeSessionUserId={currentUser.id}
+                                />
+                            </div>
                         )}
                     </div>
                 )}
