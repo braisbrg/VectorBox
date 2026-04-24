@@ -25,6 +25,7 @@ class SearchRequest(BaseModel):
     query: constr(min_length=1, max_length=500)  # M-4: Prevent abuse via long queries
     use_deep_analysis: Optional[bool] = False
     country_code: Optional[str] = "ES"
+    forced_intent: Optional[MovieSearchIntent] = None
 
 class SearchResponse(BaseModel):
     results: List[dict]
@@ -130,15 +131,18 @@ async def natural_language_search(
             if result:
                 return result
 
-        # 1. Parse Intent with Advanced LLM (Fallback to Semantic Search)
-        try:
-            intent = await parse_user_intent(search_req.query)
-        except Exception as e:
-            logger.warning(f"Groq intent parsing failed, falling back to pure vector search: {e}")
-            intent = MovieSearchIntent(
-                semantic_query=search_req.query,
-                reasoning="Groq unavailable — direct vector search",
-            )
+        # 1. Parse Intent with Advanced LLM (or use forced_intent to bypass LLM parsing)
+        if search_req.forced_intent:
+            intent = search_req.forced_intent
+        else:
+            try:
+                intent = await parse_user_intent(search_req.query)
+            except Exception as e:
+                logger.warning(f"Groq intent parsing failed, falling back to pure vector search: {e}")
+                intent = MovieSearchIntent(
+                    semantic_query=search_req.query,
+                    reasoning="Groq unavailable — direct vector search",
+                )
         logger.info(f"Parsed intent: {intent}")
         logger.info(f"Reasoning: {intent.reasoning}")
         
@@ -194,9 +198,15 @@ async def natural_language_search(
         if intent.year_max:
             qdrant_filters["year_max"] = intent.year_max
         
-        # Runtime constraint
+        # Runtime constraints
+        if intent.min_runtime_minutes:
+            qdrant_filters["min_runtime"] = intent.min_runtime_minutes
         if intent.max_runtime_minutes:
             qdrant_filters["max_runtime"] = intent.max_runtime_minutes
+
+        # Rating floor
+        if intent.min_rating:
+            qdrant_filters["min_rating"] = intent.min_rating
         
         # Popularity vibe (hidden_gem, blockbuster, any)
         if intent.popularity_vibe == "blockbuster":

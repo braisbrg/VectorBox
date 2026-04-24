@@ -62,18 +62,18 @@ async def _enrich_user_movies_background(user_id: int) -> None:
 
             logger.info(f"[Enrichment] Starting enrichment of {len(movies_to_enrich)} movies for user {user_id}")
 
-            gemini_key = os.getenv("GEMINI_API_KEY")
             groq_key = os.getenv("GROQ_API_KEY")
-            if gemini_key:
-                llm_client = AsyncOpenAI(
-                    api_key=gemini_key,
-                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                )
-            elif groq_key:
+            gemini_key = os.getenv("GEMINI_API_KEY")
+            if groq_key:
                 llm_client = AsyncOpenAI(
                     api_key=groq_key,
                     base_url="https://api.groq.com/openai/v1",
                     max_retries=0,
+                )
+            elif gemini_key:
+                llm_client = AsyncOpenAI(
+                    api_key=gemini_key,
+                    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
                 )
             else:
                 logger.warning("[Enrichment] No LLM API key available, skipping enrichment")
@@ -317,16 +317,16 @@ async def enrich_movies_background(
 
         import os
         from openai import AsyncOpenAI
-        if os.getenv("GEMINI_API_KEY"):
-            groq_client = AsyncOpenAI(
-                api_key=os.getenv("GEMINI_API_KEY"),
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            )
-        elif os.getenv("GROQ_API_KEY"):
+        if os.getenv("GROQ_API_KEY"):
             groq_client = AsyncOpenAI(
                 api_key=os.getenv("GROQ_API_KEY"),
                 base_url="https://api.groq.com/openai/v1",
                 max_retries=0,
+            )
+        elif os.getenv("GEMINI_API_KEY"):
+            groq_client = AsyncOpenAI(
+                api_key=os.getenv("GEMINI_API_KEY"),
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
             )
         else:
             groq_client = None
