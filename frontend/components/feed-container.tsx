@@ -7,16 +7,19 @@ import { AcidError } from "@/components/ui/acid-error";
 import { InfoTooltip } from "./info-tooltip";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
-import { getFeed, FeedResponse, VectorboxUser } from "@/lib/api";
+import { getFeed, FeedResponse, VectorboxUser, FeedItem } from "@/lib/api";
 
 interface FeedContainerProps {
     userId: number;
     scope: "global" | "watchlist";
     countryCode?: string;
     streamingProviders?: number[];
-    initialData?: FeedResponse | null; // SSR Prefetched Data
+    initialData?: FeedResponse | null;
     registeredUsers?: VectorboxUser[];
-    onInspect?: (movie: import("@/lib/api").FeedItem, sectionId?: string) => void;
+    onInspect?: (movie: FeedItem, sectionId?: string) => void;
+    filteredResults?: FeedItem[] | null;
+    isFiltering?: boolean;
+    onClearFilterResults?: () => void;
 }
 
 const SECTION_DESCRIPTIONS: Record<string, string> = {
@@ -37,7 +40,7 @@ const TITLE_MAP: Record<string, string> = {
     "available_now": "sections.available_now"
 };
 
-export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [], initialData, registeredUsers, onInspect }: FeedContainerProps) {
+export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [], initialData, registeredUsers, onInspect, filteredResults, isFiltering, onClearFilterResults }: FeedContainerProps) {
     const { settings } = useSettings();
     const includeLowQuality = settings.includeLowQuality;
 
@@ -51,6 +54,45 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
 
 
     const { t } = useLanguage();
+
+    if (isFiltering) {
+        return (
+            <div className="flex items-center justify-center py-20 font-mono text-xs text-zinc-500 uppercase tracking-widest">
+                EXECUTING_QUERY...
+            </div>
+        );
+    }
+
+    if (filteredResults !== null && filteredResults !== undefined) {
+        return (
+            <div className="space-y-4">
+                <div className="flex items-center justify-between border border-border px-4 py-2 font-mono text-xs">
+                    <span className="text-zinc-400">
+                        FILTERED VIEW — {filteredResults.length} RESULTS
+                    </span>
+                    <button
+                        onClick={onClearFilterResults}
+                        className="text-primary hover:underline"
+                    >
+                        [ BACK TO FEED ]
+                    </button>
+                </div>
+                {filteredResults.length > 0 ? (
+                    <MovieCarousel
+                        title="Filter Results"
+                        items={filteredResults}
+                        userId={userId}
+                        sectionId="filter_results"
+                        onInspect={onInspect}
+                    />
+                ) : (
+                    <div className="text-center text-zinc-600 font-mono text-xs py-16 uppercase tracking-widest">
+                        NO_RESULTS_FOUND
+                    </div>
+                )}
+            </div>
+        );
+    }
 
     if (isLoading) {
         return (
