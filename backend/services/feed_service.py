@@ -30,6 +30,7 @@ SECTION_CACHE_TTLS: dict[str, int] = {
     "random_picks":        0,      # never cache — random by design
     "cult_actor":          7200,   # 2h
     "auteur":              7200,   # 2h
+    "upcoming":            86400,  # 24h — changes daily with seed/refresh runs
 }
 DEFAULT_SECTION_TTL = 3600
 
@@ -382,9 +383,19 @@ class FeedService:
                 logger.error(f"Feed Task Failed [Cult Actor]: {e}")
                 return None
 
+        async def task_upcoming():
+            cached = await _get_cached_section(r, user_id, "upcoming", country_code, prov_str)
+            if cached:
+                return cached
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    return await self.engine.get_upcoming_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Upcoming]: {e}")
+                return None
 
-
-        tasks =[
+        tasks = [
             task_popular(),
             task_hybrid(),
             task_watched(),
@@ -395,6 +406,7 @@ class FeedService:
             task_auteur(),
             task_cult_actor(),
             task_available(),
+            task_upcoming(),
         ]
 
         results = await asyncio.gather(*tasks)
@@ -410,18 +422,20 @@ class FeedService:
             section_auteur,
             section_cult_actor,
             section_d,
+            section_upcoming,
         ) = results
 
         # Deduplicate and assemble in display order
         seen_ids: Set[int] = set()
         final_sections = []
 
-        ordered_results =[
+        ordered_results = [
             section_popular,
             section_hybrid,
             section_a,
             section_c,
             section_niche,
+            section_upcoming,
             section_auteur,
             section_cult_actor,
             section_wildcard,

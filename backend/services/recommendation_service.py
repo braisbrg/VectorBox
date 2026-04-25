@@ -739,6 +739,44 @@ class RecommendationService:
             if per_director > 0:
                 directors_used.append(director_name)
 
+        # Progressive fallback: if top-3 directors yielded < 6 items, expand to directors 4-10
+        if len(all_items) < 6:
+            extended_directors = [
+                name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True)
+                if score >= 1.5 and name not in top_directors
+            ][:7]
+
+            for director_name in extended_directors:
+                if len(all_items) >= 9:
+                    break
+
+                stmt = (
+                    select(Movie)
+                    .where(Movie.id.notin_(watched_internal_ids))
+                    .where(Movie.tmdb_id.notin_(seen_ids))
+                    .where(Movie.id.notin_(seen_local))
+                    .where(Movie.directors.any(director_name))
+                    .where(Movie.vectorbox_score >= 60)
+                    .where(Movie.vote_count >= 50)
+                    .where(Movie.year.isnot(None))
+                    .order_by(desc(Movie.vectorbox_score))
+                    .limit(2)
+                )
+                result = await self.db.execute(stmt)
+                fallback_films = result.scalars().all()
+
+                added = 0
+                for movie in fallback_films:
+                    if len(all_items) >= 9:
+                        break
+                    all_items.append((movie, director_name))
+                    seen_local.add(movie.id)
+                    seen_ids.add(movie.tmdb_id)
+                    added += 1
+
+                if added > 0 and director_name not in directors_used:
+                    directors_used.append(director_name)
+
         if not all_items:
             return FeedSection(id="auteur", title="From Your Favorite Directors", items=[])
 
