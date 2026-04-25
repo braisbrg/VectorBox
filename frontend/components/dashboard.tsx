@@ -8,7 +8,7 @@ import { motion } from "framer-motion";
 import Image from "next/image";
 import { useUser } from "@clerk/nextjs";
 import { useLanguage } from "@/components/language-provider";
-import { VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem } from "@/lib/api";
+import { VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem, FilterSearchParams, searchWithFilters } from "@/lib/api";
 import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
 
 import { FeedContainer } from "@/components/feed-container";
@@ -48,6 +48,8 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const [countryCode, setCountryCode] = useState("ES");
     const [streamingProviders, setStreamingProviders] = useState<number[]>([]);
     const [inspectedMovie, setInspectedMovie] = useState<{ movie: FeedItem; sectionId?: string } | null>(null);
+    const [filteredResults, setFilteredResults] = useState<FeedItem[] | null>(null);
+    const [isFiltering, setIsFiltering] = useState(false);
 
 
     const { t } = useLanguage();
@@ -128,6 +130,18 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         setStreamingProviders([]);
         setCountryCode("ES");
     };
+
+    const handleFilterSearch = async (params: FilterSearchParams) => {
+        setIsFiltering(true);
+        try {
+            const results = await searchWithFilters(params);
+            setFilteredResults(results);
+        } finally {
+            setIsFiltering(false);
+        }
+    };
+
+    const clearFilterResults = () => setFilteredResults(null);
 
     // Show loading briefly during hydration
     if (isLoadingAuth) {
@@ -282,6 +296,9 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             initialData={initialFeedData}
                             registeredUsers={users}
                             onInspect={(movie: FeedItem, sectionId?: string) => setInspectedMovie({ movie, sectionId })}
+                            filteredResults={filteredResults}
+                            isFiltering={isFiltering}
+                            onClearFilterResults={clearFilterResults}
                         />
                     )}
                 </div>
@@ -298,6 +315,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 streamingProviders={streamingProviders}
                 onToggleProvider={toggleProvider}
                 onClearFilters={clearFilters}
+                onFilterSearch={handleFilterSearch}
             />
 
             {/* Mobile Bottom Sheet for Inspector */}
