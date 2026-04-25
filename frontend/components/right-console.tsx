@@ -5,10 +5,9 @@ import type { Contributor } from "@/types/feed";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { useState, useCallback } from "react";
-import { useAuth } from "@clerk/nextjs";
 import { useLanguage } from "@/components/language-provider";
 import { COUNTRIES, getProvidersForCountry } from "@/lib/constants";
-import { FeedItem, getTMDBImageUrl, api } from "@/lib/api";
+import { FeedItem, getTMDBImageUrl, FilterSearchParams } from "@/lib/api";
 
 interface RightConsoleProps {
     selectedMovie: FeedItem | null;
@@ -21,6 +20,7 @@ interface RightConsoleProps {
     streamingProviders: number[];
     onToggleProvider: (id: number) => void;
     onClearFilters: () => void;
+    onFilterSearch?: (params: FilterSearchParams) => void;
 }
 
 export function RightConsole({
@@ -34,6 +34,7 @@ export function RightConsole({
     streamingProviders,
     onToggleProvider,
     onClearFilters,
+    onFilterSearch,
 }: RightConsoleProps) {
     const { t } = useLanguage();
     const inspectedMovie = selectedMovie;
@@ -53,42 +54,19 @@ export function RightConsole({
         return "STANDARD VECTORBOX MATCH";
     };
 
-    const { getToken } = useAuth();
     const [yearMin, setYearMin] = useState("");
     const [yearMax, setYearMax] = useState("");
-    const [minRuntime, setMinRuntime] = useState("");
+    const [maxRuntime, setMaxRuntime] = useState("");
     const [minScore, setMinScore] = useState("");
-    const [filterResults, setFilterResults] = useState<FeedItem[]>([]);
-    const [filterLoading, setFilterLoading] = useState(false);
 
-    const handleFilterSearch = useCallback(async () => {
-        setFilterLoading(true);
-        setFilterResults([]);
-        try {
-            const token = await getToken();
-            const forced_intent = {
-                semantic_query: "quality films",
-                year_min: yearMin ? parseInt(yearMin) : null,
-                year_max: yearMax ? parseInt(yearMax) : null,
-                min_runtime_minutes: minRuntime ? parseInt(minRuntime) : null,
-                max_runtime_minutes: null,
-                min_rating: minScore ? parseFloat(minScore) : null,
-                popularity_vibe: "any",
-                quality_gate_bypass: false,
-                reasoning: "Filter search from UI",
-            };
-            const res = await api.post(
-                "/api/search/natural",
-                { query: "quality films matching my filters", forced_intent },
-                { headers: { Authorization: `Bearer ${token}` } }
-            );
-            setFilterResults(res.data?.results ?? []);
-        } catch {
-            // silent fail
-        } finally {
-            setFilterLoading(false);
-        }
-    }, [yearMin, yearMax, minRuntime, minScore, getToken]);
+    const handleFilterSearch = useCallback(() => {
+        onFilterSearch?.({
+            yearMin: yearMin ? parseInt(yearMin) : null,
+            yearMax: yearMax ? parseInt(yearMax) : null,
+            maxRuntime: maxRuntime ? parseInt(maxRuntime) : null,
+            minScore: minScore ? parseFloat(minScore) : null,
+        });
+    }, [yearMin, yearMax, maxRuntime, minScore, onFilterSearch]);
 
     const activeProvidersCount = streamingProviders.length;
 
@@ -207,12 +185,12 @@ export function RightConsole({
                                 </div>
                                 <div className="grid grid-cols-2 gap-2">
                                     <div>
-                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">MIN_RUNTIME</label>
+                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">MAX_RUNTIME</label>
                                         <input
                                             type="number"
-                                            placeholder="60"
-                                            value={minRuntime}
-                                            onChange={(e) => setMinRuntime(e.target.value)}
+                                            placeholder="120"
+                                            value={maxRuntime}
+                                            onChange={(e) => setMaxRuntime(e.target.value)}
                                             className="w-full bg-zinc-900/50 border border-zinc-800 p-2 focus:outline-none focus:border-primary text-[10px]"
                                         />
                                     </div>
@@ -232,22 +210,10 @@ export function RightConsole({
                                 </div>
                                 <button
                                     onClick={handleFilterSearch}
-                                    disabled={filterLoading}
-                                    className="w-full py-2 border border-primary text-primary text-[10px] uppercase tracking-widest font-bold hover:bg-primary hover:text-black transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    className="w-full py-2 border border-primary text-primary text-[10px] uppercase tracking-widest font-bold hover:bg-primary hover:text-black transition-colors"
                                 >
-                                    {filterLoading ? "SEARCHING..." : "> EXECUTE_QUERY"}
+                                    {">"} EXECUTE_QUERY
                                 </button>
-                                {filterResults.length > 0 && (
-                                    <div className="space-y-2">
-                                        <span className="text-[9px] text-zinc-600 uppercase block">RESULTS [{filterResults.length}]</span>
-                                        {filterResults.map((m) => (
-                                            <div key={m.id} className="border border-zinc-800 p-2 hover:border-zinc-600 transition-colors">
-                                                <p className="text-[10px] font-bold truncate uppercase">{m.title}</p>
-                                                <p className="text-[9px] text-zinc-600">{m.year} · VB {m.vectorbox_score ?? m.match_score}</p>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
                             </div>
                         </div>
 
@@ -282,7 +248,7 @@ export function RightConsole({
                             {inspectedMovie ? (
                                 <>
                                     {/* Poster */}
-                                    <div className="relative aspect-[2/3] w-48 mx-auto border border-zinc-800 grayscale hover:grayscale-0 transition-all">
+                                    <div className="relative aspect-[2/3] w-48 mx-auto border border-zinc-800 transition-all">
                                         {inspectedMovie.poster_url ? (
                                             <Image
                                                 src={getTMDBImageUrl(inspectedMovie.poster_url, "w342")}

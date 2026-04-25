@@ -422,3 +422,40 @@ export const rerollCluster = async (): Promise<void> => {
     await api.post("/api/recommendations/feed/reroll-cluster");
 };
 
+export interface FilterSearchParams {
+    yearMin?: number | null;
+    yearMax?: number | null;
+    maxRuntime?: number | null;
+    minScore?: number | null;
+    genres?: string[];
+}
+
+export const searchWithFilters = async (params: FilterSearchParams): Promise<FeedItem[]> => {
+    const response = await api.post("/api/search/natural", {
+        query: "quality films matching filters",
+        forced_intent: {
+            semantic_query: "quality films",
+            year_min: params.yearMin || null,
+            year_max: params.yearMax || null,
+            max_runtime_minutes: params.maxRuntime || null,
+            min_rating: params.minScore || null,
+            popularity_vibe: "any",
+            quality_gate_bypass: false,
+            reasoning: "Filter search from UI",
+        },
+        country_code: "ES",
+    });
+    return (response.data.results || []).map((r: any): FeedItem => ({
+        id: r.movie_id ?? r.id,
+        title: r.title,
+        poster_url: r.poster_path ?? r.poster_url,
+        match_score: r.score ?? r.match_score ?? 0,
+        streaming_providers: r.streaming_providers || [],
+        year: r.year,
+        runtime: r.runtime,
+        overview: r.overview,
+        vectorbox_score: r.vectorbox_score,
+        rating: r.vote_average,
+    }));
+};
+
