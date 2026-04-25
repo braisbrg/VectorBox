@@ -35,8 +35,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 
 class DatabaseSeeder:
-    def __init__(self, limit: int = 15000):
+    def __init__(self, limit: int = 15000, strategy: str = "popular"):
         self.limit = limit
+        self.strategy = strategy
         self.tmdb = TMDBClient()
         self.qdrant = QdrantService()
         self.embedding_service = EmbeddingService()
@@ -97,21 +98,90 @@ class DatabaseSeeder:
 
     # Old process_movie method removed in favor of prepare_movie_batch_item
 
+    async def fetch_upcoming_movies(self, existing_ids: set) -> list:
+        """Fetch upcoming movies releasing in next 6 months."""
+        from datetime import date, timedelta
+        today = date.today().isoformat()
+        future = (date.today() + timedelta(days=180)).isoformat()
+
+        candidates = []
+        page = 1
+
+        pbar = tqdm(total=self.limit, desc="Finding NEW upcoming movies")
+        while len(candidates) < self.limit and page <= 50:
+            try:
+                results = await self.tmdb.discover_movies(
+                    sort_by="primary_release_date.asc",
+                    primary_release_date_gte=today,
+                    primary_release_date_lte=future,
+                    vote_count_min=None,  # upcoming films have 0 votes — no filter
+                    page=page,
+                )
+                for movie in (results or []):
+                    if movie["id"] not in existing_ids:
+                        candidates.append(movie)
+                        existing_ids.add(movie["id"])
+                        pbar.update(1)
+                        if len(candidates) >= self.limit:
+                            break
+                page += 1
+            except Exception as e:
+                logger.error(f"Error fetching upcoming page {page}: {e}")
+                break
+        pbar.close()
+        return candidates[:self.limit]
+
+    async def fetch_recent_movies(self, existing_ids: set) -> list:
+        """Fetch movies released in the last 90 days."""
+        from datetime import date, timedelta
+        today = date.today().isoformat()
+        past_90 = (date.today() - timedelta(days=90)).isoformat()
+
+        candidates = []
+        page = 1
+
+        pbar = tqdm(total=self.limit, desc="Finding NEW recent movies")
+        while len(candidates) < self.limit and page <= 50:
+            try:
+                results = await self.tmdb.discover_movies(
+                    sort_by="primary_release_date.desc",
+                    primary_release_date_gte=past_90,
+                    primary_release_date_lte=today,
+                    vote_count_min=20,
+                    page=page,
+                )
+                for movie in (results or []):
+                    if movie["id"] not in existing_ids:
+                        candidates.append(movie)
+                        existing_ids.add(movie["id"])
+                        pbar.update(1)
+                        if len(candidates) >= self.limit:
+                            break
+                page += 1
+            except Exception as e:
+                logger.error(f"Error fetching recent page {page}: {e}")
+                break
+        pbar.close()
+        return candidates[:self.limit]
 
     async def run(self):
-        logger.info(f"Starting database seed (Limit: {self.limit})")
-        
+        logger.info(f"Starting database seed (Limit: {self.limit}, Strategy: {self.strategy})")
+
         # Initialize Qdrant collection
         await self.qdrant.init_collection()
-        
+
         async with AsyncSessionLocal() as db:
             # 1. Get existing IDs
             existing_ids = await self.get_existing_tmdb_ids(db)
             logger.info(f"Found {len(existing_ids)} existing movies in DB")
-            
-            # 2. Fetch candidates (Smart Pagination)
-            # candidates already contains only NEW movies because fetch_top_movies filters them
-            new_movies = await self.fetch_top_movies(existing_ids)
+
+            # 2. Fetch candidates based on strategy
+            if self.strategy == "upcoming":
+                new_movies = await self.fetch_upcoming_movies(existing_ids)
+            elif self.strategy == "recent":
+                new_movies = await self.fetch_recent_movies(existing_ids)
+            else:
+                new_movies = await self.fetch_top_movies(existing_ids)
             logger.info(f"Fetched {len(new_movies)} NEW movies to process")
             
             # 3. Filter (Redundant step removed)
@@ -194,23 +264,41 @@ class DatabaseSeeder:
         Returns (MovieObject, PointStruct)
         """
         tmdb_id = movie_data["id"]
-        
+
         # Delegate to factory
         # Factory returns (Movie, Point, ProvidersData)
         movie, point, _ = await self.factory.build_movie(tmdb_id)
-        
+
         if not movie:
             return None
-            
+
+        if self.strategy == "upcoming":
+            from datetime import date
+            release_dates = await self.tmdb.get_release_dates(tmdb_id)
+            us_str = release_dates.get("us")
+            es_str = release_dates.get("es")
+            movie.release_date_us = date.fromisoformat(us_str) if us_str else None
+            movie.release_date_es = date.fromisoformat(es_str) if es_str else None
+            # Fallback worldwide: use TMDB release_date field from movie_data
+            ww_str = movie_data.get("release_date")
+            movie.release_date_ww = date.fromisoformat(ww_str) if ww_str else None
+            movie.is_upcoming = True
+
         return movie, point
                 
 
 async def main():
     parser = argparse.ArgumentParser(description="Seed database with TMDB movies")
     parser.add_argument("--limit", type=int, default=15000, help="Number of movies to fetch")
+    parser.add_argument(
+        "--strategy",
+        choices=["popular", "recent", "upcoming"],
+        default="popular",
+        help="popular: vote_count.desc | recent: last 90 days | upcoming: next 180 days",
+    )
     args = parser.parse_args()
-    
-    seeder = DatabaseSeeder(limit=args.limit)
+
+    seeder = DatabaseSeeder(limit=args.limit, strategy=args.strategy)
     await seeder.run()
 
 if __name__ == "__main__":

@@ -330,6 +330,31 @@ class TMDBClient:
         
         return keywords
     
+    async def get_release_dates(self, tmdb_id: int) -> dict:
+        """
+        Fetch release dates by country from TMDB.
+        Returns dict with 'us', 'es', 'ww' keys (theatrical releases only, type=3).
+        """
+        data = await self._make_request(f"/movie/{tmdb_id}/release_dates")
+        if not data:
+            return {}
+
+        result = {}
+        for country_result in data.get("results", []):
+            iso = country_result.get("iso_3166_1", "").upper()
+            if iso not in ("US", "ES"):
+                continue
+            for release in country_result.get("release_dates", []):
+                if release.get("type") == 3:  # theatrical only
+                    date_str = release.get("release_date", "")[:10]
+                    if date_str:
+                        if iso == "US":
+                            result["us"] = date_str
+                        elif iso == "ES":
+                            result["es"] = date_str
+
+        return result
+
     async def discover_movies(
         self,
         with_genres: Optional[List[int]] = None,
@@ -342,7 +367,9 @@ class TMDBClient:
         with_runtime_min: Optional[int] = None,
         with_runtime_max: Optional[int] = None,
         sort_by: str = "vote_average.desc",
-        page: int = 1
+        page: int = 1,
+        primary_release_date_gte: Optional[str] = None,
+        primary_release_date_lte: Optional[str] = None,
     ) -> List[Dict]:
         """
         Discover movies using TMDB's Discover API.
@@ -353,8 +380,9 @@ class TMDBClient:
             "language": "en-US",
             "sort_by": sort_by,
             "page": page,
-            "vote_count.gte": vote_count_min,  # Only movies with enough votes
         }
+        if vote_count_min is not None:
+            params["vote_count.gte"] = vote_count_min
         
         if with_genres:
             params["with_genres"] = ",".join(map(str, with_genres))
@@ -372,7 +400,11 @@ class TMDBClient:
             params["with_runtime.gte"] = with_runtime_min
         if with_runtime_max:
             params["with_runtime.lte"] = with_runtime_max
-        
+        if primary_release_date_gte:
+            params["primary_release_date.gte"] = primary_release_date_gte
+        if primary_release_date_lte:
+            params["primary_release_date.lte"] = primary_release_date_lte
+
         try:
             # Optimized: Use the shared _make_request which uses the connection pool
             # instead of spinning up a new client.

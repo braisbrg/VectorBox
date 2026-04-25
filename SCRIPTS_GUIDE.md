@@ -7,7 +7,8 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 
 | Script | Description | Command (Safe to Run) |
 | :--- | :--- | :--- |
-| **`seed_db.py`** | **The Main Engine.** Uses `MovieFactory` to fetch movies from TMDB with **Spanish Metadata**, **Keywords**, and strict Pydantic **OMDb Ratings**. Upserts to Postgres + Qdrant. | `docker-compose exec backend python scripts/seed_db.py --limit 100` |
+| **`seed_db.py`** | **The Main Engine.** Uses `MovieFactory` to fetch movies from TMDB with **Spanish Metadata**, **Keywords**, and strict Pydantic **OMDb Ratings**. Upserts to Postgres + Qdrant. Supports `--strategy popular\|recent\|upcoming`. | `docker-compose exec backend python scripts/seed_db.py --limit 100 [--strategy popular\|recent\|upcoming]` |
+| **`refresh_metadata.py`** | **Metadata Refresher.** Fetches fresh `vote_count`, `vote_average`, `popularity`, `poster_path`, `genres`, `runtime` from TMDB and recalculates `vectorbox_score` for movies already in DB. Selects movies by age cohort. Use `--dry-run` to preview. | `docker-compose exec backend python scripts/refresh_metadata.py --strategy recent --limit 200` |
 | **`enrich_vectors.py`** | **Data Fixer & LLM Embeddings.** Fetches missing keywords/credits from TMDB. Uses Groq to generate 80-word cinematic descriptions and upserts 384d semantic vectors. Run with `--enrich-embeddings` to process LLM upgrades. Supports `--model-only [scout\|70b\|8b]` for precise rate-limit throttling and `--reset-enrichment` for a fresh start. | `docker-compose exec backend python scripts/enrich_vectors.py [--enrich-embeddings] [--model-only scout]` |
 | **`popular_scraper.py`** | **Trends Scraper.** Fetches "Popular This Week" from Letterboxd HTML, resolves Slugs to TMDB IDs, and caches in Redis with **24h TTL**. | `docker-compose exec backend python scripts/popular_scraper.py` |
 | **`reset_profiles.py`** | **"The Refresh Button".** Forces a complete rebuild of User Clusters. Truncates `user_clusters` table and wipes Redis cache. | `docker-compose exec backend python scripts/reset_profiles.py` |
@@ -29,6 +30,50 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 | **`heal_vectors.py`** | **Vector Recovery.** Scans all movies in Postgres, identifies those missing Qdrant vectors, re-generates embeddings via `EmbeddingService`, and upserts them. | `docker-compose exec backend python scripts/heal_vectors.py` |
 | **`migrate_release_dates.py`** | **Schema Migration.** One-time migration that adds the `release_dates JSONB` column to the `movies` table. Safe to re-run (`ADD COLUMN IF NOT EXISTS`). | `docker-compose exec backend python scripts/migrate_release_dates.py` |
 | **`verify_qa_pt2.py`** | **QA Certification (Phase 5).** End-to-end HTTP check against a running stack: logs in as `qa_vecbox` and validates the `/api/recommendations/feed` response. | `docker-compose exec backend python scripts/verify_qa_pt2.py` |
+
+### seed_db.py — `--strategy` details
+
+| Strategy | Source | Sort | Use case |
+| :--- | :--- | :--- | :--- |
+| `popular` *(default)* | TMDB Discover | `vote_count.desc` | Bulk seed with well-known films |
+| `recent` | TMDB Discover, last 90 days | `primary_release_date.desc` | Keep DB current with new releases |
+| `upcoming` | TMDB Discover, next 180 days | `primary_release_date.asc` | Seed upcoming films, sets `is_upcoming=True` + fetches per-country release dates |
+
+```bash
+# Default: popular films
+docker-compose exec backend python scripts/seed_db.py --limit 500
+
+# Recent releases (last 90 days)
+docker-compose exec backend python scripts/seed_db.py --limit 200 --strategy recent
+
+# Upcoming films (next 180 days)
+docker-compose exec backend python scripts/seed_db.py --limit 100 --strategy upcoming
+```
+
+### refresh_metadata.py (NEW)
+
+Refreshes movie metadata and recalculates `vectorbox_score` for existing DB movies.
+
+**Arguments:**
+- `--strategy [recent|mid|classic|all]`
+  - `recent` — movies < 1 year old, refresh if not updated in 7 days
+  - `mid` — movies 1-5 years old, refresh if not updated in 30 days
+  - `classic` — movies > 5 years old, refresh if not updated in 90 days
+  - `all` — all three strategies combined
+- `--limit N` — max movies to process per run (default: 100)
+- `--dry-run` — show what would be refreshed without updating
+
+**Recommended cron schedule:**
+```
+# Daily: refresh recent movies
+0 3 * * * docker-compose exec -T backend python scripts/refresh_metadata.py --strategy recent --limit 200
+
+# Weekly: refresh mid-range movies
+0 4 * * 0 docker-compose exec -T backend python scripts/refresh_metadata.py --strategy mid --limit 500
+
+# Monthly: refresh classics
+0 5 1 * * docker-compose exec -T backend python scripts/refresh_metadata.py --strategy classic --limit 1000
+```
 
 ## 📦 Frontend Utility Scripts
 Commands defined in `frontend/package.json`. Run these from the host machine inside the `frontend/` directory.
@@ -79,4 +124,4 @@ Standard auditing protocols for this project.
     ```
 
 ---
-**Last Updated:** 2026-04-10
+**Last Updated:** 2026-04-25

@@ -1,5 +1,5 @@
 export interface Contributor {
-    type: "anchor" | "cluster" | "vibe" | "auteur" | "crowd" | "cult_actor" | "watchlist";
+    type: "anchor" | "cluster" | "vibe" | "auteur" | "crowd" | "cult_actor" | "watchlist" | "upcoming";
     label?: string;
     seed_title?: string;
     seed_year?: number;
@@ -10,4 +10,6 @@ export interface Contributor {
     score?: number;
     director?: string;
     actor?: string;
+    release_badge?: string;
+    release_note?: string;
 }
