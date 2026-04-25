@@ -1199,3 +1199,96 @@ class RecommendationEngine:
             title="Shuffle: From Your Watchlist",
             items=items
         )
+
+    async def get_upcoming_section(
+        self,
+        user_id: int,
+        db: AsyncSession,
+        tmdb: TMDBClient,
+        seen_ids: Set[int],
+        country: str,
+        provider_service: ProviderService = None,
+    ) -> FeedSection:
+        """
+        Upcoming movies personalized to user taste.
+        Shows is_upcoming=True movies filtered by user's dominant genres from clusters.
+        """
+        from datetime import date
+        from sqlalchemy.dialects.postgresql import ARRAY
+        from sqlalchemy import cast, String
+        today = date.today()
+
+        # Get user's dominant genres from clusters
+        clusters_result = await db.execute(
+            select(UserCluster).where(UserCluster.user_id == user_id)
+        )
+        clusters = clusters_result.scalars().all()
+        user_genres = list({
+            genre
+            for cluster in clusters
+            for genre in (cluster.dominant_genres or [])
+        })
+
+        query = (
+            select(Movie)
+            .where(Movie.is_upcoming.is_(True))
+            .where(Movie.tmdb_id.notin_(seen_ids))
+            .where(Movie.year.isnot(None))
+            .where(Movie.vectorbox_score.isnot(None))
+            .where(Movie.vote_count >= 5)
+        )
+
+        if user_genres:
+            genre_array = cast(user_genres, ARRAY(String))
+            query = query.where(Movie.genres.overlap(genre_array))
+
+        query = query.order_by(desc(Movie.vectorbox_score)).limit(20)
+
+        result = await db.execute(query)
+        candidates = result.scalars().all()
+
+        if provider_service and candidates:
+            movie_ids = [m.id for m in candidates]
+            providers_map = await provider_service.get_providers_batch(movie_ids, country)
+        else:
+            providers_map = {}
+
+        items = []
+        for movie in candidates:
+            if movie.tmdb_id in seen_ids:
+                continue
+
+            es_date = movie.release_date_es
+            us_date = movie.release_date_us
+
+            release_badge = None
+            release_note = None
+
+            if es_date and es_date > today:
+                release_badge = f"ES {es_date.strftime('%b %d')}"
+                if us_date and us_date <= today:
+                    release_note = "Available now in original version"
+            elif not es_date and us_date and us_date <= today:
+                release_badge = "OUT NOW"
+                release_note = "Not yet confirmed for ES · Available in original"
+
+            p_data = providers_map.get(movie.id, [])
+            flat_providers = [p["provider_name"] for p in p_data]
+
+            item = await self.create_feed_item(
+                movie, 1.0, country, tmdb,
+                contributors=[{
+                    "type": "upcoming",
+                    "label": "Coming soon",
+                    "release_badge": release_badge,
+                    "release_note": release_note,
+                }],
+                streaming_providers=flat_providers,
+            )
+            seen_ids.add(movie.tmdb_id)
+            items.append(item)
+
+        if not items:
+            return FeedSection(id="upcoming", title="Coming Soon", items=[])
+
+        return FeedSection(id="upcoming", title="On Your Radar", items=items)

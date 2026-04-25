@@ -1,7 +1,7 @@
 """
 SQLAlchemy database models with security considerations
 """
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, Index
+from sqlalchemy import Column, Integer, String, Float, DateTime, Date, ForeignKey, Text, Boolean, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import ARRAY, UUID, JSONB
 from datetime import datetime
@@ -69,7 +69,16 @@ class Movie(Base):
     release_dates = Column(JSONB)  # Localized release dates map
     has_enriched_embedding = Column(Boolean, default=False, server_default="false")  # LLM-enriched vector
     enriched_by_model = Column(String, nullable=True)  # Stores the Groq model ID used to generate the cinematic embedding description
-    
+
+    # Release tracking
+    release_date_us = Column(Date, nullable=True)
+    release_date_es = Column(Date, nullable=True)
+    release_date_ww = Column(Date, nullable=True)
+    is_upcoming = Column(Boolean, nullable=False, server_default="false")
+
+    # Metadata freshness
+    last_metadata_refresh = Column(DateTime, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
