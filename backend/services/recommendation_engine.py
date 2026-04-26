@@ -1234,15 +1234,14 @@ class RecommendationEngine:
             .where(Movie.is_upcoming.is_(True))
             .where(Movie.tmdb_id.notin_(seen_ids))
             .where(Movie.year.isnot(None))
-            .where(Movie.vectorbox_score.isnot(None))
-            .where(Movie.vote_count >= 5)
+            .where(Movie.popularity > 5.0)
         )
 
         if user_genres:
             genre_array = cast(user_genres, ARRAY(String))
             query = query.where(Movie.genres.overlap(genre_array))
 
-        query = query.order_by(desc(Movie.vectorbox_score)).limit(20)
+        query = query.order_by(desc(Movie.popularity)).limit(20)
 
         result = await db.execute(query)
         candidates = result.scalars().all()
@@ -1265,12 +1264,16 @@ class RecommendationEngine:
             release_note = None
 
             if es_date and es_date > today:
-                release_badge = f"ES {es_date.strftime('%b %d')}"
+                release_badge = f"ES · {es_date.strftime('%d %b').upper()}"
                 if us_date and us_date <= today:
                     release_note = "Available now in original version"
-            elif not es_date and us_date and us_date <= today:
-                release_badge = "OUT NOW"
-                release_note = "Not yet confirmed for ES · Available in original"
+            elif us_date and us_date > today:
+                release_badge = f"WW · {us_date.strftime('%d %b').upper()}"
+            elif us_date and us_date <= today and not es_date:
+                release_badge = "OUT · NO ES DATE"
+                release_note = "Available in original · Not confirmed for ES"
+            else:
+                release_badge = "COMING SOON"
 
             p_data = providers_map.get(movie.id, [])
             flat_providers = [p["provider_name"] for p in p_data]

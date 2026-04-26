@@ -111,7 +111,7 @@ class DatabaseSeeder:
         while len(candidates) < self.limit and page <= 50:
             try:
                 results = await self.tmdb.discover_movies(
-                    sort_by="primary_release_date.asc",
+                    sort_by="popularity.desc",
                     primary_release_date_gte=today,
                     primary_release_date_lte=future,
                     vote_count_min=None,  # upcoming films have 0 votes — no filter
@@ -119,11 +119,12 @@ class DatabaseSeeder:
                 )
                 for movie in (results or []):
                     if movie["id"] not in existing_ids:
-                        candidates.append(movie)
-                        existing_ids.add(movie["id"])
-                        pbar.update(1)
-                        if len(candidates) >= self.limit:
-                            break
+                        if movie.get("popularity", 0) >= 5.0:
+                            candidates.append(movie)
+                            existing_ids.add(movie["id"])
+                            pbar.update(1)
+                            if len(candidates) >= self.limit:
+                                break
                 page += 1
             except Exception as e:
                 logger.error(f"Error fetching upcoming page {page}: {e}")
