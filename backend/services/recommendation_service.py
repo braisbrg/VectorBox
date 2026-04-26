@@ -688,7 +688,7 @@ class RecommendationService:
 
         return feed_items
 
-    @safe_execution(fallback_return=FeedSection(id="auteur_picks", title="From Your Favorite Directors", items=[]))
+    @safe_execution(fallback_return=FeedSection(id="auteur", title="From Your Favorite Directors", items=[]))
     async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
         """
         Signal Auteur row — top 3 directors by score × up to 3 unwatched films each (max 9).
@@ -717,6 +717,8 @@ class RecommendationService:
             stmt = (
                 select(Movie)
                 .where(Movie.directors.any(director_name))
+                .where(Movie.id.notin_(watched_internal_ids))
+                .where(Movie.id.notin_(seen_local))
                 .where(Movie.vectorbox_score >= 60)
                 .where(Movie.vote_count >= 50)
                 .where(Movie.year.isnot(None))
@@ -730,7 +732,7 @@ class RecommendationService:
             for movie in director_films:
                 if per_director >= 3:
                     break
-                if movie.tmdb_id in seen_ids or movie.id in watched_internal_ids or movie.id in seen_local:
+                if movie.tmdb_id in seen_ids:
                     continue
                 all_items.append((movie, director_name))
                 seen_local.add(movie.id)
@@ -907,6 +909,8 @@ class RecommendationService:
             stmt = select(Movie).where(
                 *MOVIE_QUALITY_GATE,
                 Movie.cast.any(actor),
+                Movie.id.notin_(watched_ids),
+                Movie.id.notin_(seen_local),
                 Movie.vectorbox_score >= 60,
                 Movie.vote_count >= 50,
             ).order_by(desc(Movie.vectorbox_score)).limit(10)
@@ -917,7 +921,7 @@ class RecommendationService:
             for m in candidates:
                 if per_actor >= 3:
                     break
-                if m.tmdb_id in seen_ids or m.id in watched_ids or m.id in seen_local:
+                if m.tmdb_id in seen_ids:
                     continue
                 all_items.append((m, actor))
                 seen_local.add(m.id)
