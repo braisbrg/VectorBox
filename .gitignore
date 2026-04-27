@@ -108,6 +108,7 @@ debug_*.py
 test_scratch.py
 verify_*.py
 !backend/scripts/verify_*.py
+!backend/scripts/debug_movie.py
 
 # AI Agent Configuration & Skills
 .agent/
