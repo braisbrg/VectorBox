@@ -159,6 +159,49 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             finally:
                 await llm_client.close()
 
+            # T-03: Sanity-check embeddings against a MiniLM reference vector built from
+            # title/year/genres/directors. Films flagged below 0.25 are excluded from anchor
+            # and medoid selection downstream.
+            logger.info(f"[Sanity] Running embedding quality check for user {user_id}")
+            import numpy as np
+            flagged = 0
+            for movie in movies_to_enrich:
+                stored = await qdrant.get_vector(movie.tmdb_id)
+                if not stored:
+                    continue
+                ref_text = (
+                    f"{movie.title or ''} {movie.year or ''} "
+                    f"{' '.join(movie.genres or [])} {' '.join(movie.directors or [])}"
+                ).strip()
+                if not ref_text:
+                    continue
+                loop = asyncio.get_event_loop()
+                try:
+                    ref_vec = await loop.run_in_executor(
+                        None,
+                        lambda t=ref_text, m=movie: embedding_service.generate_embedding(
+                            {"title": m.title or ""}, text_override=t
+                        ),
+                    )
+                except Exception as e:
+                    logger.warning(f"[Sanity] reference embedding failed for {movie.title}: {e}")
+                    continue
+                if ref_vec is None:
+                    continue
+                a = np.array(stored)
+                b = np.array(ref_vec)
+                denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+                if denom == 0:
+                    continue
+                quality = float(np.dot(a, b) / denom)
+                movie.embedding_quality_score = quality
+                if quality < 0.25:
+                    flagged += 1
+                    movie.has_enriched_embedding = False
+                    logger.warning(f"[Sanity] Low quality embedding: {movie.title} ({quality:.2f})")
+            await db.commit()
+            logger.info(f"[Sanity] Check complete: {flagged} movies flagged for re-enrichment")
+
             logger.info(f"[Enrichment] Re-clustering user {user_id} with enriched embeddings")
             clustering = ClusteringService(qdrant=qdrant)
             await clustering.create_user_clusters(user_id, db)

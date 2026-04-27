@@ -397,6 +397,8 @@ class RecommendationEngine:
 
             # FIX 6: Fetch 100 candidates without ORDER BY — Python sorts by _score_anchor_candidate
             # so NULL dates and liked-only movies don't beat a high-rated recent watch.
+            # T-03: Prefer movies with healthy embeddings (or unchecked NULL) — corrupt vectors
+            # produce nonsensical anchors that drag the whole row off-topic.
             result = await db.execute(
                 select(UserRating, Movie)
                 .join(Movie, UserRating.movie_id == Movie.id)
@@ -405,6 +407,12 @@ class RecommendationEngine:
                     or_(
                         UserRating.rating >= 3.5,
                         UserRating.is_liked.is_(True)
+                    )
+                )
+                .where(
+                    or_(
+                        Movie.embedding_quality_score >= 0.25,
+                        Movie.embedding_quality_score.is_(None)
                     )
                 )
                 .limit(100)

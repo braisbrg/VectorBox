@@ -2,7 +2,7 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
-import { getTMDBImageUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie, rerollCluster } from "@/lib/api";
+import { getTMDBImageUrl, getLetterboxdUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie, rerollCluster } from "@/lib/api";
 import type { Contributor } from "@/types/feed";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { useRef, useState, useEffect, useCallback } from "react";
@@ -240,7 +240,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             variant="overlay"
                             badgeType={badgeType}
                             contributors={movie.contributors}
-                            href={movie.letterboxd_uri}
+                            href={getLetterboxdUrl(movie.id)}
                             vectorbox_score={movie.vectorbox_score}
                             imdb_rating={movie.imdb_rating}
                             metacritic_rating={movie.metacritic_rating}
