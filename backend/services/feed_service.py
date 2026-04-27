@@ -451,6 +451,22 @@ class FeedService:
                 if item.id not in seen_ids:
                     unique_items.append(item)
                     seen_ids.add(item.id)
+            # Auteur over-collects (up to 21 candidates) so feed-level dedup leaves
+            # buffer; here we trim to <=3 per director × <=9 total in score order.
+            if unique_items and section.id == "auteur":
+                per_director_count: Dict[str, int] = {}
+                trimmed: List = []
+                for item in unique_items:
+                    director = None
+                    if item.contributors:
+                        director = (item.contributors[0] or {}).get("director")
+                    if per_director_count.get(director, 0) >= 3:
+                        continue
+                    trimmed.append(item)
+                    per_director_count[director] = per_director_count.get(director, 0) + 1
+                    if len(trimmed) >= 9:
+                        break
+                unique_items = trimmed
             if unique_items:
                 section.items = unique_items
                 final_sections.append(section)

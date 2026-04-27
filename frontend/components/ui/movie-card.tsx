@@ -61,7 +61,9 @@ export function MovieCard({
 
     const displayTitle = (language === 'es' && title_es) ? title_es : title;
     const score = vectorbox_score || matchScore || 0;
-    
+    const upcomingContributor = contributors?.find(c => c.type === "upcoming");
+    const releaseBadge = upcomingContributor?.release_badge;
+
     // Default link to Letterboxd if non provided
     const movieLink = href || `https://letterboxd.com/tmdb/${id}/`;
 
@@ -91,8 +93,12 @@ export function MovieCard({
                         </div>
                     )}
 
-                    {/* VB Score Overlay (Top Left) */}
-                    {score > 0 && (
+                    {/* VB Score Overlay (Top Left) — release badge for upcoming, score otherwise */}
+                    {releaseBadge ? (
+                        <div className="absolute top-0 left-0 z-20 bg-black/80 border-r border-b border-zinc-800 px-1.5 py-0.5 font-mono text-[10px] font-black text-primary tracking-tighter shadow-[2px_2px_0px_rgba(0,0,0,0.5)]">
+                            {releaseBadge}
+                        </div>
+                    ) : score > 0 && (
                         <div className="absolute top-0 left-0 z-20 bg-black/80 border-r border-b border-zinc-800 px-1.5 py-0.5 font-mono text-[10px] font-black text-primary tracking-tighter shadow-[2px_2px_0px_rgba(0,0,0,0.5)]">
                             {score.toFixed(0)}
                         </div>
@@ -116,12 +122,12 @@ export function MovieCard({
                     <div className="flex justify-between items-center text-[9px] font-mono text-zinc-600 font-bold tracking-widest mt-1">
                         <div className="flex gap-2">
                             <span>{year || "????"}</span>
-                            {runtime && (
+                            {runtime && runtime > 0 ? (
                                 <>
                                     <span>|</span>
                                     <span>{runtime}M</span>
                                 </>
-                            )}
+                            ) : null}
                         </div>
                     </div>
                 </div>
