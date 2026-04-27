@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { Contributor } from "@/types/feed";
 import { motion } from "framer-motion";
 import { Loader2, Filter, X, SortAsc, Tv } from "lucide-react";
-import { getTMDBImageUrl, type FeedItem, getWatchlist, getUserActivity } from "@/lib/api";
+import { getTMDBImageUrl, getLetterboxdUrl, type FeedItem, getWatchlist, getUserActivity } from "@/lib/api";
 import { getProvidersForCountry } from "@/lib/constants";
 import { MovieCard } from "@/components/ui/movie-card";
 
@@ -385,7 +385,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                         rating={item.rating}
                                         matchScore={item.match_score}
                                         providers={item.streaming_providers}
-                                        href={item.letterboxd_uri}
+                                        href={getLetterboxdUrl(item.id)}
                                         variant="grid"
                                         badgeType="rating"
                                         overview={item.overview}

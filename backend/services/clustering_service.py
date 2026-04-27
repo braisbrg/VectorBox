@@ -182,6 +182,7 @@ class ClusteringService:
                     "genres": movie.genres or [],
                     "rating": effective_rating,
                     "vectorbox_score": movie.vectorbox_score or 0,
+                    "embedding_quality_score": movie.embedding_quality_score,
                 })
         
         if len(vectors) < 5:
@@ -332,6 +333,11 @@ class ClusteringService:
 
             def _qualifies(m, require_genre: bool) -> bool:
                 if (m.get("vectorbox_score") or 0) < MIN_MEDOID_SCORE:
+                    return False
+                # T-03: Reject medoids with known-corrupt embeddings — the medoid drives every
+                # recommendation in this cluster. NULL means unchecked, which we allow.
+                eq = m.get("embedding_quality_score")
+                if eq is not None and eq < 0.25:
                     return False
                 if require_genre and filter_genres:
                     if not (set(m.get("genres") or []) & filter_genres):

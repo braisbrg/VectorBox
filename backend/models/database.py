@@ -69,6 +69,7 @@ class Movie(Base):
     release_dates = Column(JSONB)  # Localized release dates map
     has_enriched_embedding = Column(Boolean, default=False, server_default="false")  # LLM-enriched vector
     enriched_by_model = Column(String, nullable=True)  # Stores the Groq model ID used to generate the cinematic embedding description
+    embedding_quality_score = Column(Float, nullable=True)  # Cosine sim of stored Qdrant vector vs MiniLM reference (0-1). NULL = unchecked.
 
     # Release tracking
     release_date_us = Column(Date, nullable=True)

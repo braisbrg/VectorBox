@@ -323,6 +323,13 @@ export const getTMDBImageUrl = (path: string | null, size: string = "w500") => {
     return `https://image.tmdb.org/t/p/${size}${path}`;
 };
 
+// FIX-LB: Always build Letterboxd film URLs from tmdb_id. Stored letterboxd_uri values
+// can point at user reviews ("/username/film/...") or shorturls ("boxd.it/..."), which
+// don't resolve to the canonical film page.
+export const getLetterboxdUrl = (tmdbId: number): string => {
+    return `https://letterboxd.com/tmdb/${tmdbId}/`;
+};
+
 export const getWatchlist = async (
     page: number = 1,
     limit: number = 20,
