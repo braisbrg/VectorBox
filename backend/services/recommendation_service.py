@@ -22,6 +22,9 @@ from utils.decorators import safe_execution
 
 logger = logging.getLogger(__name__)
 
+MIN_QUALITY_SCORE = 55  # floor for Picked For You; pre-filtered into Signal A and re-checked in hybrid_reranking
+MIN_SIGNAL_C_SCORE = 62  # sweet spot between 55 (too permissive) and 68 (too strict)
+
 
 async def _ingest_movie_rs_background(tmdb_id: int) -> None:
     """Background task: ingest a missing movie using its own DB session."""
@@ -251,22 +254,31 @@ class RecommendationService:
         )
         
         movie_ids = [r["movie_id"] for r in raw_recs if r["movie_id"] not in exclude_ids]
-        
+
         if not movie_ids:
             return []
-            
-        # Fetch Movie objects
-        stmt = select(Movie).where(Movie.id.in_(movie_ids))
+
+        # Pre-filter by quality floor: keeps low-VB films out of RRF entirely so
+        # they cannot dominate rankings before hybrid_reranking drops them.
+        stmt = (
+            select(Movie)
+            .where(Movie.id.in_(movie_ids))
+            .where(Movie.vectorbox_score >= MIN_QUALITY_SCORE)
+        )
         result = await self.db.execute(stmt)
         movies = result.scalars().all()
-        
+
         # Re-sort match per raw_recs order
         movies_map = {m.id: m for m in movies}
         ordered = []
         for mid in movie_ids:
             if mid in movies_map:
                 ordered.append(movies_map[mid])
-                
+
+        logger.info(
+            f"[Signal A] user={user_id} qdrant_recs={len(raw_recs)} "
+            f"after_exclude={len(movie_ids)} after_quality={len(ordered)}"
+        )
         return ordered
 
     async def get_signal_b_auteur(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
@@ -476,11 +488,11 @@ class RecommendationService:
             except Exception as e:
                 logger.warning(f"[Signal C] Could not queue ingest TMDB {tid}: {e}")
 
-        # 5. Quality threshold — aligned with project-wide MIN_QUALITY_SCORE.
-        # TMDB recs for arthouse seeds often lack OMDB/Metacritic data and fall back
-        # to the (vote_avg/10) * 100 * 0.6 formula, capping legit films near 42-58.
-        # Stricter tiers for power users were inverted: they need a lower floor, not higher.
-        signal_c_min_score = 55
+        # 5. Quality threshold — sweet spot between 55 (too permissive, lets in The
+        # Shack/Restless/The Number 23) and 68 (too strict, blocks artsy profiles
+        # entirely). 62 keeps Synecdoche/Quiz Show/Fat City/Intolerance/Silence of
+        # the Lambs while rejecting the obvious low-quality TMDB suggestions.
+        signal_c_min_score = MIN_SIGNAL_C_SCORE
 
         # 6. Filter and deduplicate
         seen_local: Set[int] = set()
@@ -560,8 +572,9 @@ class RecommendationService:
         result = await self.db.execute(stmt)
         movies = result.scalars().all()
 
-        # Minimum quality filter — no movie below 55 VB score in Picked For You
-        MIN_QUALITY_SCORE = 55
+        # Minimum quality filter — defensive (Signal A pre-filters at the same
+        # floor; Auteur and C use stricter floors). Any candidate that slipped in
+        # via NULL vectorbox_score is dropped here.
         pre_quality = len(movies)
         movies = [m for m in movies if (m.vectorbox_score or 50) >= MIN_QUALITY_SCORE]
         logger.info(
@@ -804,6 +817,7 @@ class RecommendationService:
                 match_score=90,
                 streaming_providers=flat_providers,
                 year=m.year,
+                runtime=m.runtime,
                 overview=m.overview,
                 vectorbox_score=m.vectorbox_score,
                 contributors=[{
@@ -876,54 +890,99 @@ class RecommendationService:
                 final_weight = base_weight * decay * saga_penalty
                 actor_scores[actor] = actor_scores.get(actor, 0) + final_weight
 
-        # Threshold: actor must have >= 2.5 points
-        qualifying_actors = [
-            (name, score) for name, score in sorted(actor_scores.items(), key=lambda x: x[1], reverse=True)
-            if score >= 2.5
-        ]
-
-        if not qualifying_actors:
+        if not actor_scores:
             return FeedSection(id="cult_actor", title="Cast Picks", items=[])
 
-        # 3. Top 3 cult actors
-        top_actors = qualifying_actors[:3]
+        # 3. Top 3 cult actors by weighted score (mirrors auteur)
+        top_actors = sorted(actor_scores.items(), key=lambda x: x[1], reverse=True)[:3]
 
-        # Get watched IDs
-        watched_stmt = select(UserRating.movie_id).where(
-            UserRating.user_id == user_id, UserRating.is_watched.is_(True)
+        # Get watched internal IDs
+        watched_result = await self.db.execute(
+            select(UserRating.movie_id)
+            .where(UserRating.user_id == user_id)
+            .where(UserRating.is_watched.is_(True))
         )
-        watched_ids = set((await self.db.execute(watched_stmt)).scalars().all())
+        watched_internal_ids = set(watched_result.scalars().all())
 
-        # 4. Find top 3 unwatched films per actor (max 9 total)
-        from services.recommendation_engine import MOVIE_QUALITY_GATE
-        all_items = []
+        all_items: List[Tuple[Movie, str]] = []
         seen_local: Set[int] = set()
+        actors_used: List[str] = []
 
-        for actor, _ in top_actors:
-            stmt = select(Movie).where(
-                *MOVIE_QUALITY_GATE,
-                Movie.cast.any(actor),
-                Movie.id.notin_(watched_ids),
-                Movie.id.notin_(seen_local),
-                Movie.vectorbox_score >= 60,
-                Movie.vote_count >= 50,
-            ).order_by(desc(Movie.vectorbox_score)).limit(10)
-
-            candidates = (await self.db.execute(stmt)).scalars().all()
+        # Section enforces <=3 per actor × <=9 total. limit(8) is a small over-fetch
+        # so the per_actor cap can skip films already in seen_ids without exhausting
+        # the candidate pool.
+        for actor_name, _ in top_actors:
+            stmt = (
+                select(Movie)
+                .where(Movie.cast.any(actor_name))
+                .where(Movie.id.notin_(watched_internal_ids))
+                .where(Movie.id.notin_(seen_local))
+                .where(Movie.vectorbox_score >= 60)
+                .where(Movie.vote_count >= 50)
+                .where(Movie.year.isnot(None))
+                .order_by(desc(Movie.vectorbox_score))
+                .limit(8)
+            )
+            result = await self.db.execute(stmt)
+            actor_films = result.scalars().all()
 
             per_actor = 0
-            for m in candidates:
+            for movie in actor_films:
                 if per_actor >= 3:
                     break
-                if m.tmdb_id in seen_ids:
+                if movie.tmdb_id in seen_ids:
                     continue
-                all_items.append((m, actor))
-                seen_local.add(m.id)
+                all_items.append((movie, actor_name))
+                seen_local.add(movie.id)
                 per_actor += 1
 
-        unique_movies: List[Tuple[Movie, str]] = all_items[:9]
+            if per_actor > 0:
+                actors_used.append(actor_name)
 
-        # Batch fetch providers
+        # Progressive fallback: if total < 9 (any of the top 3 lacked 3 films),
+        # pull from actors 4-10 to fill up to 9.
+        if len(all_items) < 9:
+            top_actor_names = {name for name, _ in top_actors}
+            extended_actors = [
+                name for name, score in sorted(actor_scores.items(), key=lambda x: x[1], reverse=True)
+                if score >= 1.5 and name not in top_actor_names
+            ][:7]
+
+            for actor_name in extended_actors:
+                if len(all_items) >= 9:
+                    break
+
+                stmt = (
+                    select(Movie)
+                    .where(Movie.cast.any(actor_name))
+                    .where(Movie.id.notin_(watched_internal_ids))
+                    .where(Movie.tmdb_id.notin_(seen_ids))
+                    .where(Movie.id.notin_(seen_local))
+                    .where(Movie.vectorbox_score >= 60)
+                    .where(Movie.vote_count >= 50)
+                    .where(Movie.year.isnot(None))
+                    .order_by(desc(Movie.vectorbox_score))
+                    .limit(5)
+                )
+                result = await self.db.execute(stmt)
+                fallback_films = result.scalars().all()
+
+                added = 0
+                for movie in fallback_films:
+                    if added >= 3 or len(all_items) >= 9:
+                        break
+                    all_items.append((movie, actor_name))
+                    seen_local.add(movie.id)
+                    added += 1
+
+                if added > 0 and actor_name not in actors_used:
+                    actors_used.append(actor_name)
+
+        if not all_items:
+            return FeedSection(id="cult_actor", title="Cast Picks", items=[])
+
+        unique_movies = all_items[:9]
+
         if provider_service and unique_movies:
             movie_ids = [m.id for m, _ in unique_movies]
             providers_map = await provider_service.get_providers_batch(movie_ids, country)
@@ -941,6 +1000,7 @@ class RecommendationService:
                 match_score=88,
                 streaming_providers=flat_providers,
                 year=m.year,
+                runtime=m.runtime,
                 overview=m.overview,
                 vectorbox_score=m.vectorbox_score,
                 contributors=[{

@@ -3,11 +3,12 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import select, or_
+from sqlalchemy import select, or_, and_, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import AsyncSessionLocal
 from models.database import Movie
@@ -90,12 +91,40 @@ async def refresh_movie(movie: Movie, tmdb: TMDBClient, omdb: OMDbClient) -> boo
             if vb.score is not None:
                 movie.vectorbox_score = min(vb.score, 98)
 
+        if movie.is_upcoming:
+            today = date.today()
+            es_released = movie.release_date_es and movie.release_date_es <= today
+            us_released = movie.release_date_us and movie.release_date_us <= today
+            ww_released = movie.release_date_ww and movie.release_date_ww <= today
+            if es_released or (us_released and not movie.release_date_es) or ww_released:
+                movie.is_upcoming = False
+                logger.info(f"[Refresh] {movie.title} is now released — marked as non-upcoming")
+
         movie.last_metadata_refresh = datetime.utcnow()
         return True
 
     except Exception as e:
         logger.warning(f"Failed to refresh movie {movie.id} ({movie.title}): {e}")
         return False
+
+
+async def mark_released_upcoming(db: AsyncSession) -> int:
+    """Mark upcoming movies that have passed their release date."""
+    today = date.today()
+    result = await db.execute(
+        update(Movie)
+        .where(Movie.is_upcoming.is_(True))
+        .where(
+            or_(
+                Movie.release_date_es <= today,
+                and_(Movie.release_date_us <= today, Movie.release_date_es.is_(None)),
+                Movie.release_date_ww <= today,
+            )
+        )
+        .values(is_upcoming=False)
+    )
+    await db.commit()
+    return result.rowcount
 
 
 async def run(strategy: str, limit: int, dry_run: bool) -> None:
@@ -105,6 +134,11 @@ async def run(strategy: str, limit: int, dry_run: bool) -> None:
     omdb = OMDbClient()
 
     try:
+        if not dry_run:
+            async with AsyncSessionLocal() as db:
+                released = await mark_released_upcoming(db)
+                logger.info(f"[Upcoming sweep] Marked {released} movies as non-upcoming (release date passed)")
+
         for s in strategies:
             logger.info(f"Strategy: {s} | limit: {limit} | dry_run: {dry_run}")
             async with AsyncSessionLocal() as db:
