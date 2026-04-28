@@ -34,6 +34,39 @@ router = APIRouter(
 
 logger = logging.getLogger(__name__)
 
+
+async def _invalidate_user_feed_cache(user_id: int) -> None:
+    """Sweep section, signal, and rotation cache keys for a user. Mirrors rss._invalidate_feed_cache.
+
+    Matches the canonical pattern in rss.py so any web action that mutates a user's
+    rating state (reject / watched) wipes the same surfaces an RSS sync would.
+    """
+    try:
+        import os
+        import redis.asyncio as aioredis
+        from config import FEED_CACHE_VERSION
+        r = aioredis.from_url(
+            os.environ.get("REDIS_URL", "redis://redis:6379"),
+            decode_responses=True,
+        )
+        try:
+            for pattern in (
+                f"section:{FEED_CACHE_VERSION}:{user_id}:*",
+                f"signal_cache:{user_id}:*",
+            ):
+                cursor = 0
+                while True:
+                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
+                    if keys:
+                        await r.delete(*keys)
+                    if cursor == 0:
+                        break
+            await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
+        finally:
+            await r.close()
+    except Exception as e:
+        logger.warning(f"Feed cache invalidation failed for user_id={user_id}: {e}")
+
 async def _enrich_recommendations(
     results: List[Dict],
     user_id: int,
@@ -802,30 +835,51 @@ async def reject_movie(
 
     await db.commit()
 
-    # Invalidate feed cache for this user
-    try:
-        import redis.asyncio as aioredis
-        import os
-        from services.feed_service import FEED_CACHE_VERSION
-        r = aioredis.from_url(
-            os.getenv("REDIS_URL", "redis://redis:6379"),
-            decode_responses=True
-        )
-        try:
-            cursor = 0
-            while True:
-                cursor, keys = await r.scan(cursor, match=f"section:{FEED_CACHE_VERSION}:{user_id}:*", count=100)
-                if keys:
-                    await r.delete(*keys)
-                if cursor == 0:
-                    break
-            await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
-        finally:
-            await r.close()
-    except Exception as e:
-        logger.warning(f"Cache invalidation after reject failed: {e}")
+    await _invalidate_user_feed_cache(user_id)
 
     return {"status": "ok", "tmdb_id": tmdb_id, "rejected": True}
+
+
+@router.post("/movies/{tmdb_id}/watched")
+async def mark_watched(
+    tmdb_id: int,
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mark a movie as watched from the web (no date or rewatch info available)."""
+    user_id = current_user.user_id
+
+    movie_result = await db.execute(
+        select(Movie).where(Movie.tmdb_id == tmdb_id)
+    )
+    movie = movie_result.scalar_one_or_none()
+    if not movie:
+        raise HTTPException(status_code=404, detail="Movie not found")
+
+    existing_result = await db.execute(
+        select(UserRating).where(
+            UserRating.user_id == user_id,
+            UserRating.movie_id == movie.id,
+        )
+    )
+    existing = existing_result.scalar_one_or_none()
+
+    if existing:
+        existing.is_watched = True
+    else:
+        # watch_count=0 distinguishes "marked from web" from a real ZIP/RSS-counted watch
+        db.add(UserRating(
+            user_id=user_id,
+            movie_id=movie.id,
+            is_watched=True,
+            watch_count=0,
+        ))
+
+    await db.commit()
+
+    await _invalidate_user_feed_cache(user_id)
+
+    return {"status": "ok", "tmdb_id": tmdb_id, "watched": True}
 
 
 @router.post("/feed/reroll-cluster")
