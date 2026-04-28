@@ -1,6 +1,6 @@
 "use client";
 
-import { X, Globe, Tv, RotateCcw, Info, CheckCircle2, Lock } from "lucide-react";
+import { X, Globe, Tv, RotateCcw, Info, CheckCircle2, Check, Loader2 } from "lucide-react";
 import type { Contributor } from "@/types/feed";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
@@ -21,6 +21,9 @@ interface RightConsoleProps {
     onToggleProvider: (id: number) => void;
     onClearFilters: () => void;
     onFilterSearch?: (params: FilterSearchParams) => void;
+    onMarkWatched?: (tmdbId: number) => void;
+    onReject?: (tmdbId: number) => void;
+    inspectorActionLoading?: "watched" | "rejected" | null;
 }
 
 export function RightConsole({
@@ -35,6 +38,9 @@ export function RightConsole({
     onToggleProvider,
     onClearFilters,
     onFilterSearch,
+    onMarkWatched,
+    onReject,
+    inspectorActionLoading,
 }: RightConsoleProps) {
     const { t } = useLanguage();
     const inspectedMovie = selectedMovie;
@@ -355,16 +361,32 @@ export function RightConsole({
 
                                     {/* Actions */}
                                     <div className="space-y-2 pt-4">
-                                        <button className="w-full py-3 border border-zinc-800 text-zinc-600 flex items-center justify-center gap-2 cursor-not-allowed group">
-                                            <Lock size={12} />
-                                            <span className="uppercase text-[10px] tracking-widest font-bold font-mono group-hover:text-zinc-400 transition-colors">
-                                                {">"} MARK_WATCHED [IN_DEV]
+                                        <button
+                                            onClick={() => onMarkWatched?.(inspectedMovie.id)}
+                                            disabled={inspectorActionLoading !== null}
+                                            className="w-full py-3 border border-zinc-800 text-zinc-400 hover:text-primary hover:border-primary flex items-center justify-center gap-2 transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {inspectorActionLoading === "watched" ? (
+                                                <Loader2 size={12} className="animate-spin" />
+                                            ) : (
+                                                <Check size={12} />
+                                            )}
+                                            <span className="uppercase text-[10px] tracking-widest font-bold font-mono">
+                                                {">"} MARK_WATCHED
                                             </span>
                                         </button>
-                                        <button className="w-full py-3 border border-zinc-800 text-zinc-600 flex items-center justify-center gap-2 cursor-not-allowed group">
-                                            <Lock size={12} />
-                                            <span className="uppercase text-[10px] tracking-widest font-bold font-mono group-hover:text-zinc-400 transition-colors">
-                                                {">"} RATE_DATA [LOCKED]
+                                        <button
+                                            onClick={() => onReject?.(inspectedMovie.id)}
+                                            disabled={inspectorActionLoading !== null}
+                                            className="w-full py-3 border border-zinc-800 text-zinc-500 hover:text-red-500 hover:border-red-500 flex items-center justify-center gap-2 transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
+                                        >
+                                            {inspectorActionLoading === "rejected" ? (
+                                                <Loader2 size={12} className="animate-spin" />
+                                            ) : (
+                                                <X size={12} />
+                                            )}
+                                            <span className="uppercase text-[10px] tracking-widest font-bold font-mono">
+                                                {">"} NOT_INTERESTED
                                             </span>
                                         </button>
                                     </div>

@@ -4,7 +4,7 @@ import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
 import type { Contributor } from "@/types/feed";
-import { Info, Clock, Film, X, Loader2 } from "lucide-react";
+import { Info, Clock, Film, X, Check, Loader2 } from "lucide-react";
 import { getTMDBImageUrl } from "@/lib/api";
 import { useState } from "react";
 import { useLanguage } from "@/components/language-provider";
@@ -24,6 +24,7 @@ export interface MovieCardProps {
     genres?: string[];
     onInspect?: (id: number, contributors?: Contributor[]) => void;
     onReject?: (id: number) => void;
+    onMarkWatched?: (id: number) => void;
     priority?: boolean;
     className?: string;
     badgeType?: string;
@@ -37,6 +38,7 @@ export interface MovieCardProps {
     href?: string;
     variant?: "overlay" | "grid";
     isRejecting?: boolean;
+    isMarkingWatched?: boolean;
 }
 
 export function MovieCard({
@@ -50,10 +52,12 @@ export function MovieCard({
     title_es,
     onInspect,
     onReject,
+    onMarkWatched,
     priority = false,
     className = "",
     href,
     isRejecting = false,
+    isMarkingWatched = false,
     contributors,
 }: MovieCardProps) {
     const [imageError, setImageError] = useState(false);
@@ -152,6 +156,25 @@ export function MovieCard({
                             <Loader2 size={10} className="animate-spin" />
                         ) : (
                             <X size={10} className="group-hover/rej:animate-pulse" />
+                        )}
+                    </button>
+                )}
+                {onMarkWatched && (
+                    <button
+                        onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            onMarkWatched(id);
+                        }}
+                        disabled={isMarkingWatched}
+                        className={`text-zinc-400 hover:text-primary p-1 bg-black/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/seen ${isMarkingWatched ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title="Mark as watched"
+                        aria-label="Mark as watched"
+                    >
+                        {isMarkingWatched ? (
+                            <Loader2 size={10} className="animate-spin" />
+                        ) : (
+                            <Check size={10} className="group-hover/seen:animate-pulse" />
                         )}
                     </button>
                 )}

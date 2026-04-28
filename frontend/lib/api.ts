@@ -423,6 +423,14 @@ export const rejectMovie = async (tmdbId: number): Promise<{ status: string; tmd
 };
 
 /**
+ * Mark a movie as watched from the web (no rewatch tracking — ZIP/RSS still authoritative).
+ */
+export const markWatched = async (tmdbId: number): Promise<{ status: string; tmdb_id: number; watched: boolean }> => {
+    const response = await api.post(`/api/recommendations/movies/${tmdbId}/watched`);
+    return response.data;
+};
+
+/**
  * Reroll the "Niche Picks" cluster — advances to the next cluster on the next feed load.
  */
 export const rerollCluster = async (): Promise<void> => {
