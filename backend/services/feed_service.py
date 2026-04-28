@@ -467,6 +467,21 @@ class FeedService:
                     if len(trimmed) >= 9:
                         break
                 unique_items = trimmed
+            # Same pattern for cult_actor: <=3 per actor × <=9 total.
+            if unique_items and section.id == "cult_actor":
+                per_actor_count: Dict[str, int] = {}
+                trimmed: List = []
+                for item in unique_items:
+                    actor = None
+                    if item.contributors:
+                        actor = (item.contributors[0] or {}).get("actor")
+                    if per_actor_count.get(actor, 0) >= 3:
+                        continue
+                    trimmed.append(item)
+                    per_actor_count[actor] = per_actor_count.get(actor, 0) + 1
+                    if len(trimmed) >= 9:
+                        break
+                unique_items = trimmed
             if unique_items:
                 section.items = unique_items
                 final_sections.append(section)
