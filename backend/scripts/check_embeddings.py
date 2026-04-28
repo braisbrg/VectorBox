@@ -43,11 +43,18 @@ def _build_reference_text(movie: Movie) -> str:
 
 
 async def check_movie_embedding(
-    movie: Movie, qdrant: QdrantService, embedding_service: EmbeddingService
-) -> float | None:
+    movie: Movie,
+    qdrant: QdrantService,
+    embedding_service: EmbeddingService,
+    return_debug: bool = False,
+):
     """
     Returns cosine similarity between stored Qdrant vector and a reference
     metadata embedding. Returns None if movie has no vector in Qdrant.
+
+    When return_debug=True, returns a dict with keys:
+      quality, reference_text, stored_vector, reference_vector
+    (or None if check could not run).
     """
     stored_vector = await qdrant.get_vector(movie.tmdb_id)
     if not stored_vector:
@@ -77,7 +84,15 @@ async def check_movie_embedding(
     denom = float(np.linalg.norm(a) * np.linalg.norm(b))
     if denom == 0:
         return None
-    return float(np.dot(a, b) / denom)
+    quality = float(np.dot(a, b) / denom)
+    if return_debug:
+        return {
+            "quality": quality,
+            "reference_text": reference_text,
+            "stored_vector": stored_vector,
+            "reference_vector": reference_vector,
+        }
+    return quality
 
 
 async def _re_enrich_movie(movie: Movie, llm_client, qdrant: QdrantService, embedding_service: EmbeddingService) -> bool:
@@ -159,7 +174,13 @@ async def main():
     parser.add_argument("--fix", action="store_true", help="Re-enrich flagged movies (requires LLM API key)")
     parser.add_argument("--user-id", type=int, help="Check only movies in this user's ratings")
     parser.add_argument("--update-db", action="store_true", help="Write embedding_quality_score to DB")
+    parser.add_argument("--recheck", action="store_true", help="Re-check movies that already have a quality score")
+    parser.add_argument("--tmdb-id", type=int, help="Check a specific movie by TMDB ID")
+    parser.add_argument("--verbose", action="store_true", help="Show reference text and vector sample")
     args = parser.parse_args()
+
+    if args.tmdb_id is not None:
+        args.limit = 1
 
     qdrant = QdrantService()
     embedding_service = EmbeddingService()
@@ -192,7 +213,13 @@ async def main():
 
     try:
         async with AsyncSessionLocal() as db:
-            if args.user_id is not None:
+            if args.tmdb_id is not None:
+                stmt = (
+                    select(Movie)
+                    .where(Movie.tmdb_id == args.tmdb_id)
+                    .limit(1)
+                )
+            elif args.user_id is not None:
                 stmt = (
                     select(Movie)
                     .join(UserRating, Movie.id == UserRating.movie_id)
@@ -208,21 +235,40 @@ async def main():
                     .limit(args.limit)
                 )
 
+            if not args.recheck and args.tmdb_id is None:
+                stmt = stmt.where(Movie.embedding_quality_score.is_(None))
+
             result = await db.execute(stmt)
             movies = result.scalars().all()
 
             print(f"Checking {len(movies)} movies (threshold={args.threshold})...")
 
             for movie in movies:
-                quality = await check_movie_embedding(movie, qdrant, embedding_service)
-                if quality is None:
+                result_data = await check_movie_embedding(
+                    movie, qdrant, embedding_service, return_debug=args.verbose
+                )
+                if result_data is None:
                     no_vector += 1
                     continue
+
+                if args.verbose:
+                    quality = result_data["quality"]
+                else:
+                    quality = result_data
 
                 marker = "✓" if quality >= args.threshold else "⚠"
                 flag_note = "  ← FLAGGED" if quality < args.threshold else ""
                 title = (movie.title or "")[:35]
                 print(f"{marker} {title:35s} quality={quality:.3f}{flag_note}")
+
+                if args.verbose:
+                    ref_text = result_data["reference_text"]
+                    stored_vec = result_data["stored_vector"]
+                    ref_vec = result_data["reference_vector"]
+                    print(f"  Reference text: {ref_text[:100]}...")
+                    print(f"  Stored vector[:5]:    {list(stored_vec)[:5]}")
+                    print(f"  Reference vector[:5]: {list(ref_vec)[:5]}")
+                    print(f"  Cosine similarity: {quality:.3f}")
 
                 if args.update_db:
                     movie.embedding_quality_score = quality
