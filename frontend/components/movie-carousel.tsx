@@ -2,7 +2,7 @@
 
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
-import { getTMDBImageUrl, getLetterboxdUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie, rerollCluster } from "@/lib/api";
+import { getTMDBImageUrl, getLetterboxdUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie, markWatched, rerollCluster } from "@/lib/api";
 import type { Contributor } from "@/types/feed";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { useRef, useState, useEffect, useCallback } from "react";
@@ -68,6 +68,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
 
     // FIX 3: Optimistic reject with rollback
     const [rejectingIds, setRejectingIds] = useState<Set<number>>(new Set());
+    const [watchedIds, setWatchedIds] = useState<Set<number>>(new Set());
 
     const handleReject = useCallback(async (tmdbId: number) => {
         // Snapshot for rollback
@@ -93,6 +94,34 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
         } finally {
             if (isMounted.current) {
                 setRejectingIds(prev => {
+                    const next = new Set(prev);
+                    next.delete(tmdbId);
+                    return next;
+                });
+            }
+        }
+    }, [localItems, onReject, queryClient, isMounted]);
+
+    const handleMarkWatched = useCallback(async (tmdbId: number) => {
+        const previousItems = localItems;
+
+        setLocalItems(prev => prev.filter(item => item.id !== tmdbId));
+        setWatchedIds(prev => new Set(prev).add(tmdbId));
+
+        try {
+            await markWatched(tmdbId);
+            if (isMounted.current) {
+                queryClient.invalidateQueries({ queryKey: ["feed"] });
+            }
+            onReject?.(tmdbId);
+        } catch (error) {
+            console.error("Failed to mark watched:", error);
+            if (isMounted.current) {
+                setLocalItems(previousItems);
+            }
+        } finally {
+            if (isMounted.current) {
+                setWatchedIds(prev => {
                     const next = new Set(prev);
                     next.delete(tmdbId);
                     return next;
@@ -249,7 +278,9 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             providers={movie.streaming_providers}
                             onInspect={() => onInspect?.(movie, sectionId)}
                             onReject={handleReject}
+                            onMarkWatched={handleMarkWatched}
                             isRejecting={rejectingIds.has(movie.id)}
+                            isMarkingWatched={watchedIds.has(movie.id)}
                         />
                     </div>
                 ))}
