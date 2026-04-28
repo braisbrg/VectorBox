@@ -159,52 +159,90 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             finally:
                 await llm_client.close()
 
-            # T-03: Sanity-check embeddings against a MiniLM reference vector built from
-            # title/year/genres/directors. Films flagged below 0.25 are excluded from anchor
-            # and medoid selection downstream.
-            logger.info(f"[Sanity] Running embedding quality check for user {user_id}")
-            import numpy as np
-            flagged = 0
-            for movie in movies_to_enrich:
-                stored = await qdrant.get_vector(movie.tmdb_id)
-                if not stored:
-                    continue
-                ref_text = (
-                    f"{movie.title or ''} {movie.year or ''} "
-                    f"{' '.join(movie.genres or [])} {' '.join(movie.directors or [])}"
-                ).strip()
-                if not ref_text:
-                    continue
-                loop = asyncio.get_event_loop()
-                try:
-                    ref_vec = await loop.run_in_executor(
-                        None,
-                        lambda t=ref_text, m=movie: embedding_service.generate_embedding(
-                            {"title": m.title or ""}, text_override=t
-                        ),
-                    )
-                except Exception as e:
-                    logger.warning(f"[Sanity] reference embedding failed for {movie.title}: {e}")
-                    continue
-                if ref_vec is None:
-                    continue
-                a = np.array(stored)
-                b = np.array(ref_vec)
-                denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-                if denom == 0:
-                    continue
-                quality = float(np.dot(a, b) / denom)
-                movie.embedding_quality_score = quality
-                if quality < 0.25:
-                    flagged += 1
-                    movie.has_enriched_embedding = False
-                    logger.warning(f"[Sanity] Low quality embedding: {movie.title} ({quality:.2f})")
-            await db.commit()
-            logger.info(f"[Sanity] Check complete: {flagged} movies flagged for re-enrichment")
-
             logger.info(f"[Enrichment] Re-clustering user {user_id} with enriched embeddings")
             clustering = ClusteringService(qdrant=qdrant)
             await clustering.create_user_clusters(user_id, db)
+
+            # T-03: Sanity-check embeddings against a MiniLM reference vector built from
+            # title/year/genres/directors. Restricted to medoids + top anchor candidates
+            # (~10 movies) — these are the only movies that downstream feed sections actually
+            # surface, so checking the rest wastes LLM/encoder budget.
+            logger.info(f"[Sanity] Checking medoids + anchor candidates for user {user_id}")
+            from models.database import UserCluster
+            from sqlalchemy import desc
+            import numpy as np
+
+            clusters_result = await db.execute(
+                select(UserCluster).where(UserCluster.user_id == user_id)
+            )
+            clusters = clusters_result.scalars().all()
+            medoid_internal_ids = [c.medoid_movie_id for c in clusters if c.medoid_movie_id]
+
+            anchor_stmt = (
+                select(Movie)
+                .join(UserRating, Movie.id == UserRating.movie_id)
+                .where(UserRating.user_id == user_id)
+                .where(UserRating.rating >= 4.0)
+                .where(Movie.embedding_quality_score.is_(None))
+                .order_by(desc(UserRating.watched_date))
+                .limit(5)
+            )
+            anchor_movies = (await db.execute(anchor_stmt)).scalars().all()
+            anchor_internal_ids = [m.id for m in anchor_movies]
+
+            priority_ids = list(set(medoid_internal_ids + anchor_internal_ids))
+
+            flagged = 0
+            if priority_ids:
+                movies_to_check_result = await db.execute(
+                    select(Movie).where(Movie.id.in_(priority_ids))
+                )
+                movies_to_check = movies_to_check_result.scalars().all()
+
+                for movie in movies_to_check:
+                    stored = await qdrant.get_vector(movie.tmdb_id)
+                    if not stored:
+                        continue
+                    ref_text = (
+                        f"{movie.title or ''} {movie.year or ''} "
+                        f"{' '.join(movie.genres or [])} {' '.join(movie.directors or [])}"
+                    ).strip()
+                    if not ref_text:
+                        continue
+                    loop = asyncio.get_event_loop()
+                    try:
+                        ref_vec = await loop.run_in_executor(
+                            None,
+                            lambda t=ref_text, m=movie: embedding_service.generate_embedding(
+                                {"title": m.title or ""}, text_override=t
+                            ),
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Sanity] reference embedding failed for {movie.title}: {e}")
+                        continue
+                    if ref_vec is None:
+                        continue
+                    a = np.array(stored)
+                    b = np.array(ref_vec)
+                    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+                    if denom == 0:
+                        continue
+                    quality = float(np.dot(a, b) / denom)
+                    movie.embedding_quality_score = quality
+                    if quality < 0.25:
+                        flagged += 1
+                        movie.has_enriched_embedding = False
+                        logger.warning(
+                            f"[Sanity] Low quality anchor/medoid: {movie.title} "
+                            f"({quality:.2f}) — marked for re-enrichment"
+                        )
+
+                await db.commit()
+                logger.info(
+                    f"[Sanity] Checked {len(movies_to_check)} priority movies, {flagged} flagged"
+                )
+            else:
+                logger.info("[Sanity] No medoids/anchors to check — skipping")
 
             await invalidate_user_cache(user_id)
             logger.info(f"[Enrichment] Pipeline complete for user {user_id}")

@@ -476,19 +476,11 @@ class RecommendationService:
             except Exception as e:
                 logger.warning(f"[Signal C] Could not queue ingest TMDB {tid}: {e}")
 
-        # 5. Dynamic quality threshold — TMDB recs are inherently popular so max_popularity
-        # is not applied here; only vectorbox_score floor.
-        watch_count_stmt = select(func.count()).select_from(UserRating).where(
-            UserRating.user_id == user_id,
-            UserRating.is_watched.is_(True),
-        )
-        user_watch_count = (await self.db.execute(watch_count_stmt)).scalar() or 0
-        if user_watch_count < 30:
-            signal_c_min_score = 60
-        elif user_watch_count < 100:
-            signal_c_min_score = 65
-        else:
-            signal_c_min_score = 68
+        # 5. Quality threshold — aligned with project-wide MIN_QUALITY_SCORE.
+        # TMDB recs for arthouse seeds often lack OMDB/Metacritic data and fall back
+        # to the (vote_avg/10) * 100 * 0.6 formula, capping legit films near 42-58.
+        # Stricter tiers for power users were inverted: they need a lower floor, not higher.
+        signal_c_min_score = 55
 
         # 6. Filter and deduplicate
         seen_local: Set[int] = set()

@@ -20,11 +20,44 @@ class MovieService:
         self.db = db
         self._owns_tmdb = tmdb is None
         self.tmdb = tmdb or TMDBClient()
-        self.omdb = OMDbClient()
-        self.qdrant = QdrantService()
-        self.embedding_service = EmbeddingService()
-        self.provider_service = ProviderService(db, self.tmdb)
-        self.factory = MovieFactory(self.tmdb, self.omdb, self.embedding_service, groq_client=groq_client)
+        self._groq_client = groq_client
+        self._qdrant = None
+        self._embedding = None
+        self._omdb = None
+        self._provider_service = None
+        self._factory = None
+
+    @property
+    def qdrant(self) -> QdrantService:
+        if self._qdrant is None:
+            self._qdrant = QdrantService()
+        return self._qdrant
+
+    @property
+    def embedding(self) -> EmbeddingService:
+        if self._embedding is None:
+            self._embedding = EmbeddingService()
+        return self._embedding
+
+    @property
+    def omdb(self) -> OMDbClient:
+        if self._omdb is None:
+            self._omdb = OMDbClient()
+        return self._omdb
+
+    @property
+    def provider_service(self) -> ProviderService:
+        if self._provider_service is None:
+            self._provider_service = ProviderService(self.db, self.tmdb)
+        return self._provider_service
+
+    @property
+    def factory(self) -> MovieFactory:
+        if self._factory is None:
+            self._factory = MovieFactory(
+                self.tmdb, self.omdb, self.embedding, groq_client=self._groq_client
+            )
+        return self._factory
 
     async def get_or_create_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None) -> Optional[Movie]:
         """
@@ -110,7 +143,7 @@ class MovieService:
             loop = asyncio.get_event_loop()
             vector = await loop.run_in_executor(
                 None,
-                lambda: self.embedding_service.generate_embedding({
+                lambda: self.embedding.generate_embedding({
                     "title": movie.title,
                     "overview": movie.overview,
                     "genres": movie.genres,
@@ -219,7 +252,7 @@ class MovieService:
                 loop = asyncio.get_event_loop()
                 vector = await loop.run_in_executor(
                     None,
-                    lambda: self.embedding_service.generate_embedding({
+                    lambda: self.embedding.generate_embedding({
                         "title": movie.title,
                         "overview": movie.overview,
                         "genres": movie.genres,
@@ -267,4 +300,5 @@ class MovieService:
     async def close(self):
         if self._owns_tmdb:
             await self.tmdb.aclose()
-        await self.omdb.close()
+        if self._omdb is not None:
+            await self._omdb.close()
