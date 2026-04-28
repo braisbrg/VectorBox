@@ -8,7 +8,7 @@ import { motion } from "framer-motion";
 import Image from "next/image";
 import { useUser } from "@clerk/nextjs";
 import { useLanguage } from "@/components/language-provider";
-import { VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem, FilterSearchParams, searchWithFilters } from "@/lib/api";
+import { VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem, FilterSearchParams, searchWithFilters, markWatched, rejectMovie } from "@/lib/api";
 import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
 
 import { FeedContainer } from "@/components/feed-container";
@@ -18,7 +18,7 @@ import { RightConsole } from "@/components/right-console";
 import { MobileHeader } from "@/components/mobile-header";
 import { MobileNav } from "@/components/mobile-nav";
 import { getUserClusters, ClusterInfo } from "@/lib/api";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { InfoTooltip } from "@/components/info-tooltip";
@@ -50,7 +50,35 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const [inspectedMovie, setInspectedMovie] = useState<{ movie: FeedItem; sectionId?: string } | null>(null);
     const [filteredResults, setFilteredResults] = useState<FeedItem[] | null>(null);
     const [isFiltering, setIsFiltering] = useState(false);
+    const [inspectorActionLoading, setInspectorActionLoading] = useState<"watched" | "rejected" | null>(null);
 
+    const queryClient = useQueryClient();
+
+    const handleInspectorMarkWatched = async (tmdbId: number) => {
+        setInspectorActionLoading("watched");
+        try {
+            await markWatched(tmdbId);
+            queryClient.invalidateQueries({ queryKey: ["feed"] });
+            setInspectedMovie(null);
+        } catch (error) {
+            console.error("Failed to mark as watched:", error);
+        } finally {
+            setInspectorActionLoading(null);
+        }
+    };
+
+    const handleInspectorReject = async (tmdbId: number) => {
+        setInspectorActionLoading("rejected");
+        try {
+            await rejectMovie(tmdbId);
+            queryClient.invalidateQueries({ queryKey: ["feed"] });
+            setInspectedMovie(null);
+        } catch (error) {
+            console.error("Failed to reject movie:", error);
+        } finally {
+            setInspectorActionLoading(null);
+        }
+    };
 
     const { t } = useLanguage();
 
@@ -316,6 +344,9 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 onToggleProvider={toggleProvider}
                 onClearFilters={clearFilters}
                 onFilterSearch={handleFilterSearch}
+                onMarkWatched={handleInspectorMarkWatched}
+                onReject={handleInspectorReject}
+                inspectorActionLoading={inspectorActionLoading}
             />
 
             {/* Mobile Bottom Sheet for Inspector */}
