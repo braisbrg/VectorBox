@@ -395,8 +395,11 @@ class RecommendationEngine:
             span.set_attribute("user_id", user_id)
             span.set_attribute("country", country)
 
-            # FIX 6: Fetch 100 candidates without ORDER BY — Python sorts by _score_anchor_candidate
-            # so NULL dates and liked-only movies don't beat a high-rated recent watch.
+            # FIX 6: Pre-order in SQL by (rating DESC NULLS LAST, watched_date DESC NULLS LAST)
+            # so the top-N truncation cannot drop a 5.0★ recent watch. Without ordering, an
+            # arbitrary heap slice was being returned and high-quality anchors (e.g. Hamnet)
+            # never reached the Python re-scoring step. Python still re-scores with the full
+            # formula (recency decay + rewatch boost) — SQL just guarantees the best are present.
             # T-03: Prefer movies with healthy embeddings (or unchecked NULL) — corrupt vectors
             # produce nonsensical anchors that drag the whole row off-topic.
             result = await db.execute(
@@ -415,7 +418,11 @@ class RecommendationEngine:
                         Movie.embedding_quality_score.is_(None)
                     )
                 )
-                .limit(100)
+                .order_by(
+                    UserRating.rating.desc().nullslast(),
+                    UserRating.watched_date.desc().nullslast(),
+                )
+                .limit(500)
             )
 
             candidates = result.all()
@@ -438,6 +445,13 @@ class RecommendationEngine:
                 scored_candidates.append((anchor_score, user_rating, movie))
 
             scored_candidates.sort(key=lambda x: x[0], reverse=True)
+
+            # Log the top 3 scored candidates so anchor selection is auditable from prod logs
+            top_preview = ", ".join(
+                f"{m.title} ({round(s, 3)})"
+                for s, _, m in scored_candidates[:3]
+            )
+            logger.info(f"[Because you watched] Top 3 anchor candidates: {top_preview}")
 
             # FIX 4: Reuse precomputed anti-vector if available (avoids second Qdrant/DB round-trip)
             anti_vector = precomputed_anti_vector if precomputed_anti_vector is not None else await self._get_anti_vector(user_id, db, qdrant)
@@ -639,7 +653,9 @@ class RecommendationEngine:
         import random
 
         r = None
-        theme_index = 0
+        # Random theme on cache miss so users who hit the section right after expiry
+        # don't always land on the first theme (Sleep Optional)
+        theme_index = random.randint(0, len(GLOBAL_THEMES) - 1)
         try:
             r = aioredis.from_url(REDIS_URL, decode_responses=True)
             rotation_key = f"niche_theme_rotation:{FEED_CACHE_VERSION}:{user_id}"
