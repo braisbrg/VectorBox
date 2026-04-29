@@ -467,18 +467,21 @@ class ClusteringService:
             filters=search_filters
         )
         
+        # AGENTS.md:245 — Qdrant uses tmdb_id; UserRating.movie_id is internal.
+        # Convert the watched set to tmdb_ids before comparing against Qdrant hits.
         watched_result = await db.execute(
-            select(UserRating.movie_id)
+            select(Movie.tmdb_id)
+            .join(UserRating, UserRating.movie_id == Movie.id)
             .where(UserRating.user_id == user_id)
             .where(UserRating.is_watched.is_(True))
         )
-        watched_movie_ids = set(watched_result.scalars().all())
-        
+        watched_tmdb_ids = set(watched_result.scalars().all())
+
         recommendations = [
             r for r in results
-            if r["movie_id"] not in watched_movie_ids
+            if r["movie_id"] not in watched_tmdb_ids
         ][:limit]
-        
+
         return recommendations
 
     async def get_user_centric_recommendations(
@@ -544,19 +547,22 @@ class ClusteringService:
                 filters=search_filters
             )
             
+        # AGENTS.md:245 — Qdrant uses tmdb_id; UserRating.movie_id is internal.
+        # Convert the watched set to tmdb_ids before comparing against Qdrant hits.
         watched_result = await db.execute(
-            select(UserRating.movie_id)
+            select(Movie.tmdb_id)
+            .join(UserRating, UserRating.movie_id == Movie.id)
             .where(UserRating.user_id == user_id)
             .where(UserRating.is_watched.is_(True))
         )
-        watched_movie_ids = set(watched_result.scalars().all())
-        
+        watched_tmdb_ids = set(watched_result.scalars().all())
+
         recommendations = [
             r for r in results
-            if r["movie_id"] not in watched_movie_ids
+            if r["movie_id"] not in watched_tmdb_ids
         ][:limit]
 
-        logger.info(f"User {user_id} General Recs: Found {len(results)} raw results. Watched count: {len(watched_movie_ids)}")
+        logger.info(f"User {user_id} General Recs: Found {len(results)} raw results. Watched count: {len(watched_tmdb_ids)}")
         logger.info(f"User {user_id} General Recs: {len(recommendations)} remaining after watched filter.")
         
         return recommendations

@@ -253,46 +253,110 @@ class RecommendationService:
         )
 
     async def _get_anti_vector(self, user_id: int) -> Optional[List[float]]:
-        """Mean embedding of films the user rated <=2★ or rejected.
-
-        Mirrors RecommendationEngine._get_anti_vector (recommendation_engine.py:222-268)
-        but lives here to avoid the engine→service import cycle. Returns None if
-        fewer than 3 such films have vectors in Qdrant.
+        """Progressive anti-vector — see RecommendationEngine._get_anti_vector
+        (recommendation_engine.py:222) for the policy. Duplicated here to avoid
+        the engine→service import cycle. Returns L2-normalized weighted mean,
+        or None when fewer than 3 negative films have vectors.
         """
         rating_result = await self.db.execute(
-            select(UserRating.movie_id)
+            select(UserRating, Movie.tmdb_id)
+            .join(Movie, UserRating.movie_id == Movie.id)
+            .where(UserRating.user_id == user_id)
             .where(
-                UserRating.user_id == user_id,
                 or_(
-                    UserRating.rating <= 2.0,
                     UserRating.is_rejected.is_(True),
-                ),
+                    UserRating.rating <= 3.0,
+                )
             )
             .limit(50)
         )
-        internal_ids = rating_result.scalars().all()
-        if len(internal_ids) < 3:
+        rows = rating_result.all()
+        if len(rows) < 3:
             return None
 
-        tmdb_result = await self.db.execute(
-            select(Movie.tmdb_id).where(Movie.id.in_(internal_ids))
-        )
-        tmdb_ids = tmdb_result.scalars().all()
+        tmdb_ids = [tmdb_id for _, tmdb_id in rows if tmdb_id is not None]
         if len(tmdb_ids) < 3:
             return None
-
         vectors_map = await self.qdrant.get_vectors_batch(tmdb_ids)
         if len(vectors_map) < 3:
             return None
 
+        weighted_vectors: list[np.ndarray] = []
+        weights: list[float] = []
+        for ur, tmdb_id in rows:
+            vec = vectors_map.get(tmdb_id)
+            if vec is None:
+                continue
+            if ur.is_rejected:
+                w = 2.0
+            elif ur.rating is None:
+                continue
+            elif ur.rating <= 2.0:
+                w = 1.5
+            elif ur.rating <= 2.5:
+                w = 1.0
+            elif ur.rating <= 3.0:
+                w = 0.4
+            else:
+                continue
+            weighted_vectors.append(np.array(vec) * w)
+            weights.append(w)
+
+        if len(weighted_vectors) < 3:
+            return None
+
         loop = asyncio.get_running_loop()
-        vectors_list = list(vectors_map.values())
 
         def _compute_mean():
-            arr = np.array(vectors_list)
-            return np.mean(arr, axis=0).tolist()
+            total_w = float(sum(weights))
+            mean_vec = np.sum(np.stack(weighted_vectors), axis=0) / total_w
+            norm = float(np.linalg.norm(mean_vec))
+            if norm > 0:
+                mean_vec = mean_vec / norm
+            return mean_vec.tolist()
 
         return await loop.run_in_executor(None, _compute_mean)
+
+    async def _filter_by_anti_vector(
+        self,
+        items: List[Tuple[Movie, str]],
+        anti_vector: Optional[List[float]],
+        drop_threshold: float = 0.75,
+    ) -> Tuple[List[Tuple[Movie, str]], int]:
+        """Drop (movie, label) pairs whose embedding is too close to the anti-vector.
+
+        Returns (kept_items, dropped_count). When anti_vector is None or no item
+        has a vector, returns the original list unchanged so we never block
+        a section on a missing negative signal.
+        """
+        if not anti_vector or not items:
+            return items, 0
+        tmdb_ids = [m.tmdb_id for m, _ in items]
+        vectors_map = await self.qdrant.get_vectors_batch(tmdb_ids)
+        if not vectors_map:
+            return items, 0
+        anti_np = np.array(anti_vector)
+        anti_norm = float(np.linalg.norm(anti_np))
+        if anti_norm == 0:
+            return items, 0
+        kept: List[Tuple[Movie, str]] = []
+        dropped = 0
+        for movie, label in items:
+            vec = vectors_map.get(movie.tmdb_id)
+            if vec is None:
+                kept.append((movie, label))
+                continue
+            cand = np.array(vec)
+            denom = float(np.linalg.norm(cand)) * anti_norm
+            if denom == 0:
+                kept.append((movie, label))
+                continue
+            cos_sim = float(np.dot(cand, anti_np) / denom)
+            if cos_sim > drop_threshold:
+                dropped += 1
+                continue
+            kept.append((movie, label))
+        return kept, dropped
 
     async def _get_distinctive_user_genres(self, user_id: int) -> Set[str]:
         """Top genres in user's rated history minus the generic set.
@@ -372,27 +436,33 @@ class RecommendationService:
                 adjusted_head.sort(key=lambda x: x.get("score", 0.0), reverse=True)
                 raw_recs = adjusted_head + tail
 
-        movie_ids = [r["movie_id"] for r in raw_recs if r["movie_id"] not in exclude_ids]
+        # Qdrant point IDs are tmdb_ids (movie_factory.py:137 / qdrant_service.py:78).
+        # The previous Movie.id.in_(...) query compared internal PKs to tmdb_ids and
+        # only ever matched on accidental numeric overlap, so 50 raw_recs collapsed
+        # to ~2 DB hits. AGENTS.md:245 — "Qdrant vectors indexed by tmdb_id".
+        tmdb_ids = [r["movie_id"] for r in raw_recs if r["movie_id"] not in exclude_ids]
 
-        if not movie_ids:
+        if not tmdb_ids:
             return []
 
         # Pre-filter by quality floor: keeps low-VB films out of RRF entirely so
         # they cannot dominate rankings before hybrid_reranking drops them.
         stmt = (
             select(Movie)
-            .where(Movie.id.in_(movie_ids))
+            .where(Movie.tmdb_id.in_(tmdb_ids))
             .where(Movie.vectorbox_score >= MIN_QUALITY_SCORE)
         )
         result = await self.db.execute(stmt)
         movies = result.scalars().all()
+        db_match_count = len(movies)
 
-        # Re-sort match per raw_recs order
-        movies_map = {m.id: m for m in movies}
+        # Re-sort match per raw_recs order — keyed by tmdb_id, since that is what
+        # tmdb_ids holds.
+        movies_map = {m.tmdb_id: m for m in movies}
         ordered = []
-        for mid in movie_ids:
-            if mid in movies_map:
-                ordered.append(movies_map[mid])
+        for tid in tmdb_ids:
+            if tid in movies_map:
+                ordered.append(movies_map[tid])
 
         # FIX 2: Genre coherence — drop candidates that share no distinctive genre
         # with the user's rated history. Without this, the centroid of a diverse
@@ -418,10 +488,11 @@ class RecommendationService:
             ordered = kept
 
         logger.info(
-            f"[Signal A] user={user_id} qdrant_recs={len(raw_recs)} "
-            f"after_exclude={len(movie_ids)} after_quality={before_genre} "
-            f"after_genre={len(ordered)} anti_dropped={anti_dropped} "
-            f"anti_demoted={anti_demoted} distinctive_genres={sorted(distinctive)}"
+            f"[Signal A] user={user_id} qdrant={len(raw_recs)} "
+            f"after_exclude={len(tmdb_ids)} db_matches={db_match_count} "
+            f"after_quality={before_genre} after_genre={len(ordered)} "
+            f"anti_dropped={anti_dropped} anti_demoted={anti_demoted} "
+            f"distinctive_genres={sorted(distinctive)}"
         )
         return ordered
 
@@ -933,6 +1004,17 @@ class RecommendationService:
         if not all_items:
             return FeedSection(id="auteur", title="From Your Favorite Directors", items=[])
 
+        # FIX 3: Anti-vector — drop films too close to the user's negative profile,
+        # even if the director matches. A user who has rejected several action films
+        # should not see the action half of a director's filmography.
+        anti_vector = await self._get_anti_vector(user_id)
+        all_items, anti_dropped = await self._filter_by_anti_vector(all_items, anti_vector)
+        if anti_dropped:
+            logger.info(f"[Auteur anti-vector] user={user_id} dropped={anti_dropped}")
+
+        if not all_items:
+            return FeedSection(id="auteur", title="From Your Favorite Directors", items=[])
+
         unique_movies = all_items[:21]
 
         if len(directors_used) == 1:
@@ -1121,6 +1203,16 @@ class RecommendationService:
 
                 if added > 0 and actor_name not in actors_used:
                     actors_used.append(actor_name)
+
+        if not all_items:
+            return FeedSection(id="cult_actor", title="Cast Picks", items=[])
+
+        # FIX 3: Anti-vector — drop cast films too close to the user's negative
+        # profile (action-heavy actors won't pull in action thrillers when rejected).
+        anti_vector = await self._get_anti_vector(user_id)
+        all_items, anti_dropped = await self._filter_by_anti_vector(all_items, anti_vector)
+        if anti_dropped:
+            logger.info(f"[Cult Actor anti-vector] user={user_id} dropped={anti_dropped}")
 
         if not all_items:
             return FeedSection(id="cult_actor", title="Cast Picks", items=[])
