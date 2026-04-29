@@ -221,49 +221,77 @@ class RecommendationEngine:
 
     async def _get_anti_vector(self, user_id: int, db: AsyncSession, qdrant: QdrantService) -> Optional[list]:
         """
-        Compute the average embedding vector of films the user rated <= 2 stars
-        OR explicitly rejected ("Not Interested").
-        Returns None if fewer than 3 such films exist (not enough signal).
+        Progressive anti-vector — combines negative signals at different strengths.
+
+        Most users never rate films below 3★, so the old <=2★ floor produced None
+        for almost everyone and the anti-vector was effectively dead. Now:
+          - rejected:       weight 2.0
+          - rating <= 2.0:  weight 1.5
+          - rating <= 2.5:  weight 1.0
+          - rating <= 3.0:  weight 0.4   (mild negative)
+
+        Returns the L2-normalized weighted mean, or None if fewer than 3 films
+        with vectors qualify.
         """
-        # Step 1: Get internal movie_ids from UserRating (low-rated OR rejected)
+        # Pull rating + tmdb_id together so we can apply per-film weights without
+        # a second query. We need rating value AND is_rejected to pick a weight.
         rating_result = await db.execute(
-            select(UserRating.movie_id)
+            select(UserRating, Movie.tmdb_id)
+            .join(Movie, UserRating.movie_id == Movie.id)
+            .where(UserRating.user_id == user_id)
             .where(
-                UserRating.user_id == user_id,
                 or_(
-                    UserRating.rating <= 2.0,
-                    UserRating.is_rejected.is_(True)
+                    UserRating.is_rejected.is_(True),
+                    UserRating.rating <= 3.0,
                 )
             )
             .limit(50)
         )
-        internal_ids = rating_result.scalars().all()
-
-        if len(internal_ids) < 3:
+        rows = rating_result.all()
+        if len(rows) < 3:
             return None
 
-        # Step 2: Map internal_ids → tmdb_ids via Movie table
-        tmdb_result = await db.execute(
-            select(Movie.tmdb_id).where(Movie.id.in_(internal_ids))
-        )
-        tmdb_ids = tmdb_result.scalars().all()
-
+        # Batch-fetch all candidate vectors (AGENTS.md:282 — never get_vector in a loop)
+        tmdb_ids = [tmdb_id for _, tmdb_id in rows if tmdb_id is not None]
         if len(tmdb_ids) < 3:
             return None
-
-        # Step 3: Fetch vectors from Qdrant in batch
         vectors_map = await qdrant.get_vectors_batch(tmdb_ids)
-
         if len(vectors_map) < 3:
             return None
 
-        # Step 4: Compute element-wise mean (CPU-bound → executor)
+        weighted_vectors: list[np.ndarray] = []
+        weights: list[float] = []
+        for ur, tmdb_id in rows:
+            vec = vectors_map.get(tmdb_id)
+            if vec is None:
+                continue
+            if ur.is_rejected:
+                w = 2.0
+            elif ur.rating is None:
+                continue
+            elif ur.rating <= 2.0:
+                w = 1.5
+            elif ur.rating <= 2.5:
+                w = 1.0
+            elif ur.rating <= 3.0:
+                w = 0.4
+            else:
+                continue
+            weighted_vectors.append(np.array(vec) * w)
+            weights.append(w)
+
+        if len(weighted_vectors) < 3:
+            return None
+
         loop = asyncio.get_running_loop()
-        vectors_list = list(vectors_map.values())
 
         def _compute_mean():
-            arr = np.array(vectors_list)
-            return np.mean(arr, axis=0).tolist()
+            total_w = float(sum(weights))
+            mean_vec = np.sum(np.stack(weighted_vectors), axis=0) / total_w
+            norm = float(np.linalg.norm(mean_vec))
+            if norm > 0:
+                mean_vec = mean_vec / norm
+            return mean_vec.tolist()
 
         return await loop.run_in_executor(None, _compute_mean)
 
