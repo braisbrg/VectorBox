@@ -161,7 +161,14 @@ async def _print_user_context(movie: Movie, user_id: int, db) -> set[int]:
 
 
 async def _signal_a_analysis(movie: Movie, user_id: int, db, qdrant: QdrantService) -> None:
-    """Replicates anchor selection from get_because_you_watched_section."""
+    """Replicates anchor selection from get_because_you_watched_section.
+
+    Mirrors recommendation_engine.py:405-447 — same WHERE clause, same ORDER BY,
+    same LIMIT, same Python-side _score_anchor_candidate ranking. Without the
+    SQL ORDER BY the heap-scan returned an arbitrary slice and the anchor preview
+    here disagreed with what production actually picked (e.g. "anchor: Past Lives"
+    when production used Hamnet).
+    """
     from services.recommendation_engine import _score_anchor_candidate
 
     result = await db.execute(
@@ -177,7 +184,11 @@ async def _signal_a_analysis(movie: Movie, user_id: int, db, qdrant: QdrantServi
                 Movie.embedding_quality_score.is_(None),
             )
         )
-        .limit(100)
+        .order_by(
+            UserRating.rating.desc().nullslast(),
+            UserRating.watched_date.desc().nullslast(),
+        )
+        .limit(500)
     )
     candidates = result.all()
     if not candidates:
@@ -195,6 +206,9 @@ async def _signal_a_analysis(movie: Movie, user_id: int, db, qdrant: QdrantServi
         )
         scored.append((s, ur, m))
     scored.sort(key=lambda x: x[0], reverse=True)
+
+    top3_preview = [(round(s, 3), m.title) for s, _, m in scored[:3]]
+    _print(f"Top 3 anchors: {top3_preview}")
 
     top_anchor = scored[0][2]
     anchor_vec = await qdrant.get_vector(top_anchor.tmdb_id)
@@ -346,6 +360,103 @@ async def _signal_c_analysis(movie: Movie, user_id: int, db, tmdb: TMDBClient) -
         _print(f"  → Not found in TMDB recommendations of any user seed (checked {len(seeds)} seeds).")
 
 
+async def _print_signal_membership(movie: Movie, user_id: int, db, qdrant: QdrantService, tmdb: TMDBClient) -> None:
+    """Confirms which Trident signal(s) actually surface this movie.
+
+    Mirrors the production paths used by Picked For You:
+      - Signal A (Vibe): _compute_vibe_signal_raw via clustering.get_user_centric_recommendations
+        (centroid of all rated vectors, NOT a single anchor).
+      - Signal Auteur: top directors by weighted score >= 3.0, vectorbox_score > 70.
+      - Signal C (Crowd): TMDB recs of up to 5 high-quality user seeds.
+    """
+    _print("=== SIGNAL MEMBERSHIP ===")
+
+    # Signal A — centroid-based, used in Picked For You
+    rated_result = await db.execute(
+        select(UserRating, Movie)
+        .join(Movie, UserRating.movie_id == Movie.id)
+        .where(UserRating.user_id == user_id)
+        .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+    )
+    rated = rated_result.all()
+    if rated:
+        rated_tmdb_ids = [m.tmdb_id for _, m in rated]
+        vec_map = await qdrant.get_vectors_batch(rated_tmdb_ids)
+        rated_vectors = [v for v in vec_map.values() if v]
+        if rated_vectors:
+            import numpy as np
+
+            centroid = np.mean(rated_vectors, axis=0).tolist()
+            sim_results = await qdrant.search_similar(
+                query_vector=centroid, limit=250, score_threshold=0.15
+            )
+            rank = next(
+                (i for i, r in enumerate(sim_results, 1) if r["movie_id"] == movie.tmdb_id),
+                None,
+            )
+            if rank:
+                _print(f"Signal A (Vibe — centroid): rank #{rank} of {len(sim_results)} (Picked For You candidate path)")
+            else:
+                _print(f"Signal A (Vibe — centroid): NOT in top-{len(sim_results)} (similarity below 0.15 floor or filtered out)")
+        else:
+            _print("Signal A (Vibe — centroid): cannot compute (no vectors for user's rated films).")
+    else:
+        _print("Signal A (Vibe — centroid): user has no rated/liked films.")
+
+    # Signal Auteur — director score check
+    if movie.directors:
+        from services.recommendation_service import RecommendationService
+
+        rs = RecommendationService(db)
+        scores = await rs._compute_director_scores(user_id)
+        sorted_dirs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        top_5_active = [name for name, score in sorted_dirs if score >= 3.0][:5]
+        movie_dirs_active = [d for d in movie.directors if d in top_5_active]
+        score_pass = (movie.vectorbox_score or 0) > 70
+        if movie_dirs_active and score_pass:
+            _print(f"Signal Auteur: ELIGIBLE via {movie_dirs_active} (vectorbox_score>{movie.vectorbox_score} > 70)")
+        elif movie_dirs_active:
+            _print(f"Signal Auteur: director match {movie_dirs_active} but vectorbox_score {movie.vectorbox_score} <= 70")
+        else:
+            _print("Signal Auteur: no director(s) in user top-5 active (score>=3.0).")
+    else:
+        _print("Signal Auteur: no director metadata.")
+
+    # Signal C — TMDB recs of seeds
+    seed_stmt = (
+        select(Movie)
+        .join(UserRating, Movie.id == UserRating.movie_id)
+        .where(UserRating.user_id == user_id)
+        .where(
+            or_(
+                UserRating.rating >= 4.5,
+                UserRating.is_liked.is_(True),
+                UserRating.watch_count > 1,
+            )
+        )
+        .order_by(desc(UserRating.rating), desc(UserRating.watched_date))
+        .limit(5)
+    )
+    seeds = (await db.execute(seed_stmt)).scalars().all()
+    found_in_seeds = []
+    for seed in seeds:
+        try:
+            recs = await tmdb.get_movie_recommendations(seed.tmdb_id)
+        except Exception:
+            continue
+        for r in recs[:5]:
+            if r.get("id") == movie.tmdb_id:
+                found_in_seeds.append(seed.title)
+                break
+    if found_in_seeds:
+        _print(f"Signal C (Crowd): found in TMDB recs of seeds {found_in_seeds}")
+    elif seeds:
+        _print(f"Signal C (Crowd): not in TMDB recs of {len(seeds)} user seeds.")
+    else:
+        _print("Signal C (Crowd): no high-quality seeds available.")
+    _print("")
+
+
 async def _print_summary(movie: Movie, user_id: int, db) -> None:
     """Best-effort 'why it appears' summary based on signal eligibility."""
     _print("=== WHY IT APPEARS / DOESN'T APPEAR ===")
@@ -410,6 +521,7 @@ async def main():
                 _print("")
                 await _signal_c_analysis(movie, args.user_id, db, tmdb)
                 _print("")
+                await _print_signal_membership(movie, args.user_id, db, qdrant, tmdb)
                 await _print_summary(movie, args.user_id, db)
     finally:
         await tmdb.close()
