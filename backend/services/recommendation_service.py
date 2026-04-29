@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 MIN_QUALITY_SCORE = 55  # floor for Picked For You; pre-filtered into Signal A and re-checked in hybrid_reranking
 MIN_SIGNAL_C_SCORE = 62  # sweet spot between 55 (too permissive) and 68 (too strict)
+MIN_EMBED_QUALITY_SCORE = 0.35  # below this is MiniLM-only noise; produces false centroid matches
 
 # Generic genres co-occur across most films and don't tell us anything about user taste.
 # Removed before computing the user's "distinctive" genre set for Signal A coherence.
@@ -486,11 +487,22 @@ class RecommendationService:
                     kept.append(m)
                     continue
             ordered = kept
+        after_genre_count = len(ordered)
+
+        # T-04: Drop films with corrupt MiniLM-only embeddings — they reach the
+        # centroid via accidental proximity, not real cinematic similarity.
+        # NULL = unchecked (allow through), < 0.35 = noisy and worth dropping.
+        ordered = [
+            m for m in ordered
+            if m.embedding_quality_score is None
+            or m.embedding_quality_score >= MIN_EMBED_QUALITY_SCORE
+        ]
 
         logger.info(
             f"[Signal A] user={user_id} qdrant={len(raw_recs)} "
             f"after_exclude={len(tmdb_ids)} db_matches={db_match_count} "
-            f"after_quality={before_genre} after_genre={len(ordered)} "
+            f"after_quality={before_genre} after_genre={after_genre_count} "
+            f"after_embed_quality={len(ordered)} "
             f"anti_dropped={anti_dropped} anti_demoted={anti_demoted} "
             f"distinctive_genres={sorted(distinctive)}"
         )
