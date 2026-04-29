@@ -8,6 +8,7 @@ import random
 import math
 import json
 import hashlib
+import numpy as np
 import redis.asyncio as redis
 
 from models.database import UserRating, Movie, UserCluster, User
@@ -24,6 +25,16 @@ logger = logging.getLogger(__name__)
 
 MIN_QUALITY_SCORE = 55  # floor for Picked For You; pre-filtered into Signal A and re-checked in hybrid_reranking
 MIN_SIGNAL_C_SCORE = 62  # sweet spot between 55 (too permissive) and 68 (too strict)
+
+# Generic genres co-occur across most films and don't tell us anything about user taste.
+# Removed before computing the user's "distinctive" genre set for Signal A coherence.
+GENERIC_GENRES = {"Action", "Drama", "Comedy", "Adventure", "Thriller"}
+
+# Anti-vector penalty thresholds — same as Because You Watched (recommendation_engine.py:544-557).
+ANTI_VECTOR_DROP_THRESHOLD = 0.80
+ANTI_VECTOR_DEMOTE_THRESHOLD = 0.65
+ANTI_VECTOR_DEMOTE_FACTOR = 0.5
+ANTI_VECTOR_BATCH_LIMIT = 30  # bound batch fetch cost; tail of raw_recs left untouched
 
 
 async def _ingest_movie_rs_background(tmdb_id: int) -> None:
@@ -241,6 +252,74 @@ class RecommendationService:
             compute_method=self._compute_vibe_signal_raw
         )
 
+    async def _get_anti_vector(self, user_id: int) -> Optional[List[float]]:
+        """Mean embedding of films the user rated <=2★ or rejected.
+
+        Mirrors RecommendationEngine._get_anti_vector (recommendation_engine.py:222-268)
+        but lives here to avoid the engine→service import cycle. Returns None if
+        fewer than 3 such films have vectors in Qdrant.
+        """
+        rating_result = await self.db.execute(
+            select(UserRating.movie_id)
+            .where(
+                UserRating.user_id == user_id,
+                or_(
+                    UserRating.rating <= 2.0,
+                    UserRating.is_rejected.is_(True),
+                ),
+            )
+            .limit(50)
+        )
+        internal_ids = rating_result.scalars().all()
+        if len(internal_ids) < 3:
+            return None
+
+        tmdb_result = await self.db.execute(
+            select(Movie.tmdb_id).where(Movie.id.in_(internal_ids))
+        )
+        tmdb_ids = tmdb_result.scalars().all()
+        if len(tmdb_ids) < 3:
+            return None
+
+        vectors_map = await self.qdrant.get_vectors_batch(tmdb_ids)
+        if len(vectors_map) < 3:
+            return None
+
+        loop = asyncio.get_running_loop()
+        vectors_list = list(vectors_map.values())
+
+        def _compute_mean():
+            arr = np.array(vectors_list)
+            return np.mean(arr, axis=0).tolist()
+
+        return await loop.run_in_executor(None, _compute_mean)
+
+    async def _get_distinctive_user_genres(self, user_id: int) -> Set[str]:
+        """Top genres in user's rated history minus the generic set.
+
+        Returns empty set if user has no rated films (cold start) or if every
+        top genre is generic — in both cases the genre coherence filter is skipped.
+        """
+        result = await self.db.execute(
+            select(
+                func.unnest(Movie.genres).label("genre"),
+                func.count().label("cnt"),
+            )
+            .join(UserRating, Movie.id == UserRating.movie_id)
+            .where(UserRating.user_id == user_id)
+            .where(
+                or_(
+                    UserRating.rating >= 3.5,
+                    UserRating.is_liked.is_(True),
+                )
+            )
+            .group_by(func.unnest(Movie.genres))
+            .order_by(func.count().desc())
+            .limit(10)
+        )
+        top_genres = {row.genre for row in result.all() if row.genre}
+        return top_genres - GENERIC_GENRES
+
     async def _compute_vibe_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
         """
         Raw computation for Signal A: The Vibe Expert (Vectors)
@@ -252,7 +331,47 @@ class RecommendationService:
             limit=50,
             background_tasks=background_tasks
         )
-        
+
+        # FIX 1: Anti-vector penalty (parity with Because You Watched at
+        # recommendation_engine.py:544-557). The centroid path previously had no
+        # anti-vector; mass-appeal blockbusters that sit near the generic taste mean
+        # slipped in regardless of how strongly the user disliked similar films.
+        # Bounded to top-30 to keep the extra Qdrant batch fetch cheap.
+        anti_vector = await self._get_anti_vector(user_id)
+        anti_dropped = anti_demoted = 0
+        if anti_vector and raw_recs:
+            anti_np = np.array(anti_vector)
+            anti_norm = float(np.linalg.norm(anti_np))
+            if anti_norm > 0:
+                head = raw_recs[: ANTI_VECTOR_BATCH_LIMIT]
+                tail = raw_recs[ANTI_VECTOR_BATCH_LIMIT :]
+                head_ids = [r["movie_id"] for r in head]
+                cand_vec_map = await self.qdrant.get_vectors_batch(head_ids)
+
+                adjusted_head: List[Dict] = []
+                for r in head:
+                    vec = cand_vec_map.get(r["movie_id"])
+                    if vec is None:
+                        adjusted_head.append(r)
+                        continue
+                    cand_np = np.array(vec)
+                    cand_norm = float(np.linalg.norm(cand_np))
+                    if cand_norm == 0:
+                        adjusted_head.append(r)
+                        continue
+                    cos_sim = float(np.dot(cand_np, anti_np) / (cand_norm * anti_norm))
+                    if cos_sim > ANTI_VECTOR_DROP_THRESHOLD:
+                        anti_dropped += 1
+                        continue
+                    if cos_sim > ANTI_VECTOR_DEMOTE_THRESHOLD:
+                        adjusted_head.append({**r, "score": r.get("score", 1.0) * ANTI_VECTOR_DEMOTE_FACTOR})
+                        anti_demoted += 1
+                        continue
+                    adjusted_head.append(r)
+
+                adjusted_head.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+                raw_recs = adjusted_head + tail
+
         movie_ids = [r["movie_id"] for r in raw_recs if r["movie_id"] not in exclude_ids]
 
         if not movie_ids:
@@ -275,9 +394,34 @@ class RecommendationService:
             if mid in movies_map:
                 ordered.append(movies_map[mid])
 
+        # FIX 2: Genre coherence — drop candidates that share no distinctive genre
+        # with the user's rated history. Without this, the centroid of a diverse
+        # taste profile (drama + animation + family) lands on a non-distinctive
+        # midpoint and lets generic action/family blockbusters surface. Films with
+        # no genre metadata or whose genres are entirely within the generic set are
+        # allowed through (they cannot fail the test on signal alone).
+        before_genre = len(ordered)
+        distinctive = await self._get_distinctive_user_genres(user_id)
+        if distinctive:
+            kept = []
+            for m in ordered:
+                m_genres = set(m.genres or [])
+                if not m_genres:
+                    kept.append(m)
+                    continue
+                if m_genres & distinctive:
+                    kept.append(m)
+                    continue
+                if not (m_genres - GENERIC_GENRES):
+                    kept.append(m)
+                    continue
+            ordered = kept
+
         logger.info(
             f"[Signal A] user={user_id} qdrant_recs={len(raw_recs)} "
-            f"after_exclude={len(movie_ids)} after_quality={len(ordered)}"
+            f"after_exclude={len(movie_ids)} after_quality={before_genre} "
+            f"after_genre={len(ordered)} anti_dropped={anti_dropped} "
+            f"anti_demoted={anti_demoted} distinctive_genres={sorted(distinctive)}"
         )
         return ordered
 
