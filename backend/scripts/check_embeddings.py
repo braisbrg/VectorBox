@@ -159,6 +159,7 @@ async def _re_enrich_movie(movie: Movie, llm_client, qdrant: QdrantService, embe
 
     movie.has_enriched_embedding = True
     movie.enriched_by_model = model_used
+    movie.cinematic_description = description
     return True
 
 
@@ -269,6 +270,8 @@ async def main():
                     print(f"  Stored vector[:5]:    {list(stored_vec)[:5]}")
                     print(f"  Reference vector[:5]: {list(ref_vec)[:5]}")
                     print(f"  Cosine similarity: {quality:.3f}")
+                    if movie.cinematic_description:
+                        print(f"  Cinematic desc: {movie.cinematic_description[:150]}...")
 
                 if args.update_db:
                     movie.embedding_quality_score = quality

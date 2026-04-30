@@ -142,6 +142,7 @@ async def _enrich_user_movies_background(user_id: int) -> None:
 
                             movie.has_enriched_embedding = True
                             movie.enriched_by_model = model_used
+                            movie.cinematic_description = description
                             db.add(movie)
                             enriched_count += 1
 
