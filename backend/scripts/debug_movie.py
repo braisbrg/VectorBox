@@ -81,6 +81,10 @@ async def _print_movie_header(movie: Movie, qdrant: QdrantService) -> bool:
     _print(f"genres: {movie.genres or []}")
     _print(f"directors: {movie.directors or []}")
     _print(f"runtime: {movie.runtime} | popularity: {movie.popularity}")
+    if movie.cinematic_description:
+        _print(f"cinematic_description: {movie.cinematic_description[:200]}...")
+    else:
+        _print("cinematic_description: NOT SAVED (needs re-enrichment)")
     _print("")
     return in_qdrant
 

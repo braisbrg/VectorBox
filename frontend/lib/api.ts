@@ -423,6 +423,29 @@ export const rejectMovie = async (tmdbId: number): Promise<{ status: string; tmd
 };
 
 /**
+ * Get all movies the user has rejected ("Not Interested").
+ */
+export interface RejectedMovie {
+    tmdb_id: number;
+    title: string;
+    year?: number;
+    poster_path?: string;
+}
+
+export const getRejectedMovies = async (): Promise<RejectedMovie[]> => {
+    const response = await api.get("/api/recommendations/movies/rejected");
+    return response.data;
+};
+
+/**
+ * Undo a "Not Interested" rejection.
+ */
+export const unrejectMovie = async (tmdbId: number): Promise<{ status: string; tmdb_id: number; rejected: boolean }> => {
+    const response = await api.delete(`/api/recommendations/movies/${tmdbId}/reject`);
+    return response.data;
+};
+
+/**
  * Mark a movie as watched from the web (no rewatch tracking — ZIP/RSS still authoritative).
  */
 export const markWatched = async (tmdbId: number): Promise<{ status: string; tmdb_id: number; watched: boolean }> => {

@@ -840,6 +840,71 @@ async def reject_movie(
     return {"status": "ok", "tmdb_id": tmdb_id, "rejected": True}
 
 
+@router.get("/movies/rejected")
+async def get_rejected_movies(
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all movies the user has marked as 'Not Interested'."""
+    user_id = current_user.user_id
+
+    result = await db.execute(
+        select(Movie.tmdb_id, Movie.title, Movie.year, Movie.poster_path)
+        .join(UserRating, Movie.id == UserRating.movie_id)
+        .where(
+            UserRating.user_id == user_id,
+            UserRating.is_rejected.is_(True),
+        )
+        .order_by(UserRating.created_at.desc())
+    )
+    rows = result.all()
+
+    return [
+        {
+            "tmdb_id": row.tmdb_id,
+            "title": row.title,
+            "year": row.year,
+            "poster_path": row.poster_path,
+        }
+        for row in rows
+    ]
+
+
+@router.delete("/movies/{tmdb_id}/reject")
+async def unreject_movie(
+    tmdb_id: int,
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Undo a 'Not Interested' rejection."""
+    user_id = current_user.user_id
+
+    movie_result = await db.execute(
+        select(Movie).where(Movie.tmdb_id == tmdb_id)
+    )
+    movie = movie_result.scalar_one_or_none()
+    if not movie:
+        raise HTTPException(status_code=404, detail="Movie not found")
+
+    existing_result = await db.execute(
+        select(UserRating).where(
+            UserRating.user_id == user_id,
+            UserRating.movie_id == movie.id,
+        )
+    )
+    existing = existing_result.scalar_one_or_none()
+
+    if not existing or not existing.is_rejected:
+        raise HTTPException(status_code=404, detail="Movie is not rejected")
+
+    existing.is_rejected = False
+    await db.commit()
+
+    await _invalidate_user_feed_cache(user_id)
+
+    return {"status": "ok", "tmdb_id": tmdb_id, "rejected": False}
+
+
 @router.post("/movies/{tmdb_id}/watched")
 async def mark_watched(
     tmdb_id: int,

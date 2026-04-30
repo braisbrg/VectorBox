@@ -317,6 +317,7 @@ async def enrich_embeddings_via_groq(limit: int = None, model_only: str = None):
                     if model_used is not None:
                         movie.has_enriched_embedding = True
                         movie.enriched_by_model = model_used
+                        movie.cinematic_description = description
                         successful_enrichments += 1
                         model_counts[model_used] = model_counts.get(model_used, 0) + 1
                         # Store first sample per model for quality comparison

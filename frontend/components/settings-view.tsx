@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useState, useEffect } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Loader2, RefreshCw } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2, RefreshCw, Undo2, Ban } from "lucide-react";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
 import { Switch } from "@/components/ui/switch";
-import { syncRSS, VectorboxUser } from "@/lib/api";
+import { syncRSS, VectorboxUser, getRejectedMovies, unrejectMovie, getTMDBImageUrl } from "@/lib/api";
 import { UploadZone } from "@/components/upload-zone";
 
 export function SettingsView() {
@@ -43,6 +44,35 @@ export function SettingsView() {
         },
         onError: (error: Error) => {
             setSyncMessage({ type: "error", text: error.message || "Sync failed. Please try again." });
+        },
+    });
+
+    // Not Interested — rejected movies
+    const {
+        data: rejectedMovies,
+        isLoading: rejectedLoading,
+    } = useQuery({
+        queryKey: ["rejected-movies"],
+        queryFn: getRejectedMovies,
+        staleTime: 60_000,
+    });
+
+    const unrejectMutation = useMutation({
+        mutationFn: (tmdbId: number) => unrejectMovie(tmdbId),
+        onMutate: async (tmdbId) => {
+            await queryClient.cancelQueries({ queryKey: ["rejected-movies"] });
+            const previous = queryClient.getQueryData(["rejected-movies"]);
+            queryClient.setQueryData(["rejected-movies"], (old: typeof rejectedMovies) =>
+                old?.filter((m) => m.tmdb_id !== tmdbId)
+            );
+            return { previous };
+        },
+        onError: (_err, _tmdbId, context) => {
+            queryClient.setQueryData(["rejected-movies"], context?.previous);
+        },
+        onSettled: () => {
+            queryClient.invalidateQueries({ queryKey: ["rejected-movies"] });
+            queryClient.invalidateQueries({ queryKey: ["feed"] });
         },
     });
 
@@ -138,6 +168,71 @@ export function SettingsView() {
                         )}
                     </div>
                 )}
+
+                {/* Not Interested — Rejected Movies History */}
+                <div className="border border-border p-4 font-mono">
+                    <div className="flex items-center gap-2 mb-2">
+                        <Ban className="w-3.5 h-3.5 text-zinc-400" />
+                        <h3 className="text-xs text-zinc-400">NOT INTERESTED</h3>
+                    </div>
+                    <p className="text-xs text-zinc-500 mb-3">
+                        Movies you&apos;ve dismissed. Undo to let them appear in recommendations again.
+                    </p>
+
+                    {rejectedLoading ? (
+                        <div className="flex items-center gap-2 text-xs text-zinc-600">
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                            Loading…
+                        </div>
+                    ) : !rejectedMovies || rejectedMovies.length === 0 ? (
+                        <p className="text-xs text-zinc-600">No rejected movies yet.</p>
+                    ) : (
+                        <div className="space-y-2 max-h-[320px] overflow-y-auto scrollbar-hide">
+                            {rejectedMovies.map((movie) => (
+                                <div
+                                    key={movie.tmdb_id}
+                                    className="flex items-center gap-3 p-2 border border-zinc-800 hover:border-zinc-600 transition-colors group"
+                                >
+                                    {/* Poster thumbnail */}
+                                    <div className="w-8 h-12 flex-shrink-0 bg-zinc-900 overflow-hidden">
+                                        {movie.poster_path ? (
+                                            <Image
+                                                src={getTMDBImageUrl(movie.poster_path, "w92")}
+                                                alt={movie.title}
+                                                width={32}
+                                                height={48}
+                                                className="w-full h-full object-cover"
+                                            />
+                                        ) : (
+                                            <div className="w-full h-full flex items-center justify-center text-zinc-700 text-[8px]">
+                                                N/A
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Title + year */}
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-xs text-zinc-300 truncate">{movie.title}</p>
+                                        {movie.year && (
+                                            <p className="text-[10px] text-zinc-600">{movie.year}</p>
+                                        )}
+                                    </div>
+
+                                    {/* Undo button */}
+                                    <button
+                                        onClick={() => unrejectMutation.mutate(movie.tmdb_id)}
+                                        disabled={unrejectMutation.isPending}
+                                        className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono text-zinc-600 hover:text-primary border border-transparent hover:border-primary transition-colors opacity-0 group-hover:opacity-100"
+                                        title="Undo rejection"
+                                    >
+                                        <Undo2 className="w-3 h-3" />
+                                        UNDO
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
 
                 {/* About Section */}
                 <div className="p-4 border rounded-lg bg-muted/30">
