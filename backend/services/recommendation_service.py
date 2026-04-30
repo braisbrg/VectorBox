@@ -254,11 +254,17 @@ class RecommendationService:
         )
 
     async def _get_anti_vector(self, user_id: int) -> Optional[List[float]]:
-        """Progressive anti-vector — see RecommendationEngine._get_anti_vector
-        (recommendation_engine.py:222) for the policy. Duplicated here to avoid
-        the engine→service import cycle. Returns L2-normalized weighted mean,
-        or None when fewer than 3 negative films have vectors.
+        """Progressive anti-vector with recency decay — see
+        RecommendationEngine._get_anti_vector (recommendation_engine.py) for
+        the policy. Duplicated here to avoid the engine→service import cycle.
+        Returns L2-normalized weighted mean, or None when fewer than 3
+        negative films have vectors.
+
+        Each weight is multiplied by a recency decay factor with a 365-day
+        half-life, so old rejections/low ratings gradually lose influence.
         """
+        from datetime import datetime, timezone
+
         rating_result = await self.db.execute(
             select(UserRating, Movie.tmdb_id)
             .join(Movie, UserRating.movie_id == Movie.id)
@@ -282,6 +288,9 @@ class RecommendationService:
         if len(vectors_map) < 3:
             return None
 
+        now = datetime.now(timezone.utc)
+        HALF_LIFE_DAYS = 365
+
         weighted_vectors: list[np.ndarray] = []
         weights: list[float] = []
         for ur, tmdb_id in rows:
@@ -300,6 +309,21 @@ class RecommendationService:
                 w = 0.4
             else:
                 continue
+
+            # Recency decay: 365-day half-life
+            ref_date = ur.watched_date or ur.created_at
+            if ref_date is not None:
+                if ref_date.tzinfo is None:
+                    ref_date = ref_date.replace(tzinfo=timezone.utc)
+                days_ago = max(0, (now - ref_date).days)
+            else:
+                days_ago = HALF_LIFE_DAYS  # assume 1 half-life if undated
+            decay = 0.5 ** (days_ago / HALF_LIFE_DAYS)
+            w *= decay
+
+            if w < 0.05:
+                continue  # negligible weight — skip
+
             weighted_vectors.append(np.array(vec) * w)
             weights.append(w)
 
@@ -362,28 +386,11 @@ class RecommendationService:
     async def _get_distinctive_user_genres(self, user_id: int) -> Set[str]:
         """Top genres in user's rated history minus the generic set.
 
-        Returns empty set if user has no rated films (cold start) or if every
-        top genre is generic — in both cases the genre coherence filter is skipped.
+        Delegates to the shared utility in utils.genre_utils to avoid
+        duplicated query logic and circular import issues.
         """
-        result = await self.db.execute(
-            select(
-                func.unnest(Movie.genres).label("genre"),
-                func.count().label("cnt"),
-            )
-            .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(UserRating.user_id == user_id)
-            .where(
-                or_(
-                    UserRating.rating >= 3.5,
-                    UserRating.is_liked.is_(True),
-                )
-            )
-            .group_by(func.unnest(Movie.genres))
-            .order_by(func.count().desc())
-            .limit(10)
-        )
-        top_genres = {row.genre for row in result.all() if row.genre}
-        return top_genres - GENERIC_GENRES
+        from utils.genre_utils import get_distinctive_user_genres
+        return await get_distinctive_user_genres(user_id, self.db)
 
     async def _compute_vibe_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
         """

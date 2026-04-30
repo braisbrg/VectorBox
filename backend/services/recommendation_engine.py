@@ -221,7 +221,8 @@ class RecommendationEngine:
 
     async def _get_anti_vector(self, user_id: int, db: AsyncSession, qdrant: QdrantService) -> Optional[list]:
         """
-        Progressive anti-vector — combines negative signals at different strengths.
+        Progressive anti-vector with recency decay — combines negative signals
+        at different strengths, decayed by age.
 
         Most users never rate films below 3★, so the old <=2★ floor produced None
         for almost everyone and the anti-vector was effectively dead. Now:
@@ -230,11 +231,15 @@ class RecommendationEngine:
           - rating <= 2.5:  weight 1.0
           - rating <= 3.0:  weight 0.4   (mild negative)
 
+        Each weight is multiplied by a recency decay factor with a 365-day
+        half-life, so old rejections/low ratings gradually lose influence.
         Returns the L2-normalized weighted mean, or None if fewer than 3 films
         with vectors qualify.
         """
-        # Pull rating + tmdb_id together so we can apply per-film weights without
-        # a second query. We need rating value AND is_rejected to pick a weight.
+        from datetime import timezone
+
+        # Pull rating + tmdb_id + dates together so we can apply per-film weights
+        # and recency decay without a second query.
         rating_result = await db.execute(
             select(UserRating, Movie.tmdb_id)
             .join(Movie, UserRating.movie_id == Movie.id)
@@ -259,6 +264,9 @@ class RecommendationEngine:
         if len(vectors_map) < 3:
             return None
 
+        now = datetime.now(timezone.utc)
+        HALF_LIFE_DAYS = 365
+
         weighted_vectors: list[np.ndarray] = []
         weights: list[float] = []
         for ur, tmdb_id in rows:
@@ -277,6 +285,21 @@ class RecommendationEngine:
                 w = 0.4
             else:
                 continue
+
+            # Recency decay: 365-day half-life
+            ref_date = ur.watched_date or ur.created_at
+            if ref_date is not None:
+                if ref_date.tzinfo is None:
+                    ref_date = ref_date.replace(tzinfo=timezone.utc)
+                days_ago = max(0, (now - ref_date).days)
+            else:
+                days_ago = HALF_LIFE_DAYS  # assume 1 half-life if undated
+            decay = 0.5 ** (days_ago / HALF_LIFE_DAYS)
+            w *= decay
+
+            if w < 0.05:
+                continue  # negligible weight — skip
+
             weighted_vectors.append(np.array(vec) * w)
             weights.append(w)
 
@@ -605,6 +628,31 @@ class RecommendationEngine:
 
                 if not mmr_candidates:
                     continue
+
+                # Genre coherence: drop candidates that share no distinctive genre
+                # with the user's rated history. Prevents generic blockbusters from
+                # surfacing through anchor proximity alone.
+                from utils.genre_utils import get_distinctive_user_genres, GENERIC_GENRES
+                distinctive_genres = await get_distinctive_user_genres(user_id, db)
+                if distinctive_genres and len(mmr_candidates) >= 5:
+                    coherent = []
+                    for c in mmr_candidates:
+                        m_genres = set(c["movie"].genres or [])
+                        # Allow through: no genre metadata, or all genres are generic
+                        if not m_genres or not (m_genres - GENERIC_GENRES):
+                            coherent.append(c)
+                            continue
+                        # Allow through: shares at least one distinctive genre
+                        if m_genres & distinctive_genres:
+                            coherent.append(c)
+                            continue
+                    if len(coherent) >= 5:
+                        logger.info(
+                            f"[BYW] Genre coherence: {len(mmr_candidates)} → "
+                            f"{len(coherent)} candidates, "
+                            f"distinctive={sorted(distinctive_genres)}"
+                        )
+                        mmr_candidates = coherent
 
                 # Imp 6: Apply MMR reranking
                 try:
