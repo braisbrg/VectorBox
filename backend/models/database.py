@@ -26,6 +26,11 @@ class User(Base):
     # Clerk auth (dual-auth transitional — legacy cookie still works while clerk_user_id is NULL)
     clerk_user_id = Column(String(255), unique=True, nullable=True, index=True)
     is_anonymous = Column(Boolean, nullable=False, server_default="false")
+
+    # Onboarding (carousel cold-start flow)
+    tag_preferences = Column(JSONB, nullable=True)  # {"avoided": [...], "liked": [...]}
+    onboarding_completed = Column(Boolean, nullable=False, server_default="false")
+    onboarding_ratings_count = Column(Integer, nullable=False, server_default="0")
     
     # Relationships
     ratings = relationship("UserRating", back_populates="user", cascade="all, delete-orphan")

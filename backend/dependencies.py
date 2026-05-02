@@ -293,3 +293,21 @@ async def verify_user_ownership(
             detail="Access Denied: You do not own this resource."
         )
     return current_user
+
+
+async def get_optional_current_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Optional[TokenResponse]:
+    """
+    Like get_current_user but returns None when no valid auth header is present.
+    Used by /onboarding/movies to serve both guests and signed-in users.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None
+    try:
+        return await get_current_user(request, db)
+    except HTTPException:
+        return None
+

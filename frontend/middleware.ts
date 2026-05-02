@@ -4,7 +4,8 @@ const isPublicRoute = createRouteMatcher([
     "/login(.*)",
     "/register(.*)",
     "/privacy(.*)",
-    "/terms(.*)"
+    "/terms(.*)",
+    "/onboarding(.*)"
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
@@ -13,7 +14,12 @@ export default clerkMiddleware(async (auth, request) => {
     // Si está logueado e intenta ir a /login o /register, redirigir a home
     if (userId && (request.nextUrl.pathname.startsWith('/login') ||
         request.nextUrl.pathname.startsWith('/register'))) {
-        return Response.redirect(new URL('/', request.url));
+        // Allow /login?migrate=true to proceed (onboarding migration needs the login page)
+        if (request.nextUrl.pathname.startsWith('/login') && request.nextUrl.searchParams.get('migrate') === 'true') {
+            // Don't redirect — let the login page handle migration
+        } else {
+            return Response.redirect(new URL('/', request.url));
+        }
     }
 
     // Proteger rutas no públicas
