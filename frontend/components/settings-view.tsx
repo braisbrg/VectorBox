@@ -2,14 +2,22 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RefreshCw, Undo2, Ban } from "lucide-react";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
 import { Switch } from "@/components/ui/switch";
 import { syncRSS, VectorboxUser, getRejectedMovies, unrejectMovie, getTMDBImageUrl } from "@/lib/api";
+import { api } from "@/lib/api";
 import { UploadZone } from "@/components/upload-zone";
+import {
+    TagSelector,
+    TagState,
+    tagStateToPreferences,
+    preferencesToTagState,
+} from "@/components/onboarding/tag-selector";
+import { Sliders } from "lucide-react";
 
 export function SettingsView() {
     const { t } = useLanguage();
@@ -234,6 +242,9 @@ export function SettingsView() {
                     )}
                 </div>
 
+                {/* Content Preferences — Tag Editor */}
+                <ContentPreferencesSection />
+
                 {/* About Section */}
                 <div className="p-4 border rounded-lg bg-muted/30">
                     <h3 className="font-medium mb-2">{t("settings.about.title")}</h3>
@@ -262,6 +273,66 @@ export function SettingsView() {
                     </Link>
                 </div>
             </div>
+        </div>
+    );
+}
+
+/**
+ * CONTENT PREFERENCES section — fetches from /onboarding/status, saves via /onboarding/tags.
+ */
+function ContentPreferencesSection() {
+    const [tagStates, setTagStates] = useState<Record<string, TagState>>({});
+    const [loaded, setLoaded] = useState(false);
+    const [saving, setSaving] = useState(false);
+    const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Fetch current preferences
+    useEffect(() => {
+        api.get("/api/onboarding/status")
+            .then((res) => {
+                const prefs = res.data?.tag_preferences;
+                setTagStates(preferencesToTagState(prefs || null));
+            })
+            .catch(() => {
+                // No prefs yet — show empty
+            })
+            .finally(() => setLoaded(true));
+    }, []);
+
+    const handleChange = (next: Record<string, TagState>) => {
+        setTagStates(next);
+        // Debounced save
+        if (saveTimeout.current) clearTimeout(saveTimeout.current);
+        saveTimeout.current = setTimeout(async () => {
+            setSaving(true);
+            try {
+                const prefs = tagStateToPreferences(next);
+                await api.post("/api/onboarding/tags", prefs);
+            } catch (e) {
+                console.error("Failed to save tag preferences:", e);
+            } finally {
+                setSaving(false);
+            }
+        }, 600);
+    };
+
+    if (!loaded) return null;
+
+    return (
+        <div className="border border-border p-4 font-mono">
+            <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                    <Sliders className="w-3.5 h-3.5 text-zinc-400" />
+                    <h3 className="text-xs text-zinc-400">CONTENT PREFERENCES</h3>
+                </div>
+                {saving && (
+                    <span className="text-[10px] text-zinc-600 animate-pulse">Saving...</span>
+                )}
+            </div>
+            <p className="text-xs text-zinc-500 mb-3">
+                Tap to cycle: neutral → like → avoid. Preferences influence your recommendations.
+            </p>
+            <TagSelector value={tagStates} onChange={handleChange} compact />
         </div>
     );
 }

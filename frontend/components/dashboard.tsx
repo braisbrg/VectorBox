@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { LayoutList, Globe, Tv, Loader2, RotateCcw, Heart, User as UserIcon, LogOut } from "lucide-react";
 import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/constants";
 import { motion } from "framer-motion";
@@ -20,7 +20,7 @@ import { MobileNav } from "@/components/mobile-nav";
 import { getUserClusters, ClusterInfo } from "@/lib/api";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence } from "framer-motion";
-import { X } from "lucide-react";
+import { X, Sparkles } from "lucide-react";
 import { InfoTooltip } from "@/components/info-tooltip";
 import { MoreLikeThis } from "@/components/more-like-this";
 import { WatchlistView } from "@/components/watchlist-view";
@@ -36,11 +36,13 @@ interface DashboardProps {
 
 export function Dashboard({ initialFeedData }: DashboardProps) {
     const router = useRouter();
+    const searchParams = useSearchParams();
     const { user: clerkUser, isLoaded: isClerkLoaded } = useUser();
     const handleLogout = useVectorboxLogout();
     const [currentUserSession, setCurrentUserSession] = useState<UserSession | null>(null);
     const [users, setUsers] = useState<VectorboxUser[]>([]);
     const [isLoadingAuth, setIsLoadingAuth] = useState(true);
+    const [showOnboardingBanner, setShowOnboardingBanner] = useState(false);
 
     // View State
     const [currentView, setCurrentView] = useState("feed");
@@ -53,6 +55,17 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const [inspectorActionLoading, setInspectorActionLoading] = useState<"watched" | "rejected" | null>(null);
 
     const queryClient = useQueryClient();
+
+    // Handle ?onboarding_complete=true query param
+    useEffect(() => {
+        if (searchParams.get("onboarding_complete") === "true") {
+            setShowOnboardingBanner(true);
+            // Strip param from URL without reload
+            const url = new URL(window.location.href);
+            url.searchParams.delete("onboarding_complete");
+            window.history.replaceState({}, "", url.pathname);
+        }
+    }, [searchParams]);
 
     const handleInspectorMarkWatched = async (tmdbId: number) => {
         setInspectorActionLoading("watched");
@@ -281,6 +294,36 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 )}
 
                 <div className="container px-4 mx-auto pb-20">
+                    {/* Onboarding complete welcome banner */}
+                    <AnimatePresence>
+                        {showOnboardingBanner && (
+                            <motion.div
+                                initial={{ opacity: 0, y: -10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, height: 0 }}
+                                className="mb-4 border border-primary/30 bg-primary/5 p-4 flex items-center justify-between"
+                            >
+                                <div className="flex items-center gap-3">
+                                    <Sparkles className="w-4 h-4 text-primary shrink-0" />
+                                    <div>
+                                        <p className="text-xs font-mono text-primary uppercase tracking-wider font-bold">
+                                            Welcome to VectorBox
+                                        </p>
+                                        <p className="text-[10px] font-mono text-zinc-500">
+                                            Your taste profile is being built. Recommendations will improve as you rate more films.
+                                        </p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setShowOnboardingBanner(false)}
+                                    className="p-1 text-zinc-600 hover:text-zinc-400 transition-colors shrink-0"
+                                >
+                                    <X className="w-3 h-3" />
+                                </button>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+
                     {/* Removed Filter UI - Moved to RightConsole */}
 
                     {currentView === "ai-search" ? (
