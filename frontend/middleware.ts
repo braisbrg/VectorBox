@@ -1,4 +1,5 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { NextResponse } from "next/server";
 
 const isPublicRoute = createRouteMatcher([
     "/login(.*)",
@@ -22,9 +23,11 @@ export default clerkMiddleware(async (auth, request) => {
         }
     }
 
-    // Proteger rutas no públicas
-    if (!isPublicRoute(request)) {
-        await auth.protect();
+    // Proteger rutas no públicas — redirigir a nuestro /login chooser
+    // (no a la página hosted de Clerk) para que el guest pueda elegir
+    // "Rate Films" sin pasar por sign-in.
+    if (!isPublicRoute(request) && !userId) {
+        return NextResponse.redirect(new URL('/login', request.url));
     }
 });
 

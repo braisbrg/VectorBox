@@ -15,10 +15,17 @@ export default function LoginPage() {
     const [migrating, setMigrating] = useState(false);
     const migrationAttempted = useRef(false);
 
-    // Migration path: after sign-in with ?migrate=true, push ratings/tags to backend
+    // After sign-in: migrate guest data (if ?migrate=true) or redirect to home
     useEffect(() => {
         if (!isLoaded || !isSignedIn) return;
-        if (searchParams.get("migrate") !== "true") return;
+
+        const isMigrate = searchParams.get("migrate") === "true";
+
+        if (!isMigrate) {
+            router.push("/");
+            return;
+        }
+
         if (migrationAttempted.current) return;
         migrationAttempted.current = true;
 
@@ -37,7 +44,6 @@ export default function LoginPage() {
                     tags: tagsRaw ? JSON.parse(tagsRaw) : { avoided: [], liked: [] },
                 });
 
-                // Clear guest data
                 [
                     "vb_guest_ratings",
                     "vb_guest_tags",
