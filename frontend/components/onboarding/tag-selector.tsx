@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 
 /**
  * 15-tag grid for content preferences.
- * Three-state cycle: neutral → liked → avoided → neutral.
+ * Two-state toggle: neutral ↔ avoided.
  * Used by both /onboarding/tags (localStorage) and Settings (API).
  */
 
@@ -26,11 +26,10 @@ export const ONBOARDING_TAGS = [
     "Cine de superhéroes",
 ] as const;
 
-export type TagState = "neutral" | "liked" | "avoided";
+export type TagState = "neutral" | "avoided";
 
 export interface TagPreferences {
     avoided: string[];
-    liked: string[];
 }
 
 interface TagSelectorProps {
@@ -40,27 +39,23 @@ interface TagSelectorProps {
     compact?: boolean;
 }
 
-// Cycle order: neutral → avoided → liked → neutral.
+// Cycle order: neutral → avoided → neutral.
 // Avoid-first matches the original spec wireframe — first click expresses
-// the most common signal (rule out content) before opting in.
+// the most common signal (rule out content).
 const STATE_CYCLE: Record<TagState, TagState> = {
     neutral: "avoided",
-    avoided: "liked",
-    liked: "neutral",
+    avoided: "neutral",
 };
 
 const STATE_STYLES: Record<TagState, string> = {
     neutral:
         "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-300",
-    liked:
-        "border-primary text-primary bg-primary/10 shadow-[0_0_8px_oklch(0.9_0.4_110/0.2)]",
     avoided:
         "border-red-500/60 text-red-400 bg-red-500/10 line-through decoration-red-500/40",
 };
 
 const STATE_LABELS: Record<TagState, string> = {
     neutral: "",
-    liked: "✓",
     avoided: "✕",
 };
 
@@ -78,10 +73,6 @@ export function TagSelector({ value, onChange, compact = false }: TagSelectorPro
         <div className="space-y-3">
             {!compact && (
                 <div className="flex items-center gap-4 text-[10px] font-mono text-zinc-600 uppercase tracking-widest">
-                    <span className="flex items-center gap-1">
-                        <span className="w-2 h-2 border border-primary bg-primary/20" />
-                        Like
-                    </span>
                     <span className="flex items-center gap-1">
                         <span className="w-2 h-2 border border-red-500/60 bg-red-500/20" />
                         Avoid
@@ -105,10 +96,11 @@ export function TagSelector({ value, onChange, compact = false }: TagSelectorPro
                         <button
                             key={tag}
                             type="button"
+                            title={tag}
                             onClick={() => cycle(tag)}
                             className={`
                                 group relative px-3 py-2 border font-mono text-xs uppercase tracking-wide
-                                transition-all duration-150 cursor-pointer select-none
+                                transition-all duration-150 cursor-pointer select-none min-w-[110px]
                                 ${STATE_STYLES[state]}
                             `}
                         >
@@ -138,9 +130,6 @@ export function tagStateToPreferences(
         avoided: Object.entries(states)
             .filter(([, v]) => v === "avoided")
             .map(([k]) => k),
-        liked: Object.entries(states)
-            .filter(([, v]) => v === "liked")
-            .map(([k]) => k),
     };
 }
 
@@ -153,7 +142,6 @@ export function preferencesToTagState(
     const result: Record<string, TagState> = {};
     ONBOARDING_TAGS.forEach((t) => {
         if (prefs?.avoided?.includes(t)) result[t] = "avoided";
-        else if (prefs?.liked?.includes(t)) result[t] = "liked";
         else result[t] = "neutral";
     });
     return result;

@@ -11,15 +11,15 @@ export default function LoginPage() {
     const { isLoaded, isSignedIn } = useAuth();
     const router = useRouter();
     const searchParams = useSearchParams();
-    const [mode, setMode] = useState<"choose" | "letterboxd">("choose");
+    const isMigrate = searchParams.get("migrate") === "true";
+    const redirectUrl = isMigrate ? "/login?migrate=true" : "/";
+    const [mode, setMode] = useState<"choose" | "letterboxd">(isMigrate ? "letterboxd" : "choose");
     const [migrating, setMigrating] = useState(false);
     const migrationAttempted = useRef(false);
 
     // After sign-in: migrate guest data (if ?migrate=true) or redirect to home
     useEffect(() => {
         if (!isLoaded || !isSignedIn) return;
-
-        const isMigrate = searchParams.get("migrate") === "true";
 
         if (!isMigrate) {
             router.push("/");
@@ -41,7 +41,7 @@ export default function LoginPage() {
 
                 await api.post("/api/onboarding/migrate-guest", {
                     ratings: JSON.parse(ratingsRaw),
-                    tags: tagsRaw ? JSON.parse(tagsRaw) : { avoided: [], liked: [] },
+                    tags: tagsRaw ? JSON.parse(tagsRaw) : { avoided: [] },
                 });
 
                 [
@@ -155,7 +155,10 @@ export default function LoginPage() {
                                             "bg-primary text-background font-mono rounded-none",
                                     },
                                 }}
-                                fallbackRedirectUrl="/"
+                                fallbackRedirectUrl={redirectUrl}
+                                forceRedirectUrl={redirectUrl}
+                                signUpFallbackRedirectUrl={redirectUrl}
+                                signUpForceRedirectUrl={redirectUrl}
                             />
                         </motion.div>
                     )}

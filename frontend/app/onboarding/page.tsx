@@ -55,6 +55,8 @@ export default function OnboardingCarouselPage() {
     const [showRegistration, setShowRegistration] = useState(false);
     const [direction, setDirection] = useState(1);
     const [showSearchHint, setShowSearchHint] = useState(false);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
+    const [page, setPage] = useState(1);
     const isMounted = useRef(true);
 
     useEffect(() => {
@@ -90,8 +92,12 @@ export default function OnboardingCarouselPage() {
                 }
 
                 // No usable cache — fetch and persist
+                const savedTags = localStorage.getItem("vb_guest_tags");
+                const avoided = savedTags ? JSON.parse(savedTags).avoided || [] : [];
+                const params = new URLSearchParams(avoided.length > 0 ? { avoided_tags: avoided.join(",") } : {});
+                
                 const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
-                const res = await fetch(`${API_URL}/api/onboarding/movies`);
+                const res = await fetch(`${API_URL}/api/onboarding/movies?${params.toString()}`);
                 if (!res.ok) throw new Error("Failed to fetch movies");
                 const data: OnboardingMovie[] = await res.json();
                 if (!isMounted.current) return;
@@ -166,6 +172,45 @@ export default function OnboardingCarouselPage() {
         setRatedCount(newCount);
         persist(newRatings, prevIndex, newCount);
     }, [currentIndex, movies, ratings, ratedCount, persist]);
+
+    const loadMoreMovies = useCallback(async () => {
+        setIsLoadingMore(true);
+        const nextPage = page + 1;
+        const shownIds = movies.map(m => m.tmdb_id).join(",");
+        const savedTags = localStorage.getItem("vb_guest_tags");
+        const avoided = savedTags ? JSON.parse(savedTags).avoided || [] : [];
+        
+        const params = new URLSearchParams({
+            page: nextPage.toString(),
+            exclude_ids: shownIds,
+            ...(avoided.length > 0 && { avoided_tags: avoided.join(",") }),
+        });
+        
+        try {
+            const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+            const response = await fetch(`${API_URL}/api/onboarding/movies?${params.toString()}`);
+            if (!response.ok) throw new Error("Failed to fetch more movies");
+            const newMovies = await response.json();
+            
+            setMovies(prev => {
+                const combined = [...prev, ...newMovies];
+                localStorage.setItem(MOVIES_KEY, JSON.stringify(combined));
+                return combined;
+            });
+            setPage(nextPage);
+        } catch (e) {
+            console.error("Failed to load more movies:", e);
+        } finally {
+            setIsLoadingMore(false);
+        }
+    }, [movies, page]);
+
+    useEffect(() => {
+        // When 3 movies from the end, load more
+        if (movies.length > 0 && currentIndex >= movies.length - 3 && !isLoadingMore) {
+            loadMoreMovies();
+        }
+    }, [currentIndex, movies.length, isLoadingMore, loadMoreMovies]);
 
     // Keyboard. Wireframe order: 1 = NOT FOR ME, 2 = IT WAS OK, 3 = LOVED IT.
     // `/` shows a "search after sign-in" hint for guests (real search
@@ -350,27 +395,49 @@ export default function OnboardingCarouselPage() {
                                     ))}
                                 </div>
 
-                                <div className="flex items-center justify-between">
-                                    <button
-                                        onClick={handleUndo}
-                                        disabled={currentIndex <= 0}
-                                        className="flex items-center gap-1 text-[10px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors disabled:opacity-30 disabled:cursor-not-allowed uppercase"
-                                    >
-                                        <Undo2 className="w-3 h-3" /> UNDO
-                                    </button>
-                                    <button
-                                        onClick={triggerSearchHint}
-                                        className="flex items-center gap-1 text-[10px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors uppercase"
-                                    >
-                                        <Search className="w-3 h-3" /> / SEARCH
-                                    </button>
+                                {/* Bottom controls bar */}
+                                <div className="flex items-center justify-between gap-2 mt-2">
+                                    {/* Skip — left aligned, dashed border to indicate it doesn't count */}
                                     <button
                                         onClick={handleSkip}
-                                        className="flex items-center gap-1 text-[10px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors uppercase"
+                                        className="border border-dashed border-zinc-600 text-zinc-500 px-4 py-2 
+                                                   font-mono text-xs hover:border-zinc-400 hover:text-zinc-400 
+                                                   transition-colors flex items-center gap-2"
                                     >
-                                        SKIP <SkipForward className="w-3 h-3" />
+                                        <span className="text-[10px] opacity-60">SPACE</span>
+                                        HAVEN'T SEEN IT
                                     </button>
+                                    
+                                    <div className="flex gap-2">
+                                        {/* Undo */}
+                                        <button
+                                            onClick={handleUndo}
+                                            disabled={currentIndex <= 0}
+                                            className="border border-border text-zinc-500 px-3 py-2 font-mono text-xs
+                                                       hover:border-zinc-400 hover:text-zinc-400 transition-colors
+                                                       disabled:opacity-30 disabled:cursor-not-allowed
+                                                       flex items-center gap-1"
+                                        >
+                                            <span className="text-[10px] opacity-60">←</span> UNDO
+                                        </button>
+                                        
+                                        {/* Search */}
+                                        <button
+                                            onClick={triggerSearchHint}
+                                            className="border border-border text-zinc-500 px-3 py-2 font-mono text-xs
+                                                       hover:border-zinc-400 hover:text-zinc-400 transition-colors
+                                                       flex items-center gap-1"
+                                        >
+                                            <span className="text-[10px] opacity-60">/</span> SEARCH
+                                        </button>
+                                    </div>
                                 </div>
+                                
+                                {isLoadingMore && currentIndex >= movies.length - 1 && (
+                                    <div className="font-mono text-xs text-zinc-500 animate-pulse text-center mt-4">
+                                        [ LOADING MORE FILMS... ]
+                                    </div>
+                                )}
 
                                 {/* Keyboard hints */}
                                 <div className="hidden md:flex items-center justify-center gap-4 text-[9px] font-mono text-zinc-700 uppercase">
@@ -398,23 +465,30 @@ export default function OnboardingCarouselPage() {
                         </div>
                     </div>
                 ) : (
-                    /* All movies seen */
+                    /* The "all films rated" state should only show if we truly ran out
+                       of movies AND the user has rated them all (edge case, very rare) */
                     <div className="text-center py-20 space-y-6">
-                        <Sparkles className="w-12 h-12 text-primary mx-auto" />
-                        <h2 className="text-2xl font-black font-mono uppercase tracking-tighter">
-                            ALL FILMS <span className="text-primary">RATED</span>
-                        </h2>
-                        <p className="text-zinc-500 font-mono text-sm">
-                            {ratedCount >= 15
-                                ? "Your taste profile is ready. Save your profile to get personalized recommendations."
-                                : `You've rated ${ratedCount} films. Rate at least 15 for best results.`}
-                        </p>
-                        <button
-                            onClick={handleSaveProfile}
-                            className="px-8 py-3 bg-primary text-black font-bold font-mono uppercase tracking-wider text-sm hover:bg-primary/90 transition-colors glow-primary-hover"
-                        >
-                            SAVE PROFILE
-                        </button>
+                        {ratedCount < 15 ? (
+                            <div className="font-mono text-sm text-zinc-500 animate-pulse">
+                                Loading more films...
+                            </div>
+                        ) : (
+                            <>
+                                <Sparkles className="w-12 h-12 text-primary mx-auto" />
+                                <h2 className="text-2xl font-black font-mono uppercase tracking-tighter">
+                                    ALL FILMS <span className="text-primary">RATED</span>
+                                </h2>
+                                <p className="text-zinc-500 font-mono text-sm">
+                                    Your taste profile is ready. Save your profile to get personalized recommendations.
+                                </p>
+                                <button
+                                    onClick={handleSaveProfile}
+                                    className="px-8 py-3 bg-primary text-black font-bold font-mono uppercase tracking-wider text-sm hover:bg-primary/90 transition-colors glow-primary-hover"
+                                >
+                                    SAVE PROFILE
+                                </button>
+                            </>
+                        )}
                     </div>
                 )}
 
