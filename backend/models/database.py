@@ -28,7 +28,7 @@ class User(Base):
     is_anonymous = Column(Boolean, nullable=False, server_default="false")
 
     # Onboarding (carousel cold-start flow)
-    tag_preferences = Column(JSONB, nullable=True)  # {"avoided": [...], "liked": [...]}
+    tag_preferences = Column(JSONB, nullable=True)  # {"avoided": [...]}
     onboarding_completed = Column(Boolean, nullable=False, server_default="false")
     onboarding_ratings_count = Column(Integer, nullable=False, server_default="0")
     

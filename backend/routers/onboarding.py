@@ -95,11 +95,10 @@ TAG_WHITELIST = set(TAG_FILTERS.keys())
 
 class MigrateGuestRequest(BaseModel):
     ratings: Dict[int, str]  # tmdb_id → "positive"|"neutral"|"negative"
-    tags: Dict[str, List[str]]  # {"avoided": [...], "liked": [...]}
+    tags: Dict[str, List[str]]  # {"avoided": [...]}
 
 class TagsRequest(BaseModel):
     avoided: List[str]
-    liked: List[str]
 
 class OnboardingMovie(BaseModel):
     tmdb_id: int
@@ -114,6 +113,37 @@ class OnboardingMovie(BaseModel):
     original_language: Optional[str] = None
     vectorbox_score: Optional[float] = None
 
+
+def _apply_diversity_filters(candidates: List[Movie], limit: int) -> List[Movie]:
+    """
+    Apply diversity caps:
+    - Max 2 per genre per window of 5
+    - Max 2 per decade per window of 5
+    Returns up to `limit` diverse movies.
+    """
+    selected = []
+    genre_counts: Dict[str, int] = {}
+    decade_counts: Dict[int, int] = {}
+    
+    for movie in candidates:
+        if len(selected) >= limit:
+            break
+        
+        # Check genre cap (max 2 per genre)
+        movie_genres = movie.genres or []
+        genre_ok = all(genre_counts.get(g, 0) < 2 for g in movie_genres)
+        
+        # Check decade cap (max 2 per decade)
+        decade = (movie.year // 10 * 10) if movie.year else 0
+        decade_ok = decade_counts.get(decade, 0) < 2
+        
+        if genre_ok and decade_ok:
+            selected.append(movie)
+            for g in movie_genres:
+                genre_counts[g] = genre_counts.get(g, 0) + 1
+            decade_counts[decade] = decade_counts.get(decade, 0) + 1
+    
+    return selected
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -149,6 +179,7 @@ def _apply_tag_exclude_filters(query, avoided_tags: List[str]):
     (semantically: "the genre this tag *labels* — exclude it"). Also respects
     column-level filters such as `max_runtime` and `min_popularity`.
     """
+    logger.info(f"[Onboarding] Applying tag filters. Avoided: {avoided_tags}")
     for tag in avoided_tags:
         config = TAG_FILTERS.get(tag, {})
         genres_to_exclude = config.get("exclude_genres") or config.get("include_genres", [])
@@ -169,6 +200,10 @@ def _apply_tag_exclude_filters(query, avoided_tags: List[str]):
 
 @router.get("/movies")
 async def get_onboarding_movies(
+    country_code: str = "ES",
+    avoided_tags: str = "",
+    page: int = 1,
+    exclude_ids: str = "",
     db: AsyncSession = Depends(get_db),
     current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
 ):
@@ -202,7 +237,38 @@ async def get_onboarding_movies(
         )
         tag_prefs = user_result.scalar_one_or_none() or {}
 
-    avoided_tags = (tag_prefs or {}).get("avoided", []) if isinstance(tag_prefs, dict) else []
+    if current_user and tag_prefs:
+        avoided_tags_list = tag_prefs.get("avoided", [])
+    elif avoided_tags:
+        avoided_tags_list = [t.strip() for t in avoided_tags.split(",") if t.strip()]
+    else:
+        avoided_tags_list = []
+
+    if page > 1:
+        shown_ids = [int(x) for x in exclude_ids.split(",") if x.strip()]
+        
+        # Get diverse pool excluding already shown
+        pool_query = (
+            select(Movie)
+            .where(*MOVIE_QUALITY_GATE)
+            .where(Movie.tmdb_id.notin_(shown_ids))
+            .where(Movie.vote_count >= 500)
+            .where(Movie.vectorbox_score >= 55)
+            .where(Movie.poster_path.isnot(None))
+        )
+        
+        if avoided_tags_list:
+            pool_query = _apply_tag_exclude_filters(pool_query, avoided_tags_list)
+            
+        pool_query = pool_query.order_by(desc(Movie.popularity)).limit(100)
+        result = await db.execute(pool_query)
+        candidates = result.scalars().all()
+        
+        if avoided_tags_list:
+            logger.info(f"[Onboarding] After tag filter: {len(candidates)} candidates remaining")
+            
+        selected = _apply_diversity_filters(candidates, limit=15)
+        return [_movie_to_dict(m) for m in selected]
 
     # --- Phase 1: One movie per genre pole (5 movies) ---
     pole_movies: list = []
@@ -236,8 +302,8 @@ async def get_onboarding_movies(
             query = query.where(Movie.tmdb_id.notin_(rated_movie_ids))
         if pole_tmdb_ids:
             query = query.where(Movie.tmdb_id.notin_(pole_tmdb_ids))
-        if avoided_tags:
-            query = _apply_tag_exclude_filters(query, avoided_tags)
+        if avoided_tags_list:
+            query = _apply_tag_exclude_filters(query, avoided_tags_list)
 
         query = query.order_by(desc(Movie.vectorbox_score)).limit(5)
         result = await db.execute(query)
@@ -260,8 +326,8 @@ async def get_onboarding_movies(
     )
     if seen_tmdb_ids:
         pool_query = pool_query.where(Movie.tmdb_id.notin_(seen_tmdb_ids))
-    if avoided_tags:
-        pool_query = _apply_tag_exclude_filters(pool_query, avoided_tags)
+    if avoided_tags_list:
+        pool_query = _apply_tag_exclude_filters(pool_query, avoided_tags_list)
 
     pool_query = pool_query.order_by(
         desc(Movie.vectorbox_score)
@@ -270,42 +336,10 @@ async def get_onboarding_movies(
     pool_result = await db.execute(pool_query)
     pool_candidates = pool_result.scalars().all()
 
-    # Diversity enforcement: max 2 per genre per 5-window, max 2 per decade per 5-window
-    diverse_picks: list = []
-    genre_window_counts: dict = {}
-    decade_window_counts: dict = {}
-    window_size = 5
+    if avoided_tags_list:
+        logger.info(f"[Onboarding] After tag filter: {len(pool_candidates)} candidates remaining in diverse pool")
 
-    random.shuffle(pool_candidates)  # Randomize before diversity filter
-    # Re-sort by score after shuffle to prefer quality, but shuffle breaks ties
-    pool_candidates.sort(key=lambda m: m.vectorbox_score or 0, reverse=True)
-
-    for movie in pool_candidates:
-        if len(diverse_picks) >= 10:
-            break
-
-        window_idx = len(diverse_picks) // window_size
-        genres = movie.genres or []
-        decade = (movie.year // 10 * 10) if movie.year else 0
-
-        # Check genre cap
-        genre_ok = True
-        for g in genres:
-            key = (window_idx, g)
-            if genre_window_counts.get(key, 0) >= 2:
-                genre_ok = False
-                break
-
-        # Check decade cap
-        decade_key = (window_idx, decade)
-        decade_ok = decade_window_counts.get(decade_key, 0) < 2
-
-        if genre_ok and decade_ok:
-            diverse_picks.append(movie)
-            for g in genres:
-                key = (window_idx, g)
-                genre_window_counts[key] = genre_window_counts.get(key, 0) + 1
-            decade_window_counts[decade_key] = decade_window_counts.get(decade_key, 0) + 1
+    diverse_picks = _apply_diversity_filters(pool_candidates, limit=10)
 
     # Combine: 5 pole + 10 diverse
     all_movies = pole_movies + diverse_picks
@@ -340,7 +374,6 @@ async def migrate_guest(
     # Save tag preferences
     tag_data = {
         "avoided": body.tags.get("avoided", []),
-        "liked": body.tags.get("liked", []),
     }
     user_result = await db.execute(select(User).where(User.id == user_id))
     user = user_result.scalar_one_or_none()
@@ -417,11 +450,10 @@ async def save_tags(
     """Save content tag preferences. Used by Settings UI."""
     # Validate against whitelist
     unknown_avoided = set(body.avoided) - TAG_WHITELIST
-    unknown_liked = set(body.liked) - TAG_WHITELIST
-    if unknown_avoided or unknown_liked:
+    if unknown_avoided:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Unknown tags: {unknown_avoided | unknown_liked}",
+            detail=f"Unknown tags: {unknown_avoided}",
         )
 
     user_result = await db.execute(select(User).where(User.id == current_user.user_id))
@@ -429,7 +461,7 @@ async def save_tags(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    user.tag_preferences = {"avoided": body.avoided, "liked": body.liked}
+    user.tag_preferences = {"avoided": body.avoided}
     await db.commit()
 
     return {"status": "ok"}

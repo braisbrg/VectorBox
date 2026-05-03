@@ -56,7 +56,7 @@ export default function OnboardingTagsPage() {
                         CONTENT <span className="text-primary">PREFERENCES</span>
                     </h1>
                     <p className="text-zinc-500 font-mono text-xs uppercase tracking-widest">
-                        // TAP TO CYCLE: NEUTRAL → LIKE → AVOID //
+                        // TAP TO TOGGLE: NEUTRAL ↔ AVOID //
                     </p>
                 </div>
 
