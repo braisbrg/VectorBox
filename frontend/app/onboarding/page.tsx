@@ -54,7 +54,10 @@ export default function OnboardingCarouselPage() {
     const [showPeek, setShowPeek] = useState(false);
     const [showRegistration, setShowRegistration] = useState(false);
     const [direction, setDirection] = useState(1);
-    const [showSearchHint, setShowSearchHint] = useState(false);
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [searchQuery, setSearchQuery] = useState("");
+    const [searchResults, setSearchResults] = useState<OnboardingMovie[]>([]);
+    const [searchLoading, setSearchLoading] = useState(false);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [page, setPage] = useState(1);
     const isMounted = useRef(true);
@@ -212,32 +215,110 @@ export default function OnboardingCarouselPage() {
         }
     }, [currentIndex, movies.length, isLoadingMore, loadMoreMovies]);
 
-    // Keyboard. Wireframe order: 1 = NOT FOR ME, 2 = IT WAS OK, 3 = LOVED IT.
-    // `/` shows a "search after sign-in" hint for guests (real search
-    // requires auth — see plan §2.4 carousel page).
+    // Search modal helpers
+    const openSearch = useCallback(() => {
+        setSearchOpen(true);
+    }, []);
+    const closeSearch = useCallback(() => {
+        setSearchOpen(false);
+        setSearchQuery("");
+        setSearchResults([]);
+    }, []);
+
+    const handleSearchRate = useCallback(
+        (movie: OnboardingMovie, signal: Signal) => {
+            // Add to pool if missing so the carousel can revisit / undo it.
+            let nextMovies = movies;
+            if (!movies.find((m) => m.tmdb_id === movie.tmdb_id)) {
+                nextMovies = [...movies, movie];
+                setMovies(nextMovies);
+                localStorage.setItem(MOVIES_KEY, JSON.stringify(nextMovies));
+            }
+            const newRatings = { ...ratings, [movie.tmdb_id]: signal };
+            const newCount = Object.keys(newRatings).length;
+            setRatings(newRatings);
+            setRatedCount(newCount);
+            // Persist with current carousel index — search-rates don't advance the deck.
+            localStorage.setItem(RATINGS_KEY, JSON.stringify(newRatings));
+            localStorage.setItem(
+                PROGRESS_KEY,
+                JSON.stringify({
+                    currentIndex,
+                    ratedCount: newCount,
+                    movieIds: nextMovies.map((m) => m.tmdb_id),
+                })
+            );
+            if (newCount === 10) setShowPeek(true);
+            if (newCount >= 15 && !showRegistration) setShowRegistration(true);
+            closeSearch();
+        },
+        [movies, ratings, currentIndex, showRegistration, closeSearch]
+    );
+
+    // Debounced search fetch
+    useEffect(() => {
+        if (!searchQuery || searchQuery.trim().length < 2) {
+            setSearchResults([]);
+            return;
+        }
+        let cancelled = false;
+        setSearchLoading(true);
+        const t = setTimeout(async () => {
+            try {
+                const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+                const res = await fetch(
+                    `${API_URL}/api/onboarding/search?q=${encodeURIComponent(searchQuery)}`
+                );
+                if (!res.ok) throw new Error("search failed");
+                const data: OnboardingMovie[] = await res.json();
+                if (!cancelled) setSearchResults(data);
+            } catch (e) {
+                if (!cancelled) setSearchResults([]);
+                console.error("Search failed:", e);
+            } finally {
+                if (!cancelled) setSearchLoading(false);
+            }
+        }, 300);
+        return () => {
+            cancelled = true;
+            clearTimeout(t);
+        };
+    }, [searchQuery]);
+
+    // Keyboard handler. Single mount via refs so re-renders don't re-bind.
+    // Wireframe order: 1 = NOT FOR ME, 2 = IT WAS OK, 3 = LOVED IT.
+    const handlersRef = useRef({ handleRate, handleSkip, handleUndo, openSearch, closeSearch, searchOpen });
+    useEffect(() => {
+        handlersRef.current = { handleRate, handleSkip, handleUndo, openSearch, closeSearch, searchOpen };
+    });
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+            const target = e.target;
+            const inField = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
+            const h = handlersRef.current;
+            // Modal owns the keyboard while open: only Escape passes through.
+            if (h.searchOpen) {
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    h.closeSearch();
+                }
+                return;
+            }
+            if (inField) return;
             switch (e.key) {
-                case "1": handleRate("negative"); break;
-                case "2": handleRate("neutral"); break;
-                case "3": handleRate("positive"); break;
-                case " ": e.preventDefault(); handleSkip(); break;
-                case "ArrowLeft": handleUndo(); break;
+                case "1": h.handleRate("negative"); break;
+                case "2": h.handleRate("neutral"); break;
+                case "3": h.handleRate("positive"); break;
+                case " ": e.preventDefault(); h.handleSkip(); break;
+                case "ArrowLeft": h.handleUndo(); break;
                 case "/":
                     e.preventDefault();
-                    setShowSearchHint(true);
-                    setTimeout(() => setShowSearchHint(false), 2000);
+                    h.openSearch();
                     break;
             }
         };
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, [handleRate, handleSkip, handleUndo]);
-
-    const triggerSearchHint = useCallback(() => {
-        setShowSearchHint(true);
-        setTimeout(() => setShowSearchHint(false), 2000);
     }, []);
 
     const handleSaveProfile = () => {
@@ -423,7 +504,7 @@ export default function OnboardingCarouselPage() {
                                         
                                         {/* Search */}
                                         <button
-                                            onClick={triggerSearchHint}
+                                            onClick={openSearch}
                                             className="border border-border text-zinc-500 px-3 py-2 font-mono text-xs
                                                        hover:border-zinc-400 hover:text-zinc-400 transition-colors
                                                        flex items-center gap-1"
@@ -449,18 +530,6 @@ export default function OnboardingCarouselPage() {
                                     <span>[/] Search</span>
                                 </div>
 
-                                <AnimatePresence>
-                                    {showSearchHint && (
-                                        <motion.div
-                                            initial={{ opacity: 0, y: 4 }}
-                                            animate={{ opacity: 1, y: 0 }}
-                                            exit={{ opacity: 0 }}
-                                            className="border border-zinc-700 bg-zinc-900/40 px-3 py-1.5 font-mono text-[10px] text-zinc-500 text-center uppercase tracking-wider"
-                                        >
-                                            [ SEARCH AVAILABLE AFTER SIGNING IN ]
-                                        </motion.div>
-                                    )}
-                                </AnimatePresence>
                             </div>
                         </div>
                     </div>
@@ -538,12 +607,18 @@ export default function OnboardingCarouselPage() {
                                     You&apos;ve rated {ratedCount} films. Save your profile to get personalized AI recommendations.
                                 </p>
                             </div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3 flex-wrap">
                                 <button
                                     onClick={handleSaveProfile}
                                     className="px-6 py-2.5 bg-primary text-black font-bold font-mono uppercase tracking-wider text-xs hover:bg-primary/90 transition-colors glow-primary-hover"
                                 >
                                     SAVE PROFILE
+                                </button>
+                                <button
+                                    onClick={() => router.push("/explore?guest=true")}
+                                    className="px-4 py-2.5 border border-border text-zinc-400 font-mono uppercase tracking-wider text-xs hover:border-zinc-500 hover:text-zinc-300 transition-colors"
+                                >
+                                    [ SKIP FOR NOW ]
                                 </button>
                                 <button
                                     onClick={() => setShowRegistration(false)}
@@ -552,6 +627,9 @@ export default function OnboardingCarouselPage() {
                                     [ KEEP EXPLORING ]
                                 </button>
                             </div>
+                            <p className="text-[10px] font-mono text-zinc-600">
+                                Your ratings are saved in this browser. They&apos;ll be lost if you clear your cache.
+                            </p>
                         </motion.div>
                     )}
                 </AnimatePresence>
@@ -586,6 +664,108 @@ export default function OnboardingCarouselPage() {
                     </div>
                 )}
             </main>
+
+            {/* Search modal */}
+            <AnimatePresence>
+                {searchOpen && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.15 }}
+                        className="fixed inset-0 bg-background/90 z-50 flex items-start justify-center pt-20 px-4"
+                        onClick={closeSearch}
+                    >
+                        <div
+                            className="w-full max-w-lg border border-border bg-background"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center border-b border-border px-4 py-3">
+                                <span className="text-zinc-500 font-mono text-xs mr-3">SEARCH</span>
+                                <input
+                                    autoFocus
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    placeholder="Type a film title..."
+                                    className="flex-1 bg-transparent font-mono text-sm text-foreground placeholder:text-zinc-600 outline-none"
+                                />
+                                <button
+                                    onClick={closeSearch}
+                                    className="text-zinc-500 hover:text-foreground font-mono text-xs ml-3"
+                                >
+                                    ESC
+                                </button>
+                            </div>
+
+                            <div className="max-h-96 overflow-y-auto">
+                                {searchLoading && (
+                                    <div className="p-4 font-mono text-xs text-zinc-500 animate-pulse">
+                                        SEARCHING...
+                                    </div>
+                                )}
+                                {!searchLoading && searchResults.map((movie) => (
+                                    <div
+                                        key={movie.tmdb_id}
+                                        className="border-b border-border last:border-0 p-3 flex gap-3"
+                                    >
+                                        {movie.poster_path && (
+                                            // eslint-disable-next-line @next/next/no-img-element
+                                            <img
+                                                src={getTMDBImageUrl(movie.poster_path, "w92")}
+                                                alt={movie.title}
+                                                className="w-10 h-14 object-cover flex-shrink-0 grayscale"
+                                            />
+                                        )}
+                                        <div className="flex-1 min-w-0">
+                                            <div className="font-mono text-xs text-foreground truncate">
+                                                {movie.title}
+                                            </div>
+                                            <div className="font-mono text-[10px] text-zinc-500">
+                                                {movie.year}
+                                                {movie.genres && movie.genres.length > 0 && (
+                                                    <> · {movie.genres.slice(0, 2).join("/")}</>
+                                                )}
+                                            </div>
+                                        </div>
+                                        <div className="flex gap-1 flex-shrink-0 self-center">
+                                            {([
+                                                { signal: "negative" as Signal, label: "✕", cls: "hover:border-red-500 hover:text-red-500" },
+                                                { signal: "neutral" as Signal,  label: "~", cls: "hover:border-zinc-400 hover:text-zinc-400" },
+                                                { signal: "positive" as Signal, label: "♥", cls: "hover:border-primary hover:text-primary" },
+                                            ]).map(({ signal, label, cls }) => {
+                                                const active = ratings[movie.tmdb_id] === signal;
+                                                return (
+                                                    <button
+                                                        key={signal}
+                                                        onClick={() => handleSearchRate(movie, signal)}
+                                                        className={`border w-7 h-7 font-mono text-xs flex items-center justify-center transition-colors ${
+                                                            active
+                                                                ? "border-primary text-primary"
+                                                                : `border-border text-zinc-600 ${cls}`
+                                                        }`}
+                                                    >
+                                                        {label}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                ))}
+                                {!searchLoading && searchQuery.trim().length >= 2 && searchResults.length === 0 && (
+                                    <div className="p-4 font-mono text-xs text-zinc-600">
+                                        NO RESULTS FOR &quot;{searchQuery.toUpperCase()}&quot;
+                                    </div>
+                                )}
+                                {!searchLoading && searchQuery.trim().length < 2 && (
+                                    <div className="p-4 font-mono text-[10px] text-zinc-700 uppercase tracking-wider">
+                                        Type at least 2 characters
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
         </div>
     );
 }

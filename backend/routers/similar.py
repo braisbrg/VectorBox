@@ -1,19 +1,22 @@
 """
 Get similar movie recommendations based on a specific movie
 """
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List, Optional
 import asyncio
 import logging
+import numpy as np
 
 from config import get_db
+from limiter import limiter
 from models.database import Movie
 from services.qdrant_service import QdrantService
 from services.tmdb_client import TMDBClient
 from services.embedding_service import EmbeddingService
-from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_embedding_service
+from dependencies import get_tmdb_client, get_qdrant_service, get_optional_current_user, get_embedding_service
 
 from models.schemas import TokenResponse
 
@@ -22,10 +25,12 @@ router = APIRouter()
 
 
 @router.get("/similar/{tmdb_id}")
+@limiter.limit("20/minute")
 async def get_similar_movies(
+    request: Request,
     tmdb_id: int,
     limit: int = Query(12, ge=1, le=50),
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
@@ -287,3 +292,100 @@ async def get_similar_movies(
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail="Failed to get similar movies")
+
+
+# ---------------------------------------------------------------------------
+# POST /similar/multi — Centroid-based MLT for up to 5 seed movies (public)
+# ---------------------------------------------------------------------------
+
+class MultiSeedRequest(BaseModel):
+    tmdb_ids: List[int] = Field(..., min_length=1, max_length=5)
+    limit: int = Field(12, ge=1, le=50)
+    country_code: str = "ES"
+
+
+@router.post("/similar/multi")
+@limiter.limit("20/minute")
+async def get_similar_multi(
+    request: Request,
+    body: MultiSeedRequest,
+    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+):
+    """
+    Find movies similar to up to 5 seed movies by averaging their stored
+    Qdrant vectors and searching with the centroid. Public — works for guests.
+    """
+    seed_ids = list(dict.fromkeys(body.tmdb_ids))  # preserve order, dedupe
+
+    vectors_map = await qdrant.get_vectors_batch(seed_ids)
+    vectors = [np.array(v) for v in vectors_map.values() if v]
+    if not vectors:
+        raise HTTPException(status_code=404, detail="No vectors found for provided movies")
+
+    centroid = np.mean(vectors, axis=0).tolist()
+
+    # Over-fetch to absorb seed exclusions and quality-gate filtering.
+    raw = await qdrant.search_similar(
+        query_vector=centroid,
+        limit=body.limit + len(seed_ids) + 20,
+        score_threshold=0.45,
+    )
+
+    seed_set = set(seed_ids)
+    ordered_ids: List[int] = []
+    score_by_id: dict = {}
+    for r in raw:
+        meta = r.get("metadata", {}) or {}
+        rid = int(meta.get("tmdb_id") or r["movie_id"])
+        if rid in seed_set or rid in score_by_id:
+            continue
+        ordered_ids.append(rid)
+        score_by_id[rid] = r["score"]
+
+    # Quality-gated DB fetch
+    movies_q = await db.execute(
+        select(Movie)
+        .where(Movie.tmdb_id.in_(ordered_ids))
+        .where(Movie.vectorbox_score >= 55)
+        .where(Movie.vote_count >= 100)
+        .where(Movie.poster_path.isnot(None))
+    )
+    by_id = {m.tmdb_id: m for m in movies_q.scalars().all()}
+
+    seeds_q = await db.execute(select(Movie).where(Movie.tmdb_id.in_(seed_ids)))
+    seed_titles = {m.tmdb_id: m.title for m in seeds_q.scalars().all()}
+
+    recs = []
+    for rid in ordered_ids:
+        m = by_id.get(rid)
+        if not m:
+            continue
+        recs.append({
+            "movie_id": m.tmdb_id,
+            "title": m.title,
+            "poster_path": m.poster_path,
+            "year": m.year,
+            "similarity_score": min(round(score_by_id[rid] * 100), 100),
+            "streaming_providers": [],
+            "overview": m.overview,
+            "vote_average": m.vote_average,
+            "vectorbox_score": m.vectorbox_score,
+            "imdb_rating": m.imdb_rating,
+            "metacritic_rating": m.metacritic_rating,
+            "rotten_tomatoes_rating": m.rotten_tomatoes_rating,
+            "title_es": m.title_es,
+            "overview_es": m.overview_es,
+        })
+        if len(recs) >= body.limit:
+            break
+
+    return {
+        "source_movies": [
+            {"tmdb_id": tid, "title": seed_titles.get(tid, "Unknown")}
+            for tid in seed_ids
+        ],
+        "recommendations": recs,
+    }

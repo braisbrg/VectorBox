@@ -23,7 +23,8 @@ from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from services.feed_service import FeedService
 from services.provider_service import ProviderService
-from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_embedding_service
+from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_optional_current_user, get_embedding_service
+from limiter import limiter
 from models.schemas import TokenResponse
 from services.embedding_service import EmbeddingService
 from utils.scoring import normalize_similarity_score
@@ -397,17 +398,20 @@ async def get_random_recommendation(
 
 
 @router.post("/group", response_model=List[RecommendationResponse])
+@limiter.limit("10/minute")
 async def get_group_recommendations(
+    http_request: Request,  # required by slowapi
     request: GroupRecommendationRequest,
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service)
 ):
     """
     Get recommendations for a group of users.
+    Public — guests may pass any user_ids; ownership check applies only when authed.
     """
-    if current_user.user_id not in request.user_ids:
+    if current_user is not None and current_user.user_id not in request.user_ids:
         raise HTTPException(status_code=403, detail="Access denied")
 
     try:
@@ -460,8 +464,6 @@ async def get_group_recommendations(
         logger.error(f"Group recommendation failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate group recommendations")
 
-
-from limiter import limiter
 
 @router.get("/feed", response_model=FeedResponse)
 @limiter.limit("20/minute")
