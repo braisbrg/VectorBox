@@ -36,9 +36,9 @@ export default function PrivacyPage() {
                             Project</span>, based in Spain.
                         </p>
                         <p className="text-sm text-zinc-400 leading-relaxed mb-4">
-                            VectorBox is currently in private beta and does not engage
-                            in any commercial activity. No goods or services are sold
-                            through this platform.
+                            VectorBox is an open-source, non-commercial project and
+                            does not engage in any commercial activity. No goods or
+                            services are sold through this platform.
                         </p>
                         <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 text-sm font-[var(--font-mono-acid)] text-zinc-300 space-y-1">
                             <p><span className="text-zinc-500">Entity:</span> VectorBox Project</p>
@@ -79,9 +79,11 @@ export default function PrivacyPage() {
                         </h2>
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
                             <li>
-                                <strong className="text-zinc-300">Username and PIN</strong> —
-                                Your PIN is hashed with bcrypt before storage. We never store
-                                or log your PIN in plain text.
+                                <strong className="text-zinc-300">Account identity</strong> —
+                                Authentication is handled by Clerk (a third-party identity
+                                provider). VectorBox stores your Clerk user ID and display
+                                name. We do not store passwords — authentication credentials
+                                are managed entirely by Clerk.
                             </li>
                             <li>
                                 <strong className="text-zinc-300">Movie ratings</strong> —
@@ -148,7 +150,8 @@ export default function PrivacyPage() {
                         </p>
                         <div className="bg-zinc-900/50 border border-zinc-800 rounded-lg p-4 text-sm font-[var(--font-mono-acid)] text-zinc-300 space-y-1">
                             <p>
-                                <span className="text-zinc-500">Name:</span> vectorbox_token
+                                <span className="text-zinc-500">Name:</span> __session,
+                                __clerk_* (set by Clerk)
                             </p>
                             <p>
                                 <span className="text-zinc-500">Type:</span> HttpOnly,
@@ -156,17 +159,18 @@ export default function PrivacyPage() {
                             </p>
                             <p>
                                 <span className="text-zinc-500">Purpose:</span> Session
-                                authentication
+                                authentication via Clerk
                             </p>
                             <p>
-                                <span className="text-zinc-500">Duration:</span> 24 hours
+                                <span className="text-zinc-500">Duration:</span> Session-based
+                                (managed by Clerk)
                             </p>
                         </div>
                         <p className="text-sm text-zinc-500 leading-relaxed mt-4">
-                            This cookie is used exclusively to maintain your authenticated
-                            session. It is not a tracking or analytics cookie. As a strictly
-                            necessary cookie, it is exempt from consent requirements under
-                            GDPR Article 5(3) of the ePrivacy Directive.
+                            These cookies are used exclusively to maintain your authenticated
+                            session via Clerk. They are not tracking or analytics cookies.
+                            As strictly necessary cookies, they are exempt from consent
+                            requirements under GDPR Article 5(3) of the ePrivacy Directive.
                         </p>
                     </section>
 
@@ -182,8 +186,12 @@ export default function PrivacyPage() {
                         </p>
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-2 list-disc list-inside">
                             <li>
+                                <strong className="text-zinc-300">Clerk, Inc.</strong> (United States)
+                                — Used for user authentication and session management.
+                            </li>
+                            <li>
                                 <strong className="text-zinc-300">Groq, Inc.</strong> (United States)
-                                — Used for LLM-based query parsing.
+                                — Used for LLM-based query parsing and cinematic description generation.
                             </li>
                             <li>
                                 <strong className="text-zinc-300">OpenAI, LLC</strong> (United States)
@@ -197,6 +205,18 @@ export default function PrivacyPage() {
                             Framework. Only the text of your search query is
                             transmitted — no personal identifiers, usernames, or
                             rating history are shared with these providers.
+                        </p>
+                        <p className="text-sm text-zinc-500 leading-relaxed mt-3">
+                            For details on how Clerk handles your authentication data,
+                            see{" "}
+                            <a
+                                href="https://clerk.com/legal/privacy"
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-zinc-300 underline hover:text-[#CCFF00]"
+                            >
+                                Clerk&apos;s Privacy Policy
+                            </a>.
                         </p>
                     </section>
 
@@ -268,7 +288,7 @@ export default function PrivacyPage() {
                             encourage you to review this page periodically.
                         </p>
                         <p className="text-sm text-zinc-500 mt-4 font-[var(--font-mono-acid)]">
-                            Last updated: April 8, 2026
+                            Last updated: May 4, 2026
                         </p>
                     </section>
                 </div>
