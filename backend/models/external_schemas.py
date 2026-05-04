@@ -13,10 +13,10 @@ class OMDbResponse(BaseModel):
     Title: Optional[str] = None
     Year: Optional[str] = None
     imdbRating: Optional[str] = None
+    imdbVotes: Optional[str] = None  # e.g. "1,234,567" — parsed to int by callers
     Ratings: List[OMDbRating] = Field(default_factory=list)
     Metascore: Optional[str] = None
-    
-    # Allow extra fields since OMDb returns many keys we might not strictly need right now
+
     class Config:
         extra = "ignore"
 

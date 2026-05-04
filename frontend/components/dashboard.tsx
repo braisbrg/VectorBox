@@ -8,7 +8,7 @@ import { motion } from "framer-motion";
 import Image from "next/image";
 import { useUser } from "@clerk/nextjs";
 import { useLanguage } from "@/components/language-provider";
-import { VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem, FilterSearchParams, searchWithFilters, markWatched, rejectMovie } from "@/lib/api";
+import { api, VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem, FilterSearchParams, searchWithFilters, markWatched, rejectMovie } from "@/lib/api";
 import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
 
 import { FeedContainer } from "@/components/feed-container";
@@ -43,6 +43,8 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const [users, setUsers] = useState<VectorboxUser[]>([]);
     const [isLoadingAuth, setIsLoadingAuth] = useState(true);
     const [showOnboardingBanner, setShowOnboardingBanner] = useState(false);
+    const [showImprovementBanner, setShowImprovementBanner] = useState(false);
+    const [ratingsCount, setRatingsCount] = useState(0);
 
     // View State
     const [currentView, setCurrentView] = useState("feed");
@@ -100,6 +102,14 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         if (!isClerkLoaded) return;
 
         if (!clerkUser) {
+            // FIX 1: Guest with 15+ ratings → explore instead of login
+            try {
+                const raw = localStorage.getItem("vb_guest_ratings");
+                if (raw && Object.keys(JSON.parse(raw)).length >= 15) {
+                    router.replace("/explore?guest=true");
+                    return;
+                }
+            } catch { /* ignore corrupt data */ }
             localStorage.removeItem("vectorbox_user");
             router.push("/login");
             return;
@@ -149,6 +159,26 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
 
         getUsers().then(setUsers).catch(err => console.error("Failed to fetch users", err));
     }, [isClerkLoaded, clerkUser, router]);
+
+    // FIX 3: Onboarding status check — redirect or show improvement banner
+    useEffect(() => {
+        if (!currentUserSession?.has_data) return;
+
+        api.get("/api/onboarding/status")
+            .then(({ data }) => {
+                const { ratings_count, completed } = data;
+                setRatingsCount(ratings_count);
+
+                if (!completed && ratings_count > 0 && ratings_count < 15) {
+                    router.replace("/onboarding");
+                    return;
+                }
+                if (ratings_count >= 15 && ratings_count < 35) {
+                    setShowImprovementBanner(true);
+                }
+            })
+            .catch(() => { /* non-critical, ignore */ });
+    }, [currentUserSession?.has_data, router]);
 
     // Clear invalid providers when country changes
     useEffect(() => {
@@ -323,6 +353,23 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             </motion.div>
                         )}
                     </AnimatePresence>
+
+                    {/* FIX 3: Improvement banner for users with 15–34 ratings */}
+                    {showImprovementBanner && (
+                        <div className="border border-zinc-700 px-4 py-2 font-mono text-xs
+                                        flex items-center justify-between mb-4">
+                            <span className="text-zinc-500">
+                                RATE MORE FILMS TO IMPROVE YOUR RECOMMENDATIONS
+                                · {Math.max(0, 35 - ratingsCount)} MORE FOR BEST RESULTS
+                            </span>
+                            <button
+                                onClick={() => router.push("/onboarding")}
+                                className="text-primary hover:underline text-xs font-mono ml-4 shrink-0"
+                            >
+                                [ RATE FILMS ]
+                            </button>
+                        </div>
+                    )}
 
                     {/* Removed Filter UI - Moved to RightConsole */}
 

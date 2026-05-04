@@ -7,22 +7,72 @@ import { motion, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api";
 import { Loader2 } from "lucide-react";
 
+const ONBOARDING_PATHS = [
+    {
+        id: "letterboxd",
+        title: "SYNC LETTERBOXD",
+        description: "Upload your full watch history. Best for existing Letterboxd users with years of ratings.",
+        cta: "[ UPLOAD ZIP ]",
+        href: "/?upload=true",
+    },
+    {
+        id: "rate",
+        title: "RATE FILMS",
+        description: "Rate films one by one to build your taste profile. Best if you're new to tracking.",
+        cta: "[ START RATING ]",
+        href: "/onboarding",
+    },
+    {
+        id: "rss",
+        title: "CONNECT RSS",
+        description: "Auto-sync your Letterboxd diary. Requires a Letterboxd account with public RSS.",
+        cta: "[ CONNECT RSS ]",
+        href: "/?rss=true",
+    },
+];
+
 export default function LoginPage() {
     const { isLoaded, isSignedIn } = useAuth();
     const router = useRouter();
     const searchParams = useSearchParams();
     const isMigrate = searchParams.get("migrate") === "true";
     const redirectUrl = isMigrate ? "/login?migrate=true" : "/";
-    const [mode, setMode] = useState<"choose" | "letterboxd">(isMigrate ? "letterboxd" : "choose");
+    const [mode, setMode] = useState<"choose" | "letterboxd" | "onboarding-chooser">(
+        isMigrate ? "letterboxd" : "choose"
+    );
     const [migrating, setMigrating] = useState(false);
     const migrationAttempted = useRef(false);
+    const newUserCheckAttempted = useRef(false);
 
-    // After sign-in: migrate guest data (if ?migrate=true) or redirect to home
+    // FIX 1: Guest with 15+ ratings → skip to /explore
+    useEffect(() => {
+        if (!isLoaded || isSignedIn) return;
+        try {
+            const raw = localStorage.getItem("vb_guest_ratings");
+            if (raw && Object.keys(JSON.parse(raw)).length >= 15) {
+                router.replace("/explore?guest=true");
+            }
+        } catch { /* ignore corrupt data */ }
+    }, [isLoaded, isSignedIn, router]);
+
+    // After sign-in: migrate guest data or show onboarding chooser for new users
     useEffect(() => {
         if (!isLoaded || !isSignedIn) return;
 
         if (!isMigrate) {
-            router.push("/");
+            // FIX 4: Check if new user (0 ratings) → show onboarding chooser
+            if (newUserCheckAttempted.current) return;
+            newUserCheckAttempted.current = true;
+
+            api.get("/api/onboarding/status")
+                .then(({ data }) => {
+                    if (data.ratings_count === 0) {
+                        setMode("onboarding-chooser");
+                    } else {
+                        router.push("/");
+                    }
+                })
+                .catch(() => router.push("/"));
             return;
         }
 
@@ -58,7 +108,7 @@ export default function LoginPage() {
         };
 
         migrateGuestData();
-    }, [isLoaded, isSignedIn, searchParams, router]);
+    }, [isLoaded, isSignedIn, isMigrate, router]);
 
     if (!isLoaded) {
         return (
@@ -68,7 +118,6 @@ export default function LoginPage() {
         );
     }
 
-    // Show migration spinner
     if (migrating) {
         return (
             <div className="min-h-screen flex flex-col items-center justify-center bg-background gap-4">
@@ -84,18 +133,59 @@ export default function LoginPage() {
         <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden">
             <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10 pointer-events-none" />
 
-            <div className="z-10 w-full max-w-md px-4">
+            <div className="z-10 w-full max-w-2xl px-4">
                 <AnimatePresence mode="wait">
-                    {mode === "choose" ? (
+                    {mode === "onboarding-chooser" ? (
                         <motion.div
-                            key="choose"
+                            key="onboarding-chooser"
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -20 }}
                             transition={{ duration: 0.3 }}
                             className="space-y-8"
                         >
-                            {/* Logo */}
+                            <div className="text-center space-y-2">
+                                <h1 className="text-4xl md:text-5xl font-black tracking-tighter font-mono">
+                                    VECTOR<span className="text-primary">BOX</span>
+                                </h1>
+                                <p className="text-zinc-500 font-mono text-[10px] uppercase tracking-[0.3em]">
+                                    How do you want to get started?
+                                </p>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                {ONBOARDING_PATHS.map((path) => (
+                                    <button
+                                        key={path.id}
+                                        onClick={() => router.push(path.href)}
+                                        className="flex flex-col gap-4 p-5 border border-border text-left
+                                                   hover:border-primary hover:bg-primary/5 transition-all group"
+                                    >
+                                        <div className="space-y-2">
+                                            <p className="font-mono text-xs font-bold uppercase tracking-wider
+                                                          text-foreground group-hover:text-primary transition-colors">
+                                                {path.title}
+                                            </p>
+                                            <p className="font-mono text-[10px] text-zinc-500 leading-relaxed">
+                                                {path.description}
+                                            </p>
+                                        </div>
+                                        <span className="font-mono text-xs text-primary mt-auto">
+                                            {path.cta}
+                                        </span>
+                                    </button>
+                                ))}
+                            </div>
+                        </motion.div>
+                    ) : mode === "choose" ? (
+                        <motion.div
+                            key="choose"
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -20 }}
+                            transition={{ duration: 0.3 }}
+                            className="space-y-8 max-w-md mx-auto"
+                        >
                             <div className="text-center space-y-2">
                                 <h1 className="text-4xl md:text-5xl font-black tracking-tighter font-mono">
                                     VECTOR<span className="text-primary">BOX</span>
@@ -105,7 +195,6 @@ export default function LoginPage() {
                                 </p>
                             </div>
 
-                            {/* Chooser buttons */}
                             <div className="space-y-3">
                                 <button
                                     onClick={() => setMode("letterboxd")}
@@ -136,7 +225,7 @@ export default function LoginPage() {
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -20 }}
                             transition={{ duration: 0.3 }}
-                            className="space-y-4"
+                            className="space-y-4 max-w-md mx-auto"
                         >
                             <button
                                 onClick={() => setMode("choose")}
