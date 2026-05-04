@@ -72,7 +72,7 @@ export default function LoginPage() {
                         router.push("/");
                     }
                 })
-                .catch(() => router.push("/"));
+                .catch(() => router.push("/")); // TODO: handle 401 fallback more gracefully
             return;
         }
 
