@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { useSearchParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useRouter, useSearchParams } from "next/navigation";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { motion } from "framer-motion";
 import { Sparkles, Star } from "lucide-react";
 import { getTMDBImageUrl } from "@/lib/api";
@@ -41,6 +41,8 @@ function writeRatings(ratings: Record<number, Signal>) {
 }
 
 export default function ExplorePage() {
+    const router = useRouter();
+    const queryClient = useQueryClient();
     const searchParams = useSearchParams();
     const isGuest = searchParams.get("guest") === "true";
 
@@ -121,12 +123,28 @@ export default function ExplorePage() {
                                 ? "Sign up to unlock your full personalized feed."
                                 : "Rate at least 3 films to unlock personalized recommendations."}
                         </div>
-                        <Link
-                            href="/login?migrate=true"
-                            className="border border-primary text-primary px-3 py-1.5 font-mono text-xs uppercase hover:bg-primary hover:text-background transition-colors"
-                        >
-                            [ SAVE PROFILE ]
-                        </Link>
+                        <div className="flex gap-2 flex-wrap">
+                            <button
+                                onClick={() => router.push("/onboarding")}
+                                className="border border-border text-zinc-400 px-3 py-1.5 font-mono text-xs
+                                           hover:border-zinc-500 transition-colors"
+                            >
+                                [ RATE MORE FILMS ]
+                            </button>
+                            <button
+                                onClick={() => queryClient.invalidateQueries({ queryKey: ["guest-feed"] })}
+                                className="border border-border text-zinc-500 px-3 py-1.5 font-mono text-xs
+                                           hover:border-zinc-500 transition-colors"
+                            >
+                                [ REFRESH ]
+                            </button>
+                            <Link
+                                href="/login?migrate=true"
+                                className="border border-primary text-primary px-3 py-1.5 font-mono text-xs uppercase hover:bg-primary hover:text-background transition-colors"
+                            >
+                                [ SAVE PROFILE ]
+                            </Link>
+                        </div>
                     </div>
                 </div>
             )}

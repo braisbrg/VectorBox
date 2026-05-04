@@ -96,6 +96,7 @@ class OMDbClient:
         omdb_data: Optional[OMDbResponse],
         tmdb_vote_average: float,
         tmdb_vote_count: Optional[int] = None,
+        imdb_vote_count: Optional[int] = None,
     ) -> VectorBoxScore:
         """
         Calculates VectorBox score from three sources:
@@ -132,9 +133,11 @@ class OMDbClient:
             except (ValueError, TypeError):
                 pass
 
-        # TMDB: same scale as IMDb, same normalization. Skip when vote_count < 10 —
-        # a single 10/10 vote would otherwise yield score=100 for obscure films.
-        tmdb_has_enough_votes = tmdb_vote_count is None or tmdb_vote_count >= 10
+        # TMDB: same scale as IMDb, same normalization. Skip when the best available
+        # vote count is < 10 — use IMDb votes as a confidence signal when TMDB pool
+        # is thin (e.g. foreign films with few TMDB ratings but many IMDb votes).
+        effective_vote_count = max(tmdb_vote_count or 0, imdb_vote_count or 0)
+        tmdb_has_enough_votes = effective_vote_count >= 10
         if tmdb_vote_average is not None and tmdb_has_enough_votes:
             raw_scores["tmdb"] = tmdb_vote_average
             scores["tmdb"] = max(0.0, min(100.0,

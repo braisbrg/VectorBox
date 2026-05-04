@@ -49,11 +49,19 @@ class MovieFactory:
             if imdb_id:
                 omdb_data = await self.omdb.fetch_movie_data(imdb_id)
             
+            # Parse IMDb vote count from OMDb response (format: "1,234,567")
+            imdb_vote_count = None
+            if omdb_data and omdb_data.imdbVotes:
+                raw = omdb_data.imdbVotes.replace(",", "").strip()
+                if raw.isdigit():
+                    imdb_vote_count = int(raw)
+
             # Returns VectorBoxScore object
             vb_score_data = self.omdb.calculate_vectorbox_score(
                 omdb_data,
                 details.get("vote_average"),
                 tmdb_vote_count=details.get("vote_count"),
+                imdb_vote_count=imdb_vote_count,
             )
 
             # Fallback: TMDB-only score if OMDb unavailable and vote pool is trustworthy.
@@ -87,6 +95,7 @@ class MovieFactory:
                 
                 # Extended Fields
                 imdb_id=imdb_id,
+                imdb_vote_count=imdb_vote_count,
                 imdb_rating=vb_score_data.breakdown.imdb,
                 metacritic_rating=vb_score_data.breakdown.meta,
                 vectorbox_score=vectorbox_score,
