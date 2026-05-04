@@ -8,7 +8,7 @@ VectorBox ingests your film history — via Letterboxd export, RSS feed, or an o
 
 It's built for people who care about *what* they watch next, not just that something is on.
 
-##Setup & CI/CD not updated
+## Setup & CI/CD not updated
 
 ## How It Works — The Trident Engine
 
