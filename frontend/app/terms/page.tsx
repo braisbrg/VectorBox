@@ -69,8 +69,9 @@ export default function TermsPage() {
                         </h2>
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
                             <li>
-                                You are responsible for maintaining the security of your PIN
-                                and account credentials.
+                                You are responsible for maintaining the security of your
+                                account credentials. Authentication is managed by Clerk,
+                                a third-party identity provider.
                             </li>
                             <li>
                                 One account per person. Duplicate or shared accounts may be
@@ -133,9 +134,9 @@ export default function TermsPage() {
                         <p className="text-sm text-zinc-400 leading-relaxed">
                             Movie metadata (titles, posters, synopses, cast) is sourced from
                             The Movie Database (TMDB). VectorBox does not claim ownership of
-                            third-party movie metadata. The VectorBox name, logo, source code,
-                            and design are the property of their respective creators and are
-                            protected by applicable intellectual property laws.
+                            third-party movie metadata. The VectorBox source code is released
+                            under the MIT License. The VectorBox name, logo, and design are
+                            the property of their respective creators.
                         </p>
                     </section>
 
@@ -179,7 +180,7 @@ export default function TermsPage() {
                             <span className="text-zinc-300">vectorbox.app@proton.me</span>.
                         </p>
                         <p className="text-sm text-zinc-500 mt-4 font-[var(--font-mono-acid)]">
-                            Last updated: April 8, 2026
+                            Last updated: May 4, 2026
                         </p>
                     </section>
                 </div>

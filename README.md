@@ -1,69 +1,104 @@
 # VectorBox
 
-![Version](https://img.shields.io/badge/version-v1.8.1-acidgreen?style=flat-square)
-![Last Updated](https://img.shields.io/badge/last_updated-2026--04--18-orange?style=flat-square)
+> Personalized film recommendation engine powered by semantic embeddings and hybrid signal fusion.
 
-A recommender that actually watches what you watch.
+## What It Does
 
-## What is this?
-
-VectorBox reads your Letterboxd history and turns it into a feed that behaves like a smart friend who's seen everything — not a streaming platform's "top picks" trying to sell you the new thing. You point it at your export ZIP or your RSS feed, and it builds a personal taste model across thousands of films, reranks them against global quality signals, and serves them back as themed rows that refresh over time.
+VectorBox ingests your film history — via Letterboxd export, RSS feed, or an onboarding carousel — and builds a personal taste model using vector embeddings, director/actor affinity graphs, and collaborative filtering. The result is a multi-section recommendation feed that surfaces films you'd actually want to watch, not just what's trending.
 
 It's built for people who care about *what* they watch next, not just that something is on.
 
-## How it works
+## How It Works — The Trident Engine
 
-The recommendation brain is a three-signal system called the **Trident Engine**. Each signal has a different job, and the final feed is a negotiation between them.
+The recommendation core is a three-signal hybrid system. Each signal captures a different dimension of taste, and they're fused through Reciprocal Rank Fusion (RRF) before a final diversity pass.
 
-- **Signal A — Because You Watched**: picks an anchor film from your history (weighted by rating, recency, and rewatches) and finds vector-space neighbours. This is the "if you liked X, you'll like Y" line of reasoning, but with semantic embeddings instead of collaborative filtering's popularity bias.
-- **Signal B — Niche Picks**: rotates through nine curated thematic lenses (Sleep Optional, Slow Burn, Subtitles Required…) that are global, not user-specific. The point isn't to match your clusters — it's to *offer you moods*. Each theme comes with its own genre, era, and language filters. This is the row that changes most often and keeps the feed from feeling stale.
-- **Signal C — Hidden Gems**: surfaces high-quality, low-hype films using dynamic thresholds that scale with how much of your history VectorBox has seen. New users get permissive discovery; heavy users get ruthless filtering.
+### Signal A — Because You Watched (Semantic Similarity)
+Picks a high-quality anchor from your history (scored by rating × recency decay × rewatch boost) and retrieves vector-space neighbours from Qdrant. Embeddings are generated from LLM-enriched cinematic descriptions — not just plot summaries, but tone, pacing, and visual style — using Groq's LLaMA models, then encoded with `all-MiniLM-L6-v2` (384 dimensions). An anti-vector built from your low-rated and rejected films penalizes candidates that resemble things you disliked.
 
-On top of that, two secondary signals lean on your history's *people*: an auteur signal that boosts directors you rate highly, and a cult-actor signal that does the same for repeat cast members.
+### Signal B — Niche Picks (Thematic Discovery)
+Nine curated global themes (*Sleep Optional*, *Slow Burn*, *Subtitles Required*, *Bring Tissues*…) rotate automatically per feed refresh. Each theme carries its own genre, era, and language filters. This isn't taste-matching — it's mood-offering, designed to keep the feed from going stale.
 
-Everything merges through Reciprocal Rank Fusion, then passes a quality gate (`MOVIE_QUALITY_GATE`) and a sigmoid rescoring pass that discounts films with too few votes to trust.
+### Signal C — Hidden Gems (Quality Discovery)
+Surfaces high-quality, low-popularity films directly from Postgres with dynamic thresholds that scale with your history size. New users get permissive discovery; users with 100+ rated films get stricter filtering. Non-English films receive an exoticism boost. Candidates are re-ranked using 30% vector similarity to your taste profile.
+
+### Fusion & Post-Processing
+All signals merge through RRF, then pass through a sigmoid quality weighting on VectorBox Score (0–100), director diversity caps (max 2 per director), and MMR reranking for vector-space diversity.
+
+## Tech Stack
+
+### Backend
+- **FastAPI** + Python 3.11 — async throughout
+- **PostgreSQL 15** + SQLAlchemy 2.0 (async) — film catalog, ratings, clusters
+- **Qdrant** — vector database for semantic similarity search
+- **Redis 7** — section-level feed caching with per-TTL freshness controls
+- **Groq** (LLaMA 4 Scout) — cinematic description generation
+- **all-MiniLM-L6-v2** — sentence embeddings (384 dimensions)
+- **Clerk** — authentication (JWKS-based JWT verification)
+
+### Frontend
+- **Next.js 16** (App Router) + React 19
+- **Tailwind CSS v4**
+- **Framer Motion** — animations and transitions
+- **TypeScript** — strict typing throughout
+
+### Infrastructure
+- **Docker Compose** — local development (Postgres, Qdrant, Redis, backend, frontend)
+- **Alembic** — database migrations
+- **OpenTelemetry + Jaeger** — distributed tracing
+
+## Key Features
+
+- **Letterboxd ZIP import** — full watch history, ratings, watchlist, diary, and liked films
+- **RSS sync** — automatic incremental updates from your Letterboxd diary feed
+- **Onboarding carousel** — cold-start onboarding without a Letterboxd account
+- **Guest mode** — explore recommendations before creating an account
+- **Magic Box** — natural language film search with cascading NLP pipeline (structured parse → keyword heuristic → raw embedding)
+- **More Like This** — find similar films using up to 5 seed movies
+- **Group recommendations** — find films for multiple users with merged taste profiles
+- **Upcoming movies** — personalized upcoming releases filtered by your genre preferences
+- **Content preferences** — tag-based content filtering (avoid jumpscares, gore, slow pacing, etc.)
+- **Auteur & Cast signals** — dedicated feed rows for your favorite directors and recurring actors
 
 ## Feed Sections
 
-| Section | What it does |
+| Section | Description |
 |---|---|
 | Because You Watched | Semantic neighbours of a scored anchor from your history |
-| Niche Picks | One of 9 rotating global themes with its own filter rules |
+| Picked For You | Trident RRF fusion of vibe, auteur, and crowd signals |
+| Niche Picks | One of 9 rotating global themes with curated filters |
 | Hidden Gems | High-quality discoveries with low popularity |
-| Picked For You | Trident RRF fusion of all three signals |
-| Popular on Letterboxd | Scraped Letterboxd trending list |
-| Available Now | Unwatched watchlist items streaming on your providers |
-| Auteur / Cult Actor | Director- and actor-driven boosts from your ratings |
-| Wildcard / Random | Guided chaos and pure chaos, respectively |
+| From Your Favorite Directors | Director-driven recommendations |
+| Cast Picks | Actor-driven recommendations |
+| Popular on Letterboxd | Scraped trending list, filtered against your history |
+| Available Now | Unwatched watchlist items on your streaming providers |
+| Outside Your Comfort Zone | Films from genres you don't usually watch |
+| Random Top Picks | Serendipity row |
 
-Magic Box (natural language search) sits on top of all of this as a 4-tier cascading NLP pipeline — Groq structured parse → OpenAI fallback → keyword heuristic → raw embedding.
+## Architecture
 
-## Stack
+The recommendation pipeline uses two ID spaces that must not be confused:
+- **`Movie.id`** (internal PK) — used for PostgreSQL joins, `UserRating.movie_id`, watched-set deduplication
+- **`Movie.tmdb_id`** (TMDB API ID) — used for Qdrant vector indexing, feed-level `seen_ids` deduplication
 
-| Layer | Tech |
-|---|---|
-| Frontend | Next.js 16 (App Router), React 19, Tailwind v4, TanStack Query, Framer Motion |
-| Backend | FastAPI, SQLAlchemy 2.0 async, Pydantic v2, APScheduler |
-| Data | PostgreSQL 15, Qdrant (vectors), Redis 7 (cache) |
-| AI/ML | sentence-transformers, scikit-learn, Groq (Llama), OpenAI (fallback), Instructor |
-| Observability | OpenTelemetry + Jaeger |
-| Infra | Docker Compose |
+Feed orchestration runs 10 section-generation tasks in parallel via `asyncio.gather()`, each with its own isolated database session. An anti-vector is pre-computed once before parallelization and shared across signals that need it.
 
 ## Getting Started
 
 ### Prerequisites
 
 - Docker Desktop with Compose v2
-- TMDB + OMDb API keys
-- At least one of: Groq or OpenAI API key
+- [TMDB API key](https://www.themoviedb.org/settings/api) + [OMDb API key](https://www.omdbapi.com/apikey.aspx)
+- [Groq API key](https://console.groq.com/) (for cinematic descriptions)
+- [Clerk account](https://clerk.com/) (for authentication)
+- A Letterboxd account (optional — can use the onboarding carousel instead)
 
 ### Setup
 
 ```bash
-git clone <repo-url>
-cd LetterboxRecommender
+git clone https://github.com/braisbrg/vectorbox.git
+cd vectorbox
 cp .env.example .env
-# edit .env — fill TMDB_API_KEY, TMDB_READ_TOKEN, OMDB_API_KEY, JWT_SECRET, GROQ_API_KEY
+# Fill in your API keys in .env
 ```
 
 ### Launch
@@ -85,25 +120,25 @@ Add `-clean` / `--clean` for a fresh volume wipe.
 | Service | URL |
 |---|---|
 | Frontend | http://localhost:3000 |
-| API | http://localhost:8000 |
-| Swagger | http://localhost:8000/docs |
-| Jaeger | http://localhost:16686 |
-| Qdrant | http://localhost:6333/dashboard |
+| API Docs | http://localhost:8000/docs |
+| Jaeger (tracing) | http://localhost:16686 |
+| Qdrant Dashboard | http://localhost:6333/dashboard |
 
-## First run
+### First Run
 
-Create a user, drop in your Letterboxd export ZIP (Settings → Import & Export → Export Data), and wait for the ingestion pipeline to finish. The feed needs about 30 rated films before Signal B and C become useful; under that, Niche Picks and Hidden Gems pull from more permissive pools so the feed isn't empty.
+Create an account, then either import your Letterboxd export ZIP (Settings → Import & Export → Export Data) or use the onboarding carousel to rate 15+ films. The feed needs about 30 rated films before all signals become useful; under that threshold, the engine uses more permissive pools so the feed isn't empty.
 
-## Documentation
+## Scripts
 
-- [PROJECT_MASTER_GUIDE.md](./PROJECT_MASTER_GUIDE.md) — architecture, decisions, full feature catalogue
-- [AGENTS.md](./AGENTS.md) — hard architectural rules and anti-patterns
-- [STACK_RULES.md](./STACK_RULES.md) — forbidden patterns by layer
-- [QA_TESTING_MANUAL.md](./QA_TESTING_MANUAL.md) — manual test protocol
+See [SCRIPTS_GUIDE.md](./SCRIPTS_GUIDE.md) for the full catalogue of maintenance, backup, and data scripts.
 
-## Version
+## Development
 
-**v1.8.1** — 2026-04-18
+- **Branch strategy:** `develop` for active work, `feature/*` for significant changes, `main` for tagged releases only.
+- **Commit format:** `feat:`, `fix:`, `refactor:`, `perf:`, `docs:`
+- **Package manager:** pnpm (frontend), pip with hash-verified lockfile (backend)
+- **Backend commands** run inside Docker: `docker-compose exec backend ...`
 
-Proprietary & Confidential. All rights reserved.
-Contact: vectorbox.app@proton.me
+## License
+
+[MIT](./LICENSE)

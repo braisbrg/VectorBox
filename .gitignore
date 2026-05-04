@@ -92,6 +92,11 @@ frontend/e2e/.auth/
 frontend/playwright-report/
 frontend/test-results/
 
+# Debug & QA output
+debug_results.txt
+debug_headed_*.txt
+**/qa_output.txt
+
 # Diagnostic temp files
 [0-9].txt
 *_logs.txt
@@ -113,5 +118,14 @@ verify_*.py
 # AI Agent Configuration & Skills
 .agent/
 .agents/
+.ai_context/
 .gemini/
 skills-lock.json
+
+# Internal Documentation (kept local, not public)
+AGENTS.md
+CLAUDE.md
+STACK_RULES.md
+PROJECT_MASTER_GUIDE.md
+QA_TESTING_MANUAL.md
+DEPLOYMENT.md

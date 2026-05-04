@@ -3,7 +3,7 @@ import random
 import asyncio
 import math
 import functools
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, or_
@@ -483,7 +483,7 @@ class RecommendationEngine:
                 return await self._get_genre_fallback_section(user_id, db, tmdb, seen_ids, country, provider_service)
 
             # Sort entirely in Python — _score_anchor_candidate handles rating=None and NULL dates
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             scored_candidates = []
             for row in candidates:
                 user_rating, movie = row
@@ -519,7 +519,7 @@ class RecommendationEngine:
                         keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
                     else:
                         keywords = anchor_movie.keywords
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     anchor_vector = await loop.run_in_executor(
                         None,
                         lambda: self.embedding_service.generate_embedding({
@@ -848,7 +848,8 @@ class RecommendationEngine:
         """Signal C: Hidden Gems — Score-to-Hype Filtering"""
         with _tracer.start_as_current_span("trident.signal_c.hidden_gems") as span:
             span.set_attribute("user_id", user_id)
-            span.set_attribute            # Step 1: Get dynamic thresholds based on user's movie count
+            span.set_attribute("country", country)
+            # Step 1: Get dynamic thresholds based on user's movie count
             user_count_result = await db.execute(
                 select(func.count(UserRating.id))
                 .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
