@@ -13,7 +13,7 @@ import logging
 import random
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,7 @@ from sqlalchemy import String, cast
 
 from config import get_db, REDIS_URL, AsyncSessionLocal
 from dependencies import get_current_user, get_optional_current_user, get_qdrant_service
+from limiter import limiter
 from models.database import User, Movie, UserRating
 from models.schemas import TokenResponse
 from services.recommendation_engine import MOVIE_QUALITY_GATE
@@ -344,6 +345,35 @@ async def get_onboarding_movies(
     # Combine: 5 pole + 10 diverse
     all_movies = pole_movies + diverse_picks
     return [_movie_to_dict(m) for m in all_movies]
+
+
+# ---------------------------------------------------------------------------
+# GET /search — Public title search for the carousel modal (no auth)
+# ---------------------------------------------------------------------------
+
+@router.get("/search")
+@limiter.limit("30/minute")
+async def search_onboarding_movies(
+    request: Request,
+    q: str,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Public DB-only title search backing the onboarding search modal.
+    Returns up to 8 quality-gated films matching the query.
+    """
+    if len(q.strip()) < 2:
+        return []
+
+    result = await db.execute(
+        select(Movie)
+        .where(Movie.title.ilike(f"%{q.strip()}%"))
+        .where(Movie.poster_path.isnot(None))
+        .where(Movie.vectorbox_score.isnot(None))
+        .order_by(desc(Movie.vote_count))
+        .limit(8)
+    )
+    return [_movie_to_dict(m) for m in result.scalars().all()]
 
 
 # ---------------------------------------------------------------------------
