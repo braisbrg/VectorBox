@@ -116,7 +116,6 @@ export interface RecommendationRequest {
     min_rating?: number;
     original_language?: string;
     include_keywords?: string[];
-    include_low_quality?: boolean;
     page?: number;
 }
 
@@ -296,8 +295,7 @@ export const linkLetterboxd = async (
 export const getFeed = async (
     scope: "global" | "watchlist" = "global",
     countryCode: string = "ES",
-    streamingProviders: number[] = [],
-    includeLowQuality: boolean = false
+    streamingProviders: number[] = []
 ): Promise<FeedResponse> => {
     const params = new URLSearchParams();
     params.append("scope", scope);
@@ -305,7 +303,6 @@ export const getFeed = async (
     if (streamingProviders.length > 0) {
         params.append("streaming_providers", streamingProviders.join(","));
     }
-    params.append("include_low_quality", includeLowQuality.toString());
 
     const response = await api.get(`/api/recommendations/feed?${params.toString()}`);
     return response.data;
@@ -372,7 +369,6 @@ export const getFeedServerSide = async (
     scope: "global" | "watchlist" = "global",
     countryCode: string = "ES",
     streamingProviders: number[] = [],
-    includeLowQuality: boolean = false,
     cookieHeader?: string
 ): Promise<FeedResponse | null> => {
     try {
@@ -382,7 +378,6 @@ export const getFeedServerSide = async (
         if (streamingProviders.length > 0) {
             params.append("streaming_providers", streamingProviders.join(","));
         }
-        params.append("include_low_quality", includeLowQuality.toString());
 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout

@@ -438,22 +438,24 @@ class ClusteringService:
             
             # Fallback to centroid if medoid is unavailable
             if cluster_center is None:
+                CENTROID_CAP = 50
                 result = await db.execute(
                     select(UserRating, Movie)
                     .join(Movie, UserRating.movie_id == Movie.id)
                     .where(UserRating.user_id == user_id)
                     .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+                    .order_by(desc(UserRating.rating))
+                    .limit(CENTROID_CAP)
                 )
                 all_ratings = result.all()
-                
-                sample_ids = cluster.sample_movie_ids or []
-                sample_tmdb_ids = [movie.tmdb_id for _, movie in all_ratings if movie.id in sample_ids]
-                vectors_map = await self.qdrant.get_vectors_batch(sample_tmdb_ids)
+
+                all_tmdb_ids = [movie.tmdb_id for _, movie in all_ratings]
+                vectors_map = await self.qdrant.get_vectors_batch(all_tmdb_ids)
                 cluster_vectors = list(vectors_map.values())
-                
+
                 if not cluster_vectors:
-                    raise ValueError("No vectors found for cluster samples")
-                
+                    raise ValueError("No vectors found for cluster centroid fallback")
+
                 cluster_center = np.mean(cluster_vectors, axis=0).tolist()
         
         search_filters = filters or {}
@@ -584,7 +586,6 @@ class ClusteringService:
         db: AsyncSession,
         filters: Dict = None,
         limit: int = 20,
-        include_low_quality: bool = False,
         page: int = 1,
         background_tasks = None,
     ) -> List[Dict]:
@@ -729,7 +730,7 @@ class ClusteringService:
                 
                 effective_score = vb_score if vb_score is not None and vb_score > 0 else 50
                 
-                if not include_low_quality and effective_score < 40:
+                if effective_score < 40:
                     continue
                 
                 quality_weight = self.calculate_quality_weight(effective_score)
