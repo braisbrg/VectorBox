@@ -1016,10 +1016,16 @@ class RecommendationEngine:
                         available_providers.append(p["provider_name"])
                 
                 if available_providers:
-                    match_score = 95
-                    if movie.vote_average:
-                        match_score = 90 + min(9, max(0, (movie.vote_average - 7.0) * 4.5))
-                    
+                    vb = movie.vectorbox_score
+                    va = movie.vote_average
+                    # Skip movies with no real score data — no inflated defaults
+                    if not vb and not va:
+                        continue
+                    if vb and vb > 0:
+                        match_score = min(99, vb)
+                    else:
+                        match_score = 55 + min(30, max(0, (va - 5.0) * 7.5))
+
                     items.append(FeedItem(
                         id=movie.tmdb_id,
                         title=movie.title,
@@ -1029,8 +1035,8 @@ class RecommendationEngine:
                         year=movie.year,
                         runtime=movie.runtime,
                         letterboxd_uri=movie.letterboxd_uri,
-                        rating=movie.vote_average,
-                        vectorbox_score=movie.vectorbox_score,
+                        rating=va,
+                        vectorbox_score=vb,
                         imdb_rating=movie.imdb_rating,
                         metacritic_rating=movie.metacritic_rating,
                         rotten_tomatoes_rating=movie.rotten_tomatoes_rating,
@@ -1043,9 +1049,10 @@ class RecommendationEngine:
                         }],
                     ))
                     seen_ids.add(movie.tmdb_id)
-                    if len(items) >= 20:
-                        break
-        
+
+        items.sort(key=lambda x: x.match_score, reverse=True)
+        items = items[:20]
+
         return FeedSection(
             id="available_now",
             title="Available on Your Services",
