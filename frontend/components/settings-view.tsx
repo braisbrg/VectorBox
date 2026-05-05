@@ -7,7 +7,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RefreshCw, Undo2, Ban } from "lucide-react";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
-import { Switch } from "@/components/ui/switch";
 import { syncRSS, VectorboxUser, getRejectedMovies, unrejectMovie, getTMDBImageUrl } from "@/lib/api";
 import { api } from "@/lib/api";
 import { UploadZone } from "@/components/upload-zone";
@@ -21,7 +20,7 @@ import { Sliders } from "lucide-react";
 
 export function SettingsView() {
     const { t } = useLanguage();
-    const { settings, updateSettings, mounted } = useSettings();
+    const { mounted } = useSettings();
     const [letterboxdUsername, setLetterboxdUsername] = useState<string | null>(null);
     const [currentUser, setCurrentUser] = useState<VectorboxUser | null>(null);
     const [syncMessage, setSyncMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
@@ -94,20 +93,6 @@ export function SettingsView() {
             <p className="text-muted-foreground mb-6">{t("settings.subtitle")}</p>
 
             <div className="space-y-6">
-                {/* Quality Settings */}
-                <div className="p-4 border rounded-lg space-y-4">
-                    <div className="flex items-center justify-between">
-                        <div className="space-y-0.5">
-                            <h3 className="font-medium text-zinc-200">{t("settings.show_low_quality")}</h3>
-                            <p className="text-xs text-zinc-500">{t("settings.show_low_quality_desc")}</p>
-                        </div>
-                        <Switch
-                            checked={settings.includeLowQuality}
-                            onCheckedChange={(checked) => updateSettings({ includeLowQuality: checked })}
-                        />
-                    </div>
-                </div>
-
                 {/* Letterboxd Sync */}
                 {letterboxdUsername && (
                     <div className="p-4 border border-primary/30 rounded-lg space-y-3">

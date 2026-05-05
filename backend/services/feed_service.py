@@ -210,7 +210,6 @@ class FeedService:
         streaming_providers: List[int],
         tmdb: TMDBClient,
         qdrant: QdrantService,
-        include_low_quality: bool = False,
         background_tasks = None
     ) -> FeedResponse:
         """

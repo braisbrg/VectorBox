@@ -215,7 +215,6 @@ async def get_general_recommendations(
             db=db,
             filters=filters,
             limit=request.limit,
-            include_low_quality=request.include_low_quality or False,
             page=request.page # Pagination
         )
         
@@ -473,7 +472,6 @@ async def get_feed(
     scope: str = "global",
     country_code: str = "ES",
     streaming_providers: str = "",
-    include_low_quality: bool = False,
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
@@ -514,7 +512,6 @@ async def get_feed(
             streaming_providers=provider_ids,
             tmdb=tmdb,
             qdrant=qdrant,
-            include_low_quality=include_low_quality,
             background_tasks=background_tasks
         )
             
