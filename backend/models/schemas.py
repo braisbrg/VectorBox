@@ -85,7 +85,6 @@ class RecommendationRequest(BaseModel):
     original_language: Optional[constr(min_length=2, max_length=10)] = None
     include_keywords: Optional[List[str]] = []
     watchlist_only: Optional[bool] = False
-    include_low_quality: Optional[bool] = False # Trash Gate Bypass
     page: conint(ge=1) = 1 # Pagination
     
     @validator('country_code')

@@ -85,11 +85,22 @@ async def refresh_movie(movie: Movie, tmdb: TMDBClient, omdb: OMDbClient) -> boo
             movie.genres = [g["name"] for g in genres]
         movie.runtime = tmdb_data.get("runtime", movie.runtime)
 
-        if movie.imdb_id and movie.vote_count and movie.vote_count >= 10:
+        if movie.imdb_id:
             omdb_data = await omdb.fetch_movie_data(movie.imdb_id)
-            vb = omdb.calculate_vectorbox_score(omdb_data, movie.vote_average, movie.vote_count)
-            if vb.score is not None:
-                movie.vectorbox_score = min(vb.score, 98)
+            if omdb_data and omdb_data.imdbVotes:
+                raw = omdb_data.imdbVotes.replace(",", "").strip()
+                if raw.isdigit():
+                    movie.imdb_vote_count = int(raw)
+            effective_votes = max(movie.vote_count or 0, movie.imdb_vote_count or 0)
+            if effective_votes >= 10:
+                vb = omdb.calculate_vectorbox_score(
+                    omdb_data,
+                    movie.vote_average,
+                    tmdb_vote_count=movie.vote_count,
+                    imdb_vote_count=movie.imdb_vote_count,
+                )
+                if vb.score is not None:
+                    movie.vectorbox_score = min(vb.score, 98)
 
         if movie.is_upcoming:
             today = date.today()

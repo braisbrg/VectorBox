@@ -6,7 +6,6 @@ import { UploadZone } from "@/components/upload-zone";
 import { AcidError } from "@/components/ui/acid-error";
 import { InfoTooltip } from "./info-tooltip";
 import { useLanguage } from "@/components/language-provider";
-import { useSettings } from "@/lib/hooks";
 import { getFeed, FeedResponse, VectorboxUser, FeedItem } from "@/lib/api";
 
 interface FeedContainerProps {
@@ -41,12 +40,9 @@ const TITLE_MAP: Record<string, string> = {
 };
 
 export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [], initialData, registeredUsers, onInspect, filteredResults, isFiltering, onClearFilterResults }: FeedContainerProps) {
-    const { settings } = useSettings();
-    const includeLowQuality = settings.includeLowQuality;
-
     const { data: feedData, isLoading, error } = useQuery<FeedResponse>({
-        queryKey: ["feed", userId, scope, countryCode, streamingProviders, includeLowQuality],
-        queryFn: async () => getFeed(scope, countryCode, streamingProviders, includeLowQuality),
+        queryKey: ["feed", userId, scope, countryCode, streamingProviders],
+        queryFn: async () => getFeed(scope, countryCode, streamingProviders),
         staleTime: 5 * 60 * 1000, // 5 minutes
         initialData: initialData ?? undefined, // SSR Prefetched Data
     });

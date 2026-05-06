@@ -53,7 +53,6 @@ export default async function HomePage() {
             "global",
             "ES",
             [],
-            false,
             cookieHeader
         );
     }

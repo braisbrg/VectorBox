@@ -1,12 +1,9 @@
 import { useState, useEffect } from "react";
 
-export interface Settings {
-    includeLowQuality: boolean;
-}
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
+export interface Settings {}
 
-const DEFAULT_SETTINGS: Settings = {
-    includeLowQuality: false,
-};
+const DEFAULT_SETTINGS: Settings = {};
 
 export function useSettings() {
     const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);

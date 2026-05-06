@@ -72,6 +72,7 @@ class Movie(Base):
     overview_es = Column(Text)
     collection_id = Column(Integer, index=True)  # New: For Franchise Bias fix
     release_dates = Column(JSONB)  # Localized release dates map
+    imdb_vote_count = Column(Integer, nullable=True)
     has_enriched_embedding = Column(Boolean, default=False, server_default="false")  # LLM-enriched vector
     enriched_by_model = Column(String, nullable=True)  # Stores the Groq model ID used to generate the cinematic embedding description
     cinematic_description = Column(Text, nullable=True)  # LLM-generated cinematic description used for embedding
