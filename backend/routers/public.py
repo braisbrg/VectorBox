@@ -50,19 +50,18 @@ async def _get_popular_fallback(db: AsyncSession) -> List[dict]:
     return [_serialize(m) for m in result.scalars().all()]
 
 
-@router.post("/public/guest-feed")
-@limiter.limit("10/minute")
-async def get_guest_feed(
-    request: Request,
+async def _compute_guest_feed(
     ratings: Dict[int, str],
-    db: AsyncSession = Depends(get_db),
-    qdrant: QdrantService = Depends(get_qdrant_service),
-):
+    db: AsyncSession,
+    qdrant: QdrantService,
+) -> List[dict]:
     """
-    Generate a personalized feed for guest users from localStorage ratings.
-    Body: {tmdb_id: "positive" | "neutral" | "negative"}
-    Falls back to popular films when fewer than 3 positive ratings or no
-    usable vectors are found.
+    Core guest feed computation. Callable from both the HTTP endpoint and
+    test scripts.
+
+    Returns a list of serialized movie dicts ordered by similarity to the
+    centroid of positive-signal embeddings. Falls back to popular films when
+    fewer than 3 positive ratings exist or no Qdrant vectors are found.
     """
     positive_ids = [tid for tid, sig in ratings.items() if sig == "positive"]
     if len(positive_ids) < 3:
@@ -111,3 +110,20 @@ async def get_guest_feed(
                 break
 
     return output if output else await _get_popular_fallback(db)
+
+
+@router.post("/public/guest-feed")
+@limiter.limit("10/minute")
+async def get_guest_feed(
+    request: Request,
+    ratings: Dict[int, str],
+    db: AsyncSession = Depends(get_db),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+):
+    """
+    Generate a personalized feed for guest users from localStorage ratings.
+    Body: {tmdb_id: "positive" | "neutral" | "negative"}
+    Falls back to popular films when fewer than 3 positive ratings or no
+    usable vectors are found.
+    """
+    return await _compute_guest_feed(ratings, db, qdrant)

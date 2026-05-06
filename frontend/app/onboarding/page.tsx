@@ -227,32 +227,18 @@ export default function OnboardingCarouselPage() {
 
     const handleSearchRate = useCallback(
         (movie: OnboardingMovie, signal: Signal) => {
-            // Add to pool if missing so the carousel can revisit / undo it.
-            let nextMovies = movies;
-            if (!movies.find((m) => m.tmdb_id === movie.tmdb_id)) {
-                nextMovies = [...movies, movie];
-                setMovies(nextMovies);
-                localStorage.setItem(MOVIES_KEY, JSON.stringify(nextMovies));
-            }
+            // Save rating only — don't add to carousel pool or advance the deck.
+            // The rating is persisted and will be migrated on signup.
             const newRatings = { ...ratings, [movie.tmdb_id]: signal };
             const newCount = Object.keys(newRatings).length;
             setRatings(newRatings);
             setRatedCount(newCount);
-            // Persist with current carousel index — search-rates don't advance the deck.
-            localStorage.setItem(RATINGS_KEY, JSON.stringify(newRatings));
-            localStorage.setItem(
-                PROGRESS_KEY,
-                JSON.stringify({
-                    currentIndex,
-                    ratedCount: newCount,
-                    movieIds: nextMovies.map((m) => m.tmdb_id),
-                })
-            );
+            persist(newRatings, currentIndex, newCount);
             if (newCount === 10) setShowPeek(true);
             if (newCount >= 15 && !showRegistration) setShowRegistration(true);
             closeSearch();
         },
-        [movies, ratings, currentIndex, showRegistration, closeSearch]
+        [ratings, currentIndex, showRegistration, persist, closeSearch]
     );
 
     // Debounced search fetch
