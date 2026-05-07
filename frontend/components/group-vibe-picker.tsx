@@ -139,7 +139,7 @@ export function GroupVibePicker() {
                                     vectorbox_score={item.movie.vectorbox_score}
                                     imdb_rating={item.movie.imdb_rating}
                                     metacritic_rating={item.movie.metacritic_rating}
-                                    rotten_tomatoes_rating={item.movie.rotten_tomatoes_rating}
+
                                     title_es={item.movie.title_es}
                                     onInspect={() => {}} // Placeholder
                                 />

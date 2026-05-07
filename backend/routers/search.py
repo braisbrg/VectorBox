@@ -17,6 +17,7 @@ from services.provider_service import ProviderService
 from models.database import UserRating, Movie
 from sqlalchemy import select, or_
 from utils.scoring import normalize_similarity_score
+from utils.input_validation import validate_user_query
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -97,6 +98,9 @@ async def natural_language_search(
     Also handles "Movies like X" by detecting title matches.
     """
     try:
+        # Validate input for LLM injection
+        search_req.query = validate_user_query(search_req.query)
+
         # 0. Check if query is a specific movie title (Item-to-Item Search)
         potential_movie_id = None
         potential_movie_title = None
@@ -348,7 +352,7 @@ async def natural_language_search(
                 "vectorbox_score": db_movie.vectorbox_score if db_movie else None,
                 "imdb_rating": db_movie.imdb_rating if db_movie else None,
                 "metacritic_rating": db_movie.metacritic_rating if db_movie else None,
-                "rotten_tomatoes_rating": db_movie.rotten_tomatoes_rating if db_movie else None,
+
                 "title_es": db_movie.title_es if db_movie else None,
                 "overview_es": db_movie.overview_es if db_movie else None
             }
@@ -435,7 +439,9 @@ async def search_movies(
     3. Auto-populate Qdrant with new TMDB discoveries
     """
     try:
-        
+        # Validate input
+        query = validate_user_query(query)
+
         # 1. Generate query vector
         loop = asyncio.get_event_loop()
         query_vector = await loop.run_in_executor(
@@ -510,7 +516,7 @@ async def search_movies(
                 "vectorbox_score": db_movie.vectorbox_score if db_movie else None,
                 "imdb_rating": db_movie.imdb_rating if db_movie else None,
                 "metacritic_rating": db_movie.metacritic_rating if db_movie else None,
-                "rotten_tomatoes_rating": db_movie.rotten_tomatoes_rating if db_movie else None,
+
                 "title_es": db_movie.title_es if db_movie else None,
                 "overview_es": db_movie.overview_es if db_movie else None
             })

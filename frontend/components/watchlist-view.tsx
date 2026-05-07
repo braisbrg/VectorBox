@@ -391,7 +391,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                         overview={item.overview}
                                         vectorbox_score={item.vectorbox_score}
                                         metacritic_rating={item.metacritic_rating}
-                                        rotten_tomatoes_rating={item.rotten_tomatoes_rating}
+
                                         onInspect={() => onInspect?.(item, undefined)}
                                     />
                                 </motion.div>

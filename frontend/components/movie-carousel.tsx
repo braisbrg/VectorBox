@@ -26,7 +26,7 @@ interface FeedItem {
     vectorbox_score?: number;
     imdb_rating?: number;
     metacritic_rating?: number;
-    rotten_tomatoes_rating?: number;
+
     letterboxd_rating?: number;
 }
 
@@ -273,7 +273,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             vectorbox_score={movie.vectorbox_score}
                             imdb_rating={movie.imdb_rating}
                             metacritic_rating={movie.metacritic_rating}
-                            rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
+
                             letterboxd_rating={movie.letterboxd_rating}
                             providers={movie.streaming_providers}
                             onInspect={() => onInspect?.(movie, sectionId)}

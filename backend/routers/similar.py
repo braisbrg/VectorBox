@@ -166,7 +166,7 @@ async def get_similar_movies(
                     "vectorbox_score": movie.vectorbox_score,
                     "imdb_rating": movie.imdb_rating,
                     "metacritic_rating": movie.metacritic_rating,
-                    "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
+
                     "title_es": movie.title_es,
                     "overview_es": movie.overview_es
                 })
@@ -192,7 +192,7 @@ async def get_similar_movies(
                     "vectorbox_score": metadata.get("vectorbox_score"),
                     "imdb_rating": metadata.get("imdb_rating"),
                     "metacritic_rating": metadata.get("metacritic_rating"),
-                    "rotten_tomatoes_rating": metadata.get("rotten_tomatoes_rating"),
+
                     "title_es": metadata.get("title_es"),
                     "overview_es": metadata.get("overview_es")
                 })
@@ -250,7 +250,7 @@ async def get_similar_movies(
                         "vectorbox_score": local_movie.vectorbox_score if local_movie else None,
                         "imdb_rating": local_movie.imdb_rating if local_movie else None,
                         "metacritic_rating": local_movie.metacritic_rating if local_movie else None,
-                        "rotten_tomatoes_rating": local_movie.rotten_tomatoes_rating if local_movie else None,
+
                         "title_es": local_movie.title_es if local_movie else None,
                         "overview_es": local_movie.overview_es if local_movie else None
                     })
@@ -375,7 +375,7 @@ async def get_similar_multi(
             "vectorbox_score": m.vectorbox_score,
             "imdb_rating": m.imdb_rating,
             "metacritic_rating": m.metacritic_rating,
-            "rotten_tomatoes_rating": m.rotten_tomatoes_rating,
+
             "title_es": m.title_es,
             "overview_es": m.overview_es,
         })
