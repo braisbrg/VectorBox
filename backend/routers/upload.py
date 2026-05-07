@@ -538,7 +538,7 @@ async def enrich_movies_background(
                                         "vectorbox_score": m.vectorbox_score,
                                         "imdb_rating": m.imdb_rating,
                                         "metacritic_rating": m.metacritic_rating,
-                                        "rotten_tomatoes_rating": m.rotten_tomatoes_rating,
+
                                         "title_es": m.title_es,
                                         "overview_es": m.overview_es,
                                         "keywords": m.keywords
