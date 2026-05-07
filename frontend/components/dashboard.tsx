@@ -107,6 +107,10 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             return;
         }
 
+        // Catch users who signed up directly from onboarding (bypassing login/page.tsx)
+        // This promotes the anonymous session if a cookie is present.
+        api.post("/api/auth/claim-anonymous").catch(() => {});
+
         // Optimistic paint from cached session (Clerk JWT attached by AuthBridge)
         const storedUser = localStorage.getItem("vectorbox_user");
         if (storedUser) {
