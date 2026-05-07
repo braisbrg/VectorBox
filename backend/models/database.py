@@ -31,7 +31,10 @@ class User(Base):
     tag_preferences = Column(JSONB, nullable=True)  # {"avoided": [...]}
     onboarding_completed = Column(Boolean, nullable=False, server_default="false")
     onboarding_ratings_count = Column(Integer, nullable=False, server_default="0")
-    
+
+    # Activity tracking (anonymous user cleanup)
+    last_active_at = Column(DateTime, nullable=True, default=datetime.utcnow)
+
     # Relationships
     ratings = relationship("UserRating", back_populates="user", cascade="all, delete-orphan")
     clusters = relationship("UserCluster", back_populates="user", cascade="all, delete-orphan")

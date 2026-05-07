@@ -311,3 +311,88 @@ async def get_optional_current_user(
     except HTTPException:
         return None
 
+
+# ---------------------------------------------------------------------------
+# Anonymous Session Cookie — vb_anon_session
+# ---------------------------------------------------------------------------
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from config import ANON_SESSION_SECRET, ANON_SESSION_MAX_AGE
+
+_anon_signer = URLSafeTimedSerializer(ANON_SESSION_SECRET, salt="vb_anon_session")
+
+ANON_COOKIE_NAME = "vb_anon_session"
+
+
+def sign_anon_session(user_id: int) -> str:
+    """Create a signed cookie value for an anonymous user."""
+    return _anon_signer.dumps({"uid": user_id})
+
+
+def verify_anon_session(token: str) -> Optional[int]:
+    """Validate and extract user_id from a signed anonymous cookie. Returns None on failure."""
+    try:
+        data = _anon_signer.loads(token, max_age=ANON_SESSION_MAX_AGE)
+        return data.get("uid")
+    except (BadSignature, SignatureExpired):
+        return None
+
+
+async def get_anonymous_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Optional[User]:
+    """
+    Resolve the anonymous user from the vb_anon_session httponly cookie.
+    Returns None if cookie is absent, invalid, expired, or user not found.
+    Never raises — callers decide.
+    """
+    cookie_value = request.cookies.get(ANON_COOKIE_NAME)
+    if not cookie_value:
+        return None
+
+    user_id = verify_anon_session(cookie_value)
+    if user_id is None:
+        return None
+
+    result = await db.execute(
+        select(User).where(User.id == user_id, User.is_anonymous.is_(True))
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_current_or_anonymous_user(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> TokenResponse:
+    """
+    Unified auth: tries Clerk JWT first, falls back to vb_anon_session cookie.
+    Raises 401 only if neither is present/valid.
+    """
+    # Path 1: Clerk JWT (authenticated user)
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        try:
+            return await get_current_user(request, db)
+        except HTTPException:
+            pass  # Fall through to anonymous path
+
+    # Path 2: Anonymous session cookie
+    anon_user = await get_anonymous_user(request, db)
+    if anon_user is not None:
+        rating_count = await db.scalar(
+            select(func.count(UserRating.id)).where(UserRating.user_id == anon_user.id)
+        )
+        has_data = (rating_count or 0) > 0
+        return TokenResponse(
+            token="",  # No JWT for anonymous users
+            user_id=anon_user.id,
+            username=anon_user.username,
+            has_data=has_data,
+            letterboxd_username=None,
+        )
+
+    # Neither path succeeded
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Not authenticated",
+    )

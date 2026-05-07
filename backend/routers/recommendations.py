@@ -23,7 +23,7 @@ from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from services.feed_service import FeedService
 from services.provider_service import ProviderService
-from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_optional_current_user, get_embedding_service
+from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_optional_current_user, get_current_or_anonymous_user, get_embedding_service
 from limiter import limiter
 from models.schemas import TokenResponse
 from services.embedding_service import EmbeddingService
@@ -468,7 +468,7 @@ async def get_group_recommendations(
 @limiter.limit("20/minute")
 async def get_feed(
     request: Request,
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
     scope: str = "global",
     country_code: str = "ES",
     streaming_providers: str = "",
