@@ -41,6 +41,16 @@ class User(Base):
     streaming_providers = relationship("StreamingProvider", back_populates="user", cascade="all, delete-orphan")
 
 
+class ApiBudget(Base):
+    """OMDb API budget tracking for enrichment scheduler"""
+    __tablename__ = "api_budget"
+    
+    id = Column(Integer, primary_key=True)
+    date = Column(Date, unique=True, nullable=False)
+    omdb_calls_used = Column(Integer, default=0, server_default="0")
+    omdb_calls_limit = Column(Integer, default=1000, server_default="1000")
+
+
 class Movie(Base):
     """Movie metadata cache from TMDB"""
     __tablename__ = "movies"
@@ -69,7 +79,6 @@ class Movie(Base):
     imdb_id = Column(String(20), unique=True)
     imdb_rating = Column(Float)
     metacritic_rating = Column(Integer)
-    rotten_tomatoes_rating = Column(Integer)
     vectorbox_score = Column(Float)
     title_es = Column(String(500))
     overview_es = Column(Text)
@@ -89,6 +98,7 @@ class Movie(Base):
 
     # Metadata freshness
     last_metadata_refresh = Column(DateTime, nullable=True)
+    last_enriched = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
