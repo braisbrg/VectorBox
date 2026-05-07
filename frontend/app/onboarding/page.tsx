@@ -6,7 +6,7 @@ import { useAuth } from "@clerk/nextjs";
 import { motion, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { ThumbsUp, ThumbsDown, Minus, Undo2, SkipForward, Star, Sparkles, Search } from "lucide-react";
-import { getTMDBImageUrl } from "@/lib/api";
+import { getTMDBImageUrl, api } from "@/lib/api";
 
 interface OnboardingMovie {
     tmdb_id: number;
@@ -38,9 +38,7 @@ const SIGNAL_BUTTONS: {
     { signal: "positive", key: "3", label: "LOVED IT",   icon: ThumbsUp,   color: "text-primary" },
 ];
 
-const MOVIES_KEY = "vb_onboarding_movies";
-const PROGRESS_KEY = "vb_onboarding_progress";
-const RATINGS_KEY = "vb_guest_ratings";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
 
 export default function OnboardingCarouselPage() {
     const router = useRouter();
@@ -60,52 +58,35 @@ export default function OnboardingCarouselPage() {
     const [searchLoading, setSearchLoading] = useState(false);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [page, setPage] = useState(1);
+    const [sessionReady, setSessionReady] = useState(false);
     const isMounted = useRef(true);
 
     useEffect(() => {
         return () => { isMounted.current = false; };
     }, []);
 
-    // Mount: prefer cached movies+progress over a fresh fetch so a guest who
-    // refreshes mid-carousel keeps their place. Pole randomness would otherwise
-    // re-roll the first 5 films and force the saved-progress check to discard.
+    // Mount: init anonymous session + fetch movies from API
     useEffect(() => {
         const hydrate = async () => {
             try {
-                const savedMoviesRaw = localStorage.getItem(MOVIES_KEY);
-                const savedProgressRaw = localStorage.getItem(PROGRESS_KEY);
-                const savedRatingsRaw = localStorage.getItem(RATINGS_KEY);
-
-                if (savedMoviesRaw && savedProgressRaw) {
-                    try {
-                        const savedMovies: OnboardingMovie[] = JSON.parse(savedMoviesRaw);
-                        const savedProgress = JSON.parse(savedProgressRaw);
-                        if (Array.isArray(savedMovies) && savedMovies.length > 0) {
-                            if (!isMounted.current) return;
-                            setMovies(savedMovies);
-                            setCurrentIndex(savedProgress.currentIndex || 0);
-                            setRatedCount(savedProgress.ratedCount || 0);
-                            if (savedRatingsRaw) {
-                                try { setRatings(JSON.parse(savedRatingsRaw)); } catch { /* ignore */ }
-                            }
-                            setLoading(false);
-                            return;
-                        }
-                    } catch { /* corrupt — fall through to fetch */ }
+                // Init or resume anonymous session (sets httponly cookie)
+                const sessionRes = await fetch(`${API_URL}/api/onboarding/init-session`, {
+                    method: "POST",
+                    credentials: "include",
+                });
+                if (sessionRes.ok) {
+                    const sessionData = await sessionRes.json();
+                    if (!isMounted.current) return;
+                    setRatedCount(sessionData.ratings_count || 0);
+                    setSessionReady(true);
                 }
 
-                // No usable cache — fetch and persist
-                const savedTags = localStorage.getItem("vb_guest_tags");
-                const avoided = savedTags ? JSON.parse(savedTags).avoided || [] : [];
-                const params = new URLSearchParams(avoided.length > 0 ? { avoided_tags: avoided.join(",") } : {});
-                
-                const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
-                const res = await fetch(`${API_URL}/api/onboarding/movies?${params.toString()}`);
+                // Fetch carousel movies
+                const res = await fetch(`${API_URL}/api/onboarding/movies`, { credentials: "include" });
                 if (!res.ok) throw new Error("Failed to fetch movies");
                 const data: OnboardingMovie[] = await res.json();
                 if (!isMounted.current) return;
                 setMovies(data);
-                localStorage.setItem(MOVIES_KEY, JSON.stringify(data));
             } catch (e) {
                 console.error("Failed to load onboarding movies:", e);
             } finally {
@@ -115,23 +96,16 @@ export default function OnboardingCarouselPage() {
         hydrate();
     }, []);
 
-    // Persist helper
-    const persist = useCallback(
-        (newRatings: Record<number, Signal>, newIndex: number, newCount: number) => {
-            localStorage.setItem(RATINGS_KEY, JSON.stringify(newRatings));
-            localStorage.setItem(
-                PROGRESS_KEY,
-                JSON.stringify({
-                    currentIndex: newIndex,
-                    ratedCount: newCount,
-                    movieIds: movies.map((m) => m.tmdb_id),
-                })
-            );
-        },
-        [movies]
-    );
+    // Save a single rating to DB via API
+    const saveRating = useCallback(async (tmdbId: number, signal: Signal) => {
+        try {
+            await api.post("/api/onboarding/rate", { tmdb_id: tmdbId, signal });
+        } catch (e) {
+            console.error("Failed to save rating:", e);
+        }
+    }, []);
 
-    // Rate handler
+    // Rate handler — saves to DB via API
     const handleRate = useCallback(
         (signal: Signal) => {
             if (currentIndex >= movies.length) return;
@@ -143,24 +117,22 @@ export default function OnboardingCarouselPage() {
             setRatings(newRatings);
             setRatedCount(newCount);
             setCurrentIndex(newIndex);
-            persist(newRatings, newIndex, newCount);
+            saveRating(movie.tmdb_id, signal);
 
             if (newCount === 10) setShowPeek(true);
             if (newCount >= 15 && !showRegistration) setShowRegistration(true);
         },
-        [currentIndex, movies, ratings, ratedCount, persist, showRegistration]
+        [currentIndex, movies, ratings, ratedCount, saveRating, showRegistration]
     );
 
-    // Skip
+    // Skip — no API call needed, just advance the carousel
     const handleSkip = useCallback(() => {
         if (currentIndex >= movies.length) return;
         setDirection(1);
-        const newIndex = currentIndex + 1;
-        setCurrentIndex(newIndex);
-        persist(ratings, newIndex, ratedCount);
-    }, [currentIndex, movies.length, ratings, ratedCount, persist]);
+        setCurrentIndex(currentIndex + 1);
+    }, [currentIndex, movies.length]);
 
-    // Undo
+    // Undo — client-side only (rating already sent; re-rating will overwrite on next swipe)
     const handleUndo = useCallback(() => {
         if (currentIndex <= 0) return;
         const prevIndex = currentIndex - 1;
@@ -173,8 +145,7 @@ export default function OnboardingCarouselPage() {
         setCurrentIndex(prevIndex);
         setRatings(newRatings);
         setRatedCount(newCount);
-        persist(newRatings, prevIndex, newCount);
-    }, [currentIndex, movies, ratings, ratedCount, persist]);
+    }, [currentIndex, movies, ratings, ratedCount]);
 
     const loadMoreMovies = useCallback(async () => {
         setIsLoadingMore(true);
@@ -197,7 +168,6 @@ export default function OnboardingCarouselPage() {
             
             setMovies(prev => {
                 const combined = [...prev, ...newMovies];
-                localStorage.setItem(MOVIES_KEY, JSON.stringify(combined));
                 return combined;
             });
             setPage(nextPage);
@@ -227,18 +197,17 @@ export default function OnboardingCarouselPage() {
 
     const handleSearchRate = useCallback(
         (movie: OnboardingMovie, signal: Signal) => {
-            // Save rating only — don't add to carousel pool or advance the deck.
-            // The rating is persisted and will be migrated on signup.
+            // Save rating to DB — don't add to carousel pool or advance the deck.
             const newRatings = { ...ratings, [movie.tmdb_id]: signal };
             const newCount = Object.keys(newRatings).length;
             setRatings(newRatings);
             setRatedCount(newCount);
-            persist(newRatings, currentIndex, newCount);
+            saveRating(movie.tmdb_id, signal);
             if (newCount === 10) setShowPeek(true);
             if (newCount >= 15 && !showRegistration) setShowRegistration(true);
             closeSearch();
         },
-        [ratings, currentIndex, showRegistration, persist, closeSearch]
+        [ratings, currentIndex, showRegistration, saveRating, closeSearch]
     );
 
     // Debounced search fetch

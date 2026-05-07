@@ -2,26 +2,38 @@
 Onboarding Router — Guest carousel flow + tag preferences.
 
 Public endpoints:
-    GET  /movies    — 15 diverse films for the onboarding carousel (optional auth)
+    GET  /movies       — 15 diverse films for the onboarding carousel (optional auth)
+    POST /init-session — Create/resume anonymous user with httponly cookie
 
-Auth-required endpoints:
-    POST /migrate-guest — Migrate localStorage ratings/tags to Postgres
+Auth-required endpoints (Clerk JWT OR vb_anon_session cookie):
+    POST /rate          — Save a single carousel rating to DB
+    POST /migrate-guest — Migrate localStorage ratings/tags to Postgres (legacy)
     POST /tags          — Save tag preferences (Settings UI)
     GET  /status        — Onboarding completion status
 """
 import logging
 import random
+import uuid
+from datetime import datetime
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import ARRAY, array
 from sqlalchemy import String, cast
 
-from config import get_db, REDIS_URL, AsyncSessionLocal
-from dependencies import get_current_user, get_optional_current_user, get_qdrant_service
+from config import get_db, REDIS_URL, AsyncSessionLocal, IS_PRODUCTION, ANON_SESSION_MAX_AGE
+from dependencies import (
+    get_current_user,
+    get_optional_current_user,
+    get_current_or_anonymous_user,
+    get_qdrant_service,
+    get_anonymous_user,
+    sign_anon_session,
+    ANON_COOKIE_NAME,
+)
 from limiter import limiter
 from models.database import User, Movie, UserRating
 from models.schemas import TokenResponse
@@ -100,6 +112,11 @@ class MigrateGuestRequest(BaseModel):
 
 class TagsRequest(BaseModel):
     avoided: List[str]
+
+class RateRequest(BaseModel):
+    tmdb_id: int
+    signal: str  # "positive" | "neutral" | "negative"
+
 
 class OnboardingMovie(BaseModel):
     tmdb_id: int
@@ -377,6 +394,158 @@ async def search_onboarding_movies(
 
 
 # ---------------------------------------------------------------------------
+# POST /init-session — Create/resume anonymous user (TASK 2)
+# ---------------------------------------------------------------------------
+
+@router.post("/init-session")
+@limiter.limit("30/minute")
+async def init_session(
+    request: Request,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    anon_user: Optional[User] = Depends(get_anonymous_user),
+):
+    """
+    Idempotent session initializer for guest users.
+    If a valid vb_anon_session cookie is present, return the existing user.
+    Otherwise, create a new anonymous user and set the cookie.
+    """
+    if anon_user is not None:
+        # Existing anonymous session — refresh last_active_at
+        anon_user.last_active_at = datetime.utcnow()
+        await db.commit()
+        return {"user_id": anon_user.id, "is_anonymous": True, "ratings_count": anon_user.onboarding_ratings_count}
+
+    # Create new anonymous user
+    guest_suffix = uuid.uuid4().hex[:8]
+    user = User(
+        username=f"guest_{guest_suffix}",
+        is_anonymous=True,
+        last_active_at=datetime.utcnow(),
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+
+    # Set httponly cookie
+    cookie_value = sign_anon_session(user.id)
+    response.set_cookie(
+        key=ANON_COOKIE_NAME,
+        value=cookie_value,
+        httponly=True,
+        samesite="lax",
+        secure=IS_PRODUCTION,
+        max_age=ANON_SESSION_MAX_AGE,
+        path="/",
+    )
+
+    logger.info(f"[init-session] Created anonymous user id={user.id} username={user.username}")
+    return {"user_id": user.id, "is_anonymous": True, "ratings_count": 0}
+
+
+# ---------------------------------------------------------------------------
+# POST /rate — Save a single carousel rating to DB (TASK 3)
+# ---------------------------------------------------------------------------
+
+@router.post("/rate")
+@limiter.limit("60/minute")
+async def rate_movie(
+    request: Request,
+    body: RateRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+):
+    """
+    Save a single onboarding rating to DB. Works for both authenticated and
+    anonymous users. Called on each carousel swipe instead of localStorage.
+    """
+    user_id = current_user.user_id
+
+    if body.signal not in SIGNAL_TO_RATING:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid signal: {body.signal}. Must be positive, neutral, or negative.",
+        )
+
+    rating_value = SIGNAL_TO_RATING[body.signal]
+
+    # Look up movie by tmdb_id
+    movie_result = await db.execute(
+        select(Movie).where(Movie.tmdb_id == body.tmdb_id)
+    )
+    movie = movie_result.scalar_one_or_none()
+    if not movie:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Movie tmdb_id={body.tmdb_id} not found in DB",
+        )
+
+    # Upsert rating (idempotent — re-rating the same movie updates it)
+    existing = await db.execute(
+        select(UserRating).where(
+            UserRating.user_id == user_id,
+            UserRating.movie_id == movie.id,
+        )
+    )
+    existing_rating = existing.scalar_one_or_none()
+
+    if existing_rating is not None:
+        existing_rating.rating = rating_value
+        existing_rating.is_watched = True
+    else:
+        db.add(UserRating(
+            user_id=user_id,
+            movie_id=movie.id,
+            rating=rating_value,
+            is_watched=True,
+            watch_count=1,
+        ))
+
+    # Update denormalized counter
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
+    if user:
+        # Count actual ratings for accuracy
+        count = await db.scalar(
+            select(func.count(UserRating.id)).where(UserRating.user_id == user_id)
+        )
+        new_count = (count or 0) + (0 if existing_rating else 1)
+        user.onboarding_ratings_count = new_count
+        if new_count >= 15:
+            user.onboarding_completed = True
+
+    await db.commit()
+
+    # Trigger clustering when enough ratings accumulate
+    final_count = user.onboarding_ratings_count if user else 0
+    if final_count >= 5 and existing_rating is None:
+        qdrant_singleton = qdrant
+
+        async def _run_clustering(uid: int):
+            from services.clustering_service import ClusteringService
+            async with AsyncSessionLocal() as session:
+                try:
+                    clustering = ClusteringService(qdrant=qdrant_singleton)
+                    await clustering.create_user_clusters(uid, session, groq_client=None)
+                except Exception as e:
+                    logger.error(f"[rate] Clustering failed for user {uid}: {e}")
+
+        background_tasks.add_task(_run_clustering, user_id)
+
+    # Invalidate profile cache
+    await set_profile_dirty(user_id, REDIS_URL)
+
+    return {
+        "status": "ok",
+        "tmdb_id": body.tmdb_id,
+        "signal": body.signal,
+        "ratings_count": final_count,
+    }
+
+
+# ---------------------------------------------------------------------------
 # POST /migrate-guest — Migrate localStorage ratings + tags to Postgres
 # ---------------------------------------------------------------------------
 
@@ -504,9 +673,9 @@ async def save_tags(
 @router.get("/status")
 async def get_onboarding_status(
     db: AsyncSession = Depends(get_db),
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
 ):
-    """Return onboarding state for the current user."""
+    """Return onboarding state for the current user (authenticated or anonymous)."""
     user_result = await db.execute(select(User).where(User.id == current_user.user_id))
     user = user_result.scalar_one_or_none()
     if not user:

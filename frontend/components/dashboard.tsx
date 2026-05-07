@@ -102,14 +102,6 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         if (!isClerkLoaded) return;
 
         if (!clerkUser) {
-            // FIX 1: Guest with 15+ ratings → explore instead of login
-            try {
-                const raw = localStorage.getItem("vb_guest_ratings");
-                if (raw && Object.keys(JSON.parse(raw)).length >= 15) {
-                    router.replace("/explore?guest=true");
-                    return;
-                }
-            } catch { /* ignore corrupt data */ }
             localStorage.removeItem("vectorbox_user");
             router.push("/login");
             return;
