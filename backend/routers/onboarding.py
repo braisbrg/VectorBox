@@ -21,7 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request,
 from pydantic import BaseModel
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.dialects.postgresql import ARRAY, array
+from sqlalchemy.dialects.postgresql import ARRAY, array, insert as pg_insert
 from sqlalchemy import String, cast
 
 from config import get_db, REDIS_URL, AsyncSessionLocal, IS_PRODUCTION, ANON_SESSION_MAX_AGE
@@ -582,31 +582,49 @@ async def migrate_guest(
     user.tag_preferences = tag_data
 
     # Map signal → rating and insert UserRatings
-    migrated = 0
+    # Batch fetch all candidate movies in a single query (no N+1)
+    valid_pairs: List[tuple[int, float]] = []
     for tmdb_id_str, signal in body.ratings.items():
-        tmdb_id = int(tmdb_id_str)
         rating_value = SIGNAL_TO_RATING.get(signal)
         if rating_value is None:
             continue
+        try:
+            valid_pairs.append((int(tmdb_id_str), rating_value))
+        except (TypeError, ValueError):
+            continue
 
-        # Look up Movie by tmdb_id — don't create bare movies (AGENTS.md anti-pattern #20)
-        movie_result = await db.execute(
-            select(Movie).where(Movie.tmdb_id == tmdb_id)
-        )
-        movie = movie_result.scalar_one_or_none()
+    movies_by_tmdb: Dict[int, Movie] = {}
+    if valid_pairs:
+        tmdb_ids = [tid for tid, _ in valid_pairs]
+        movies_q = await db.execute(select(Movie).where(Movie.tmdb_id.in_(tmdb_ids)))
+        movies_by_tmdb = {m.tmdb_id: m for m in movies_q.scalars().all()}
+
+    rows: List[Dict] = []
+    for tmdb_id, rating_value in valid_pairs:
+        movie = movies_by_tmdb.get(tmdb_id)
         if not movie:
             logger.warning(f"[migrate-guest] Skipping tmdb_id={tmdb_id}: not in DB")
             continue
+        rows.append({
+            "user_id": user_id,
+            "movie_id": movie.id,
+            "rating": rating_value,
+            "is_watched": True,
+            "watch_count": 1,
+        })
 
-        user_rating = UserRating(
-            user_id=user_id,
-            movie_id=movie.id,
-            rating=rating_value,
-            is_watched=True,
-            watch_count=1,
+    migrated = 0
+    if rows:
+        # Idempotent upsert — protects against retries after the existing_count guard passes
+        stmt = pg_insert(UserRating).values(rows).on_conflict_do_update(
+            index_elements=["user_id", "movie_id"],
+            set_={
+                "rating": pg_insert(UserRating).excluded.rating,
+                "is_watched": True,
+            },
         )
-        db.add(user_rating)
-        migrated += 1
+        result = await db.execute(stmt)
+        migrated = result.rowcount or len(rows)
 
     # Update denormalized counters
     user.onboarding_ratings_count = migrated

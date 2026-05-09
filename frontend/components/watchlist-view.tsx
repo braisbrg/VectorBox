@@ -241,7 +241,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                             <select
                                 className="w-full px-3 py-2 rounded-md border bg-background"
                                 value={filters.sortBy}
-                                onChange={(e) => updateFilters({ sortBy: e.target.value as any })}
+                                onChange={(e) => updateFilters({ sortBy: e.target.value as WatchlistFilters["sortBy"] })}
                             >
                                 <option value="date_added">Date Added</option>
                                 <option value="title">Title</option>

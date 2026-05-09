@@ -47,8 +47,8 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
 
     const searchMutation = useMutation({
         mutationFn: async (query: string) => {
-            // Public DB search backing the onboarding modal — works for guests too.
-            const res = await api.get(`/api/onboarding/search?q=${encodeURIComponent(query)}`);
+            // Public TMDB search backing the More Like This modal
+            const res = await api.get(`/api/search/autocomplete?q=${encodeURIComponent(query)}`);
             return res.data as Array<{ tmdb_id: number; title: string; year?: number; poster_path?: string; overview?: string }>;
         },
         onSuccess: (data) => {

@@ -89,60 +89,62 @@ async def scrape_letterboxd_popular():
             
             async with AsyncSessionLocal() as db:
                 movie_service = MovieService(db, tmdb=tmdb)
-                
-                try:
-                    for i, slug in enumerate(unique_slugs):
+
+                # Step A: parallelize TMDB searches with a concurrency cap
+                sem = asyncio.Semaphore(5)
+
+                async def _resolve(idx: int, slug: str):
+                    async with sem:
                         try:
-                            # Smart slug parsing for patterns like:
-                            # - "sinners-2025" -> title="sinners", year=2025
-                            # - "eternity-2025-1" -> title="eternity", year=2025 (strip "-1" disambiguation suffix)
                             query = slug.replace("-", " ")
                             year = None
-                            
-                            # FIRST: Strip trailing disambiguation suffix (e.g., "1" in "eternity 2025 1")
                             query = re.sub(r'\s\d$', '', query)
-                            
-                            # THEN: Extract year if at end (e.g., "eternity 2025" -> year=2025)
                             year_match = re.search(r'\s(\d{4})$', query)
                             if year_match:
                                 potential_year = int(year_match.group(1))
                                 if 1888 <= potential_year <= 2030:
                                     year = potential_year
                                     query = query[:year_match.start()].strip()
-                            
-                            # Primary search: with year parameter (sorted by popularity)
+
                             result_movie = await tmdb.search_movie(query, year=year)
-                            
-                            # Fallback: Try without year if year search failed
                             if not result_movie and year:
                                 result_movie = await tmdb.search_movie(query)
-                            
-                            if result_movie:
-                                tmdb_id = result_movie["id"]
-                                tmdb_ids.append(tmdb_id)
-                                
-                                uri = f"https://letterboxd.com/film/{slug}/"
-                                
-                                # Upsert (crear si no existe)
-                                db_movie = await movie_service.get_or_create_movie(tmdb_id, letterboxd_uri=uri)
-                                
-                                # Actualizar rating si lo tenemos
-                                if i < len(ratings) and db_movie:
-                                     try:
-                                         db_movie.letterboxd_rating = float(ratings[i])
-                                     except (ValueError, TypeError) as e:
-                                         logger.warning(f"Failed to parse rating for slug {slug}: {e}")
-                                
-                                # Commit por lotes sería mejor, pero uno a uno es seguro
-                                await db.commit()
-                            else:
-                                logger.warning(f"Could not resolve slug: {slug}")
-                                failed_slugs.append(slug)
+                            return idx, slug, result_movie
+                        except Exception as e:
+                            logger.warning(f"Search failed for {slug}: {e}")
+                            return idx, slug, None
+
+                try:
+                    search_results = await asyncio.gather(
+                        *[_resolve(i, s) for i, s in enumerate(unique_slugs)]
+                    )
+
+                    # Step B: sequential ingest (DB session is single-threaded);
+                    # single commit at the end of the batch.
+                    for idx, slug, result_movie in search_results:
+                        if not result_movie:
+                            logger.warning(f"Could not resolve slug: {slug}")
+                            failed_slugs.append(slug)
+                            continue
+                        try:
+                            tmdb_id = result_movie["id"]
+                            tmdb_ids.append(tmdb_id)
+                            uri = f"https://letterboxd.com/film/{slug}/"
+                            db_movie = await movie_service.get_or_create_movie(tmdb_id, letterboxd_uri=uri)
+                            if idx < len(ratings) and db_movie:
+                                try:
+                                    db_movie.letterboxd_rating = float(ratings[idx])
+                                except (ValueError, TypeError) as e:
+                                    logger.warning(f"Failed to parse rating for slug {slug}: {e}")
                         except Exception as inner_e:
                             logger.warning(f"Skipping {slug}: {inner_e}")
                             failed_slugs.append(f"{slug} (Error)")
-                            await db.rollback()
-                            
+
+                    try:
+                        await db.commit()
+                    except Exception as e:
+                        await db.rollback()
+                        logger.error(f"Final batch commit failed: {e}")
                 finally:
                     # Clean up batches
                     await movie_service.close()
@@ -158,7 +160,7 @@ async def scrape_letterboxd_popular():
             if tmdb_ids:
                 redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
                 try:
-                    r = await redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
+                    r = redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
                     await r.set(REDIS_KEY_POPULAR, json.dumps(tmdb_ids), ex=60*60*24)
                     logger.info("Saved Popular IDs to Redis.")
                     await r.close()

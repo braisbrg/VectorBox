@@ -103,7 +103,7 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                             if not description or model_used is None:
                                 continue
 
-                            loop = asyncio.get_event_loop()
+                            loop = asyncio.get_running_loop()
                             vector = await loop.run_in_executor(
                                 None,
                                 lambda d=description, m=movie: embedding_service.generate_embedding(
@@ -200,8 +200,11 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                 )
                 movies_to_check = movies_to_check_result.scalars().all()
 
+                # Batch-fetch all stored vectors in a single Qdrant call
+                vectors_by_tmdb = await qdrant.get_vectors_batch([m.tmdb_id for m in movies_to_check])
+
                 for movie in movies_to_check:
-                    stored = await qdrant.get_vector(movie.tmdb_id)
+                    stored = vectors_by_tmdb.get(movie.tmdb_id)
                     if not stored:
                         continue
                     ref_text = (
@@ -210,7 +213,7 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                     ).strip()
                     if not ref_text:
                         continue
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     try:
                         ref_vec = await loop.run_in_executor(
                             None,
@@ -514,7 +517,7 @@ async def enrich_movies_background(
                                 })
 
                             # Generate Batch Embeddings (non-blocking)
-                            loop = asyncio.get_event_loop()
+                            loop = asyncio.get_running_loop()
                             vectors = await loop.run_in_executor(
                                 None,
                                 lambda: embedding_service.generate_batch_embeddings(data_for_embedding)

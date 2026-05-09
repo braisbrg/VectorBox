@@ -76,7 +76,7 @@ class TMDBClient:
     async def _get_redis(self) -> redis.Redis:
         """Get or create Redis connection"""
         if not self.redis_client:
-            self.redis_client = await redis.from_url(
+            self.redis_client = redis.from_url(
                 self.redis_url,
                 encoding="utf-8",
                 decode_responses=True
@@ -85,18 +85,18 @@ class TMDBClient:
     
     async def _rate_limit(self):
         """Enforce rate limiting to respect TMDB API limits"""
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
         time_since_last = current_time - self.last_request_time
         
         if time_since_last < self.RATE_LIMIT_DELAY:
             await asyncio.sleep(self.RATE_LIMIT_DELAY - time_since_last)
         
-        self.last_request_time = asyncio.get_event_loop().time()
+        self.last_request_time = asyncio.get_running_loop().time()
     
     async def _make_request(self, endpoint: str, params: Dict = None) -> Optional[Dict]:
         """Make HTTP request with error handling and rate limiting and retry logic"""
         # [RESILIENCE] Circuit Breaker Check
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
         if self.cb_state == "OPEN":
             if current_time - self.cb_last_failure_time > self.cb_reset_timeout:
                 logger.info("TMDB Circuit Breaker entering HALF-OPEN state.")
@@ -153,7 +153,7 @@ class TMDBClient:
 
     def _record_failure(self):
         """Record a failure and potentially trip the circuit breaker"""
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
         self.cb_failure_count += 1
         self.cb_last_failure_time = current_time
         

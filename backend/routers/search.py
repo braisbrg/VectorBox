@@ -178,7 +178,7 @@ async def natural_language_search(
                     return result
         
         # 2. Generate Embedding for the EXPANDED semantic query
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         query_vector = await loop.run_in_executor(
             None,
             lambda: embedding_service.generate_embedding({
@@ -443,7 +443,7 @@ async def search_movies(
         query = validate_user_query(query)
 
         # 1. Generate query vector
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         query_vector = await loop.run_in_executor(
             None,
             lambda: embedding_service.generate_embedding({
@@ -552,7 +552,7 @@ async def search_movies(
                             genres = [g["name"] for g in details.get("genres", [])]
                         
                             # Generate embedding
-                            loop = asyncio.get_event_loop()
+                            loop = asyncio.get_running_loop()
                             vector = await loop.run_in_executor(
                                 None,
                                 lambda: embedding_service.generate_embedding({
@@ -604,3 +604,34 @@ async def search_movies(
     except Exception as e:
         logger.error(f"Movie search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Search service unavailable")
+
+
+@router.get("/autocomplete")
+@limiter.limit("60/minute")
+async def autocomplete_search(
+    request: Request,
+    q: str,
+    tmdb: TMDBClient = Depends(get_tmdb_client)
+):
+    """
+    Fast title autocomplete backing the More Like This search.
+    Searches TMDB directly to support multiple languages and broad coverage.
+    """
+    if len(q.strip()) < 2:
+        return []
+
+    data = await tmdb._make_request("/search/movie", {"query": q.strip(), "include_adult": "false"})
+    if not data or not data.get("results"):
+        return []
+
+    results = []
+    for m in data["results"][:8]:
+        results.append({
+            "tmdb_id": m["id"],
+            "title": m["title"],
+            "year": int(m["release_date"][:4]) if m.get("release_date") else None,
+            "poster_path": m.get("poster_path"),
+            "overview": m.get("overview", "")
+        })
+    return results
+

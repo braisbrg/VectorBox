@@ -125,18 +125,41 @@ class RSSService:
         """
         items = await self.fetch_user_rss(username)
         stats = {"processed": 0, "new_movies": 0, "new_ratings": 0, "updated_ratings": 0, "errors": 0}
-        
+
+        # Pre-fetch existing movies in two batched queries (was N+1 per item)
+        all_tmdb_ids = [i['tmdb_id'] for i in items if i.get('tmdb_id')]
+        all_uris = [i['uri'] for i in items if i.get('uri')]
+        movies_by_tmdb: Dict[int, Movie] = {}
+        movies_by_uri: Dict[str, Movie] = {}
+        if all_tmdb_ids:
+            r = await self.db.execute(select(Movie).where(Movie.tmdb_id.in_(all_tmdb_ids)))
+            movies_by_tmdb = {m.tmdb_id: m for m in r.scalars().all()}
+        if all_uris:
+            r = await self.db.execute(select(Movie).where(Movie.letterboxd_uri.in_(all_uris)))
+            movies_by_uri = {m.letterboxd_uri: m for m in r.scalars().all()}
+
+        # Skip enrichment for movies enriched in the last 7 days
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        enrich_cutoff = _dt.now(_tz.utc) - _td(days=7)
+
+        async def _maybe_enrich(m: Movie) -> None:
+            le = m.last_enriched
+            if le is not None:
+                if le.tzinfo is None:
+                    le = le.replace(tzinfo=_tz.utc)
+                if le >= enrich_cutoff:
+                    return
+            await self.movie_service.enrich_movie(m)
+
         for item in items:
             stats["processed"] += 1
             try:
                 movie = None
-                
+
                 # 1. Try matching by TMDB ID (Most accurate)
                 if item.get('tmdb_id'):
-                    stmt = select(Movie).where(Movie.tmdb_id == item['tmdb_id'])
-                    result = await self.db.execute(stmt)
-                    movie = result.scalar_one_or_none()
-                    
+                    movie = movies_by_tmdb.get(item['tmdb_id'])
+
                     if movie:
                         # Update URI if missing
                         if not movie.letterboxd_uri:
@@ -148,17 +171,15 @@ class RSSService:
                                 logger.error(f"DB commit failed updating letterboxd_uri: {e}")
                                 raise
                     if movie:
-                        await self.movie_service.enrich_movie(movie)        
-                
+                        await _maybe_enrich(movie)
+
                 # 2. Fallback: Try matching by Letterboxd URI
                 if not movie:
-                    stmt = select(Movie).where(Movie.letterboxd_uri == item['uri'])
-                    result = await self.db.execute(stmt)
-                    movie = result.scalar_one_or_none()
-                    
+                    movie = movies_by_uri.get(item['uri'])
+
                     if movie:
                          logger.info(f"Found movie by URI: {movie.title}")
-                         await self.movie_service.enrich_movie(movie)
+                         await _maybe_enrich(movie)
 
                 # 3. Fallback: Try Title + Year (Only if no TMDB ID was provided)
                 if not movie and item['year'] and not item.get('tmdb_id'):
@@ -179,7 +200,7 @@ class RSSService:
                                 await self.db.rollback()
                                 logger.error(f"DB commit failed updating letterboxd_uri: {e}")
                                 raise
-                        await self.movie_service.enrich_movie(movie)
+                        await _maybe_enrich(movie)
                 
                 # 4. If movie doesn't exist, fetch from TMDB and create it
                 if not movie:

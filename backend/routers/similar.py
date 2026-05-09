@@ -1,7 +1,7 @@
 """
 Get similar movie recommendations based on a specific movie
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -24,11 +24,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _ingest_similar_background(tmdb_ids: List[int], tmdb: TMDBClient) -> None:
+    """Background ingest of TMDB recommendations missing from local DB.
+
+    Owns its own AsyncSession. Per-id try/except, never re-raises.
+    """
+    if not tmdb_ids:
+        return
+    from config import AsyncSessionLocal
+    from services.movie_service import MovieService
+    async with AsyncSessionLocal() as db:
+        movie_service = MovieService(db, tmdb=tmdb)
+        for tid in tmdb_ids:
+            try:
+                await movie_service.get_or_create_movie(tid)
+            except Exception as e:
+                logger.error(f"[similar/background] Ingest failed for tmdb_id={tid}: {e}")
+
+
 @router.get("/similar/{tmdb_id}")
 @limiter.limit("20/minute")
 async def get_similar_movies(
     request: Request,
     tmdb_id: int,
+    background_tasks: BackgroundTasks,
     limit: int = Query(12, ge=1, le=50),
     current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
@@ -69,8 +88,8 @@ async def get_similar_movies(
             # Fetch from TMDB via MovieService (Ensures full enrichment)
             logger.info(f"Movie {tmdb_id} not found locally, fetching via MovieService")
             from services.movie_service import MovieService
-            movie_service = MovieService(db)
-            
+            movie_service = MovieService(db, tmdb=tmdb)
+
             source_movie = await movie_service.get_or_create_movie(tmdb_id)
             
             if not source_movie:
@@ -87,7 +106,7 @@ async def get_similar_movies(
             keywords = await tmdb.get_movie_keywords(tmdb_id)
 
         # Generate QUERY vector - WITHOUT title to avoid name-matching
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         query_vector = await loop.run_in_executor(
             None,
             lambda: embedding_service.generate_embedding({
@@ -216,28 +235,22 @@ async def get_similar_movies(
                         existing_movies_map[m.tmdb_id] = m
                         
                 logger.info(f"Enrichment: Found {len(existing_movies_map)} local movies out of {len(tmdb_ids_to_check)} TMDB results")
-                
+
+                to_ingest_background: List[int] = []
                 for rec in tmdb_results:
                     rec_id = rec["id"]
                     if rec_id in seen_ids:
                         continue
-                    
+
                     # Check if we have it locally
                     local_movie = existing_movies_map.get(rec_id)
-                    
+
                     if local_movie:
                         logger.info(f"Enrichment: Using local movie for {rec_id} ({local_movie.title}). VB Score: {local_movie.vectorbox_score}")
                     else:
-                        # Ingest on the fly to get full metadata (VectorBox Score, etc.)
-                        logger.info(f"Enrichment: Ingesting movie {rec_id} on the fly.")
-                        try:
-                            from services.movie_service import MovieService
-                            movie_service = MovieService(db)
-                            local_movie = await movie_service.get_or_create_movie(rec_id)
-                        except Exception as e:
-                            logger.error(f"Failed to ingest movie {rec_id} on the fly: {e}")
-                            local_movie = None
-                    
+                        # Defer ingest to background — return TMDB payload now, enrich next request
+                        to_ingest_background.append(rec_id)
+
                     recommendations.append({
                         "movie_id": rec_id,
                         "title": local_movie.title if local_movie else rec.get("title"),
@@ -255,9 +268,12 @@ async def get_similar_movies(
                         "overview_es": local_movie.overview_es if local_movie else None
                     })
                     seen_ids.add(rec_id)
-                    
+
                     if len(recommendations) >= limit:
                         break
+
+                if to_ingest_background:
+                    background_tasks.add_task(_ingest_similar_background, to_ingest_background, tmdb)
         
         # Limit results
         recommendations = recommendations[:limit]
@@ -321,6 +337,22 @@ async def get_similar_multi(
     seed_ids = list(dict.fromkeys(body.tmdb_ids))  # preserve order, dedupe
 
     vectors_map = await qdrant.get_vectors_batch(seed_ids)
+    
+    # Auto-ingest missing vectors
+    missing_ids = [tid for tid in seed_ids if not vectors_map.get(tid)]
+    if missing_ids:
+        from services.movie_service import MovieService
+        movie_service = MovieService(db, tmdb=tmdb)
+        for tid in missing_ids:
+            try:
+                await movie_service.get_or_create_movie(tid)
+            except Exception as e:
+                logger.error(f"Failed to ingest missing seed movie {tid}: {e}")
+        
+        # Fetch newly generated vectors
+        new_vectors_map = await qdrant.get_vectors_batch(missing_ids)
+        vectors_map.update(new_vectors_map)
+
     vectors = [np.array(v) for v in vectors_map.values() if v]
     if not vectors:
         raise HTTPException(status_code=404, detail="No vectors found for provided movies")

@@ -1,7 +1,8 @@
 allowBuilds:
-  '@clerk/shared': set this to true or false
-  sharp: set this to true or false
-  unrs-resolver: set this to true or false
+  '@clerk/shared': true
+  sharp: true
+  unrs-resolver: true
 onlyBuiltDependencies:
+  - '@clerk/shared'
   - sharp
   - unrs-resolver

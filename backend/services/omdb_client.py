@@ -35,7 +35,7 @@ class OMDbClient:
 
         # [RESILIENCE] Circuit Breaker Check
         import asyncio
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
         if self.cb_state == "OPEN":
             if current_time - self.cb_last_failure_time > self.cb_reset_timeout:
                 logger.info("OMDb Circuit Breaker entering HALF-OPEN state.")
@@ -82,7 +82,7 @@ class OMDbClient:
     def _record_failure(self):
         """Record a failure and optionally open the circuit"""
         import asyncio
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
         self.cb_failure_count += 1
         self.cb_last_failure_time = current_time
         
