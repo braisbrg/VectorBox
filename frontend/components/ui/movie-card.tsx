@@ -33,7 +33,7 @@ export interface MovieCardProps {
     forceVectorBoxScore?: boolean;
     imdb_rating?: number;
     metacritic_rating?: number;
-    rotten_tomatoes_rating?: number;
+
     letterboxd_rating?: number;
     href?: string;
     variant?: "overlay" | "grid";

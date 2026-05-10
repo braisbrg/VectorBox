@@ -25,7 +25,7 @@ interface SearchResult {
     vectorbox_score?: number;
     imdb_rating?: number;
     metacritic_rating?: number;
-    rotten_tomatoes_rating?: number;
+
     title_es?: string;
     overview_es?: string;
     streaming_providers?: string[];
@@ -240,7 +240,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                                             vectorbox_score={movie.vectorbox_score}
                                             imdb_rating={movie.imdb_rating}
                                             metacritic_rating={movie.metacritic_rating}
-                                            rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
+
                                             title_es={movie.title_es}
                                             overview_es={movie.overview_es}
                                             onInspect={() => { }} // Placeholder or pass from Dashboard

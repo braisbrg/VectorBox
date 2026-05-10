@@ -32,7 +32,7 @@ interface SimilarMovie {
     vectorbox_score?: number;
     imdb_rating?: number;
     metacritic_rating?: number;
-    rotten_tomatoes_rating?: number;
+
     title_es?: string;
     overview_es?: string;
 }
@@ -47,8 +47,8 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
 
     const searchMutation = useMutation({
         mutationFn: async (query: string) => {
-            // Public DB search backing the onboarding modal — works for guests too.
-            const res = await api.get(`/api/onboarding/search?q=${encodeURIComponent(query)}`);
+            // Public TMDB search backing the More Like This modal
+            const res = await api.get(`/api/search/autocomplete?q=${encodeURIComponent(query)}`);
             return res.data as Array<{ tmdb_id: number; title: string; year?: number; poster_path?: string; overview?: string }>;
         },
         onSuccess: (data) => {
@@ -269,7 +269,7 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
                                         vectorbox_score={movie.vectorbox_score}
                                         imdb_rating={movie.imdb_rating}
                                         metacritic_rating={movie.metacritic_rating}
-                                        rotten_tomatoes_rating={movie.rotten_tomatoes_rating}
+
                                         title_es={movie.title_es}
                                         overview_es={movie.overview_es}
                                         onInspect={() => {}}

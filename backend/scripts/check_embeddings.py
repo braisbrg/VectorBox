@@ -64,7 +64,7 @@ async def check_movie_embedding(
     if not reference_text:
         return None
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         reference_vector = await loop.run_in_executor(
             None,
@@ -117,7 +117,7 @@ async def _re_enrich_movie(movie: Movie, llm_client, qdrant: QdrantService, embe
     if not description or model_used is None:
         return False
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     try:
         vector = await loop.run_in_executor(
             None,

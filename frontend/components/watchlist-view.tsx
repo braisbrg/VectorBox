@@ -241,7 +241,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                             <select
                                 className="w-full px-3 py-2 rounded-md border bg-background"
                                 value={filters.sortBy}
-                                onChange={(e) => updateFilters({ sortBy: e.target.value as any })}
+                                onChange={(e) => updateFilters({ sortBy: e.target.value as WatchlistFilters["sortBy"] })}
                             >
                                 <option value="date_added">Date Added</option>
                                 <option value="title">Title</option>
@@ -391,7 +391,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                         overview={item.overview}
                                         vectorbox_score={item.vectorbox_score}
                                         metacritic_rating={item.metacritic_rating}
-                                        rotten_tomatoes_rating={item.rotten_tomatoes_rating}
+
                                         onInspect={() => onInspect?.(item, undefined)}
                                     />
                                 </motion.div>

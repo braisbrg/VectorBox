@@ -132,7 +132,7 @@ class MovieFactory:
                     logger.warning(f"Cinematic enrichment failed for {movie.title}: {e}")
                     text_override = None
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             vector = await loop.run_in_executor(
                 None,
                 lambda: self.embedding_service.generate_embedding(

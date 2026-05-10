@@ -17,6 +17,7 @@ from services.provider_service import ProviderService
 from models.database import UserRating, Movie
 from sqlalchemy import select, or_
 from utils.scoring import normalize_similarity_score
+from utils.input_validation import validate_user_query
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -97,6 +98,9 @@ async def natural_language_search(
     Also handles "Movies like X" by detecting title matches.
     """
     try:
+        # Validate input for LLM injection
+        search_req.query = validate_user_query(search_req.query)
+
         # 0. Check if query is a specific movie title (Item-to-Item Search)
         potential_movie_id = None
         potential_movie_title = None
@@ -174,7 +178,7 @@ async def natural_language_search(
                     return result
         
         # 2. Generate Embedding for the EXPANDED semantic query
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         query_vector = await loop.run_in_executor(
             None,
             lambda: embedding_service.generate_embedding({
@@ -348,7 +352,7 @@ async def natural_language_search(
                 "vectorbox_score": db_movie.vectorbox_score if db_movie else None,
                 "imdb_rating": db_movie.imdb_rating if db_movie else None,
                 "metacritic_rating": db_movie.metacritic_rating if db_movie else None,
-                "rotten_tomatoes_rating": db_movie.rotten_tomatoes_rating if db_movie else None,
+
                 "title_es": db_movie.title_es if db_movie else None,
                 "overview_es": db_movie.overview_es if db_movie else None
             }
@@ -435,9 +439,11 @@ async def search_movies(
     3. Auto-populate Qdrant with new TMDB discoveries
     """
     try:
-        
+        # Validate input
+        query = validate_user_query(query)
+
         # 1. Generate query vector
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         query_vector = await loop.run_in_executor(
             None,
             lambda: embedding_service.generate_embedding({
@@ -510,7 +516,7 @@ async def search_movies(
                 "vectorbox_score": db_movie.vectorbox_score if db_movie else None,
                 "imdb_rating": db_movie.imdb_rating if db_movie else None,
                 "metacritic_rating": db_movie.metacritic_rating if db_movie else None,
-                "rotten_tomatoes_rating": db_movie.rotten_tomatoes_rating if db_movie else None,
+
                 "title_es": db_movie.title_es if db_movie else None,
                 "overview_es": db_movie.overview_es if db_movie else None
             })
@@ -546,7 +552,7 @@ async def search_movies(
                             genres = [g["name"] for g in details.get("genres", [])]
                         
                             # Generate embedding
-                            loop = asyncio.get_event_loop()
+                            loop = asyncio.get_running_loop()
                             vector = await loop.run_in_executor(
                                 None,
                                 lambda: embedding_service.generate_embedding({
@@ -598,3 +604,34 @@ async def search_movies(
     except Exception as e:
         logger.error(f"Movie search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Search service unavailable")
+
+
+@router.get("/autocomplete")
+@limiter.limit("60/minute")
+async def autocomplete_search(
+    request: Request,
+    q: str,
+    tmdb: TMDBClient = Depends(get_tmdb_client)
+):
+    """
+    Fast title autocomplete backing the More Like This search.
+    Searches TMDB directly to support multiple languages and broad coverage.
+    """
+    if len(q.strip()) < 2:
+        return []
+
+    data = await tmdb._make_request("/search/movie", {"query": q.strip(), "include_adult": "false"})
+    if not data or not data.get("results"):
+        return []
+
+    results = []
+    for m in data["results"][:8]:
+        results.append({
+            "tmdb_id": m["id"],
+            "title": m["title"],
+            "year": int(m["release_date"][:4]) if m.get("release_date") else None,
+            "poster_path": m.get("poster_path"),
+            "overview": m.get("overview", "")
+        })
+    return results
+

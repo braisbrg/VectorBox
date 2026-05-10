@@ -153,7 +153,7 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
                     "vectorbox_score": movie.vectorbox_score,
                     "imdb_rating": movie.imdb_rating,
                     "metacritic_rating": movie.metacritic_rating,
-                    "rotten_tomatoes_rating": movie.rotten_tomatoes_rating,
+
                     "title_es": movie.title_es,
                     "overview_es": movie.overview_es
                 }

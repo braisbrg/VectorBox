@@ -140,7 +140,7 @@ class MovieService:
             logger.warning(f"Vector missing for {movie.title} ({movie.tmdb_id}). Regenerating...")
             
             keywords = await self.tmdb.get_movie_keywords(movie.tmdb_id)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             vector = await loop.run_in_executor(
                 None,
                 lambda: self.embedding.generate_embedding({
@@ -249,7 +249,7 @@ class MovieService:
                     logger.error(f"DB commit failed enriching movie: {e}")
                     raise
 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 vector = await loop.run_in_executor(
                     None,
                     lambda: self.embedding.generate_embedding({

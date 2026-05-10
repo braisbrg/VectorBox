@@ -920,7 +920,7 @@ class RecommendationService:
                 vectorbox_score=movie.vectorbox_score,
                 imdb_rating=movie.imdb_rating,
                 metacritic_rating=movie.metacritic_rating,
-                rotten_tomatoes_rating=movie.rotten_tomatoes_rating,
+
                 title_es=movie.title_es,
                 overview_es=movie.overview_es
             ))
@@ -1153,36 +1153,44 @@ class RecommendationService:
         seen_local: Set[int] = set()
         actors_used: List[str] = []
 
-        # Section enforces <=3 per actor × <=9 total. limit(8) is a small over-fetch
-        # so the per_actor cap can skip films already in seen_ids without exhausting
-        # the candidate pool.
-        for actor_name, _ in top_actors:
+        # Section enforces <=3 per actor × <=9 total. Single batched query per
+        # actor cohort using ARRAY overlap; assignment happens in Python so a
+        # film is credited to its highest-priority matching actor.
+        def _assign(films, priority: Dict[str, int], per_actor_count: Dict[str, int], cap: int):
+            for movie in films:
+                if movie.tmdb_id in seen_ids or movie.id in seen_local:
+                    continue
+                match: Optional[str] = None
+                best_idx: int = 10**9
+                for actor in (movie.cast or [])[:3]:
+                    if actor in priority and per_actor_count.get(actor, 0) < cap and priority[actor] < best_idx:
+                        best_idx = priority[actor]
+                        match = actor
+                if match is None:
+                    continue
+                all_items.append((movie, match))
+                seen_local.add(movie.id)
+                per_actor_count[match] = per_actor_count.get(match, 0) + 1
+                if match not in actors_used:
+                    actors_used.append(match)
+
+        actor_names = [name for name, _ in top_actors]
+        if actor_names:
+            actor_priority = {name: idx for idx, name in enumerate(actor_names)}
             stmt = (
                 select(Movie)
-                .where(Movie.cast.any(actor_name))
+                .where(Movie.cast.overlap(actor_names))
                 .where(Movie.id.notin_(watched_internal_ids))
-                .where(Movie.id.notin_(seen_local))
                 .where(Movie.vectorbox_score >= 60)
                 .where(Movie.vote_count >= 50)
                 .where(Movie.year.isnot(None))
                 .order_by(desc(Movie.vectorbox_score))
-                .limit(8)
+                .limit(8 * len(actor_names))
             )
             result = await self.db.execute(stmt)
             actor_films = result.scalars().all()
-
-            per_actor = 0
-            for movie in actor_films:
-                if per_actor >= 3:
-                    break
-                if movie.tmdb_id in seen_ids:
-                    continue
-                all_items.append((movie, actor_name))
-                seen_local.add(movie.id)
-                per_actor += 1
-
-            if per_actor > 0:
-                actors_used.append(actor_name)
+            per_actor_count: Dict[str, int] = {n: 0 for n in actor_names}
+            _assign(actor_films, actor_priority, per_actor_count, cap=3)
 
         # Progressive fallback: if total < 9 (any of the top 3 lacked 3 films),
         # pull from actors 4-10 to fill up to 9.
@@ -1193,35 +1201,40 @@ class RecommendationService:
                 if score >= 1.5 and name not in top_actor_names
             ][:7]
 
-            for actor_name in extended_actors:
-                if len(all_items) >= 9:
-                    break
-
+            if extended_actors:
+                ext_priority = {name: idx for idx, name in enumerate(extended_actors)}
                 stmt = (
                     select(Movie)
-                    .where(Movie.cast.any(actor_name))
+                    .where(Movie.cast.overlap(extended_actors))
                     .where(Movie.id.notin_(watched_internal_ids))
-                    .where(Movie.tmdb_id.notin_(seen_ids))
-                    .where(Movie.id.notin_(seen_local))
                     .where(Movie.vectorbox_score >= 60)
                     .where(Movie.vote_count >= 50)
                     .where(Movie.year.isnot(None))
                     .order_by(desc(Movie.vectorbox_score))
-                    .limit(5)
+                    .limit(5 * len(extended_actors))
                 )
                 result = await self.db.execute(stmt)
                 fallback_films = result.scalars().all()
-
-                added = 0
+                ext_per_actor: Dict[str, int] = {n: 0 for n in extended_actors}
+                # cap=3 per extended actor, but stop overall at 9
                 for movie in fallback_films:
-                    if added >= 3 or len(all_items) >= 9:
+                    if len(all_items) >= 9:
                         break
-                    all_items.append((movie, actor_name))
+                    if movie.tmdb_id in seen_ids or movie.id in seen_local:
+                        continue
+                    match: Optional[str] = None
+                    best_idx: int = 10**9
+                    for actor in (movie.cast or [])[:3]:
+                        if actor in ext_priority and ext_per_actor[actor] < 3 and ext_priority[actor] < best_idx:
+                            best_idx = ext_priority[actor]
+                            match = actor
+                    if match is None:
+                        continue
+                    all_items.append((movie, match))
                     seen_local.add(movie.id)
-                    added += 1
-
-                if added > 0 and actor_name not in actors_used:
-                    actors_used.append(actor_name)
+                    ext_per_actor[match] += 1
+                    if match not in actors_used:
+                        actors_used.append(match)
 
         if not all_items:
             return FeedSection(id="cult_actor", title="Cast Picks", items=[])

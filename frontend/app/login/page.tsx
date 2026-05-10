@@ -44,16 +44,7 @@ export default function LoginPage() {
     const migrationAttempted = useRef(false);
     const newUserCheckAttempted = useRef(false);
 
-    // FIX 1: Guest with 15+ ratings → skip to /explore
-    useEffect(() => {
-        if (!isLoaded || isSignedIn) return;
-        try {
-            const raw = localStorage.getItem("vb_guest_ratings");
-            if (raw && Object.keys(JSON.parse(raw)).length >= 15) {
-                router.replace("/explore?guest=true");
-            }
-        } catch { /* ignore corrupt data */ }
-    }, [isLoaded, isSignedIn, router]);
+    // Fix 1 removed: no longer use local storage for guest rating checks.
 
     // After sign-in: migrate guest data or show onboarding chooser for new users
     useEffect(() => {
@@ -82,24 +73,17 @@ export default function LoginPage() {
         const migrateGuestData = async () => {
             setMigrating(true);
             try {
-                const ratingsRaw = localStorage.getItem("vb_guest_ratings");
-                const tagsRaw = localStorage.getItem("vb_guest_tags");
-                if (!ratingsRaw) {
-                    router.push("/");
-                    return;
-                }
+                // Promote anonymous session to registered user (transfers ratings, deletes cookie)
+                await api.post("/api/auth/claim-anonymous");
 
-                await api.post("/api/onboarding/migrate-guest", {
-                    ratings: JSON.parse(ratingsRaw),
-                    tags: tagsRaw ? JSON.parse(tagsRaw) : { avoided: [] },
-                });
-
+                // Clean up legacy localStorage if any exists
                 [
                     "vb_guest_ratings",
                     "vb_guest_tags",
                     "vb_onboarding_progress",
                     "vb_onboarding_movies",
                 ].forEach((k) => localStorage.removeItem(k));
+                
                 router.push("/?onboarding_complete=true");
             } catch (err) {
                 console.error("Migration failed:", err);

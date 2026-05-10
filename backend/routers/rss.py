@@ -76,7 +76,7 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
             await rss_service.sync_user_rss(letterboxd_profile, user_id)
 
             scraper = ScraperService()
-            movie_service = MovieService(db)
+            movie_service = MovieService(db, tmdb=tmdb)
             watchlist_added = 0
 
             try:
@@ -211,44 +211,44 @@ async def get_group_recommendations(
     
     # Map back to results to keep order/score
     movie_map = {m.tmdb_id: m for m in db_movies}
-    
-    final_results = []
-    
-    for res in scored_results:
-        if len(final_results) >= 20:
-            break
-            
-        tmdb_id = res['tmdb_id']
-        movie = movie_map.get(tmdb_id)
-        
-        # If missing in DB, ingest via MovieService (full enrichment: TMDB + OMDb + embedding + Qdrant)
-        if not movie:
+
+    # Inline ingest only for the small set of misses (cap to 5 to bound latency)
+    missing = [res['tmdb_id'] for res in scored_results[:20] if res['tmdb_id'] not in movie_map][:5]
+    if missing:
+        from services.movie_service import MovieService
+        movie_svc = MovieService(db, tmdb=tmdb)
+        for tmdb_id in missing:
             try:
-                from services.movie_service import MovieService
-                movie_svc = MovieService(db, tmdb=tmdb)
-                movie = await movie_svc.get_or_create_movie(tmdb_id)
-                if not movie:
-                    logger.warning(f"Could not ingest TMDB ID {tmdb_id} for group vibe — skipping")
-                    continue
+                m = await movie_svc.get_or_create_movie(tmdb_id)
+                if m:
+                    movie_map[tmdb_id] = m
             except Exception as e:
                 logger.error(f"Group vibe movie ingest failed for tmdb_id={tmdb_id}: {e}")
-                continue
 
-        if movie:
-            # Fetch streaming providers (Default to ES for now)
+    # Resolve providers for all movies in parallel
+    import asyncio
+
+    async def _build(res):
+        movie = movie_map.get(res['tmdb_id'])
+        if not movie:
+            return None
+        try:
             providers_data = await rss_service.tmdb.get_watch_providers(movie.tmdb_id, "ES")
-            flat_providers = []
-            if providers_data and 'flatrate' in providers_data:
-                 flat_providers = [p['provider_name'] for p in providers_data['flatrate']]
-            
-            final_results.append({
-                "movie": movie,
-                "similarity_score": res['score'],
-                "providers": flat_providers,
-                "contributors": [
-                    {"seed_title": c["username"], "contribution": c["score"]} 
-                    for c in res.get("contributors", [])
-                ]
-            })
-            
+        except Exception as e:
+            logger.warning(f"Provider fetch failed for tmdb_id={movie.tmdb_id}: {e}")
+            providers_data = None
+        flat_providers = [p['provider_name'] for p in (providers_data or {}).get('flatrate', [])]
+        return {
+            "movie": movie,
+            "similarity_score": res['score'],
+            "providers": flat_providers,
+            "contributors": [
+                {"seed_title": c["username"], "contribution": c["score"]}
+                for c in res.get("contributors", [])
+            ]
+        }
+
+    tasks = [_build(res) for res in scored_results[:20]]
+    final_results = [r for r in await asyncio.gather(*tasks) if r is not None]
+
     return final_results

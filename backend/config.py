@@ -19,6 +19,11 @@ CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
+# Anonymous session signing key (httponly cookie for guest users)
+ANON_SESSION_SECRET = os.getenv("ANON_SESSION_SECRET", os.getenv("SECRET_KEY", "vectorbox-anon-dev-secret"))
+ANON_SESSION_MAX_AGE = 90 * 24 * 3600  # 90 days in seconds (7_776_000)
+IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
+
 # Cache versioning — bump to auto-invalidate all section/signal Redis keys on schema changes
 FEED_CACHE_VERSION = "v2"
 

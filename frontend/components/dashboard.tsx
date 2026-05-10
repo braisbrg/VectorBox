@@ -102,18 +102,14 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         if (!isClerkLoaded) return;
 
         if (!clerkUser) {
-            // FIX 1: Guest with 15+ ratings → explore instead of login
-            try {
-                const raw = localStorage.getItem("vb_guest_ratings");
-                if (raw && Object.keys(JSON.parse(raw)).length >= 15) {
-                    router.replace("/explore?guest=true");
-                    return;
-                }
-            } catch { /* ignore corrupt data */ }
             localStorage.removeItem("vectorbox_user");
             router.push("/login");
             return;
         }
+
+        // Catch users who signed up directly from onboarding (bypassing login/page.tsx)
+        // This promotes the anonymous session if a cookie is present.
+        api.post("/api/auth/claim-anonymous").catch(() => {});
 
         // Optimistic paint from cached session (Clerk JWT attached by AuthBridge)
         const storedUser = localStorage.getItem("vectorbox_user");

@@ -23,7 +23,7 @@ from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 
 from database import init_db
-from routers import upload, recommendations, tools, users, search, rss, auth, tasks, movies, onboarding, public
+from routers import upload, recommendations, tools, users, search, rss, auth, tasks, movies, onboarding
 from routers.similar import router as similar_router
 from services.qdrant_service import QdrantService
 from models.schemas import HealthResponse, RootResponse
@@ -261,7 +261,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    response.headers["Content-Security-Policy"] = "default-src 'self'"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     return response
 
 # Include routers
@@ -276,8 +276,6 @@ app.include_router(rss.router, prefix="/api/rss", tags=["RSS"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["Tasks"])
 app.include_router(movies.router, prefix="/api/movies", tags=["Movies"])
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["Onboarding"])
-app.include_router(public.router, prefix="/api", tags=["Public"])
-
 
 @app.get("/", tags=["System"], response_model=RootResponse)
 async def root() -> RootResponse:

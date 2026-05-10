@@ -31,11 +31,24 @@ class User(Base):
     tag_preferences = Column(JSONB, nullable=True)  # {"avoided": [...]}
     onboarding_completed = Column(Boolean, nullable=False, server_default="false")
     onboarding_ratings_count = Column(Integer, nullable=False, server_default="0")
-    
+
+    # Activity tracking (anonymous user cleanup)
+    last_active_at = Column(DateTime, nullable=True, default=datetime.utcnow)
+
     # Relationships
     ratings = relationship("UserRating", back_populates="user", cascade="all, delete-orphan")
     clusters = relationship("UserCluster", back_populates="user", cascade="all, delete-orphan")
     streaming_providers = relationship("StreamingProvider", back_populates="user", cascade="all, delete-orphan")
+
+
+class ApiBudget(Base):
+    """OMDb API budget tracking for enrichment scheduler"""
+    __tablename__ = "api_budget"
+    
+    id = Column(Integer, primary_key=True)
+    date = Column(Date, unique=True, nullable=False)
+    omdb_calls_used = Column(Integer, default=0, server_default="0")
+    omdb_calls_limit = Column(Integer, default=1000, server_default="1000")
 
 
 class Movie(Base):
@@ -66,7 +79,6 @@ class Movie(Base):
     imdb_id = Column(String(20), unique=True)
     imdb_rating = Column(Float)
     metacritic_rating = Column(Integer)
-    rotten_tomatoes_rating = Column(Integer)
     vectorbox_score = Column(Float)
     title_es = Column(String(500))
     overview_es = Column(Text)
@@ -86,6 +98,7 @@ class Movie(Base):
 
     # Metadata freshness
     last_metadata_refresh = Column(DateTime, nullable=True)
+    last_enriched = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

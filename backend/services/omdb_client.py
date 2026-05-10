@@ -35,7 +35,7 @@ class OMDbClient:
 
         # [RESILIENCE] Circuit Breaker Check
         import asyncio
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
         if self.cb_state == "OPEN":
             if current_time - self.cb_last_failure_time > self.cb_reset_timeout:
                 logger.info("OMDb Circuit Breaker entering HALF-OPEN state.")
@@ -82,7 +82,7 @@ class OMDbClient:
     def _record_failure(self):
         """Record a failure and optionally open the circuit"""
         import asyncio
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
         self.cb_failure_count += 1
         self.cb_last_failure_time = current_time
         
@@ -90,6 +90,46 @@ class OMDbClient:
             if self.cb_state != "OPEN":
                 self.cb_state = "OPEN"
                 logger.warning("OMDb Circuit Open. Skipping external calls.")
+
+    # Calibration constants — derived from actual catalog distribution (n≈7000).
+    # See histogram in audit_report or maintenance_orchestrator.py for context.
+    #
+    # Asymmetric percentile stretch maps p05 → STRETCH_FLOOR and p95 → 100,
+    # so a "median" movie (p50) lands around ~62 instead of ~33. This avoids
+    # the perception bug where a 6/10 IMDb (catalog median) read as "failure".
+    STRETCH_FLOOR = 20.0  # asymmetric: bottom of the meaningful range
+    STRETCH_CEIL = 100.0
+
+    # Per-source p05 / p95 from catalog (data-driven, not guessed)
+    IMDB_P05, IMDB_P95 = 5.1, 8.1
+    TMDB_P05, TMDB_P95 = 5.4, 7.92
+    META_P05, META_P95 = 30.0, 89.0
+
+    # Bayesian shrinkage priors. The 'm' parameter is the prior strength
+    # (catalog-mean votes equivalent); larger m pulls low-vote movies harder
+    # toward the global mean C.
+    IMDB_PRIOR_M = 2000   # IMDb has wide vote distribution (50 to millions)
+    IMDB_PRIOR_C = 6.69   # Catalog mean IMDb rating
+    TMDB_PRIOR_M = 200    # TMDB has narrower distribution (10 to ~5000)
+    TMDB_PRIOR_C = 6.67   # Catalog mean TMDB vote_average
+
+    @staticmethod
+    def _bayesian_shrink(rating: float, votes: Optional[int], m: int, C: float) -> float:
+        """Pull a rating toward catalog mean C based on vote-count confidence.
+        Falls through unchanged when votes is None (caller did not provide)."""
+        if votes is None or votes <= 0:
+            return rating
+        return (votes / (votes + m)) * rating + (m / (votes + m)) * C
+
+    @classmethod
+    def _stretch(cls, raw: float, p05: float, p95: float) -> float:
+        """Asymmetric percentile stretch: p05 → STRETCH_FLOOR, p95 → 100.
+        Values below p05 clip to STRETCH_FLOOR; above p95 clip to 100."""
+        if p95 <= p05:
+            return cls.STRETCH_FLOOR
+        norm = (raw - p05) / (p95 - p05)
+        norm = max(0.0, min(1.0, norm))
+        return cls.STRETCH_FLOOR + norm * (cls.STRETCH_CEIL - cls.STRETCH_FLOOR)
 
     def calculate_vectorbox_score(
         self,
@@ -101,85 +141,77 @@ class OMDbClient:
         """
         Calculates VectorBox score from three sources:
         IMDb (40%), Metacritic (35%), TMDB (25%).
-        Rotten Tomatoes excluded — binary consensus metric,
-        prone to review bombing, not a quality signal.
+        Rotten Tomatoes excluded — binary consensus metric.
 
-        tmdb_vote_count guards against noise: under 10 votes, TMDB's average
-        is one rater's opinion — we drop TMDB from the weighting rather than
-        scale it as a full 0.25 contributor.
+        Pipeline per source:
+          1. Bayesian shrinkage (IMDb, TMDB) — pulls low-vote ratings toward
+             the catalog mean. Metacritic skipped: it's curated journalism,
+             not crowd-sourced, so vote_count doesn't apply.
+          2. Asymmetric percentile stretch — p05 → STRETCH_FLOOR (20),
+             p95 → 100. Aligns the three scales so a median movie lands
+             at the same normalized score regardless of source.
+
+        Vote-count gate: TMDB still requires effective_vote_count >= 10 to
+        enter at all. IMDb votes act as a cross-source confidence signal.
         """
         scores = {}
         weights = {}
-        raw_scores = {}  # Store originals for breakdown
-        
-        if not omdb_data:
-            # Handle empty case elegantly
-             # Redistribute tmdb weight effectively
-             pass 
+        raw_scores = {}
 
-        # 1. Extract and Normalize Scores — all sources to 0-100
-
-        # IMDb: scale 0-10, useful range 4-10
-        # Linear stretch: 4.0 → 0, 10.0 → 100
-        if omdb_data and omdb_data.imdbRating \
-                and omdb_data.imdbRating != "N/A":
+        # 1. IMDb — Bayesian shrink + asymmetric stretch
+        if omdb_data and omdb_data.imdbRating and omdb_data.imdbRating != "N/A":
             try:
                 imdb_raw = float(omdb_data.imdbRating)
                 raw_scores["imdb"] = imdb_raw
-                scores["imdb"] = max(0.0, min(100.0,
-                    (imdb_raw - 4.0) / 6.0 * 100
-                ))
+                shrunk = self._bayesian_shrink(
+                    imdb_raw, imdb_vote_count, self.IMDB_PRIOR_M, self.IMDB_PRIOR_C
+                )
+                scores["imdb"] = self._stretch(shrunk, self.IMDB_P05, self.IMDB_P95)
                 weights["imdb"] = 0.40
             except (ValueError, TypeError):
                 pass
 
-        # TMDB: same scale as IMDb, same normalization. Skip when the best available
-        # vote count is < 10 — use IMDb votes as a confidence signal when TMDB pool
-        # is thin (e.g. foreign films with few TMDB ratings but many IMDb votes).
+        # 2. TMDB — same pipeline + vote-count gate.
+        # F-16 cross-source rescue: thin TMDB pool (<10 votes) is OK if IMDb is robust,
+        # but TMDB MUST have at least 1 real vote — otherwise vote_average is a phantom
+        # placeholder, not a signal.
         effective_vote_count = max(tmdb_vote_count or 0, imdb_vote_count or 0)
-        tmdb_has_enough_votes = effective_vote_count >= 10
+        tmdb_has_enough_votes = effective_vote_count >= 10 and (tmdb_vote_count or 0) >= 1
         if tmdb_vote_average is not None and tmdb_has_enough_votes:
             raw_scores["tmdb"] = tmdb_vote_average
-            scores["tmdb"] = max(0.0, min(100.0,
-                (tmdb_vote_average - 4.0) / 6.0 * 100
-            ))
+            shrunk = self._bayesian_shrink(
+                tmdb_vote_average, tmdb_vote_count, self.TMDB_PRIOR_M, self.TMDB_PRIOR_C
+            )
+            scores["tmdb"] = self._stretch(shrunk, self.TMDB_P05, self.TMDB_P95)
             weights["tmdb"] = 0.25
 
-        # Metacritic: already 0-100, no normalization needed
-        if omdb_data and omdb_data.Metascore \
-                and omdb_data.Metascore != "N/A":
+        # 3. Metacritic — stretch only (no shrinkage; not crowd-sourced)
+        if omdb_data and omdb_data.Metascore and omdb_data.Metascore != "N/A":
             try:
                 meta_val = int(omdb_data.Metascore)
                 raw_scores["meta"] = meta_val
-                scores["meta"] = float(meta_val)
+                scores["meta"] = self._stretch(float(meta_val), self.META_P05, self.META_P95)
                 weights["meta"] = 0.35
             except (ValueError, TypeError):
                 pass
 
-        # 2. Calculate Weighted Score
+        # 4. Weighted aggregate with proportional redistribution
         total_weight = sum(weights.values())
-        
-        # Populate Breakdown
+
         breakdown = VectorBoxBreakdown(
             imdb=raw_scores.get("imdb"),
             meta=raw_scores.get("meta"),
-            tmdb=raw_scores.get("tmdb")
+            tmdb=raw_scores.get("tmdb"),
         )
 
         if total_weight == 0:
             return VectorBoxScore(score=None, breakdown=breakdown)
-            
-        # Redistribute weights proportionally and calculate
-        final_score = 0
-        for source, norm_score in scores.items():
-            # Normalized weight = original_weight / total_weight
-            final_score += norm_score * (weights[source] / total_weight)
-            
-        # Cap at 98 — matches the random-picks anomaly filter
-        # (Movie.vectorbox_score.between(1, 98)) and prevents 100.0 outliers.
+
+        final_score = sum(
+            norm * (weights[src] / total_weight) for src, norm in scores.items()
+        )
+
+        # Cap at 98 — matches Movie.vectorbox_score.between(1, 98) anomaly filter.
         final_score = min(final_score, 98.0)
 
-        return VectorBoxScore(
-            score=round(final_score, 1),
-            breakdown=breakdown
-        )
+        return VectorBoxScore(score=round(final_score, 1), breakdown=breakdown)

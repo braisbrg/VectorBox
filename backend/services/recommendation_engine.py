@@ -182,7 +182,14 @@ def _score_anchor_candidate(rating, watched_date, now, watch_count: int = 1) -> 
     correctly beat old liked-only films even when all history is 2-5 years old.
     Handles rating=None (liked-only movies) by defaulting to 3.5.
     """
+    from datetime import timezone
     effective_rating = rating if rating is not None else 3.5
+    
+    if watched_date and watched_date.tzinfo is None:
+        watched_date = watched_date.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
     days_ago = max(0, (now - watched_date).days) if watched_date else 730
     decay = 0.5 ** (days_ago / 730)
     rewatch_boost = min(1.0 + (watch_count - 1) * 0.15, 1.4)
@@ -423,7 +430,7 @@ class RecommendationEngine:
             vectorbox_score=movie.vectorbox_score,
             imdb_rating=movie.imdb_rating,
             metacritic_rating=movie.metacritic_rating,
-            rotten_tomatoes_rating=movie.rotten_tomatoes_rating,
+
             title_es=movie.title_es,
             overview_es=movie.overview_es,
             release_dates=movie.release_dates
@@ -1039,7 +1046,7 @@ class RecommendationEngine:
                         vectorbox_score=vb,
                         imdb_rating=movie.imdb_rating,
                         metacritic_rating=movie.metacritic_rating,
-                        rotten_tomatoes_rating=movie.rotten_tomatoes_rating,
+
                         title_es=movie.title_es,
                         overview_es=movie.overview_es,
                         overview=movie.overview,

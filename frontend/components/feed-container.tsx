@@ -158,7 +158,7 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
 
                 <div className="w-full max-w-xl bg-card border border-border rounded-xl shadow-lg p-6">
                     <UploadZone
-                        registeredUsers={registeredUsers || [{ id: userId, username: "" } as any]}
+                        registeredUsers={registeredUsers || [{ id: userId, username: "" }]}
                         activeSessionUserId={userId}
                         onUploadSuccess={() => window.location.reload()}
                         onUserCreated={() => { }}

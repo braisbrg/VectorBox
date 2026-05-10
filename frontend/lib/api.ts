@@ -77,7 +77,7 @@ export interface MovieMetadata {
     vectorbox_score?: number;
     imdb_rating?: number;
     metacritic_rating?: number;
-    rotten_tomatoes_rating?: number;
+
     title_es?: string;
     overview_es?: string;
     release_dates?: Record<string, string>;
@@ -135,7 +135,7 @@ export interface FeedItem {
     vectorbox_score?: number;
     imdb_rating?: number;
     metacritic_rating?: number;
-    rotten_tomatoes_rating?: number;
+
     title_es?: string;
     overview_es?: string;
     letterboxd_rating?: number;

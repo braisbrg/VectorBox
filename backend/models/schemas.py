@@ -40,7 +40,6 @@ class MovieMetadata(BaseModel):
     vectorbox_score: Optional[float] = None
     imdb_rating: Optional[float] = None
     metacritic_rating: Optional[int] = None
-    rotten_tomatoes_rating: Optional[int] = None
     release_dates: Optional[Dict[str, str]] = None
     title_es: Optional[str] = None
     overview_es: Optional[str] = None
@@ -229,7 +228,6 @@ class FeedItem(BaseModel):
     vectorbox_score: Optional[float] = None
     imdb_rating: Optional[float] = None
     metacritic_rating: Optional[int] = None
-    rotten_tomatoes_rating: Optional[int] = None
     release_dates: Optional[Dict[str, str]] = None
     title_es: Optional[str] = None
     overview_es: Optional[str] = None
