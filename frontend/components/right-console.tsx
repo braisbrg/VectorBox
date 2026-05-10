@@ -60,6 +60,7 @@ export function RightConsole({
         return "STANDARD VECTORBOX MATCH";
     };
 
+    const [scoreExpanded, setScoreExpanded] = useState(false);
     const [yearMin, setYearMin] = useState("");
     const [yearMax, setYearMax] = useState("");
     const [maxRuntime, setMaxRuntime] = useState("");
@@ -280,12 +281,18 @@ export function RightConsole({
                                     </div>
 
                                     {/* VB Score */}
-                                    <div className="p-4 border border-zinc-800 bg-zinc-900/30">
+                                    <div
+                                        className="p-4 border border-zinc-800 bg-zinc-900/30 cursor-pointer select-none"
+                                        onClick={() => setScoreExpanded(v => !v)}
+                                    >
                                         <div className="flex justify-between items-center mb-1">
                                             <span className="text-[10px] text-zinc-500 uppercase italic font-bold">VECTORBOX_SCORE</span>
-                                            <span className="text-primary font-black text-xl">
-                                                {inspectedMovie.vectorbox_score || inspectedMovie.match_score}
-                                            </span>
+                                            <div className="flex items-center gap-2">
+                                                <span className="text-primary font-black text-xl">
+                                                    {inspectedMovie.vectorbox_score || inspectedMovie.match_score}
+                                                </span>
+                                                <span className="text-zinc-600 text-[9px]">{scoreExpanded ? "▲" : "▼"}</span>
+                                            </div>
                                         </div>
                                         <div className="w-full h-1 bg-zinc-800 overflow-hidden">
                                             <div
@@ -293,6 +300,28 @@ export function RightConsole({
                                                 style={{ width: `${inspectedMovie.vectorbox_score || inspectedMovie.match_score}%` }}
                                             />
                                         </div>
+                                        {scoreExpanded && (inspectedMovie.imdb_rating || inspectedMovie.metacritic_rating || inspectedMovie.rating) && (
+                                            <div className="mt-3 pt-2 border-t border-zinc-800 space-y-1">
+                                                {inspectedMovie.imdb_rating != null && (
+                                                    <div className="flex justify-between text-[10px]">
+                                                        <span className="text-zinc-600">IMDb</span>
+                                                        <span className="text-zinc-400">{inspectedMovie.imdb_rating}/10</span>
+                                                    </div>
+                                                )}
+                                                {inspectedMovie.metacritic_rating != null && (
+                                                    <div className="flex justify-between text-[10px]">
+                                                        <span className="text-zinc-600">Metacritic</span>
+                                                        <span className="text-zinc-400">{inspectedMovie.metacritic_rating}/100</span>
+                                                    </div>
+                                                )}
+                                                {inspectedMovie.rating != null && (
+                                                    <div className="flex justify-between text-[10px]">
+                                                        <span className="text-zinc-600">TMDB</span>
+                                                        <span className="text-zinc-400">{inspectedMovie.rating.toFixed(1)}/10</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
 
                                     {/* Synopsis */}
@@ -335,6 +364,14 @@ export function RightConsole({
                                                                     </p>
                                                                 )}
                                                             </>
+                                                        )}
+                                                        {c.type === "upcoming" && (
+                                                            <div className="space-y-0.5">
+                                                                <p className="text-xs font-mono text-primary">{c.release_badge}</p>
+                                                                {c.release_note && (
+                                                                    <p className="text-[11px] font-mono text-zinc-500">{c.release_note}</p>
+                                                                )}
+                                                            </div>
                                                         )}
                                                         {(c.type === "vibe" || c.type === "auteur" || c.type === "crowd" || c.type === "cult_actor" || c.type === "watchlist") && (
                                                             <div className="flex items-center justify-between gap-2">

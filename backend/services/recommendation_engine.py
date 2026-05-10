@@ -973,7 +973,8 @@ class RecommendationEngine:
                 item = await self.create_feed_item(
                     movie, cand["score"], country, tmdb,
                     include_rating=True, provider_service=provider_service,
-                    streaming_providers=s_providers
+                    streaming_providers=s_providers,
+                    contributors=[{"type": "crowd", "label": "Critically acclaimed, under the radar"}]
                 )
                 items.append(item)
                 seen_ids.add(item.id)
@@ -1129,10 +1130,11 @@ class RecommendationEngine:
         for m in sample:
             movie_providers = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.create_feed_item(m, 0.85, country, tmdb, include_rating=True, streaming_providers=flat_providers)
+            item = await self.create_feed_item(m, 0.85, country, tmdb, include_rating=True, streaming_providers=flat_providers,
+                contributors=[{"type": "vibe", "label": "Outside your comfort zone"}])
             items.append(item)
             seen_ids.add(m.tmdb_id)
-            
+
         return FeedSection(
             id="wildcard",
             title="Outside Your Comfort Zone",
@@ -1184,10 +1186,11 @@ class RecommendationEngine:
         for m in sample:
             movie_providers = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.create_feed_item(m, 0.9, country, tmdb, include_rating=True, streaming_providers=flat_providers)
+            item = await self.create_feed_item(m, 0.9, country, tmdb, include_rating=True, streaming_providers=flat_providers,
+                contributors=[{"type": "crowd", "label": "High quality discovery"}])
             items.append(item)
             seen_ids.add(m.tmdb_id)
-            
+
         return FeedSection(
             id="random_picks", 
             title="Random Top Picks", 
