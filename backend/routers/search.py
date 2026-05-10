@@ -153,12 +153,20 @@ async def natural_language_search(
         # Check for Reference Movie (e.g. "movies like Inception")
         if intent.reference_movie:
             logger.info(f"Detected reference movie in intent: {intent.reference_movie}")
-            # Try to find this movie
+            # Local DB search: substring match against title OR original_title.
+            # Substring (with %…%) lets "deprisa deprisa" match "Deprisa, deprisa"
+            # and original_title catches Spanish/foreign titles localised in `title`.
+            ref_pattern = f"%{intent.reference_movie}%"
             ref_movie_match = await db.execute(
-                select(Movie).where(Movie.title.ilike(intent.reference_movie))
+                select(Movie).where(
+                    or_(
+                        Movie.title.ilike(ref_pattern),
+                        Movie.original_title.ilike(ref_pattern),
+                    )
+                )
             )
             ref_movie = ref_movie_match.scalars().first()
-            
+
             if ref_movie:
                 potential_movie_id = ref_movie.tmdb_id
                 potential_movie_title = ref_movie.title
@@ -325,17 +333,22 @@ async def natural_language_search(
                 final_score = (final_score * 0.5) + (title_score * 0.5)
                 logger.info(f"Blended score for {metadata.get('title')} (Sim: {title_sim:.2f}): {final_score}")
 
-            # Imp 3: Dynamic quality gate — apply sigmoid weight after normalization
+            # Imp 3: Dynamic quality gate — sigmoid weight with floor.
+            # Old gate (midpoint=65, steepness=0.15) annihilated thematically-strong
+            # but obscure films (Sky High at VBS=63 got weight ≈ 0.4; Barrio at 78
+            # got 0.88; Cure 1997 at low VBS got near-zero). The new VBS catalog
+            # median sits around 55, so we anchor the midpoint there. We also add
+            # a 0.20 floor so a strong vector match cannot be fully zeroed by VBS,
+            # keeping legitimate cult/foreign/obscure cinema reachable.
             vb_score = db_movie.vectorbox_score if db_movie else None
             if vb_score is not None:
                 import math as _math
                 if intent.quality_gate_bypass:
-                    # Relaxed sigmoid for campy/trash/guilty-pleasure intent
-                    midpoint, steepness = 25, 0.10
+                    midpoint, steepness, floor = 25, 0.10, 0.10
                 else:
-                    # Default quality gate
-                    midpoint, steepness = 65, 0.15
-                weight = 1.0 / (1.0 + _math.exp(-steepness * (vb_score - midpoint)))
+                    midpoint, steepness, floor = 55, 0.10, 0.20
+                sigmoid = 1.0 / (1.0 + _math.exp(-steepness * (vb_score - midpoint)))
+                weight = floor + (1.0 - floor) * sigmoid
                 final_score = final_score * weight
 
             result = {
@@ -442,7 +455,8 @@ async def search_movies(
         # Validate input
         query = validate_user_query(query)
 
-        # 1. Generate query vector
+        # 1. Generate query vector — this endpoint takes a raw title string and
+        # finds Qdrant matches; title MUST be in the embedding (opt-in).
         loop = asyncio.get_running_loop()
         query_vector = await loop.run_in_executor(
             None,
@@ -451,7 +465,7 @@ async def search_movies(
                 "overview": "",
                 "genres": [],
                 "keywords": []
-            }).tolist()
+            }, include_title=True).tolist()
         )
         
         # 2. Search Qdrant (Local)

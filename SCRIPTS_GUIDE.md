@@ -33,6 +33,11 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 | **`migrate_release_dates.py`** | **Schema Migration.** One-time migration that adds the `release_dates JSONB` column to the `movies` table. Safe to re-run (`ADD COLUMN IF NOT EXISTS`). | `docker-compose exec backend python scripts/migrate_release_dates.py` |
 | **`verify_qa_pt2.py`** | **QA Certification (Phase 5).** End-to-end HTTP check against a running stack: logs in as `qa_vecbox` and validates the `/api/recommendations/feed` response. | `docker-compose exec backend python scripts/verify_qa_pt2.py` |
 | **`debug_movie.py`** | **Diagnostic.** Inspects a single movie: DB metadata, top-10 Qdrant vector neighbors, and (with `--user-id`) signal-by-signal eligibility analysis (Signal A anchor similarity, Auteur director rank, Signal C TMDB rec presence). Lookup by title (fuzzy) or `--tmdb-id`. | `docker-compose exec backend python scripts/debug_movie.py "Spirited Away" --user-id 212` |
+| **`recalc_vbs_from_db.py`** | **VBS Backfill (no API).** Recomputes `vectorbox_score` for every movie using existing DB columns (`imdb_rating`, `metacritic_rating`, `vote_average`, `imdb_vote_count`, `vote_count`) — **does NOT hit OMDb**. Run this after any change to the VBS formula in `omdb_client.py` to consolidate the catalogue in seconds. Reports updated/cleared/unchanged counts and average delta. | `docker compose exec backend python scripts/recalc_vbs_from_db.py` |
+| **`reembed_catalog.py`** | **Bulk Re-embedding.** Regenerates Qdrant vectors for the entire catalogue using `cinematic_description` (preferred, ~99% coverage) or `overview + genres + keywords` (fallback). NEVER includes title — title-token leakage causes off-theme BYW/Magic Box neighbours. Same model (all-MiniLM-L6-v2, 384-dim) and same Qdrant collection — just upserts new vectors. After running, re-cluster with `reset_profiles.py --force` and flush Redis. ~3-5 min for 7500 films. No API hits. | `docker compose exec backend python scripts/reembed_catalog.py` |
+| **`experiment_embeddings.py`** | **Embedding A/B Comparison.** Curated 80-film pool with 7 anchors (Howl's, Deprisa Deprisa, Pan's Labyrinth, Inception, Godfather, Goodfellas, Spirited Away) and known thematic neighbours. Compares 4-5 embedding variants (current Qdrant baseline, MiniLM-no-title, multilingual-MiniLM, multilingual-e5-small, optionally EmbeddingGemma if HF token present) on top-8 hit rate. Output is a tabular qualitative report — use to decide before any model change or major re-embedding. | `docker compose exec backend python scripts/experiment_embeddings.py` |
+| **`experiment_signal_c.py`** | **Signal C filter A/B.** Curated 12-film pool (4 niche + 4 art-house + 4 popular). For each seed fetches both TMDB endpoints (`/recommendations` and `/similar`), computes vector cosine + genre overlap vs the seed, and tabulates which candidates would survive each filter strategy (raw, vec≥0.45, vec≥0.50, genre-only, combos). Reports aggregate pass-rate per strategy across all seeds + multi-seed agreement analysis for `user_id=212`. Use before tuning `SIGNAL_C_VEC_SIM_THRESHOLD` or before swapping data sources. | `docker compose exec backend python scripts/experiment_signal_c.py` |
+| **`experiment_trakt.py`** | **Alternative Signal C source comparison.** Same 12-seed pool as `experiment_signal_c.py` but pulls related films from **Trakt API** (`/movies/{id}/related`) instead of TMDB. Use to evaluate whether Trakt's user-behaviour-based recs are higher quality than TMDB's noisy collab filter, especially for niche/recent/non-English films. Requires `TRAKT_CLIENT_ID` env var (free, sign up at https://trakt.tv/oauth/applications). Reports catalogue-coverage (% of recs already in our DB) and pass-rate per filter strategy. | `docker compose exec backend python scripts/experiment_trakt.py` |
 | **`check_embeddings.py`** | **Embedding Sanity Check.** Compares stored Qdrant vectors against a reference MiniLM embedding built from `title + year + genres + directors`. Flags movies below cosine threshold as likely-corrupt. Flags: `--update-db` persist score, `--fix` re-enrich flagged, `--user-id` scope to one user, `--tmdb-id` check a single movie, `--recheck` re-run on movies that already have a score (default skips them), `--verbose` print reference text + first 5 dims of stored/reference vectors, `--threshold` let's you change the threshold value to flag movies | `docker-compose exec backend python scripts/check_embeddings.py --tmdb-id 129 --verbose --recheck --threshold 0.5` |
 | **`fix_qdrant_ids.py`** | **Qdrant ID Audit (T-04).** Walks every Qdrant point and classifies it as modern (`point.id == Movie.tmdb_id`), legacy (`point.id == Movie.id`, requires migration to tmdb_id), or orphan (no DB record). Migrates legacy points by re-upserting under the correct tmdb_id and deleting the legacy point. Dry-run by default; pass `--execute` to apply. `--delete-orphans` (requires `--execute`) wipes points with no DB record. | `docker-compose exec backend python scripts/fix_qdrant_ids.py [--execute] [--delete-orphans] [--limit 200]` |
 | **`test_guest_feed.py`** | **Recommendation Quality QA.** Tests the `/public/guest-feed` recommendation logic offline. Accepts a JSON ratings dict, a DB user ID, or a named preset (`cinephile`, `blockbuster`). Reports VectorBox score distribution, genre distribution, top-10 results, and genre coverage (% of positive-seed genres represented in recs). | `docker compose exec backend python scripts/test_guest_feed.py --preset cinephile` |
@@ -168,4 +173,45 @@ Standard auditing protocols for this project.
     ```
 
 ---
-**Last Updated:** 2026-04-25
+**Last Updated:** 2026-05-10
+
+## VBS scoring & embedding refresh — 2026-05 cookbook
+
+After the VBS v2 formula and embedding overhaul (`include_title=False`, `cinematic_description` text override), the canonical refresh sequence is:
+
+```bash
+# 1. (optional) Drain OMDb daily quota for fresh ratings on stale rows
+docker compose exec backend python scripts/maintenance_orchestrator.py --phases 1 --omdb-budget 1000
+
+# 2. Recompute VBS for the whole catalogue with the new formula (no API hits)
+docker compose exec backend python scripts/recalc_vbs_from_db.py
+
+# 3. Re-embed the catalogue (no API hits — uses cinematic_description from DB)
+docker compose exec backend python scripts/reembed_catalog.py
+
+# 4. Re-cluster every user — clusters depend on the new vector space
+docker compose exec backend python scripts/reset_profiles.py --force
+
+# 5. Flush Redis so feeds pick up the new vectors immediately
+docker compose exec backend python -c "
+import asyncio, os
+import redis.asyncio as aioredis
+async def f():
+    r = aioredis.from_url(os.getenv('REDIS_URL', 'redis://redis:6379'), decode_responses=True)
+    try:
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor, count=100)
+            if keys: await r.delete(*keys)
+            if cursor == 0: break
+    finally:
+        await r.close()
+asyncio.run(f())
+"
+
+# 6. (optional) Run Phases 3+4 to re-enrich films flagged with low embedding_quality_score
+docker compose exec backend python scripts/maintenance_orchestrator.py --phases 3,4 --embed-limit 500
+# Then loop back to step 3 to consolidate the new descriptions into vectors.
+```
+
+Step 1 is the only one that hits external APIs (OMDb). Steps 2-5 are local and take a few minutes total.

@@ -283,6 +283,12 @@ app.include_router(tasks.router, prefix="/api/tasks", tags=["Tasks"])
 app.include_router(movies.router, prefix="/api/movies", tags=["Movies"])
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["Onboarding"])
 
+@app.get("/api/health", tags=["System"], include_in_schema=False)
+async def api_health_alias():
+    """Alias so frontend /api/health calls don't 404."""
+    return {"status": "healthy"}
+
+
 @app.get("/", tags=["System"], response_model=RootResponse)
 async def root() -> RootResponse:
     """API root endpoint"""

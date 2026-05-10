@@ -105,17 +105,23 @@ async def get_similar_movies(
             # We can fetch keywords from TMDB again or just use what we have.
             keywords = await tmdb.get_movie_keywords(tmdb_id)
 
-        # Generate QUERY vector - WITHOUT title to avoid name-matching
-        loop = asyncio.get_running_loop()
-        query_vector = await loop.run_in_executor(
-            None,
-            lambda: embedding_service.generate_embedding({
-                "title": movie_title,
-                "overview": overview,
-                "genres": genres,
-                "keywords": keywords
-            }, include_title=False).tolist()
-        )
+        # Prefer the stored Qdrant vector — built from cinematic_description, no title.
+        # Fresh on-the-fly encoding from overview+genres+keywords lives in a different
+        # vector space than the catalogue and produces off-theme neighbours.
+        query_vector = await qdrant.get_vector(tmdb_id)
+
+        if not query_vector:
+            text_override = source_movie.cinematic_description if source_movie.cinematic_description else None
+            loop = asyncio.get_running_loop()
+            query_vector = await loop.run_in_executor(
+                None,
+                lambda: embedding_service.generate_embedding({
+                    "title": movie_title,
+                    "overview": overview,
+                    "genres": genres,
+                    "keywords": keywords,
+                }, text_override=text_override).tolist()
+            )
 
         # 3. Search Qdrant
         similar_results = await qdrant.search_similar(

@@ -91,19 +91,29 @@ class OMDbClient:
                 self.cb_state = "OPEN"
                 logger.warning("OMDb Circuit Open. Skipping external calls.")
 
-    # Calibration constants — derived from actual catalog distribution (n≈7000).
-    # See histogram in audit_report or maintenance_orchestrator.py for context.
+    # Calibration constants — derived from actual catalog distribution (n≈7400).
+    # Three-segment piecewise linear stretch (symmetric):
+    #   0 ≤ raw < p05    → linear 0..20 (sub-floor differentiation)
+    #   p05 ≤ raw ≤ p90  → linear 20..90 (broad meaningful range)
+    #   p90 < raw ≤ p99  → linear 90..98 (compressed, diminishing returns)
+    #   raw > p99         → STRETCH_CEIL (99) — natural ceiling, no hard cap
     #
-    # Asymmetric percentile stretch maps p05 → STRETCH_FLOOR and p95 → 100,
-    # so a "median" movie (p50) lands around ~62 instead of ~33. This avoids
-    # the perception bug where a 6/10 IMDb (catalog median) read as "failure".
-    STRETCH_FLOOR = 20.0  # asymmetric: bottom of the meaningful range
-    STRETCH_CEIL = 100.0
+    # The compressed top segment prevents flat-ceiling pile-up; the linear
+    # sub-floor segment prevents the equivalent flat-floor at 20 (where the
+    # worst-of-the-worst — Snow White 2025, Batman & Robin, Madame Web —
+    # collided indistinguishably).
+    STRETCH_FLOOR = 20.0
+    STRETCH_CEIL = 99.0
 
-    # Per-source p05 / p95 from catalog (data-driven, not guessed)
-    IMDB_P05, IMDB_P95 = 5.1, 8.1
-    TMDB_P05, TMDB_P95 = 5.4, 7.92
-    META_P05, META_P95 = 30.0, 89.0
+    # Per-source p05 / p90 / p99 from catalog (data-driven, computed from BD)
+    IMDB_P05, IMDB_P90, IMDB_P99 = 5.1, 7.8, 8.4
+    TMDB_P05, TMDB_P90, TMDB_P99 = 5.4, 7.7, 8.28
+    META_P05, META_P90, META_P99 = 30.0, 84.0, 96.0
+
+    # Coverage factor by number of present sources (1-3). Penalises thin-data
+    # films that lack cross-source validation, e.g. a TMDb-only documentary
+    # used to ride a single high vote_average all the way to the cap.
+    COVERAGE_FACTORS = {1: 0.85, 2: 0.95, 3: 1.00}
 
     # Bayesian shrinkage priors. The 'm' parameter is the prior strength
     # (catalog-mean votes equivalent); larger m pulls low-vote movies harder
@@ -122,14 +132,20 @@ class OMDbClient:
         return (votes / (votes + m)) * rating + (m / (votes + m)) * C
 
     @classmethod
-    def _stretch(cls, raw: float, p05: float, p95: float) -> float:
-        """Asymmetric percentile stretch: p05 → STRETCH_FLOOR, p95 → 100.
-        Values below p05 clip to STRETCH_FLOOR; above p95 clip to 100."""
-        if p95 <= p05:
-            return cls.STRETCH_FLOOR
-        norm = (raw - p05) / (p95 - p05)
-        norm = max(0.0, min(1.0, norm))
-        return cls.STRETCH_FLOOR + norm * (cls.STRETCH_CEIL - cls.STRETCH_FLOOR)
+    def _stretch(cls, raw: float, p05: float, p90: float, p99: float) -> float:
+        """Three-segment piecewise linear stretch.
+        0..p05 → 0..20 (sub-floor), p05..p90 → 20..90, p90..p99 → 90..98, >p99 → 99."""
+        if raw <= 0:
+            return 0.0
+        if raw < p05:
+            return (raw / p05) * cls.STRETCH_FLOOR
+        if raw <= p90:
+            norm = (raw - p05) / (p90 - p05)
+            return cls.STRETCH_FLOOR + norm * (90.0 - cls.STRETCH_FLOOR)
+        if raw >= p99:
+            return cls.STRETCH_CEIL
+        norm = (raw - p90) / (p99 - p90)
+        return 90.0 + norm * 8.0
 
     def calculate_vectorbox_score(
         self,
@@ -147,9 +163,10 @@ class OMDbClient:
           1. Bayesian shrinkage (IMDb, TMDB) — pulls low-vote ratings toward
              the catalog mean. Metacritic skipped: it's curated journalism,
              not crowd-sourced, so vote_count doesn't apply.
-          2. Asymmetric percentile stretch — p05 → STRETCH_FLOOR (20),
-             p95 → 100. Aligns the three scales so a median movie lands
-             at the same normalized score regardless of source.
+          2. Two-segment piecewise stretch — p05..p90 → 20..90 (broad),
+             p90..p99 → 90..98 (compressed), >p99 → 99 (natural ceiling).
+          3. Coverage factor — multiplies final score by 0.85/0.95/1.00 for
+             1/2/3 sources present, penalising thin-data films.
 
         Vote-count gate: TMDB still requires effective_vote_count >= 10 to
         enter at all. IMDb votes act as a cross-source confidence signal.
@@ -158,7 +175,7 @@ class OMDbClient:
         weights = {}
         raw_scores = {}
 
-        # 1. IMDb — Bayesian shrink + asymmetric stretch
+        # 1. IMDb — Bayesian shrink + piecewise stretch
         if omdb_data and omdb_data.imdbRating and omdb_data.imdbRating != "N/A":
             try:
                 imdb_raw = float(omdb_data.imdbRating)
@@ -166,7 +183,9 @@ class OMDbClient:
                 shrunk = self._bayesian_shrink(
                     imdb_raw, imdb_vote_count, self.IMDB_PRIOR_M, self.IMDB_PRIOR_C
                 )
-                scores["imdb"] = self._stretch(shrunk, self.IMDB_P05, self.IMDB_P95)
+                scores["imdb"] = self._stretch(
+                    shrunk, self.IMDB_P05, self.IMDB_P90, self.IMDB_P99
+                )
                 weights["imdb"] = 0.40
             except (ValueError, TypeError):
                 pass
@@ -182,7 +201,9 @@ class OMDbClient:
             shrunk = self._bayesian_shrink(
                 tmdb_vote_average, tmdb_vote_count, self.TMDB_PRIOR_M, self.TMDB_PRIOR_C
             )
-            scores["tmdb"] = self._stretch(shrunk, self.TMDB_P05, self.TMDB_P95)
+            scores["tmdb"] = self._stretch(
+                shrunk, self.TMDB_P05, self.TMDB_P90, self.TMDB_P99
+            )
             weights["tmdb"] = 0.25
 
         # 3. Metacritic — stretch only (no shrinkage; not crowd-sourced)
@@ -190,7 +211,9 @@ class OMDbClient:
             try:
                 meta_val = int(omdb_data.Metascore)
                 raw_scores["meta"] = meta_val
-                scores["meta"] = self._stretch(float(meta_val), self.META_P05, self.META_P95)
+                scores["meta"] = self._stretch(
+                    float(meta_val), self.META_P05, self.META_P90, self.META_P99
+                )
                 weights["meta"] = 0.35
             except (ValueError, TypeError):
                 pass
@@ -207,11 +230,13 @@ class OMDbClient:
         if total_weight == 0:
             return VectorBoxScore(score=None, breakdown=breakdown)
 
-        final_score = sum(
+        weighted_avg = sum(
             norm * (weights[src] / total_weight) for src, norm in scores.items()
         )
 
-        # Cap at 98 — matches Movie.vectorbox_score.between(1, 98) anomaly filter.
-        final_score = min(final_score, 98.0)
+        # 5. Coverage penalty — single-source films can't ride one inflated
+        # rating to the top without cross-source validation.
+        coverage = self.COVERAGE_FACTORS.get(len(scores), 0.85)
+        final_score = weighted_avg * coverage
 
         return VectorBoxScore(score=round(final_score, 1), breakdown=breakdown)

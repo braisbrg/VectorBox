@@ -30,11 +30,15 @@ class EmbeddingService:
         # Model is now loaded lazily via get_model()
         pass
     
-    def generate_embedding(self, movie_data: dict, include_title: bool = True, text_override: str = None) -> np.ndarray:
+    def generate_embedding(self, movie_data: dict, include_title: bool = False, text_override: str = None) -> np.ndarray:
         """
         Generate embedding from movie metadata.
         If text_override is provided (e.g. from cinematic enricher), use it directly.
-        Otherwise combines: title, overview, genres, keywords.
+        Otherwise combines: overview, genres, keywords (and title if include_title=True).
+
+        Default is `include_title=False` because title tokens cause off-theme
+        neighbours (e.g. Howl's → The Howling/Witch films, Faster Faster → Fast X).
+        Title-aware callers (e.g. the /movies title search endpoint) must opt in.
         """
         model = get_model()
         
@@ -74,17 +78,21 @@ class EmbeddingService:
         
         return embedding
     
-    def generate_batch_embeddings(self, movies_data: List[dict]) -> List[np.ndarray]:
-        """Generate embeddings for multiple movies (more efficient)"""
+    def generate_batch_embeddings(self, movies_data: List[dict], include_title: bool = False) -> List[np.ndarray]:
+        """Generate embeddings for multiple movies (more efficient).
+
+        Default `include_title=False` matches `generate_embedding` to avoid the
+        title-token leakage that pollutes neighbour search.
+        """
         model = get_model()
         texts = []
-        
+
         for movie in movies_data:
             parts = []
-            
-            if movie.get("title"):
+
+            if include_title and movie.get("title"):
                 parts.append(movie["title"])
-            
+
             if movie.get("overview"):
                 parts.append(movie["overview"])
             

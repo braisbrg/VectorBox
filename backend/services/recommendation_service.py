@@ -14,6 +14,7 @@ import redis.asyncio as redis
 from models.database import UserRating, Movie, UserCluster, User
 from models.schemas import FeedSection, FeedItem
 from services.tmdb_client import TMDBClient
+from services.trakt_client import TraktClient
 from services.qdrant_service import QdrantService
 from services.clustering_service import ClusteringService
 from services.movie_service import MovieService
@@ -26,6 +27,16 @@ logger = logging.getLogger(__name__)
 MIN_QUALITY_SCORE = 55  # floor for Picked For You; pre-filtered into Signal A and re-checked in hybrid_reranking
 MIN_SIGNAL_C_SCORE = 62  # sweet spot between 55 (too permissive) and 68 (too strict)
 MIN_EMBED_QUALITY_SCORE = 0.35  # below this is MiniLM-only noise; produces false centroid matches
+
+# Signal C source: Trakt /related (replaced TMDB /recommendations on 2026-05-10
+# after experiment_signal_c.py vs experiment_trakt.py showed Trakt's collab
+# filter is dramatically cleaner — vec_sim≥0.45 pass rate jumped 10.8% → 27.5%).
+# The cross-validation gate is now a safety net rather than the main filter,
+# so we relax the threshold from 0.50 → 0.40. Set to 0.0 to disable entirely.
+SIGNAL_C_VEC_SIM_THRESHOLD = 0.40  # min cosine between seed and candidate
+SIGNAL_C_REQUIRE_GENRE_OVERLAP = True  # candidate must share ≥1 genre with the seed that recommended it
+SIGNAL_C_MAX_SEEDS = 8  # number of high-quality user films to query for related (was 5; broader pool)
+SIGNAL_C_PER_SEED_TAKE = 5  # candidates kept per seed
 
 # Generic genres co-occur across most films and don't tell us anything about user taste.
 # Removed before computing the user's "distinctive" genre set for Signal A coherence.
@@ -55,13 +66,21 @@ class RecommendationService:
     Merges 3 distinct signals:
     - Signal A: Vibe (Vector Embeddings)
     - Signal Auteur: Director Analysis
-    - Signal C: Crowd (TMDB Collaborative Filtering)
+    - Signal C: Crowd (Trakt /related — user-behaviour collab filter)
     """
 
-    def __init__(self, db: AsyncSession, tmdb: TMDBClient = None, qdrant: QdrantService = None, redis_client: redis.Redis = None):
+    def __init__(
+        self,
+        db: AsyncSession,
+        tmdb: TMDBClient = None,
+        qdrant: QdrantService = None,
+        redis_client: redis.Redis = None,
+        trakt: TraktClient = None,
+    ):
         self.db = db
         self.tmdb = tmdb
         self.qdrant = qdrant
+        self.trakt = trakt or TraktClient()  # default singleton; falls back gracefully if no TRAKT_CLIENT_ID
         self.redis = redis_client
         self.clustering = ClusteringService(qdrant=qdrant)
         self.movie_service = MovieService(db, tmdb=tmdb)
@@ -90,7 +109,7 @@ class RecommendationService:
             from config import AsyncSessionLocal
             async with AsyncSessionLocal() as session:
                 # Create an isolated service instance for this task to avoid concurrent session errors
-                isolated_service = RecommendationService(db=session, tmdb=self.tmdb, qdrant=self.qdrant, redis_client=self.redis)
+                isolated_service = RecommendationService(db=session, tmdb=self.tmdb, qdrant=self.qdrant, redis_client=self.redis, trakt=self.trakt)
                 method = getattr(isolated_service, method_name)
                 res = await method(*args, **kwargs)
             duration = (time.time() - t0) * 1000
@@ -658,26 +677,36 @@ class RecommendationService:
 
     async def _compute_crowd_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
         """
-        Raw computation for Signal C: The Crowd Expert (Collaborative Filtering via TMDB)
+        Raw computation for Signal C: The Crowd Expert.
+        Source: Trakt /movies/{id}/related (real user-behaviour collab filter).
+        Replaced TMDB /recommendations on 2026-05-10 — Trakt's signal/noise ratio
+        was 2.5× better in side-by-side experiments (see scripts/experiment_trakt.py).
+        Falls back gracefully when TRAKT_CLIENT_ID is unset (returns empty pool;
+        Picked For You then relies on Vibe + Auteur only).
         """
-        if not self.tmdb:
-            logger.warning("[Signal C] No TMDBClient injected, skipping crowd signal.")
+        if not self.trakt or not self.trakt.enabled:
+            logger.info("[Signal C] Trakt not configured (TRAKT_CLIENT_ID missing) — skipping crowd signal.")
             return []
-        
-        # 1. Get up to 5 high-quality seed movies: 4.5★+, liked, or rewatched
+
+        # 1. Get up to N high-quality seed movies — only EXPLICIT endorsement.
+        # Dropped `watch_count > 1` (2026-05-10) because Letterboxd diary entries
+        # without rating/like were qualifying as seeds (e.g. user 212's Wolf Beach,
+        # Eterna, Voice of Hind Rajab — all watch_count≥2 from import duplication
+        # rather than real rewatches). Now: rating ≥ 4.0 OR is_liked. Broader pool
+        # than the original 5 — gives weak seeds a chance to contribute zero, while
+        # strong seeds (canonical favourites) carry the result.
         stmt = (
             select(Movie)
             .join(UserRating, Movie.id == UserRating.movie_id)
             .where(UserRating.user_id == user_id)
             .where(
                 or_(
-                    UserRating.rating >= 4.5,
+                    UserRating.rating >= 4.0,
                     UserRating.is_liked.is_(True),
-                    UserRating.watch_count > 1,
                 )
             )
             .order_by(desc(UserRating.rating), desc(UserRating.watched_date))
-            .limit(5)
+            .limit(SIGNAL_C_MAX_SEEDS)
         )
 
         seeds = (await self.db.execute(stmt)).scalars().all()
@@ -685,21 +714,29 @@ class RecommendationService:
         logger.info(f"[Signal C] user={user_id} seeds_quality={len(seeds)}")
         if not seeds:
             return []
-            
-        # 2. Collect all TMDB IDs from TMDB recommendations (parallel, no sequential N+1)
-        all_tmdb_ids: List[int] = []
-        tasks = [self.tmdb.get_movie_recommendations(seed.tmdb_id) for seed in seeds]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for i, recs in enumerate(results):
-            if isinstance(recs, Exception):
-                logger.warning(f"[Signal C] TMDB recs failed for seed {seeds[i].tmdb_id}: {recs}")
-                continue
-            for r in recs[:5]:
-                tid = r['id']
-                if tid not in exclude_ids:
-                    all_tmdb_ids.append(tid)
 
-        
+        # 2. Collect candidate tmdb_ids from Trakt /related (parallel).
+        # Track candidate → set of seed_tmdb_ids that recommended it (for cross-validation).
+        all_tmdb_ids: List[int] = []
+        candidate_to_seeds: Dict[int, Set[int]] = {}
+        tasks = [self.trakt.related_by_tmdb(seed.tmdb_id) for seed in seeds]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, related in enumerate(results):
+            seed_tmdb_id = seeds[i].tmdb_id
+            if isinstance(related, Exception):
+                logger.warning(f"[Signal C] Trakt /related failed for seed {seed_tmdb_id}: {related}")
+                continue
+            kept_for_seed = 0
+            for r in related:
+                tid = (r.get("ids") or {}).get("tmdb")
+                if not tid or tid in exclude_ids:
+                    continue
+                all_tmdb_ids.append(tid)
+                candidate_to_seeds.setdefault(tid, set()).add(seed_tmdb_id)
+                kept_for_seed += 1
+                if kept_for_seed >= SIGNAL_C_PER_SEED_TAKE:
+                    break
+
         if not all_tmdb_ids:
             return []
 
@@ -722,19 +759,72 @@ class RecommendationService:
             except Exception as e:
                 logger.warning(f"[Signal C] Could not queue ingest TMDB {tid}: {e}")
 
-        # 5. Quality threshold — sweet spot between 55 (too permissive, lets in The
+        # 5. Cross-validation gate (vec_sim + genre overlap). TMDB collab filter is
+        # noisy — without this gate, ~83% of its suggestions are vectorially weak
+        # cross-genre pairings that have no thematic relation. Only applied when
+        # qdrant is available; otherwise behaviour falls back to genre+VBS only.
+        seed_by_tmdb = {s.tmdb_id: s for s in seeds}
+        cross_val_pass: Optional[Set[int]] = None
+        dropped_cross_val = 0
+        if self.qdrant and SIGNAL_C_VEC_SIM_THRESHOLD > 0.0:
+            seed_tmdb_ids = [s.tmdb_id for s in seeds]
+            cand_tmdb_ids_in_db = [m.tmdb_id for m in existing_movies]
+            seed_vecs_map = await self.qdrant.get_vectors_batch(seed_tmdb_ids)
+            cand_vecs_map = await self.qdrant.get_vectors_batch(cand_tmdb_ids_in_db)
+
+            cross_val_pass = set()
+            for m in existing_movies:
+                cand_vec_raw = cand_vecs_map.get(m.tmdb_id)
+                if not cand_vec_raw:
+                    # No vector in Qdrant — let it through (will be auto-ingested);
+                    # better to keep than drop a possibly-good rec we can't validate.
+                    cross_val_pass.add(m.tmdb_id)
+                    continue
+                cand_vec = np.array(cand_vec_raw)
+                cand_norm = float(np.linalg.norm(cand_vec))
+                if cand_norm == 0:
+                    continue
+                cand_genres = set(m.genres or [])
+
+                # Compare against each seed that recommended this candidate; pass if ANY seed clears the gate.
+                passed = False
+                for seed_tid in candidate_to_seeds.get(m.tmdb_id, set()):
+                    seed_obj = seed_by_tmdb.get(seed_tid)
+                    seed_vec_raw = seed_vecs_map.get(seed_tid)
+                    if not seed_obj or not seed_vec_raw:
+                        continue
+                    seed_vec = np.array(seed_vec_raw)
+                    seed_norm = float(np.linalg.norm(seed_vec))
+                    if seed_norm == 0:
+                        continue
+                    cos_sim = float(np.dot(seed_vec, cand_vec) / (seed_norm * cand_norm))
+                    if cos_sim < SIGNAL_C_VEC_SIM_THRESHOLD:
+                        continue
+                    if SIGNAL_C_REQUIRE_GENRE_OVERLAP:
+                        seed_genres = set(seed_obj.genres or [])
+                        if seed_genres and cand_genres and not (seed_genres & cand_genres):
+                            continue
+                    passed = True
+                    break
+                if passed:
+                    cross_val_pass.add(m.tmdb_id)
+
+        # 6. Quality threshold — sweet spot between 55 (too permissive, lets in The
         # Shack/Restless/The Number 23) and 68 (too strict, blocks artsy profiles
         # entirely). 62 keeps Synecdoche/Quiz Show/Fat City/Intolerance/Silence of
         # the Lambs while rejecting the obvious low-quality TMDB suggestions.
         signal_c_min_score = MIN_SIGNAL_C_SCORE
 
-        # 6. Filter and deduplicate
+        # 7. Filter and deduplicate
         seen_local: Set[int] = set()
         unique: List[Movie] = []
         dropped_excluded = dropped_quality = 0
         for m in existing_movies:
             if m.id in seen_local or m.tmdb_id in exclude_ids:
                 dropped_excluded += 1
+                continue
+            if cross_val_pass is not None and m.tmdb_id not in cross_val_pass:
+                dropped_cross_val += 1
                 continue
             if (m.vectorbox_score or 0) < signal_c_min_score:
                 dropped_quality += 1
@@ -745,6 +835,7 @@ class RecommendationService:
         logger.info(
             f"[Signal C] user={user_id} tmdb_recs={len(all_tmdb_ids)} "
             f"in_db={len(existing_movies)} queued_ingest={len(missing_ids)} "
+            f"vec_threshold={SIGNAL_C_VEC_SIM_THRESHOLD} dropped_cross_val={dropped_cross_val} "
             f"min_score={signal_c_min_score} dropped_excluded={dropped_excluded} "
             f"dropped_quality={dropped_quality} kept={len(unique)}"
         )

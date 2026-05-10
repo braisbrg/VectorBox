@@ -100,7 +100,7 @@ async def refresh_movie(movie: Movie, tmdb: TMDBClient, omdb: OMDbClient) -> boo
                     imdb_vote_count=movie.imdb_vote_count,
                 )
                 if vb.score is not None:
-                    movie.vectorbox_score = min(vb.score, 98)
+                    movie.vectorbox_score = vb.score
 
         if movie.is_upcoming:
             today = date.today()

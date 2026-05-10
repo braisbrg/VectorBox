@@ -82,26 +82,34 @@ class RSSService:
                 'uri': entry.link,
                 'watched_date': None,
                 'rating': None,
-                'rewatch': False
+                'rewatch': False,
+                'is_liked': False,
             }
-            
+
             # Parse watched date
             if hasattr(entry, 'letterboxd_watcheddate'):
                 try:
                     item['watched_date'] = datetime.strptime(entry.letterboxd_watcheddate, "%Y-%m-%d")
                 except ValueError:
                     pass
-            
+
             # Parse rating (member rating is 0-5)
             if hasattr(entry, 'letterboxd_memberrating'):
                 try:
                     item['rating'] = float(entry.letterboxd_memberrating)
                 except ValueError:
                     pass
-                    
+
             # Parse rewatch
             if hasattr(entry, 'letterboxd_rewatch'):
                 item['rewatch'] = entry.letterboxd_rewatch == 'Yes'
+
+            # Parse like / heart. Letterboxd exposes this as <letterboxd:liked>true|false</letterboxd:liked>
+            # in the diary RSS feed. Without this extraction, RSS-only users (no ZIP import)
+            # never get is_liked populated.
+            if hasattr(entry, 'letterboxd_liked'):
+                raw = (entry.letterboxd_liked or '').strip().lower()
+                item['is_liked'] = raw in ('true', 'yes', '1')
 
             # Parse TMDB ID (Crucial for accurate matching)
             if hasattr(entry, 'tmdb_movieid'):
@@ -250,6 +258,19 @@ class RSSService:
                 )
                 existing_rating = existing_rating_result.scalar_one_or_none()
 
+                # watch_count bump rule (idempotent):
+                #   - Only when RSS flags this entry as a rewatch (<letterboxd:rewatch>Yes</...>).
+                #   - AND the incoming watched_date is strictly later than the existing one.
+                # Both conditions together prevent the historical bug where Wolf Beach,
+                # Eterna, etc. ended up with watch_count=3 simply because the RSS sync
+                # re-processed the same diary entry on every cron tick. ZIP uploads
+                # remain authoritative — they overwrite watch_count via excluded.
+                incoming_date = item.get('watched_date')
+                existing_date = existing_rating.watched_date if existing_rating else None
+                rewatch_flag = bool(item.get('rewatch')) and (
+                    existing_date is None or (incoming_date is not None and incoming_date > existing_date)
+                )
+
                 stmt = insert(UserRating).values(
                     user_id=user_id,
                     movie_id=movie.id,
@@ -264,16 +285,16 @@ class RSSService:
                     set_={
                         "rating": getattr(insert(UserRating).excluded, "rating"),
                         "is_watched": True, # Ensure it's marked as watched
-                        # is_liked intentionally omitted — RSS feed has no liked status.
-                        # Overwriting with False would erase likes set by ZIP upload.
+                        # is_liked: RSS now extracts <letterboxd:liked> per item, so we
+                        # update it to reflect Letterboxd's current state. RSS is
+                        # authoritative for likes once the parser captures the field.
+                        "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
                         "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
                         "review": getattr(insert(UserRating).excluded, "review"),
-                        # Rewatch detection: only bump watch_count if the row was
-                        # already marked as watched (genuine rewatch), otherwise leave it.
-                        "watch_count": case(
-                            (UserRating.is_watched.is_(True),
-                             func.coalesce(UserRating.watch_count, 1) + 1),
-                            else_=func.coalesce(UserRating.watch_count, 1),
+                        "watch_count": (
+                            func.coalesce(UserRating.watch_count, 1) + 1
+                            if rewatch_flag
+                            else func.coalesce(UserRating.watch_count, 1)
                         ),
                     }
                 )

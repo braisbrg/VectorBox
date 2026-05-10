@@ -518,10 +518,15 @@ class RecommendationEngine:
             for _, user_rating, anchor_movie in scored_candidates:
                 logger.info(f"[Because you watched] Anchor: {anchor_movie.title} ({anchor_movie.year}) rating={user_rating.rating} watch_count={getattr(user_rating, 'watch_count', 1)}")
 
-                if not self.embedding_service:
-                    # No embedding service — fall back to stored vector
-                    anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
-                else:
+                # Prefer the stored Qdrant vector — it was built from cinematic_description
+                # (Groq-enriched, no title) and is the canonical encoding for the catalogue.
+                # Regenerating on the fly creates a different vector space and produces
+                # off-theme neighbours. Only fall back to fresh encoding when the anchor
+                # has no stored vector (e.g. just-ingested film).
+                anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
+
+                if not anchor_vector and self.embedding_service:
+                    text_override = anchor_movie.cinematic_description if anchor_movie.cinematic_description else None
                     if anchor_movie.keywords is None:
                         keywords = await tmdb.get_movie_keywords(anchor_movie.tmdb_id) or []
                     else:
@@ -533,15 +538,12 @@ class RecommendationEngine:
                             "title": anchor_movie.title,
                             "overview": anchor_movie.overview or "",
                             "genres": anchor_movie.genres or [],
-                            "keywords": keywords
-                        }, include_title=False).tolist()
+                            "keywords": keywords,
+                        }, text_override=text_override).tolist()
                     )
-                
+
                 if not anchor_vector:
-                     anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
-                
-                if not anchor_vector:
-                     continue
+                    continue
 
                 similar_results = await qdrant.search_similar(
                     query_vector=anchor_vector,
@@ -1161,7 +1163,7 @@ class RecommendationEngine:
         q = (
             select(Movie)
             .where(*MOVIE_QUALITY_GATE)
-            .where(Movie.vectorbox_score.between(1, 98))
+            .where(Movie.vectorbox_score.between(1, 99))
         )
         if watched_internal_ids:
             q = q.where(Movie.id.notin_(watched_internal_ids))
