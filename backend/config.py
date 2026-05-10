@@ -20,9 +20,18 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # Anonymous session signing key (httponly cookie for guest users)
-ANON_SESSION_SECRET = os.getenv("ANON_SESSION_SECRET", os.getenv("SECRET_KEY", "vectorbox-anon-dev-secret"))
+_ANON_SESSION_DEFAULT = "vectorbox-anon-dev-secret"
+ANON_SESSION_SECRET = os.getenv("ANON_SESSION_SECRET", os.getenv("SECRET_KEY", _ANON_SESSION_DEFAULT))
 ANON_SESSION_MAX_AGE = 90 * 24 * 3600  # 90 days in seconds (7_776_000)
 IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
+
+# Refuse to boot in production with the dev-default cookie secret — anyone could
+# forge anonymous sessions and hijack guest data.
+if IS_PRODUCTION and ANON_SESSION_SECRET == _ANON_SESSION_DEFAULT:
+    raise RuntimeError(
+        "ANON_SESSION_SECRET (or SECRET_KEY) must be set in production; "
+        "the dev default would let anyone forge guest cookies."
+    )
 
 # Cache versioning — bump to auto-invalidate all section/signal Redis keys on schema changes
 FEED_CACHE_VERSION = "v2"

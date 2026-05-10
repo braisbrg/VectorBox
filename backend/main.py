@@ -120,11 +120,17 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Security: Trusted Host Middleware (prevent host header attacks)
-# Dynamically load from env for Cloudflare Tunnel and production domains
-#allowed_hosts_str = os.getenv("TRUSTED_HOSTS", "localhost,localhost:3000,127.0.0.1,127.0.0.1:3000")
-allowed_hosts_str = os.getenv("TRUSTED_HOSTS", "*")
+# Dev default is permissive; production MUST set TRUSTED_HOSTS explicitly.
+_default_hosts = "*" if not IS_PRODUCTION else ""
+allowed_hosts_str = os.getenv("TRUSTED_HOSTS", _default_hosts)
 allowed_hosts = [h.strip() for h in allowed_hosts_str.split(",") if h.strip()]
 logger.info(f"Trusted hosts: {allowed_hosts}")
+
+if IS_PRODUCTION and (not allowed_hosts or '*' in allowed_hosts):
+    raise RuntimeError(
+        "TRUSTED_HOSTS must be set to an explicit allowlist in production "
+        "(no '*'); host-header attacks are otherwise unblocked."
+    )
 
 if allowed_hosts and '*' not in allowed_hosts:
     app.add_middleware(

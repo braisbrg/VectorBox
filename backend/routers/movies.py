@@ -1,7 +1,8 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, confloat
 from typing import Optional
+from limiter import limiter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
@@ -18,7 +19,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 class RateMovieRequest(BaseModel):
-    rating: Optional[float] = None
+    rating: Optional[confloat(ge=0, le=5)] = None
     is_watchlist: bool = False
     is_liked: bool = False
 
@@ -81,7 +82,9 @@ async def get_movie_details(
 
 
 @router.post("/{tmdb_id}/rate")
+@limiter.limit("60/minute")
 async def rate_movie(
+    http_request: Request,
     tmdb_id: int,
     request: RateMovieRequest,
     db: AsyncSession = Depends(get_db),

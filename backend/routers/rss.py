@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from typing import List, Dict
-from pydantic import BaseModel
+from pydantic import BaseModel, conlist, constr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import User, Movie, UserRating
@@ -30,7 +30,7 @@ class SyncResponse(BaseModel):
     message: str
 
 class GroupVibeRequest(BaseModel):
-    usernames: List[str]
+    usernames: conlist(constr(min_length=1, max_length=80), min_length=2, max_length=8)
 
 async def _invalidate_feed_cache(user_id: int) -> None:
     """Delete all cached feed keys for this user after RSS sync or upload."""
@@ -167,10 +167,16 @@ async def sync_user_data(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Verify the requested letterboxd username matches the authenticated user's linked account
-    letterboxd_profile = user.letterboxd_username or username
-    if letterboxd_profile != username:
+    # L-3: require an explicit prior link before sync. Without this, a user with no
+    # linked profile could trigger sync against any letterboxd handle.
+    if not user.letterboxd_username:
+        raise HTTPException(
+            status_code=400,
+            detail="Link your Letterboxd profile before syncing.",
+        )
+    if user.letterboxd_username != username:
         raise HTTPException(status_code=403, detail="Cannot sync another user's Letterboxd account")
+    letterboxd_profile = user.letterboxd_username
     background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb)
 
     return {
@@ -180,7 +186,9 @@ async def sync_user_data(
     }
 
 @router.post("/group/vibe")
+@limiter.limit("10/minute")
 async def get_group_recommendations(
+    http_request: Request,  # required by slowapi
     request: GroupVibeRequest,
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),

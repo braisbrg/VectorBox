@@ -23,7 +23,7 @@ from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from services.feed_service import FeedService
 from services.provider_service import ProviderService
-from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_optional_current_user, get_current_or_anonymous_user, get_embedding_service
+from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_current_or_anonymous_user, get_embedding_service
 from limiter import limiter
 from models.schemas import TokenResponse
 from services.embedding_service import EmbeddingService
@@ -169,7 +169,9 @@ async def _enrich_recommendations(
 
 
 @router.post("/general", response_model=List[RecommendationResponse])
+@limiter.limit("30/minute")
 async def get_general_recommendations(
+    http_request: Request,
     request: RecommendationRequest,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -287,7 +289,9 @@ async def get_user_clusters(
 
 
 @router.post("/by-mood", response_model=List[RecommendationResponse])
+@limiter.limit("30/minute")
 async def get_recommendations_by_mood(
+    http_request: Request,
     request: RecommendationRequest,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -352,7 +356,9 @@ async def get_recommendations_by_mood(
 
 
 @router.post("/random", response_model=RecommendationResponse)
+@limiter.limit("30/minute")
 async def get_random_recommendation(
+    http_request: Request,
     request: RecommendationRequest,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -374,16 +380,16 @@ async def get_random_recommendation(
         if request.genres: filters["include_genres"] = request.genres
         
         results = await clustering.get_item_based_recommendations(
-            user_id=request.user_id,
+            user_id=user_id,
             db=db,
             filters=filters,
             limit=50 # Get a pool
         )
-        
+
         if not results:
              raise HTTPException(status_code=404, detail="No movies found matching criteria")
-             
-        enriched = await _enrich_recommendations(results, request.user_id, db, request, tmdb)
+
+        enriched = await _enrich_recommendations(results, user_id, db, request, tmdb)
         if not enriched:
             raise HTTPException(status_code=404, detail="No movies found matching criteria")
             
@@ -401,16 +407,17 @@ async def get_random_recommendation(
 async def get_group_recommendations(
     http_request: Request,  # required by slowapi
     request: GroupRecommendationRequest,
-    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
+    current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service)
 ):
     """
     Get recommendations for a group of users.
-    Public — guests may pass any user_ids; ownership check applies only when authed.
+    Requester must be a member of the group — otherwise an unauthenticated
+    guest could enumerate any pair of users' watchlist intersections.
     """
-    if current_user is not None and current_user.user_id not in request.user_ids:
+    if current_user.user_id not in request.user_ids:
         raise HTTPException(status_code=403, detail="Access denied")
 
     try:

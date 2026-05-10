@@ -1,7 +1,7 @@
 """
 Additional tools: Group watchlist, compatibility test
 """
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from typing import List
@@ -13,13 +13,16 @@ from dependencies import get_qdrant_service, get_current_user
 from models.database import UserRating, Movie, User
 from models.schemas import GroupWatchlistRequest, CompatibilityRequest, CompatibilityResponse, TokenResponse
 from services.qdrant_service import QdrantService
+from limiter import limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 @router.post("/group-watchlist")
+@limiter.limit("10/minute")
 async def create_group_watchlist(
+    http_request: Request,
     request: GroupWatchlistRequest,
     db: AsyncSession = Depends(get_db),
     current_user: TokenResponse = Depends(get_current_user)
@@ -82,7 +85,9 @@ async def create_group_watchlist(
 
 
 @router.post("/compatibility", response_model=CompatibilityResponse)
+@limiter.limit("10/minute")
 async def calculate_compatibility(
+    http_request: Request,
     request: CompatibilityRequest,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -182,9 +187,6 @@ async def calculate_compatibility(
         shared_genres=shared_genres[:10]
     )
 
-
-from limiter import limiter
-from fastapi import Request
 
 @router.post("/update-popular")
 @limiter.limit("1/hour")

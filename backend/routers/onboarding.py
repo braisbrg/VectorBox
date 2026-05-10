@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, conlist, constr
 from sqlalchemy import select, func, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import ARRAY, array, insert as pg_insert
@@ -107,15 +107,16 @@ TAG_WHITELIST = set(TAG_FILTERS.keys())
 # ---------------------------------------------------------------------------
 
 class MigrateGuestRequest(BaseModel):
-    ratings: Dict[int, str]  # tmdb_id → "positive"|"neutral"|"negative"
-    tags: Dict[str, List[str]]  # {"avoided": [...]}
+    # Onboarding caps at ~30 ratings; 200 is a generous ceiling that still bounds payload size.
+    ratings: Dict[int, constr(max_length=10)] = Field(..., max_length=200)
+    tags: Dict[constr(max_length=20), conlist(constr(max_length=40), max_length=30)] = Field(..., max_length=10)
 
 class TagsRequest(BaseModel):
-    avoided: List[str]
+    avoided: conlist(constr(max_length=40), max_length=30)
 
 class RateRequest(BaseModel):
     tmdb_id: int
-    signal: str  # "positive" | "neutral" | "negative"
+    signal: constr(max_length=10)  # "positive" | "neutral" | "negative" — enforced via SIGNAL_TO_RATING
 
 
 class OnboardingMovie(BaseModel):
@@ -550,7 +551,9 @@ async def rate_movie(
 # ---------------------------------------------------------------------------
 
 @router.post("/migrate-guest")
+@limiter.limit("3/hour")
 async def migrate_guest(
+    request: Request,
     body: MigrateGuestRequest,
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
@@ -659,7 +662,9 @@ async def migrate_guest(
 # ---------------------------------------------------------------------------
 
 @router.post("/tags")
+@limiter.limit("30/minute")
 async def save_tags(
+    request: Request,
     body: TagsRequest,
     db: AsyncSession = Depends(get_db),
     current_user: TokenResponse = Depends(get_current_user),
@@ -689,7 +694,9 @@ async def save_tags(
 # ---------------------------------------------------------------------------
 
 @router.get("/status")
+@limiter.limit("60/minute")
 async def get_onboarding_status(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: TokenResponse = Depends(get_current_or_anonymous_user),
 ):

@@ -146,11 +146,6 @@ class TokenResponse(BaseModel):
     letterboxd_username: Optional[str] = None
 
 
-class LinkLetterboxdRequest(BaseModel):
-    """Link a Letterboxd profile to user account"""
-    letterboxd_username: constr(min_length=1, max_length=50, pattern=r'^[a-zA-Z0-9_-]+$')
-
-
 class TaskStatusResponse(BaseModel):
     """Background task status"""
     task_id: str

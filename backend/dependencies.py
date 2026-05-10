@@ -102,20 +102,32 @@ def _extract_clerk_email(payload: dict) -> str:
     includes it. Older templates or default sessions may surface it under
     `primary_email_address`/`email_address`/`email_addresses[].email_address`.
     Return the first non-empty variant, or "" if none found.
+
+    Verification: when the claim ships with a verification status (Clerk's
+    `email_addresses[]` shape does), we only accept entries marked verified.
+    Top-level scalar claims are trusted iff `email_verified` is True or absent
+    (Clerk's default JWT template only emits the `email` claim post-verification).
     """
-    for key in ("email", "primary_email_address", "email_address"):
-        val = payload.get(key)
-        if isinstance(val, str) and val:
-            return val
     emails = payload.get("email_addresses")
     if isinstance(emails, list):
         for entry in emails:
             if isinstance(entry, dict):
+                verification = entry.get("verification") or {}
+                if verification.get("status") and verification.get("status") != "verified":
+                    continue
                 addr = entry.get("email_address")
                 if isinstance(addr, str) and addr:
                     return addr
             elif isinstance(entry, str) and entry:
                 return entry
+
+    # If a verification flag is present and explicitly False, refuse the claim.
+    if payload.get("email_verified") is False:
+        return ""
+    for key in ("email", "primary_email_address", "email_address"):
+        val = payload.get(key)
+        if isinstance(val, str) and val:
+            return val
     return ""
 
 
@@ -242,10 +254,16 @@ async def get_current_user(
         user = result.scalar_one_or_none()
 
         # Fallback: legacy user exists by email without clerk_user_id — adopt it.
+        # Email is filtered through _extract_clerk_email which drops unverified entries.
         if user is None and email and not is_anonymous:
             result = await db.execute(select(User).where(User.email == email))
             user = result.scalar_one_or_none()
             if user is not None:
+                logger.warning(
+                    f"[CLERK] Adopting legacy user {user.id} (email={email}) "
+                    f"into clerk_user_id={clerk_user_id} — verify Clerk JWT template "
+                    f"only emits verified emails."
+                )
                 user.clerk_user_id = clerk_user_id
                 if user.username.startswith("guest_"):
                     # Priority: clerk username claim → email prefix
