@@ -187,7 +187,9 @@ def _score_anchor_candidate(rating, watched_date, now, watch_count: int = 1) -> 
     
     if watched_date and watched_date.tzinfo is None:
         watched_date = watched_date.replace(tzinfo=timezone.utc)
-        
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
     days_ago = max(0, (now - watched_date).days) if watched_date else 730
     decay = 0.5 ** (days_ago / 730)
     rewatch_boost = min(1.0 + (watch_count - 1) * 0.15, 1.4)

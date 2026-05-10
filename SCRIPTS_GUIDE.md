@@ -7,6 +7,7 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 
 | Script | Description | Command (Safe to Run) |
 | :--- | :--- | :--- |
+| **`maintenance_orchestrator.py`** | **Master Orchestrator.** Runs the full DB maintenance pipeline in 5 phases respecting OMDb daily budget (`api_budget` table) and Groq daily limits. Phases: (1) refresh_metadata for missing `imdb_vote_count` or stale, (2) embedding_audit for NULL `embedding_quality_score`, (3) embedding_repair via Groq for low-quality / not-yet-enriched, (4) backfill cinematic descriptions, (5) reset user clusters. Stops gracefully on budget exhaustion. Resumable across runs. | `docker-compose exec backend python scripts/maintenance_orchestrator.py [--phases 1,2,3] [--omdb-budget 1000] [--embed-limit 500] [--dry-run]` |
 | **`seed_db.py`** | **The Main Engine.** Uses `MovieFactory` to fetch movies from TMDB with **Spanish Metadata**, **Keywords**, and strict Pydantic **OMDb Ratings**. Upserts to Postgres + Qdrant. Supports `--strategy popular\|recent\|upcoming`. | `docker-compose exec backend python scripts/seed_db.py --limit 100 [--strategy popular\|recent\|upcoming]` |
 | **`refresh_metadata.py`** | **Metadata Refresher.** Fetches fresh `vote_count`, `vote_average`, `popularity`, `poster_path`, `genres`, `runtime` from TMDB and recalculates `vectorbox_score` for movies already in DB. Selects movies by age cohort. Use `--dry-run` to preview. | `docker-compose exec backend python scripts/refresh_metadata.py --strategy recent --limit 200` |
 | **`enrich_vectors.py`** | **Data Fixer & LLM Embeddings.** Fetches missing keywords/credits from TMDB. Uses Groq to generate 80-word cinematic descriptions and upserts 384d semantic vectors. Run with `--enrich-embeddings` to process LLM upgrades. Supports `--model-only [scout\|70b\|8b]` for precise rate-limit throttling and `--reset-enrichment` for a fresh start. | `docker-compose exec backend python scripts/enrich_vectors.py [--enrich-embeddings] [--model-only scout]` |
@@ -55,7 +56,45 @@ docker-compose exec backend python scripts/seed_db.py --limit 200 --strategy rec
 docker-compose exec backend python scripts/seed_db.py --limit 100 --strategy upcoming
 ```
 
-### refresh_metadata.py (NEW)
+### maintenance_orchestrator.py (master)
+
+Single entry point for routine DB maintenance. Replaces ad-hoc sequencing of `refresh_metadata`, `check_embeddings`, `enrich_vectors`, `backfill_descriptions`, and `reset_profiles`.
+
+**Phases (run in order; filter with `--phases`):**
+
+| # | Name | API used | Stop condition |
+|---|---|---|---|
+| 1 | `refresh_metadata` | OMDb + TMDB | OMDb daily budget reached |
+| 2 | `embedding_audit` | none (local MiniLM) | `--embed-limit` |
+| 3 | `embedding_repair` | Groq | `DailyLimitExhausted` or `--embed-limit` |
+| 4 | `backfill_descriptions` | Groq | `DailyLimitExhausted` or `--embed-limit` |
+| 5 | `reset_profiles` | none | runs once over all users with `onboarding_completed` |
+
+**Arguments:**
+- `--phases 1,2,3,4,5` — comma-separated phases to run (default: all)
+- `--omdb-budget N` — max OMDb calls for this run, capped by remaining daily quota in `api_budget` table (default: 1000)
+- `--embed-limit N` — max movies per embedding phase 2/3/4 (default: 500)
+- `--dry-run` — preview targets without writing
+
+**Recommended cadence:**
+```bash
+# Daily — keep recent metadata fresh + drain Groq daily quota for repair
+0 3 * * *  docker compose exec -T backend python scripts/maintenance_orchestrator.py --phases 1,2,3 --omdb-budget 1000 --embed-limit 200
+
+# Weekly — backfill descriptions and re-cluster
+0 4 * * 0  docker compose exec -T backend python scripts/maintenance_orchestrator.py --phases 4,5
+```
+
+**One-off catch-up (after big formula changes / mass ingest):**
+```bash
+# Day 1: drain OMDb quota
+docker compose exec backend python scripts/maintenance_orchestrator.py --phases 1 --omdb-budget 1000
+
+# Day 2-N: repeat Phase 1 until imdb_vote_count populated everywhere; then run 2-5.
+docker compose exec backend python scripts/maintenance_orchestrator.py --phases 2,3,4,5 --embed-limit 1000
+```
+
+### refresh_metadata.py (legacy single-phase)
 
 Refreshes movie metadata and recalculates `vectorbox_score` for existing DB movies.
 
