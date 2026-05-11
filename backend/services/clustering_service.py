@@ -7,7 +7,7 @@ from sklearn.preprocessing import StandardScaler
 from collections import Counter
 import numpy as np
 import math
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Set
 import logging
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,14 +46,47 @@ class ClusteringService:
         self.qdrant = qdrant or QdrantService()
     
     @staticmethod
-    def calculate_optimal_clusters(n_movies: int) -> int:
+    def calculate_optimal_clusters(
+        n_movies: int,
+        X: Optional[np.ndarray] = None,
+        sample_weights: Optional[np.ndarray] = None,
+    ) -> int:
         """
-        Calculate optimal number of clusters based on user's movie count
-        Formula: n_clusters = min(5, max(2, total_movies // 20))
+        Pick k via silhouette score over k ∈ [3, min(12, n//20)].
+
+        Falls back to the old fixed formula `min(5, max(2, n // 20))` when:
+          - X is not provided (callers that only know n_movies)
+          - n_movies < 30 (silhouette is unreliable on very small samples)
+
+        Silhouette is sub-sampled (max 500 points, seeded random) so cost stays
+        ≤2-3s even for 1700-film users.
         """
-        n_clusters = max(2, n_movies // 20)
-        n_clusters = min(5, n_clusters)
-        return n_clusters
+        if X is None or n_movies < 30:
+            n_clusters = max(2, n_movies // 20)
+            return min(5, n_clusters)
+
+        from sklearn.metrics import silhouette_score
+
+        k_max = min(12, max(3, n_movies // 20))
+        if k_max < 4:
+            return k_max  # not enough headroom to compare
+
+        best_k = 3
+        best_score = -1.0
+        for k in range(3, k_max + 1):
+            km = KMeans(n_clusters=k, random_state=42, n_init=5, max_iter=200)
+            if sample_weights is not None:
+                labels = km.fit_predict(X, sample_weight=sample_weights)
+            else:
+                labels = km.fit_predict(X)
+            # silhouette is O(n²) — subsample for speed; same seed for fair comparison
+            sample_size = min(500, n_movies)
+            score = float(silhouette_score(X, labels, sample_size=sample_size, random_state=42))
+            if score > best_score:
+                best_score = score
+                best_k = k
+        logger.info(f"Silhouette-optimal k={best_k} (score={best_score:.3f}, n={n_movies})")
+        return best_k
 
     @staticmethod
     def _compute_medoid(vectors: np.ndarray) -> tuple[np.ndarray, int]:
@@ -131,16 +164,29 @@ class ClusteringService:
         Generate K-Means clusters for a user's taste profile
         Returns list of UserCluster objects
         """
+        # Pre-clustering filter: only films that signal real "taste" drive geometry.
+        # Drops ★<3.5 unrated noise (casual viewings) but keeps:
+        #   - rating ≥ 3.5 (positive taste signal)
+        #   - is_liked = True (explicit affinity)
+        #   - watch_count ≥ 2 (rewatches → strong implicit signal even without high rating)
+        # This addresses user 210's "rate-everything" pattern that dragged centroids
+        # toward generic averages. See scripts/experiment_signal_a.py findings.
         result = await db.execute(
             select(UserRating, Movie)
             .join(Movie, UserRating.movie_id == Movie.id)
             .where(UserRating.user_id == user_id)
-            .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+            .where(
+                or_(
+                    UserRating.rating >= 3.5,
+                    UserRating.is_liked.is_(True),
+                    UserRating.watch_count >= 2,
+                )
+            )
         )
         ratings_movies = result.all()
-        
+
         ratings_movies.sort(key=lambda x: x[1].id)
-        
+
         if len(ratings_movies) < 10:
             if len(ratings_movies) < 5:
                 logger.warning(f"User {user_id} has too few rated/liked movies ({len(ratings_movies)}) for clustering")
@@ -241,30 +287,30 @@ class ClusteringService:
                 w = min(w * 1.2, 1.0)
 
             weights.append(w)
-            
+
         weights_array = np.array(weights)
-        try:
-             X_weighted = X_normalized * weights_array[:, np.newaxis]
-        except Exception as e:
-              logger.error(f"Weight application failed: {e}")
-              return []
-        
-        n_clusters = self.calculate_optimal_clusters(len(vectors))
-        
+
+        # Use sklearn's sample_weight (proper weighted k-means) instead of multiplying
+        # vectors by weight — multiplying distorts the vector space (puts low-weight
+        # films closer to origin, creating spurious "small magnitude" clusters).
+        # sample_weight only re-weights the centroid means, leaving vector positions intact.
+        n_clusters = self.calculate_optimal_clusters(
+            len(vectors), X=X_normalized, sample_weights=weights_array
+        )
+
         kmeans = KMeans(
             n_clusters=n_clusters,
             random_state=42,
             n_init=10,
-            max_iter=300
+            max_iter=300,
         )
-        
+
         loop = asyncio.get_running_loop()
         start_time = time.perf_counter()
-        
+
         cluster_labels = await loop.run_in_executor(
             None,
-            kmeans.fit_predict, 
-            X_weighted
+            functools.partial(kmeans.fit_predict, X_normalized, sample_weight=weights_array),
         )
         
         duration = time.perf_counter() - start_time
@@ -495,62 +541,44 @@ class ClusteringService:
         page: int = 1,
         background_tasks = None
     ) -> List[Dict]:
-        """
-        Get general movie recommendations based on user's global taste profile (Clustering/Centroid).
-        Used for "Hidden Gems" and general discovery.
+        """Multi-anchor consensus (G2 strategy) — Signal A backbone.
+
+        Picks top-N anchor films from the user's loved films, runs per-anchor
+        Qdrant similarity search, merges results with Reciprocal Rank Fusion,
+        and keeps films that appear as a neighbour of ≥2 anchors (consensus).
+
+        Rationale: for users with diverse tastes, a single geometric mean of
+        all rated vectors lands in a "nowhereland" of vector space. Multi-anchor
+        consensus surfaces films that sit at the intersection of multiple tastes
+        — empirically +9-10 VBS vs global-centroid baseline on both coherent
+        (user 212) and diverse (user 210) profiles. See scripts/experiment_signal_a.py.
+
+        Falls back to single-anchor RRF order (by neighbour proximity) if too few
+        consensus picks; falls back to global centroid if no anchors have vectors.
         """
         offset = (page - 1) * limit
-        
+        search_filters = filters or {}
+
+        # Anchor candidates: rating ≥ 4.0 OR liked. Lower threshold (vs ★≥4.5)
+        # gives more anchors so consensus signal is achievable for users
+        # with few 5★ ratings.
         result = await db.execute(
             select(UserRating, Movie)
             .join(Movie, UserRating.movie_id == Movie.id)
             .where(UserRating.user_id == user_id)
-            .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+            .where(or_(UserRating.rating >= 4.0, UserRating.is_liked.is_(True)))
         )
         all_ratings = result.all()
-        
+
         # FIX: Never block path with inline enrichment — background only.
         for _, movie in all_ratings:
             if movie.keywords is None and background_tasks:
                 background_tasks.add_task(_enrich_movie_background, movie.tmdb_id)
-        
+
         if not all_ratings:
             return []
-        
-        movie_tmdb_ids = [movie.tmdb_id for _, movie in all_ratings]
-        raw_vectors_map = await self.qdrant.get_vectors_batch(movie_tmdb_ids)
 
-        vectors = []
-        for _, movie in all_ratings:
-            vector = raw_vectors_map.get(movie.tmdb_id)
-            if vector:
-                vectors.append(vector)
-        
-        if not vectors:
-            return []
-        
-        global_center = np.mean(vectors, axis=0).tolist()
-        
-        search_filters = filters or {}
-        results = await self.qdrant.search_similar(
-            query_vector=global_center,
-            limit=limit * 5,
-            offset=offset,
-            score_threshold=0.15,
-            filters=search_filters
-        )
-        
-        if not results:
-            results = await self.qdrant.search_similar(
-                query_vector=global_center,
-                limit=limit * 5,
-                offset=offset,
-                score_threshold=0.1,
-                filters=search_filters
-            )
-            
-        # AGENTS.md:245 — Qdrant uses tmdb_id; UserRating.movie_id is internal.
-        # Convert the watched set to tmdb_ids before comparing against Qdrant hits.
+        # Watched set (tmdb_ids — Qdrant point id convention)
         watched_result = await db.execute(
             select(Movie.tmdb_id)
             .join(UserRating, UserRating.movie_id == Movie.id)
@@ -559,15 +587,128 @@ class ClusteringService:
         )
         watched_tmdb_ids = set(watched_result.scalars().all())
 
-        recommendations = [
-            r for r in results
-            if r["movie_id"] not in watched_tmdb_ids
-        ][:limit]
+        # Score each candidate as a potential anchor.
+        # base = rating_part + liked_bonus + rewatch_signal; decayed by recency.
+        def _recency_decay(ref_date, half_life_days: float = 540.0) -> float:
+            if ref_date is None:
+                return 0.5
+            if ref_date.tzinfo is None:
+                ref_date = ref_date.replace(tzinfo=timezone.utc)
+            days = max(0.0, (datetime.now(timezone.utc) - ref_date).total_seconds() / 86400.0)
+            return 0.5 ** (days / half_life_days)
 
-        logger.info(f"User {user_id} General Recs: Found {len(results)} raw results. Watched count: {len(watched_tmdb_ids)}")
-        logger.info(f"User {user_id} General Recs: {len(recommendations)} remaining after watched filter.")
-        
+        scored: List[Tuple[float, Movie]] = []
+        for ur, m in all_ratings:
+            base = max(0.0, ((ur.rating or 0) - 2.5) / 2.5) + (0.5 if ur.is_liked else 0.0)
+            base += float(np.log1p(max(0, (ur.watch_count or 1) - 1))) * 0.3
+            ref = ur.created_at or ur.watched_date
+            scored.append((base * _recency_decay(ref), m))
+        scored.sort(key=lambda x: -x[0])
+
+        N_ANCHORS = 7
+        PER_ANCHOR_LIMIT = 20
+        K_RRF = 60
+        CONSENSUS_MIN = 2
+
+        anchors = scored[:N_ANCHORS]
+        anchor_tmdb_ids = [m.tmdb_id for _, m in anchors]
+        anchor_vecs_map = await self.qdrant.get_vectors_batch(anchor_tmdb_ids)
+
+        # Per-anchor search + RRF aggregation
+        rrf_scores: Dict[int, float] = {}
+        anchor_count: Dict[int, int] = {}
+        anchors_used = 0
+        for _, m in anchors:
+            vec = anchor_vecs_map.get(m.tmdb_id)
+            if not vec:
+                continue
+            anchors_used += 1
+            hits = await self.qdrant.search_similar(
+                query_vector=list(vec),
+                limit=PER_ANCHOR_LIMIT + 5,
+                score_threshold=0.30,
+                filters=search_filters,
+            )
+            # Drop the anchor itself and already-watched films
+            ranked = [
+                h for h in hits
+                if h["movie_id"] != m.tmdb_id and h["movie_id"] not in watched_tmdb_ids
+            ][:PER_ANCHOR_LIMIT]
+            for rank, h in enumerate(ranked):
+                mid = h["movie_id"]
+                rrf_scores[mid] = rrf_scores.get(mid, 0.0) + 1.0 / (K_RRF + rank)
+                anchor_count[mid] = anchor_count.get(mid, 0) + 1
+
+        # Fallback if no anchor had a vector or all hits filtered out
+        if not rrf_scores:
+            logger.warning(
+                f"User {user_id} G2 Recs: no anchor-based results "
+                f"(anchors_used={anchors_used}); falling back to global centroid."
+            )
+            return await self._global_centroid_fallback(
+                user_id, db, watched_tmdb_ids, search_filters, limit, offset
+            )
+
+        # Split consensus (≥2 anchors) vs single-anchor; consensus ranks first
+        consensus_sorted = sorted(
+            [mid for mid, n in anchor_count.items() if n >= CONSENSUS_MIN],
+            key=lambda mid: -rrf_scores[mid],
+        )
+        single_sorted = sorted(
+            [mid for mid, n in anchor_count.items() if n < CONSENSUS_MIN],
+            key=lambda mid: -rrf_scores[mid],
+        )
+        # Over-fetch (limit * 5) so caller's quality gate has headroom
+        target = max(limit * 5, limit + offset)
+        result_ids = (consensus_sorted + single_sorted)[offset : offset + target]
+
+        recommendations = [
+            {"movie_id": mid, "score": rrf_scores[mid]}
+            for mid in result_ids
+        ][:limit * 5]
+
+        consensus_n = len(consensus_sorted)
+        logger.info(
+            f"User {user_id} G2 Recs: anchors_used={anchors_used}/{N_ANCHORS}, "
+            f"consensus={consensus_n}, single={len(single_sorted)}, "
+            f"returned={len(recommendations)} (watched filtered upstream)."
+        )
         return recommendations
+
+    async def _global_centroid_fallback(
+        self,
+        user_id: int,
+        db: AsyncSession,
+        watched_tmdb_ids: set,
+        search_filters: Dict,
+        limit: int,
+        offset: int,
+    ) -> List[Dict]:
+        """Old A-strategy: global mean of all rated/liked vectors. Used only
+        when G2 cannot produce anchor-based results (rare).
+        """
+        result = await db.execute(
+            select(Movie.tmdb_id)
+            .join(UserRating, UserRating.movie_id == Movie.id)
+            .where(UserRating.user_id == user_id)
+            .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+        )
+        tmdb_ids = result.scalars().all()
+        if not tmdb_ids:
+            return []
+        raw_vectors_map = await self.qdrant.get_vectors_batch(tmdb_ids)
+        vectors = [v for v in raw_vectors_map.values() if v]
+        if not vectors:
+            return []
+        global_center = np.mean(vectors, axis=0).tolist()
+        results = await self.qdrant.search_similar(
+            query_vector=global_center,
+            limit=limit * 5,
+            offset=offset,
+            score_threshold=0.15,
+            filters=search_filters,
+        )
+        return [r for r in results if r["movie_id"] not in watched_tmdb_ids][:limit * 5]
 
     def calculate_quality_weight(self, score: float) -> float:
         """
