@@ -338,19 +338,14 @@ class RecommendationEngine:
         Cold start fallback: recommend high-scoring films from user's dominant genres.
         Used when Signal A or B produce empty results.
         """
-        # Get user's top 3 dominant genres from their clusters
-        clusters_result = await db.execute(
-            select(UserCluster)
-            .where(UserCluster.user_id == user_id)
-            .order_by(desc(UserCluster.movie_count))
-        )
-        clusters = clusters_result.scalars().all()
-
-        fallback_genres = ["Drama", "Thriller"]  # defaults
-        for c in clusters:
-            if c.dominant_genres:
-                fallback_genres = c.dominant_genres[:3]
-                break
+        # Top-3 most-loved genres from user's actual ratings (rating-weighted).
+        # Going direct to ratings instead of cluster.dominant_genres avoids the
+        # "biggest cluster ≠ most loved" problem — see
+        # scripts/experiment_feed_sections.py for the user 210 case where
+        # Drama dominates by weight but Action led the biggest cluster.
+        from services.clustering_service import ClusteringService
+        prefs = await ClusteringService.get_user_genre_preferences(user_id, db)
+        fallback_genres = [g for g, _ in prefs[:3]] or ["Drama", "Thriller"]
 
         # Get watched movie IDs to exclude
         watched_result = await db.execute(
@@ -1078,20 +1073,17 @@ class RecommendationEngine:
         country: str,
         provider_service: ProviderService = None
     ) -> Optional[FeedSection]:
-        """Wildcard Section: Outside Your Comfort Zone"""
-        clusters_result = await db.execute(
-            select(UserCluster)
-            .where(UserCluster.user_id == user_id)
-            .order_by(desc(UserCluster.movie_count))
-            .limit(3)
-        )
-        clusters = clusters_result.scalars().all()
-        
-        excluded_genres = set()
-        for c in clusters:
-            if c.dominant_genres:
-                excluded_genres.update(c.dominant_genres)
-        
+        """Wildcard Section: Outside Your Comfort Zone.
+
+        Excludes the user's top-3 most-loved genres (rating-weighted). The old
+        path took the OR-union of dominant_genres across the 3 biggest clusters,
+        which routinely covered 6-8 genres and over-restricted the pool (user 212
+        was down to 161 candidates; with top-3 the pool is 542 — 3.4×).
+        """
+        from services.clustering_service import ClusteringService
+        prefs = await ClusteringService.get_user_genre_preferences(user_id, db)
+        excluded_genres = {g for g, _ in prefs[:3]}
+
         if not excluded_genres:
             return None
 
@@ -1338,16 +1330,14 @@ class RecommendationEngine:
         from sqlalchemy import cast, String
         today = date.today()
 
-        # Get user's dominant genres from clusters
-        clusters_result = await db.execute(
-            select(UserCluster).where(UserCluster.user_id == user_id)
-        )
-        clusters = clusters_result.scalars().all()
-        user_genres = list({
-            genre
-            for cluster in clusters
-            for genre in (cluster.dominant_genres or [])
-        })
+        # Top-5 most-loved genres (rating-weighted). Wider net than niche_picks /
+        # wildcard because upcoming is mainly mainstream + we want enough films
+        # in the pool — the old path of UNION-of-all-clusters yielded 11 genres
+        # for user 212 (essentially no filter), while top-3 was too tight on
+        # user 210 (cut Star Wars, Avatar etc. from the upcoming pool).
+        from services.clustering_service import ClusteringService
+        prefs = await ClusteringService.get_user_genre_preferences(user_id, db)
+        user_genres = [g for g, _ in prefs[:5]]
 
         query = (
             select(Movie)

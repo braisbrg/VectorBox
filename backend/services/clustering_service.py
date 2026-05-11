@@ -89,6 +89,49 @@ class ClusteringService:
         return best_k
 
     @staticmethod
+    async def get_user_genre_preferences(
+        user_id: int,
+        db: AsyncSession,
+        *,
+        min_rating: float = 3.5,
+    ) -> List[Tuple[str, float]]:
+        """Returns [(genre, weight)] sorted desc by weight.
+
+        Weight per film is: (rating_part + liked_bonus + log1p(watch_count-1)*0.3)
+        multiplied by recency_decay (730-day half-life). The weight is then
+        accumulated across every genre the film has.
+
+        Used by the 4 feed sections that previously derived "user genres" from
+        cluster.dominant_genres. Going directly to ratings is cleaner because
+        clusters can mis-represent breadth (biggest cluster ≠ most loved genres
+        — see scripts/experiment_feed_sections.py for empirical evidence on
+        user 210 where Drama dominates by weight but Action led the biggest cluster).
+        """
+        result = await db.execute(
+            select(UserRating, Movie)
+            .join(Movie, UserRating.movie_id == Movie.id)
+            .where(UserRating.user_id == user_id)
+            .where(or_(UserRating.rating >= min_rating, UserRating.is_liked.is_(True)))
+        )
+        weights: Dict[str, float] = {}
+        now = datetime.now(timezone.utc)
+        for ur, m in result.all():
+            if not m.genres:
+                continue
+            base = max(0.0, ((ur.rating or 0) - 2.5) / 2.5) + (0.5 if ur.is_liked else 0.0)
+            base += float(np.log1p(max(0, (ur.watch_count or 1) - 1))) * 0.3
+            if base <= 0:
+                continue
+            ref = ur.created_at or ur.watched_date
+            if ref is not None and ref.tzinfo is None:
+                ref = ref.replace(tzinfo=timezone.utc)
+            decay = 0.5 if ref is None else 0.5 ** (max(0.0, (now - ref).total_seconds() / 86400.0) / 730.0)
+            w = base * decay
+            for g in m.genres:
+                weights[g] = weights.get(g, 0.0) + w
+        return sorted(weights.items(), key=lambda x: -x[1])
+
+    @staticmethod
     def _compute_medoid(vectors: np.ndarray) -> tuple[np.ndarray, int]:
         """
         Find the vector in `vectors` closest to the cluster centroid.
