@@ -101,29 +101,68 @@ class ClusteringService:
 
     @staticmethod
     async def generate_cluster_label(
-        sample_film_titles: list[str],
+        sample_films: list[dict],
         dominant_genres: list[str],
         groq_client,
+        cluster_size: Optional[int] = None,
+        avg_rating: Optional[float] = None,
     ) -> str:
         """
         Generate a cinematic cluster label using Groq.
+
+        `sample_films` is a list of dicts with `title`, `year` keys.
         Falls back to genre-based label on failure.
+
+        The richer context (year span, cluster size, avg rating) helps the LLM
+        decide whether the cluster has a coherent theme worth naming, or whether
+        it's a generic bucket that should get a plain '[Adjective] [Genre]' label
+        — preventing the confabulation we saw with 5-title prompts.
         """
         fallback = ", ".join(dominant_genres[:2]) if dominant_genres else "Cinema"
 
-        if groq_client is None:
+        if groq_client is None or not sample_films:
             return fallback
 
-        titles_str = ", ".join(sample_film_titles[:5])
-        genres_str = ", ".join(dominant_genres[:3]) if dominant_genres else "Various"
+        # Build a richer prompt: up to 12 films with year, year-range, genres, stats.
+        titles_with_year = [
+            f"{f['title']} ({f.get('year') or '?'})" for f in sample_films[:12]
+        ]
+        years = [f["year"] for f in sample_films if f.get("year")]
+        year_range = ""
+        if years:
+            y_min, y_max = min(years), max(years)
+            year_range = f"{y_min}-{y_max}" if y_min != y_max else str(y_min)
+
+        genres_str = ", ".join(dominant_genres[:5]) if dominant_genres else "Various"
+        stats_line = []
+        if cluster_size:
+            stats_line.append(f"{cluster_size} films total")
+        if year_range:
+            stats_line.append(f"year span {year_range}")
+        if avg_rating is not None:
+            stats_line.append(f"avg★ {avg_rating:.2f}")
+        stats_str = " | ".join(stats_line) if stats_line else ""
 
         prompt = (
-            f"Films: {titles_str}\n"
-            f"Dominant genres: {genres_str}\n\n"
-            "Generate a cinematic cluster name of 2-4 words maximum. "
-            "Style examples: 'Slow Burn Noir', 'European Art House', "
-            "'80s Synth Sci-Fi', 'Korean Revenge Cinema', 'Quiet Contemplative Drama'. "
-            "Respond with ONLY the label, no explanation, no punctuation at the end."
+            f"Films in this cluster (top by rating):\n  - "
+            + "\n  - ".join(titles_with_year)
+            + f"\n\nDominant genres: {genres_str}"
+            + (f"\nStats: {stats_str}" if stats_str else "")
+            + "\n\nName this cluster in 2-4 words (English). "
+            "Examples of GOOD labels for coherent themes: "
+            "'Slow Burn Noir', 'European Art House', '80s Synth Sci-Fi', "
+            "'Studio Ghibli Wonder', 'Korean Revenge Cinema'. "
+            "\n\nIMPORTANT: A cluster can span MANY decades and still have a "
+            "coherent MOOD/STYLE (e.g. 'Quiet Character Drama', 'Visual Auteur Cinema', "
+            "'Studio Ghibli Wonder'). Don't reject thematic labels just because of a "
+            "wide year range — focus on whether the films share a common emotional "
+            "register, visual style, or directorial sensibility. "
+            "\n\nONLY if the films genuinely lack any common mood/theme/style "
+            "(e.g. random blockbusters thrown together, or unrelated dramas that "
+            "happen to be highly rated), return a HONEST GENERIC label like "
+            "'Mixed Drama', 'Genre Crowd-Pleasers', '[Dominant Genre] Mix'. "
+            "Do NOT confabulate a fake theme, but DO surface a real one when present. "
+            "\n\nRespond with ONLY the label. No quotes, no explanation, no trailing punctuation."
         )
 
         import os
@@ -134,12 +173,15 @@ class ClusteringService:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You name film clusters. Respond with ONLY the label in English. 2-4 words. No punctuation at the end.",
+                        "content": (
+                            "You name film clusters honestly. Respond with ONLY a 2-4 word English label. "
+                            "No punctuation at the end. If films don't share a coherent theme, use a generic label."
+                        ),
                     },
                     {"role": "user", "content": prompt},
                 ],
-                temperature=0.5,
-                max_tokens=800,
+                temperature=0.3,
+                max_tokens=40,
             )
             label = response.choices[0].message.content.strip().rstrip(".!,;:")
             if label and 1 < len(label) < 60:
@@ -400,15 +442,26 @@ class ClusteringService:
             medoid_movie_data = cluster_movies[medoid_local_idx]
             medoid_movie_id = medoid_movie_data["id"]
 
-            # Generate cluster label via LLM or fall back to genre-based
+            # Generate cluster label via LLM or fall back to genre-based.
+            # Pass top 12 films (title + year) plus stats so the LLM can decide
+            # whether to label a coherent theme or honestly return 'Mixed X'.
             cluster_movies_sorted = sorted(cluster_movies, key=lambda x: x["rating"], reverse=True)
-            sample_titles = [m["title"] for m in cluster_movies_sorted[:5]]
+            sample_films = [
+                {"title": m["title"], "year": m.get("year")}
+                for m in cluster_movies_sorted[:12]
+            ]
             sample_movie_ids = [m["id"] for m in cluster_movies_sorted[:5]]
+            cluster_avg_rating = (
+                float(np.mean([m["rating"] for m in cluster_movies]))
+                if cluster_movies else None
+            )
 
             label = await self.generate_cluster_label(
-                sample_film_titles=sample_titles,
+                sample_films=sample_films,
                 dominant_genres=dominant_genres,
                 groq_client=groq_client,
+                cluster_size=len(cluster_movies),
+                avg_rating=cluster_avg_rating,
             )
             
             user_cluster = UserCluster(
