@@ -26,6 +26,7 @@ from config import AsyncSessionLocal
 from models.database import Movie, UserRating, UserCluster, User
 from services.qdrant_service import QdrantService
 from services.tmdb_client import TMDBClient
+from services.trakt_client import get_trakt_client
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 logger = logging.getLogger("debug_movie")
@@ -165,101 +166,86 @@ async def _print_user_context(movie: Movie, user_id: int, db) -> set[int]:
 
 
 async def _signal_a_analysis(movie: Movie, user_id: int, db, qdrant: QdrantService) -> None:
-    """Replicates anchor selection from get_because_you_watched_section.
+    """Replicates G2 multi-anchor consensus from clustering_service.get_user_centric_recommendations.
 
-    Mirrors recommendation_engine.py:405-447 — same WHERE clause, same ORDER BY,
-    same LIMIT, same Python-side _score_anchor_candidate ranking. Without the
-    SQL ORDER BY the heap-scan returned an arbitrary slice and the anchor preview
-    here disagreed with what production actually picked (e.g. "anchor: Past Lives"
-    when production used Hamnet).
+    Signal A is no longer a single global centroid: it picks top-7 anchors by
+    (rating + liked + log1p(rewatch)) * recency_decay(540d), runs per-anchor
+    Qdrant search, merges with RRF, and prefers films contributed by ≥2 anchors.
+    This function shows: (a) the 7 anchors, (b) which of them have this film
+    in their top-20 neighbours, (c) the consensus tier (≥2) vs single-anchor.
     """
-    from services.recommendation_engine import _score_anchor_candidate
+    import numpy as np
+
+    def _recency_decay(ref, half_life_days: float = 540.0) -> float:
+        if ref is None:
+            return 0.5
+        if ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+        days = max(0.0, (datetime.now(timezone.utc) - ref).total_seconds() / 86400.0)
+        return 0.5 ** (days / half_life_days)
 
     result = await db.execute(
         select(UserRating, Movie)
         .join(Movie, UserRating.movie_id == Movie.id)
-        .where(
-            UserRating.user_id == user_id,
-            or_(UserRating.rating >= 3.5, UserRating.is_liked.is_(True)),
-        )
-        .where(
-            or_(
-                Movie.embedding_quality_score >= 0.25,
-                Movie.embedding_quality_score.is_(None),
-            )
-        )
-        .order_by(
-            UserRating.rating.desc().nullslast(),
-            UserRating.watched_date.desc().nullslast(),
-        )
-        .limit(500)
+        .where(UserRating.user_id == user_id)
+        .where(or_(UserRating.rating >= 4.0, UserRating.is_liked.is_(True)))
     )
     candidates = result.all()
     if not candidates:
-        _print("Signal A: no eligible anchors (user has no rated/liked films).")
+        _print("Signal A (G2): no anchor candidates (★≥4.0 OR liked).")
         return
 
-    now = datetime.utcnow()
     scored = []
     for ur, m in candidates:
-        s = _score_anchor_candidate(
-            rating=ur.rating,
-            watched_date=ur.watched_date or ur.created_at,
-            now=now,
-            watch_count=getattr(ur, "watch_count", 1) or 1,
-        )
-        scored.append((s, ur, m))
-    scored.sort(key=lambda x: x[0], reverse=True)
+        base = max(0.0, ((ur.rating or 0) - 2.5) / 2.5) + (0.5 if ur.is_liked else 0.0)
+        base += float(np.log1p(max(0, (ur.watch_count or 1) - 1))) * 0.3
+        ref = ur.created_at or ur.watched_date
+        scored.append((base * _recency_decay(ref), m))
+    scored.sort(key=lambda x: -x[0])
+    anchors = scored[:7]
 
-    top3_preview = [(round(s, 3), m.title) for s, _, m in scored[:3]]
-    _print(f"Top 3 anchors: {top3_preview}")
+    _print("Signal A (G2 — top 7 anchors):")
+    for s, m in anchors:
+        _print(f"  - {s:.3f}  {m.title} ({m.year})")
 
-    top_anchor = scored[0][2]
-    anchor_vec = await qdrant.get_vector(top_anchor.tmdb_id)
+    # Check this film's appearance in each anchor's neighbourhood
+    anchor_tmdb_ids = [m.tmdb_id for _, m in anchors]
+    anchor_vec_map = await qdrant.get_vectors_batch(anchor_tmdb_ids)
     target_vec = await qdrant.get_vector(movie.tmdb_id)
 
-    sim = None
-    if anchor_vec and target_vec:
-        import numpy as np
+    if not target_vec:
+        _print("  → target film has no vector in Qdrant — cannot evaluate.")
+        return
 
-        a = np.array(anchor_vec)
-        b = np.array(target_vec)
-        denom = float(np.linalg.norm(a) * np.linalg.norm(b))
-        if denom > 0:
-            sim = float(np.dot(a, b) / denom)
-
-    _print(
-        f"Signal A anchor: {top_anchor.title} ({top_anchor.year}) | "
-        f"similarity to this movie: {sim:.3f}" if sim is not None else
-        f"Signal A anchor: {top_anchor.title} ({top_anchor.year}) | similarity: n/a (missing vector)"
-    )
-
-    # Where would this film rank in Signal A candidates?
-    if anchor_vec and target_vec:
-        sim_results = await qdrant.search_similar(
-            query_vector=anchor_vec, limit=500, score_threshold=0.25
+    contributors = []  # (anchor_title, rank_in_anchor, similarity)
+    for _, anchor in anchors:
+        avec = anchor_vec_map.get(anchor.tmdb_id)
+        if not avec:
+            continue
+        hits = await qdrant.search_similar(
+            query_vector=list(avec), limit=25, score_threshold=0.30,
+            filters={"min_vote_count": 500},
         )
-        rank = None
-        for i, r in enumerate(sim_results, 1):
-            if r["movie_id"] == movie.tmdb_id:
-                rank = i
+        # Drop the anchor itself, find rank of our target
+        ranked = [h for h in hits if h["movie_id"] != anchor.tmdb_id][:20]
+        for rank, h in enumerate(ranked):
+            if h["movie_id"] == movie.tmdb_id:
+                contributors.append((anchor.title, rank + 1, h["score"]))
                 break
-        total = len(sim_results)
-        if rank:
-            _print(f"  → rank in Signal A candidates: #{rank} of {total}")
-        else:
-            _print(f"  → not in Signal A top-{total} (similarity below 0.25 floor)")
 
-    in_top_15 = sim is not None and sim >= 0.7
+    n_contributors = len(contributors)
+    if n_contributors == 0:
+        _print(f"  → film NOT in any anchor's top-20 neighbours (no Signal A contribution).")
+    else:
+        tier = "CONSENSUS (≥2 anchors)" if n_contributors >= 2 else "SINGLE-ANCHOR"
+        _print(f"  → {tier}: appears in {n_contributors}/{len(anchors)} anchors' top-20:")
+        for title, rank, sim in contributors:
+            _print(f"      via '{title}' at rank #{rank} (sim={sim:.3f})")
+
     quality_pass = (movie.vectorbox_score or 0) >= 55
-    _print(
-        f"  → passes quality gate (score {movie.vectorbox_score} >= 55): "
-        f"{'YES' if quality_pass else 'NO'}"
-    )
-    _print(
-        f"  → likely in top-15 MMR output: "
-        f"{'YES' if in_top_15 and quality_pass else 'NO'}"
-    )
+    _print(f"  → passes quality gate (VBS {movie.vectorbox_score} >= 55): {'YES' if quality_pass else 'NO'}")
+    surfaces = n_contributors >= 1 and quality_pass
+    _print(f"  → would surface via Signal A: {'YES' if surfaces else 'NO'}")
 
 
 async def _signal_auteur_analysis(movie: Movie, user_id: int, db) -> None:
@@ -306,108 +292,189 @@ async def _signal_auteur_analysis(movie: Movie, user_id: int, db) -> None:
     )
 
 
-async def _signal_c_analysis(movie: Movie, user_id: int, db, tmdb: TMDBClient) -> None:
-    # Get up to 5 high-quality seed movies for the user
+async def _signal_c_analysis(movie: Movie, user_id: int, db, qdrant: QdrantService) -> None:
+    """Signal C ('Crowd') — Trakt-based collaborative filter.
+
+    Picks up to 8 seeds (★≥4.0 OR liked) per recommendation_service constants,
+    queries Trakt /movies/{slug}/related for each, applies the cross-validation
+    gate (vec_sim ≥ 0.40 AND genre overlap with seed). Mirrors
+    services/recommendation_service.py _compute_crowd_signal_raw.
+    """
+    import numpy as np
+
+    trakt = get_trakt_client()
+    _print("Signal C (Trakt — Crowd):")
+    if not trakt.enabled:
+        _print("  → TRAKT_CLIENT_ID not set; Signal C disabled.")
+        return
+
     stmt = (
         select(Movie)
         .join(UserRating, Movie.id == UserRating.movie_id)
         .where(UserRating.user_id == user_id)
-        .where(
-            or_(
-                UserRating.rating >= 4.5,
-                UserRating.is_liked.is_(True),
-                UserRating.watch_count > 1,
-            )
-        )
+        .where(or_(UserRating.rating >= 4.0, UserRating.is_liked.is_(True)))
         .order_by(desc(UserRating.rating), desc(UserRating.watched_date))
-        .limit(5)
+        .limit(8)
     )
     seeds = (await db.execute(stmt)).scalars().all()
-    _print("Signal C:")
     if not seeds:
-        _print("  → no high-quality seeds found for user.")
+        _print("  → no high-quality seeds (★≥4.0 OR liked).")
         return
 
-    found_in = []
+    target_vec = await qdrant.get_vector(movie.tmdb_id)
+    target_genres = set(movie.genres or [])
+    seed_vec_map = await qdrant.get_vectors_batch([s.tmdb_id for s in seeds])
+
+    found_via = []  # (seed_title, vec_sim, genre_overlap, gate_pass)
     for seed in seeds:
         try:
-            recs = await tmdb.get_movie_recommendations(seed.tmdb_id)
+            related = await trakt.related_by_tmdb(seed.tmdb_id, limit=10)
         except Exception as e:
-            _print(f"  → TMDB recs failed for seed {seed.title}: {e}")
+            _print(f"  → Trakt /related failed for '{seed.title}': {e}")
             continue
-        for r in recs[:5]:
-            if r.get("id") == movie.tmdb_id:
-                found_in.append(seed.title)
-                break
+        related_tmdb_ids = {
+            r.get("ids", {}).get("tmdb") for r in related if r.get("ids", {}).get("tmdb")
+        }
+        if movie.tmdb_id not in related_tmdb_ids:
+            continue
 
-    if found_in:
-        _print(f"  → Found in TMDB recs for: {found_in}")
-        watch_count_stmt = (
-            select(func.count())
-            .select_from(UserRating)
-            .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
-        )
-        user_watch_count = (await db.execute(watch_count_stmt)).scalar() or 0
-        if user_watch_count < 30:
-            min_score = 60
-        elif user_watch_count < 100:
-            min_score = 65
-        else:
-            min_score = 68
-        passes = (movie.vectorbox_score or 0) >= min_score
+        # Cross-validation gate: vec_sim ≥ 0.40 AND genre overlap with seed
+        sv = seed_vec_map.get(seed.tmdb_id)
+        vec_sim = None
+        if sv and target_vec:
+            a, b = np.array(sv), np.array(target_vec)
+            denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+            if denom > 0:
+                vec_sim = float(np.dot(a, b) / denom)
+
+        seed_genres = set(seed.genres or [])
+        genre_overlap = bool(target_genres & seed_genres)
+
+        gate = (vec_sim is not None and vec_sim >= 0.40) and genre_overlap
+        found_via.append((seed.title, vec_sim, genre_overlap, gate))
+
+    if not found_via:
+        _print(f"  → not in Trakt /related of any of {len(seeds)} seeds.")
+        return
+
+    _print(f"  → appears in Trakt /related via {len(found_via)} seed(s):")
+    any_passed = False
+    for title, vec_sim, overlap, gate in found_via:
+        sim_str = f"{vec_sim:.3f}" if vec_sim is not None else "n/a"
         _print(
-            f"  → passes quality threshold (score {movie.vectorbox_score} >= {min_score}): "
-            f"{'YES' if passes else 'NO'}"
+            f"      via '{title}'  vec_sim={sim_str}  genre_overlap={overlap}  "
+            f"cross-val={'PASS' if gate else 'FAIL'}"
         )
-        _print(f"  → kept={'YES' if passes else 'NO'}")
+        if gate:
+            any_passed = True
+
+    # User's watched count → dynamic min_score for Signal C
+    watch_count_stmt = (
+        select(func.count())
+        .select_from(UserRating)
+        .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+    )
+    user_watch_count = (await db.execute(watch_count_stmt)).scalar() or 0
+    if user_watch_count < 30:
+        min_score = 60
+    elif user_watch_count < 100:
+        min_score = 65
     else:
-        _print(f"  → Not found in TMDB recommendations of any user seed (checked {len(seeds)} seeds).")
+        min_score = 68
+    quality_pass = (movie.vectorbox_score or 0) >= min_score
+    _print(
+        f"  → quality gate (VBS {movie.vectorbox_score} >= {min_score} for "
+        f"{user_watch_count} watched films): {'YES' if quality_pass else 'NO'}"
+    )
+    surfaces = any_passed and quality_pass
+    _print(f"  → would surface via Signal C: {'YES' if surfaces else 'NO'}")
 
 
-async def _print_signal_membership(movie: Movie, user_id: int, db, qdrant: QdrantService, tmdb: TMDBClient) -> None:
+async def _print_cluster_membership(movie: Movie, user_id: int, db, qdrant: QdrantService) -> None:
+    """Show which user cluster this film sits closest to (medoid cosine sim)."""
+    import numpy as np
+
+    clusters_result = await db.execute(
+        select(UserCluster).where(UserCluster.user_id == user_id)
+        .order_by(UserCluster.cluster_id)
+    )
+    clusters = clusters_result.scalars().all()
+    if not clusters:
+        _print("=== CLUSTER MEMBERSHIP ===")
+        _print("User has no clusters yet (run reset_profiles.py).")
+        _print("")
+        return
+
+    target_vec = await qdrant.get_vector(movie.tmdb_id)
+    if not target_vec:
+        _print("=== CLUSTER MEMBERSHIP ===")
+        _print("Target film has no vector — cannot compute cluster proximity.")
+        _print("")
+        return
+
+    medoid_ids = [c.medoid_movie_id for c in clusters if c.medoid_movie_id]
+    medoid_map = {}
+    if medoid_ids:
+        rows = await db.execute(select(Movie).where(Movie.id.in_(medoid_ids)))
+        medoid_map = {m.id: m for m in rows.scalars().all()}
+
+    target_np = np.array(target_vec)
+    t_norm = float(np.linalg.norm(target_np))
+
+    _print("=== CLUSTER MEMBERSHIP ===")
+    sims = []
+    for c in clusters:
+        m = medoid_map.get(c.medoid_movie_id)
+        if not m:
+            continue
+        mv = await qdrant.get_vector(m.tmdb_id)
+        if not mv:
+            continue
+        mv_np = np.array(mv)
+        denom = t_norm * float(np.linalg.norm(mv_np))
+        sim = float(np.dot(target_np, mv_np) / denom) if denom > 0 else 0.0
+        sims.append((sim, c, m))
+
+    sims.sort(key=lambda x: -x[0])
+    for i, (sim, c, m) in enumerate(sims, 1):
+        marker = "← closest" if i == 1 else ""
+        _print(
+            f"  cl{c.cluster_id} '{c.cluster_label}' (n={c.movie_count}, avg★ {c.avg_rating:.2f}) "
+            f"medoid='{m.title}' sim={sim:.3f}  {marker}"
+        )
+    _print("")
+
+
+async def _print_signal_membership(movie: Movie, user_id: int, db, qdrant: QdrantService) -> None:
     """Confirms which Trident signal(s) actually surface this movie.
 
     Mirrors the production paths used by Picked For You:
-      - Signal A (Vibe): _compute_vibe_signal_raw via clustering.get_user_centric_recommendations
-        (centroid of all rated vectors, NOT a single anchor).
+      - Signal A (Vibe): G2 multi-anchor consensus via
+        clustering_service.get_user_centric_recommendations.
       - Signal Auteur: top directors by weighted score >= 3.0, vectorbox_score > 70.
-      - Signal C (Crowd): TMDB recs of up to 5 high-quality user seeds.
+      - Signal C (Crowd): Trakt /related films of up to 8 high-quality user seeds,
+        with cross-validation gate (vec_sim ≥ 0.40 AND genre overlap).
     """
+    from services.clustering_service import ClusteringService
+
     _print("=== SIGNAL MEMBERSHIP ===")
 
-    # Signal A — centroid-based, used in Picked For You
-    rated_result = await db.execute(
-        select(UserRating, Movie)
-        .join(Movie, UserRating.movie_id == Movie.id)
-        .where(UserRating.user_id == user_id)
-        .where(or_(UserRating.rating.isnot(None), UserRating.is_liked.is_(True)))
+    # Signal A — call the actual production code path
+    cs = ClusteringService(qdrant=qdrant)
+    raw_recs = await cs.get_user_centric_recommendations(
+        user_id, db, filters={"min_vote_count": 500}, limit=50
     )
-    rated = rated_result.all()
-    if rated:
-        rated_tmdb_ids = [m.tmdb_id for _, m in rated]
-        vec_map = await qdrant.get_vectors_batch(rated_tmdb_ids)
-        rated_vectors = [v for v in vec_map.values() if v]
-        if rated_vectors:
-            import numpy as np
-
-            centroid = np.mean(rated_vectors, axis=0).tolist()
-            sim_results = await qdrant.search_similar(
-                query_vector=centroid, limit=250, score_threshold=0.15
-            )
-            rank = next(
-                (i for i, r in enumerate(sim_results, 1) if r["movie_id"] == movie.tmdb_id),
-                None,
-            )
-            if rank:
-                _print(f"Signal A (Vibe — centroid): rank #{rank} of {len(sim_results)} (Picked For You candidate path)")
-            else:
-                _print(f"Signal A (Vibe — centroid): NOT in top-{len(sim_results)} (similarity below 0.15 floor or filtered out)")
-        else:
-            _print("Signal A (Vibe — centroid): cannot compute (no vectors for user's rated films).")
+    rank = next(
+        (i for i, r in enumerate(raw_recs, 1) if r["movie_id"] == movie.tmdb_id),
+        None,
+    )
+    if rank:
+        score = next(r["score"] for r in raw_recs if r["movie_id"] == movie.tmdb_id)
+        _print(f"Signal A (G2 multi-anchor): rank #{rank} of {len(raw_recs)} (rrf={score:.4f})")
     else:
-        _print("Signal A (Vibe — centroid): user has no rated/liked films.")
+        _print(f"Signal A (G2 multi-anchor): NOT in top-{len(raw_recs)} candidates.")
 
-    # Signal Auteur — director score check
+    # Signal Auteur
     if movie.directors:
         from services.recommendation_service import RecommendationService
 
@@ -418,46 +485,14 @@ async def _print_signal_membership(movie: Movie, user_id: int, db, qdrant: Qdran
         movie_dirs_active = [d for d in movie.directors if d in top_5_active]
         score_pass = (movie.vectorbox_score or 0) > 70
         if movie_dirs_active and score_pass:
-            _print(f"Signal Auteur: ELIGIBLE via {movie_dirs_active} (vectorbox_score>{movie.vectorbox_score} > 70)")
+            _print(f"Signal Auteur: ELIGIBLE via {movie_dirs_active} (VBS {movie.vectorbox_score} > 70)")
         elif movie_dirs_active:
-            _print(f"Signal Auteur: director match {movie_dirs_active} but vectorbox_score {movie.vectorbox_score} <= 70")
+            _print(f"Signal Auteur: director match {movie_dirs_active} but VBS {movie.vectorbox_score} <= 70")
         else:
             _print("Signal Auteur: no director(s) in user top-5 active (score>=3.0).")
     else:
         _print("Signal Auteur: no director metadata.")
 
-    # Signal C — TMDB recs of seeds
-    seed_stmt = (
-        select(Movie)
-        .join(UserRating, Movie.id == UserRating.movie_id)
-        .where(UserRating.user_id == user_id)
-        .where(
-            or_(
-                UserRating.rating >= 4.5,
-                UserRating.is_liked.is_(True),
-                UserRating.watch_count > 1,
-            )
-        )
-        .order_by(desc(UserRating.rating), desc(UserRating.watched_date))
-        .limit(5)
-    )
-    seeds = (await db.execute(seed_stmt)).scalars().all()
-    found_in_seeds = []
-    for seed in seeds:
-        try:
-            recs = await tmdb.get_movie_recommendations(seed.tmdb_id)
-        except Exception:
-            continue
-        for r in recs[:5]:
-            if r.get("id") == movie.tmdb_id:
-                found_in_seeds.append(seed.title)
-                break
-    if found_in_seeds:
-        _print(f"Signal C (Crowd): found in TMDB recs of seeds {found_in_seeds}")
-    elif seeds:
-        _print(f"Signal C (Crowd): not in TMDB recs of {len(seeds)} user seeds.")
-    else:
-        _print("Signal C (Crowd): no high-quality seeds available.")
     _print("")
 
 
@@ -503,7 +538,7 @@ async def main():
         parser.error("Provide either a title or --tmdb-id")
 
     qdrant = QdrantService()
-    tmdb = TMDBClient()
+    trakt = get_trakt_client()
 
     try:
         async with AsyncSessionLocal() as db:
@@ -518,17 +553,18 @@ async def main():
 
             if args.user_id is not None:
                 await _print_user_context(movie, args.user_id, db)
+                await _print_cluster_membership(movie, args.user_id, db, qdrant)
                 _print(f"=== SIGNAL ANALYSIS (user_id={args.user_id}) ===")
                 await _signal_a_analysis(movie, args.user_id, db, qdrant)
                 _print("")
                 await _signal_auteur_analysis(movie, args.user_id, db)
                 _print("")
-                await _signal_c_analysis(movie, args.user_id, db, tmdb)
+                await _signal_c_analysis(movie, args.user_id, db, qdrant)
                 _print("")
-                await _print_signal_membership(movie, args.user_id, db, qdrant, tmdb)
+                await _print_signal_membership(movie, args.user_id, db, qdrant)
                 await _print_summary(movie, args.user_id, db)
     finally:
-        await tmdb.close()
+        await trakt.aclose()
         await qdrant.client.close()
 
 
