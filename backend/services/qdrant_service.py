@@ -4,8 +4,7 @@ Qdrant vector database service for semantic search
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue,
-    HnswConfigDiff, SearchParams, ScalarQuantization, ScalarQuantizationConfig,
-    ScalarType, QuantizationConfig, PayloadSchemaType,
+    HnswConfigDiff, SearchParams, PayloadSchemaType,
 )
 from typing import List, Dict, Optional, Union
 from models.external_schemas import QdrantPayload
@@ -59,6 +58,19 @@ class QdrantService:
                         raise e
             else:
                 logger.info(f"Collection {self.COLLECTION_NAME} already exists")
+                # Warn if pre-existing collection has legacy HNSW m=16 — the new
+                # m=32 config only applies to freshly-created collections, so an
+                # operator needs to rebuild (scripts/reembed_catalog.py) to pick it up.
+                try:
+                    info = await self.client.get_collection(self.COLLECTION_NAME)
+                    current_m = info.config.hnsw_config.m
+                    if current_m != 32:
+                        logger.warning(
+                            f"Qdrant collection HNSW m={current_m} (expected 32). "
+                            f"The new tuning will not apply until the collection is rebuilt."
+                        )
+                except Exception as inspect_err:
+                    logger.debug(f"Could not inspect HNSW config: {inspect_err}")
                 # Ensure payload indexes exist (idempotent — no-op if already present)
                 await self.init_payload_indexes()
         except Exception as e:

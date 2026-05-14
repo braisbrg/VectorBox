@@ -220,13 +220,18 @@ class FeedService:
         # --- CACHE INTERCEPT BLOCK ---
         # Prefer the injected lifespan singleton (shared connection pool).
         # Only create a new client if nothing was injected (e.g. direct test calls).
+        # r_is_local tracks ownership: we must NOT close the injected singleton or
+        # subsequent requests will fail with "connection closed".
         r = redis_client
+        r_is_local = False
         prov_str = ",".join(map(str, sorted(streaming_providers)))
         if r is None:
             try:
                 r = aioredis.from_url(REDIS_URL, decode_responses=True)
+                r_is_local = True
             except Exception as e:
                 logger.warning(f"Redis connection failed: {e}")
+                r = None
         # --- END CACHE INTERCEPT ---
 
         # --- FIX 4: Pre-compute anti_vector once — Signal A and Signal B both need it ---
@@ -508,7 +513,10 @@ class FeedService:
             except Exception as e:
                 logger.warning(f"Redis feed cache write failed: {e}")
             finally:
-                await r.close()
+                # Only close clients we created locally — the injected lifespan
+                # singleton is shared across all requests and must remain open.
+                if r_is_local:
+                    await r.aclose()
         # --- END CACHE SAVE ---
 
         return final_resp
