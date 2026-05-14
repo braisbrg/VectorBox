@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Contributor } from "@/types/feed";
-import { motion } from "framer-motion";
+import { m } from "framer-motion";
 import { Loader2, Filter, X, SortAsc, Tv } from "lucide-react";
 import { getTMDBImageUrl, getLetterboxdUrl, type FeedItem, getWatchlist, getUserActivity } from "@/lib/api";
 import { getProvidersForCountry } from "@/lib/constants";
@@ -112,7 +112,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
     if (isLoading) {
         return (
             <div className="flex items-center justify-center py-20">
-                <Loader2 className="w-12 h-12 animate-spin text-primary" />
+                <Loader2 className="size-12 animate-spin text-primary" />
             </div>
         );
     }
@@ -130,7 +130,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
             {/* Header */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div>
-                    <h2 className="text-3xl font-bold">My Watchlist</h2>
+                    <h2 className="text-3xl font-semibold">My Watchlist</h2>
                     <div className="flex items-center gap-4 text-sm text-muted-foreground mt-1">
                         <span>{data?.total || 0} movies</span>
                         {activity?.last_watched && (
@@ -201,7 +201,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                         className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-colors ${showFilters ? "bg-primary text-primary-foreground border-primary" : "bg-background hover:bg-muted"
                             }`}
                     >
-                        <Filter className="w-4 h-4" />
+                        <Filter className="size-4" />
                         Filters
                         {Object.values({
                             runtime: filters.runtimeMax,
@@ -226,7 +226,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
 
             {/* Filters */}
             {showFilters && (
-                <motion.div
+                <m.div
                     initial={{ height: 0, opacity: 0 }}
                     animate={{ height: "auto", opacity: 1 }}
                     className="p-4 rounded-lg border bg-muted/30 space-y-4"
@@ -234,11 +234,12 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                     <div className="grid sm:grid-cols-2 md:grid-cols-4 gap-4">
                         {/* Sort */}
                         <div className="space-y-2">
-                            <label className="text-sm font-medium flex items-center gap-2">
-                                <SortAsc className="w-4 h-4" />
+                            <label htmlFor="wl-sort-by" className="text-sm font-medium flex items-center gap-2">
+                                <SortAsc className="size-4" />
                                 Sort By
                             </label>
                             <select
+                                id="wl-sort-by"
                                 className="w-full px-3 py-2 rounded-md border bg-background"
                                 value={filters.sortBy}
                                 onChange={(e) => updateFilters({ sortBy: e.target.value as WatchlistFilters["sortBy"] })}
@@ -270,8 +271,9 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
 
                         {/* Year Min */}
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Year From</label>
+                            <label htmlFor="yearFrom" className="text-sm font-medium">Year From</label>
                             <input
+                                id="yearFrom"
                                 type="number"
                                 placeholder="1980"
                                 className="w-full px-3 py-2 rounded-md border bg-background"
@@ -282,8 +284,9 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
 
                         {/* Year Max */}
                         <div className="space-y-2">
-                            <label className="text-sm font-medium">Year To</label>
+                            <label htmlFor="yearTo" className="text-sm font-medium">Year To</label>
                             <input
+                                id="yearTo"
                                 type="number"
                                 placeholder="2024"
                                 className="w-full px-3 py-2 rounded-md border bg-background"
@@ -295,11 +298,12 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
 
                     {/* Min Rating */}
                     <div className="space-y-2">
-                        <label className="text-sm font-medium flex justify-between">
+                        <label htmlFor="minRating" className="text-sm font-medium flex justify-between">
                             <span>Min VectorBox Score</span>
                             <span className="text-muted-foreground">{filters.minRating ? `${filters.minRating}+` : "Any"}</span>
                         </label>
                         <input
+                            id="minRating"
                             type="range"
                             min="0"
                             max="100"
@@ -309,13 +313,13 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                             onChange={(e) => updateFilters({ minRating: parseFloat(e.target.value) || undefined })}
                         />
                     </div>
-                </motion.div>
+                </m.div>
             )}
 
             {/* Streaming Filters */}
             <div className="space-y-2">
                 <label className="text-sm font-medium flex items-center gap-2">
-                    <Tv className="w-4 h-4" />
+                    <Tv className="size-4" />
                     Available On
                 </label>
                 <div className="flex flex-wrap gap-2">
@@ -356,7 +360,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                     }}
                     className="text-sm text-muted-foreground hover:text-foreground flex items-center gap-1"
                 >
-                    <X className="w-3 h-3" />
+                    <X className="size-3" />
                 </button>
             )}
 
@@ -370,7 +374,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                     <div className="space-y-8">
                         <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
                             {data.items.map((item, index) => (
-                                <motion.div
+                                <m.div
                                     key={item.id}
                                     initial={{ opacity: 0, y: 20 }}
                                     animate={{ opacity: 1, y: 0 }}
@@ -394,7 +398,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
 
                                         onInspect={() => onInspect?.(item, undefined)}
                                     />
-                                </motion.div>
+                                </m.div>
                             ))}
                         </div>
 

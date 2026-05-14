@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { loginAs } from './fixtures/auth';
 
-test.describe('Phase 7 — Security', () => {
+test.describe('Phase 7 - Security', () => {
   test('HTTP security headers present on frontend', async ({ request }) => {
     const response = await request.get('http://localhost:3000');
     const headers = response.headers();
@@ -36,7 +36,7 @@ test.describe('Phase 7 — Security', () => {
     expect(pageContent).not.toContain('unhandled');
   });
 
-  test('localStorage cleared does not crash — cookie is truth', async ({ page }) => {
+  test('localStorage cleared does not crash - cookie is truth', async ({ page }) => {
     await loginAs(page);
     await page.evaluate(() => localStorage.clear());
     await page.reload();

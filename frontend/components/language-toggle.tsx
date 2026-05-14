@@ -1,7 +1,8 @@
 "use client";
 
 import { useLanguage } from "@/components/language-provider";
-import { motion } from "framer-motion";
+
+
 
 export function LanguageToggle({ isCollapsed }: { isCollapsed?: boolean }) {
     const { language, setLanguage } = useLanguage();

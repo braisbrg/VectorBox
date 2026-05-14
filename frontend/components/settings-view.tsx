@@ -47,14 +47,14 @@ export function SettingsView() {
     const syncMutation = useMutation({
         mutationFn: (username: string) => syncRSS(username),
         onSuccess: () => {
-            setSyncMessage({ type: "success", text: "Sync started — your feed will update shortly" });
+            setSyncMessage({ type: "success", text: "Sync started - your feed will update shortly" });
         },
         onError: (error: Error) => {
             setSyncMessage({ type: "error", text: error.message || "Sync failed. Please try again." });
         },
     });
 
-    // Not Interested — rejected movies
+    // Not Interested - rejected movies
     const {
         data: rejectedMovies,
         isLoading: rejectedLoading,
@@ -109,9 +109,9 @@ export function SettingsView() {
                                 className="flex items-center gap-2 px-4 py-2 rounded-lg border border-primary/30 text-sm font-medium text-primary hover:bg-primary/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                                 {syncMutation.isPending ? (
-                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    <Loader2 className="size-4 animate-spin" />
                                 ) : (
-                                    <RefreshCw className="w-4 h-4" />
+                                    <RefreshCw className="size-4" />
                                 )}
                                 Sync Letterboxd Now
                             </button>
@@ -125,7 +125,7 @@ export function SettingsView() {
                     </div>
                 )}
 
-                {/* Letterboxd Data — Re-upload */}
+                {/* Letterboxd Data - Re-upload */}
                 {currentUser && (
                     <div className="border border-border p-4 font-mono">
                         <h3 className="text-xs text-zinc-400 mb-2">LETTERBOXD DATA</h3>
@@ -162,10 +162,10 @@ export function SettingsView() {
                     </div>
                 )}
 
-                {/* Not Interested — Rejected Movies History */}
+                {/* Not Interested - Rejected Movies History */}
                 <div className="border border-border p-4 font-mono">
                     <div className="flex items-center gap-2 mb-2">
-                        <Ban className="w-3.5 h-3.5 text-zinc-400" />
+                        <Ban className="size-3.5 text-zinc-400" />
                         <h3 className="text-xs text-zinc-400">NOT INTERESTED</h3>
                     </div>
                     <p className="text-xs text-zinc-500 mb-3">
@@ -174,7 +174,7 @@ export function SettingsView() {
 
                     {rejectedLoading ? (
                         <div className="flex items-center gap-2 text-xs text-zinc-600">
-                            <Loader2 className="w-3 h-3 animate-spin" />
+                            <Loader2 className="size-3 animate-spin" />
                             Loading…
                         </div>
                     ) : !rejectedMovies || rejectedMovies.length === 0 ? (
@@ -194,10 +194,10 @@ export function SettingsView() {
                                                 alt={movie.title}
                                                 width={32}
                                                 height={48}
-                                                className="w-full h-full object-cover"
+                                                className="size-full object-cover"
                                             />
                                         ) : (
-                                            <div className="w-full h-full flex items-center justify-center text-zinc-700 text-[8px]">
+                                            <div className="size-full flex items-center justify-center text-zinc-700 text-[8px]">
                                                 N/A
                                             </div>
                                         )}
@@ -218,7 +218,7 @@ export function SettingsView() {
                                         className="flex items-center gap-1 px-2 py-1 text-[10px] font-mono text-zinc-600 hover:text-primary border border-transparent hover:border-primary transition-colors opacity-0 group-hover:opacity-100"
                                         title="Undo rejection"
                                     >
-                                        <Undo2 className="w-3 h-3" />
+                                        <Undo2 className="size-3" />
                                         UNDO
                                     </button>
                                 </div>
@@ -227,7 +227,7 @@ export function SettingsView() {
                     )}
                 </div>
 
-                {/* Content Preferences — Tag Editor */}
+                {/* Content Preferences - Tag Editor */}
                 <ContentPreferencesSection />
 
                 {/* About Section */}
@@ -263,7 +263,7 @@ export function SettingsView() {
 }
 
 /**
- * CONTENT PREFERENCES section — fetches from /onboarding/status, saves via /onboarding/tags.
+ * CONTENT PREFERENCES section - fetches from /onboarding/status, saves via /onboarding/tags.
  */
 function ContentPreferencesSection() {
     const [tagStates, setTagStates] = useState<Record<string, TagState>>({});
@@ -279,7 +279,7 @@ function ContentPreferencesSection() {
                 setTagStates(preferencesToTagState(prefs || null));
             })
             .catch(() => {
-                // No prefs yet — show empty
+                // No prefs yet - show empty
             })
             .finally(() => setLoaded(true));
     }, []);
@@ -307,7 +307,7 @@ function ContentPreferencesSection() {
         <div className="border border-border p-4 font-mono">
             <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
-                    <Sliders className="w-3.5 h-3.5 text-zinc-400" />
+                    <Sliders className="size-3.5 text-zinc-400" />
                     <h3 className="text-xs text-zinc-400">CONTENT PREFERENCES</h3>
                 </div>
                 {saving && (

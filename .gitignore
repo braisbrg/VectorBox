@@ -97,6 +97,11 @@ debug_results.txt
 debug_headed_*.txt
 **/qa_output.txt
 
+# react-doctor scratch (codemod output + one-shot repair scripts)
+frontend/react-doctor-*.txt
+frontend/fix.js
+frontend/clean.js
+
 # Diagnostic temp files
 [0-9].txt
 *_logs.txt

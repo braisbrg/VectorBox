@@ -17,7 +17,7 @@ const buttonVariants = cva(
                     "bg-secondary text-secondary-foreground hover:bg-secondary/80 rounded-none",
                 ghost: "hover:bg-accent hover:text-accent-foreground rounded-none",
                 link: "text-primary underline-offset-4 hover:underline rounded-none",
-                acid: "bg-black text-primary border-2 border-primary hover:bg-primary hover:text-black shadow-[4px_4px_0px_0px_var(--primary)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all rounded-none",
+                acid: "bg-zinc-950 text-primary border-2 border-primary hover:bg-primary hover:text-black shadow-[4px_4px_0px_0px_var(--primary)] hover:shadow-none hover:translate-x-[2px] hover:translate-y-[2px] transition-all rounded-none",
             },
             size: {
                 default: "h-10 px-4 py-2",

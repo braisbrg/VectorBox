@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { Suspense, useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth, SignIn } from "@clerk/nextjs";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api";
 import { Loader2 } from "lucide-react";
 
@@ -31,9 +31,9 @@ const ONBOARDING_PATHS = [
     },
 ];
 
-export default function LoginPage() {
+function LoginContent() {
     const { isLoaded, isSignedIn } = useAuth();
-    const router = useRouter();
+    const { push } = useRouter();
     const searchParams = useSearchParams();
     const isMigrate = searchParams.get("migrate") === "true";
     const redirectUrl = isMigrate ? "/login?migrate=true" : "/";
@@ -60,10 +60,10 @@ export default function LoginPage() {
                     if (data.ratings_count === 0) {
                         setMode("onboarding-chooser");
                     } else {
-                        router.push("/");
+                        push("/");
                     }
                 })
-                .catch(() => router.push("/")); // TODO: handle 401 fallback more gracefully
+                .catch(() => push("/")); // TODO: handle 401 fallback more gracefully
             return;
         }
 
@@ -84,15 +84,15 @@ export default function LoginPage() {
                     "vb_onboarding_movies",
                 ].forEach((k) => localStorage.removeItem(k));
                 
-                router.push("/?onboarding_complete=true");
+                push("/?onboarding_complete=true");
             } catch (err) {
                 console.error("Migration failed:", err);
-                router.push("/");
+                push("/");
             }
         };
 
         migrateGuestData();
-    }, [isLoaded, isSignedIn, isMigrate, router]);
+    }, [isLoaded, isSignedIn, isMigrate, push]);
 
     if (!isLoaded) {
         return (
@@ -105,9 +105,9 @@ export default function LoginPage() {
     if (migrating) {
         return (
             <div className="min-h-screen flex flex-col items-center justify-center bg-background gap-4">
-                <Loader2 className="w-8 h-8 text-primary animate-spin" />
+                <Loader2 className="size-8 text-primary animate-spin" />
                 <p className="font-mono text-xs text-zinc-500 uppercase tracking-widest">
-                    Migrating your ratings...
+                    Migrating your ratings…
                 </p>
             </div>
         );
@@ -120,7 +120,7 @@ export default function LoginPage() {
             <div className="z-10 w-full max-w-2xl px-4">
                 <AnimatePresence mode="wait">
                     {mode === "onboarding-chooser" ? (
-                        <motion.div
+                        <m.div
                             key="onboarding-chooser"
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
@@ -141,7 +141,7 @@ export default function LoginPage() {
                                 {ONBOARDING_PATHS.map((path) => (
                                     <button
                                         key={path.id}
-                                        onClick={() => router.push(path.href)}
+                                        onClick={() => push(path.href)}
                                         className="flex flex-col gap-4 p-5 border border-border text-left
                                                    hover:border-primary hover:bg-primary/5 transition-all group"
                                     >
@@ -160,9 +160,9 @@ export default function LoginPage() {
                                     </button>
                                 ))}
                             </div>
-                        </motion.div>
+                        </m.div>
                     ) : mode === "choose" ? (
-                        <motion.div
+                        <m.div
                             key="choose"
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
@@ -191,7 +191,7 @@ export default function LoginPage() {
                                 </button>
 
                                 <button
-                                    onClick={() => router.push("/onboarding/tags")}
+                                    onClick={() => push("/onboarding/tags")}
                                     className="w-full py-3.5 bg-primary text-black font-bold font-mono text-xs uppercase tracking-wider hover:bg-primary/90 transition-colors glow-primary-hover"
                                 >
                                     RATE FILMS TO GET STARTED
@@ -201,9 +201,9 @@ export default function LoginPage() {
                             <p className="text-center text-[10px] font-mono text-zinc-700">
                                 No account needed to start rating
                             </p>
-                        </motion.div>
+                        </m.div>
                     ) : (
-                        <motion.div
+                        <m.div
                             key="letterboxd"
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
@@ -233,10 +233,17 @@ export default function LoginPage() {
                                 signUpFallbackRedirectUrl={redirectUrl}
                                 signUpForceRedirectUrl={redirectUrl}
                             />
-                        </motion.div>
+                        </m.div>
                     )}
                 </AnimatePresence>
             </div>
         </div>
+    );
+}
+export default function LoginPage() {
+    return (
+        <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
+            <LoginContent />
+        </Suspense>
     );
 }

@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { ThumbsUp, ThumbsDown, Minus, Undo2, SkipForward, Star, Sparkles, Search } from "lucide-react";
 import { getTMDBImageUrl, api } from "@/lib/api";
@@ -70,23 +70,15 @@ export default function OnboardingCarouselPage() {
         const hydrate = async () => {
             try {
                 // Init or resume anonymous session (sets httponly cookie)
-                const sessionRes = await fetch(`${API_URL}/api/onboarding/init-session`, {
-                    method: "POST",
-                    credentials: "include",
-                });
-                if (sessionRes.ok) {
-                    const sessionData = await sessionRes.json();
-                    if (!isMounted.current) return;
-                    setRatedCount(sessionData.ratings_count || 0);
-                    setSessionReady(true);
-                }
+                const { data: sessionData } = await api.post("/api/onboarding/init-session");
+                if (!isMounted.current) return;
+                setRatedCount(sessionData.ratings_count || 0);
+                setSessionReady(true);
 
                 // Fetch carousel movies
-                const res = await fetch(`${API_URL}/api/onboarding/movies`, { credentials: "include" });
-                if (!res.ok) throw new Error("Failed to fetch movies");
-                const data: OnboardingMovie[] = await res.json();
+                const { data } = await api.get("/api/onboarding/movies");
                 if (!isMounted.current) return;
-                setMovies(data);
+                setMovies(data as OnboardingMovie[]);
             } catch (e) {
                 console.error("Failed to load onboarding movies:", e);
             } finally {
@@ -105,7 +97,7 @@ export default function OnboardingCarouselPage() {
         }
     }, []);
 
-    // Rate handler — saves to DB via API
+    // Rate handler - saves to DB via API
     const handleRate = useCallback(
         (signal: Signal) => {
             if (currentIndex >= movies.length) return;
@@ -125,14 +117,14 @@ export default function OnboardingCarouselPage() {
         [currentIndex, movies, ratings, ratedCount, saveRating, showRegistration]
     );
 
-    // Skip — no API call needed, just advance the carousel
+    // Skip - no API call needed, just advance the carousel
     const handleSkip = useCallback(() => {
         if (currentIndex >= movies.length) return;
         setDirection(1);
         setCurrentIndex(currentIndex + 1);
     }, [currentIndex, movies.length]);
 
-    // Undo — client-side only (rating already sent; re-rating will overwrite on next swipe)
+    // Undo - client-side only (rating already sent; re-rating will overwrite on next swipe)
     const handleUndo = useCallback(() => {
         if (currentIndex <= 0) return;
         const prevIndex = currentIndex - 1;
@@ -197,7 +189,7 @@ export default function OnboardingCarouselPage() {
 
     const handleSearchRate = useCallback(
         (movie: OnboardingMovie, signal: Signal) => {
-            // Save rating to DB — don't add to carousel pool or advance the deck.
+            // Save rating to DB - don't add to carousel pool or advance the deck.
             const newRatings = { ...ratings, [movie.tmdb_id]: signal };
             const newCount = Object.keys(newRatings).length;
             setRatings(newRatings);
@@ -287,7 +279,7 @@ export default function OnboardingCarouselPage() {
         return (
             <div className="min-h-screen flex items-center justify-center bg-background">
                 <div className="text-center space-y-4">
-                    <div className="w-8 h-8 border-2 border-primary border-t-transparent animate-spin mx-auto" />
+                    <div className="size-8 border-2 border-primary border-t-transparent animate-spin mx-auto" />
                     <p className="font-mono text-xs text-zinc-600 uppercase tracking-widest">Loading films...</p>
                 </div>
             </div>
@@ -320,7 +312,7 @@ export default function OnboardingCarouselPage() {
                 </div>
                 {/* Progress bar */}
                 <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-zinc-900">
-                    <motion.div
+                    <m.div
                         className="h-full bg-primary"
                         initial={{ width: 0 }}
                         animate={{ width: `${progress}%` }}
@@ -336,7 +328,7 @@ export default function OnboardingCarouselPage() {
                         {/* Poster */}
                         <div className="w-full lg:w-[300px] shrink-0">
                             <AnimatePresence mode="wait" custom={direction}>
-                                <motion.div
+                                <m.div
                                     key={currentMovie.tmdb_id}
                                     custom={direction}
                                     initial={{ opacity: 0, x: direction * 60 }}
@@ -350,22 +342,23 @@ export default function OnboardingCarouselPage() {
                                             src={getTMDBImageUrl(currentMovie.poster_path, "w500")}
                                             alt={currentMovie.title}
                                             fill
+                                            sizes="(max-width: 768px) 100vw, (max-width: 1200px) 50vw, 33vw"
                                             className="object-cover"
                                             priority
                                         />
                                     ) : (
-                                        <div className="w-full h-full bg-zinc-900 flex items-center justify-center">
+                                        <div className="size-full bg-zinc-900 flex items-center justify-center">
                                             <span className="font-mono text-zinc-700 text-xs">NO POSTER</span>
                                         </div>
                                     )}
-                                </motion.div>
+                                </m.div>
                             </AnimatePresence>
                         </div>
 
                         {/* Info + Actions */}
                         <div className="flex-1 space-y-6">
                             <AnimatePresence mode="wait">
-                                <motion.div
+                                <m.div
                                     key={currentMovie.tmdb_id}
                                     initial={{ opacity: 0, y: 10 }}
                                     animate={{ opacity: 1, y: 0 }}
@@ -382,7 +375,7 @@ export default function OnboardingCarouselPage() {
                                             {currentMovie.runtime && <span>{currentMovie.runtime} min</span>}
                                             {currentMovie.vote_average && (
                                                 <span className="flex items-center gap-1">
-                                                    <Star className="w-3 h-3 text-yellow-500" />
+                                                    <Star className="size-3 text-yellow-500" />
                                                     {currentMovie.vote_average.toFixed(1)}
                                                 </span>
                                             )}
@@ -410,7 +403,7 @@ export default function OnboardingCarouselPage() {
                                             {currentMovie.overview}
                                         </p>
                                     )}
-                                </motion.div>
+                                </m.div>
                             </AnimatePresence>
 
                             {/* Rating buttons */}
@@ -422,7 +415,7 @@ export default function OnboardingCarouselPage() {
                                             onClick={() => handleRate(signal)}
                                             className={`flex flex-col items-center gap-1.5 py-3 px-2 border border-zinc-800 hover:border-zinc-600 transition-all font-mono text-xs uppercase ${color} hover:bg-zinc-900/50`}
                                         >
-                                            <Icon className="w-5 h-5" />
+                                            <Icon className="size-5" />
                                             <span className="text-[10px] flex items-center gap-1.5">
                                                 <span className="font-mono opacity-60">{key}</span>
                                                 {label}
@@ -433,7 +426,7 @@ export default function OnboardingCarouselPage() {
 
                                 {/* Bottom controls bar */}
                                 <div className="flex items-center justify-between gap-2 mt-2">
-                                    {/* Skip — left aligned, dashed border to indicate it doesn't count */}
+                                    {/* Skip - left aligned, dashed border to indicate it doesn't count */}
                                     <button
                                         onClick={handleSkip}
                                         className="border border-dashed border-zinc-600 text-zinc-500 px-4 py-2 
@@ -498,7 +491,7 @@ export default function OnboardingCarouselPage() {
                             </div>
                         ) : (
                             <>
-                                <Sparkles className="w-12 h-12 text-primary mx-auto" />
+                                <Sparkles className="size-12 text-primary mx-auto" />
                                 <h2 className="text-2xl font-black font-mono uppercase tracking-tighter">
                                     ALL FILMS <span className="text-primary">RATED</span>
                                 </h2>
@@ -519,7 +512,7 @@ export default function OnboardingCarouselPage() {
                 {/* Peek banner at 10 ratings */}
                 <AnimatePresence>
                     {showPeek && ratedCount >= 10 && ratedCount < 15 && (
-                        <motion.div
+                        <m.div
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -10 }}
@@ -528,7 +521,7 @@ export default function OnboardingCarouselPage() {
                             <div className="flex items-center justify-between">
                                 <div className="space-y-1">
                                     <p className="text-xs font-mono text-primary uppercase tracking-wider font-bold">
-                                        Nice taste — keep going!
+                                        Nice taste - keep going!
                                     </p>
                                     <p className="text-[10px] font-mono text-zinc-500">
                                         Rate 5 more films to unlock your full profile.
@@ -541,14 +534,14 @@ export default function OnboardingCarouselPage() {
                                     [ DISMISS ]
                                 </button>
                             </div>
-                        </motion.div>
+                        </m.div>
                     )}
                 </AnimatePresence>
 
                 {/* Registration prompt at 15 ratings */}
                 <AnimatePresence>
                     {showRegistration && ratedCount >= 15 && currentMovie && (
-                        <motion.div
+                        <m.div
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -10 }}
@@ -585,17 +578,17 @@ export default function OnboardingCarouselPage() {
                             <p className="text-[10px] font-mono text-zinc-600">
                                 Your ratings are saved in this browser. They&apos;ll be lost if you clear your cache.
                             </p>
-                        </motion.div>
+                        </m.div>
                     )}
                 </AnimatePresence>
 
-                {/* Constellation viz — decorative MVP */}
+                {/* Constellation viz - decorative MVP */}
                 {ratedCount > 0 && (
                     <div className="mt-12 border border-border/30 p-4">
                         <p className="text-[10px] font-mono text-zinc-700 uppercase tracking-widest mb-3">
                             // YOUR TASTE MAP //
                         </p>
-                        {/* Decorative only — real placement requires Qdrant 384d → 2D PCA, deferred */}
+                        {/* Decorative only - real placement requires Qdrant 384d → 2D PCA, deferred */}
                         <div className="relative h-32 overflow-hidden">
                             {Object.entries(ratings).map(([tmdbId, signal]) => {
                                 const id = parseInt(tmdbId);
@@ -609,7 +602,7 @@ export default function OnboardingCarouselPage() {
                                 return (
                                     <div
                                         key={tmdbId}
-                                        className={`absolute w-2 h-2 ${color} opacity-70`}
+                                        className={`absolute size-2 ${color} opacity-70`}
                                         style={{ left: `${x}%`, top: `${y}%` }}
                                         title={movie.title}
                                     />
@@ -623,22 +616,27 @@ export default function OnboardingCarouselPage() {
             {/* Search modal */}
             <AnimatePresence>
                 {searchOpen && (
-                    <motion.div
+                    <m.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         transition={{ duration: 0.15 }}
                         className="fixed inset-0 bg-background/90 z-50 flex items-start justify-center pt-20 px-4"
                         onClick={closeSearch}
+                        onKeyDown={(e) => { if (e.key === 'Escape' || e.key === 'Enter') closeSearch(); }}
+                        tabIndex={0}
+                        role="button"
                     >
                         <div
                             className="w-full max-w-lg border border-border bg-background"
                             onClick={(e) => e.stopPropagation()}
+                            onKeyDown={(e) => e.stopPropagation()}
+                            role="dialog"
+                            aria-modal="true"
                         >
                             <div className="flex items-center border-b border-border px-4 py-3">
                                 <span className="text-zinc-500 font-mono text-xs mr-3">SEARCH</span>
                                 <input
-                                    autoFocus
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
                                     placeholder="Type a film title..."
@@ -693,7 +691,7 @@ export default function OnboardingCarouselPage() {
                                                     <button
                                                         key={signal}
                                                         onClick={() => handleSearchRate(movie, signal)}
-                                                        className={`border w-7 h-7 font-mono text-xs flex items-center justify-center transition-colors ${
+                                                        className={`border size-7 font-mono text-xs flex items-center justify-center transition-colors ${
                                                             active
                                                                 ? "border-primary text-primary"
                                                                 : `border-border text-zinc-600 ${cls}`
@@ -718,7 +716,7 @@ export default function OnboardingCarouselPage() {
                                 )}
                             </div>
                         </div>
-                    </motion.div>
+                    </m.div>
                 )}
             </AnimatePresence>
         </div>

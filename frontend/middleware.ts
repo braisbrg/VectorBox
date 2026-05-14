@@ -18,13 +18,13 @@ export default clerkMiddleware(async (auth, request) => {
         request.nextUrl.pathname.startsWith('/register'))) {
         // Allow /login?migrate=true to proceed (onboarding migration needs the login page)
         if (request.nextUrl.pathname.startsWith('/login') && request.nextUrl.searchParams.get('migrate') === 'true') {
-            // Don't redirect — let the login page handle migration
+            // Don't redirect - let the login page handle migration
         } else {
             return Response.redirect(new URL('/', request.url));
         }
     }
 
-    // Proteger rutas no públicas — redirigir a nuestro /login chooser
+    // Proteger rutas no públicas - redirigir a nuestro /login chooser
     // (no a la página hosted de Clerk) para que el guest pueda elegir
     // "Rate Films" sin pasar por sign-in.
     if (!isPublicRoute(request) && !userId) {

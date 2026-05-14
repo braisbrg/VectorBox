@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 
 const API = 'http://localhost:8000';
 
-test.describe('Phase 5 — Feed & NLP Search', () => {
+test.describe('Phase 5 - Feed & NLP Search', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
   });

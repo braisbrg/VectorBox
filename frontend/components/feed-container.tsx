@@ -64,7 +64,7 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
             <div className="space-y-4">
                 <div className="flex items-center justify-between border border-border px-4 py-2 font-mono text-xs">
                     <span className="text-zinc-400">
-                        FILTERED VIEW — {filteredResults.length} RESULTS
+                        FILTERED VIEW - {filteredResults.length} RESULTS
                     </span>
                     <button
                         onClick={onClearFilterResults}
@@ -144,7 +144,7 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
         const isIncomplete = feedData?.status === "incomplete";
 
         return (
-            <div className="flex flex-col items-center justify-center min-h-[50vh] space-y-8">
+            <div className="flex flex-col items-center justify-center min-h-[50vh] gap-y-8">
                 <div className="text-center space-y-2">
                     <h2 className={`text-2xl font-bold font-mono ${isIncomplete ? "text-orange-500" : "text-primary"}`}>
                         {isIncomplete ? "DATA_INCOMPLETE" : "DATA_MISSING"}

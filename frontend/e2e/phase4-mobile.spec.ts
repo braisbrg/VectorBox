@@ -4,7 +4,7 @@ import { loginAs } from './fixtures/auth';
 // These tests run specifically on mobile viewports
 // configured in playwright.config.ts projects
 
-test.describe('Phase 4 — Mobile UX', () => {
+test.describe('Phase 4 - Mobile UX', () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
   test.beforeEach(async ({ page }) => {

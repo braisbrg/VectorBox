@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { getTMDBImageUrl, getLetterboxdUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie, markWatched, rerollCluster } from "@/lib/api";
 import type { Contributor } from "@/types/feed";
@@ -189,7 +189,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
 
     return (
         <AnimatePresence>
-        <motion.div
+        <m.div
             className="space-y-4 mb-8"
             data-testid="feed-carousel"
             initial={{ opacity: 1, height: "auto" }}
@@ -199,7 +199,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
             <div className="flex items-center justify-between px-4 md:px-8">
                 <div className="flex items-center gap-3">
                     {titlePrefix}
-                    <h3 className="text-3xl font-bold font-space uppercase tracking-wider text-acid-outline" data-text={localTitle}>{localTitle}</h3>
+                    <h3 className="text-3xl font-semibold font-space uppercase tracking-wider text-acid-outline" data-text={localTitle}>{localTitle}</h3>
                     {showReroll && (
                         <button
                             onClick={handleReroll}
@@ -208,7 +208,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                             title={isWildcard ? "Reroll wildcard" : "Get new random picks"}
                             aria-label={isWildcard ? t("aria.reroll_wildcard") : t("aria.reroll_random")}
                         >
-                            <RefreshCw className={`w-4 h-4 ${isRerolling ? "animate-spin" : ""}`} />
+                            <RefreshCw className={`size-4 ${isRerolling ? "animate-spin" : ""}`} />
                         </button>
                     )}
                     {sectionId === "niche_picks" && (
@@ -239,14 +239,14 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                         className="p-2 rounded-none border border-zinc-800 hover:bg-zinc-900 hover:border-primary hover:text-primary transition-all"
                         aria-label={t("aria.scroll_left")}
                     >
-                        <ChevronLeft className="w-5 h-5" />
+                        <ChevronLeft className="size-5" />
                     </button>
                     <button
                         onClick={() => scroll("right")}
                         className="p-2 rounded-none border border-zinc-800 hover:bg-zinc-900 hover:border-primary hover:text-primary transition-all"
                         aria-label={t("aria.scroll_right")}
                     >
-                        <ChevronRight className="w-5 h-5" />
+                        <ChevronRight className="size-5" />
                     </button>
                 </div>
             </div>
@@ -294,7 +294,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                     </div>
                 )}
             </div>
-        </motion.div>
+        </m.div>
         </AnimatePresence>
     );
 }

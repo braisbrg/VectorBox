@@ -19,7 +19,7 @@ export function AuthBridge() {
                     config.headers.Authorization = `Bearer ${token}`;
                 }
             } catch {
-                // No active Clerk session — fall back to legacy cookie auth.
+                // No active Clerk session - fall back to legacy cookie auth.
             }
             return config;
         });

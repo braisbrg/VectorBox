@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Sparkles, Search, Loader2, X, BrainCircuit } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import { useMutation } from "@tanstack/react-query";
 import { MovieCard } from "@/components/ui/movie-card";
 import { BorderBeam } from "@/components/tweak/border-beam";
@@ -112,7 +112,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
 
             <form onSubmit={handleSearch} className="relative group">
                 {/* Living AI Terminal Container with Border Beam */}
-                <div className={`relative flex items-center bg-black border-2 ${isDeepAnalysis ? 'border-primary shadow-[0_0_30px_rgba(204,255,0,0.2)]' : 'border-zinc-800 focus-within:border-primary'} shadow-[0_0_20px_rgba(204,255,0,0.15)] transition-all duration-300`}>
+                <div className={`relative flex items-center bg-zinc-950 border-2 ${isDeepAnalysis ? 'border-primary shadow-[0_0_30px_rgba(204,255,0,0.2)]' : 'border-zinc-800 focus-within:border-primary'} shadow-[0_0_20px_rgba(204,255,0,0.15)] transition-all duration-300`}>
                     {/* Border Beam Effect - Living AI Terminal */}
                     <BorderBeam
                         size={250}
@@ -130,7 +130,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         title={t("magic_search.toggle_deep")}
                         aria-label={t("magic_search.aria_toggle_deep")}
                     >
-                        <BrainCircuit className="w-6 h-6" />
+                        <BrainCircuit className="size-6" />
                     </button>
 
                     <div className="h-8 w-[1px] bg-zinc-800 mr-2" />
@@ -149,7 +149,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                             className="px-4 text-zinc-600 hover:text-primary transition-colors"
                             aria-label={t("magic_search.aria_clear_search")}
                         >
-                            <X className="w-6 h-6" />
+                            <X className="size-6" />
                         </button>
                     )}
                     <button
@@ -159,9 +159,9 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         aria-label={t("magic_search.aria_submit_search")}
                     >
                         {searchMutation.isPending ? (
-                            <Loader2 className="w-6 h-6 animate-spin" />
+                            <Loader2 className="size-6 animate-spin" />
                         ) : (
-                            <Search className="w-6 h-6" />
+                            <Search className="size-6" />
                         )}
                     </button>
                 </div>
@@ -176,7 +176,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
             {/* Results Display */}
             <AnimatePresence>
                 {showResults && results.length > 0 && (
-                    <motion.div
+                    <m.div
                         initial={{ opacity: 0, y: -20 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -20 }}
@@ -184,9 +184,9 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                     >
                         <div className="flex items-center justify-between mb-4">
                             <div>
-                                <h3 className="text-lg font-bold flex items-center gap-2">
+                        <h3 className="text-lg font-semibold flex items-center gap-2">
                                     {t("magic_search.search_results")}
-                                    {isDeepAnalysis && <BrainCircuit className="w-4 h-4 text-primary" />}
+                                    {isDeepAnalysis && <BrainCircuit className="size-4 text-primary" />}
                                 </h3>
                                 {intent && (
                                     <p className="text-sm text-muted-foreground mt-1">
@@ -216,7 +216,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                                 };
 
                                 return (
-                                    <motion.div
+                                    <m.div
                                         key={movie.movie_id}
                                         initial={{ opacity: 0, scale: 0.9 }}
                                         animate={{ opacity: 1, scale: 1 }}
@@ -248,14 +248,14 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                                         />
                                         {/* AI Reason Overlay for Deep Analysis */}
                                         {movie.ai_reason && (
-                                            <div className="absolute bottom-0 left-0 right-0 bg-black/90 border-t border-primary p-3 transform translate-y-full group-hover:translate-y-0 transition-transform z-20">
+                                            <div className="absolute bottom-0 left-0 right-0 bg-zinc-950/90 border-t border-primary p-3 transform translate-y-full group-hover:translate-y-0 transition-transform z-20">
                                                 <p className="text-[10px] text-primary font-mono leading-tight">
-                                                    <BrainCircuit className="w-3 h-3 inline mr-1" />
+                                                    <BrainCircuit className="size-3 inline mr-1" />
                                                     {movie.ai_reason}
                                                 </p>
                                             </div>
                                         )}
-                                    </motion.div>
+                                    </m.div>
                                 );
                             })}
                         </div>
@@ -283,14 +283,14 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                                 </button>
                             </div>
                         )}
-                    </motion.div>
+                    </m.div>
                 )}
             </AnimatePresence>
 
             {/* No Results Message */}
             <AnimatePresence>
                 {showResults && results.length === 0 && !searchMutation.isPending && (
-                    <motion.div
+                    <m.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
@@ -299,7 +299,7 @@ export function MagicSearch({ userId }: MagicSearchProps) {
                         <p className="text-muted-foreground">
                             {t("search.no_results")}
                         </p>
-                    </motion.div>
+                    </m.div>
                 )}
             </AnimatePresence>
 

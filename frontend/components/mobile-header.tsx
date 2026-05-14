@@ -9,10 +9,10 @@ export function MobileHeader() {
     const { t } = useLanguage();
 
     return (
-        <header className="lg:hidden fixed top-0 left-0 right-0 h-[60px] bg-black/80 backdrop-blur-md border-b border-zinc-800 flex items-center justify-between px-4 z-40">
+        <header className="lg:hidden fixed top-0 left-0 right-0 h-[60px] bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800 flex items-center justify-between px-4 z-40">
             {/* Logo */}
             <div className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-primary flex items-center justify-center">
+                <div className="size-8 bg-primary flex items-center justify-center">
                     <span className="font-mono font-bold text-black text-xl">V</span>
                 </div>
                 <span className="font-mono font-bold text-lg tracking-wider text-white">VECTORBOX</span>
@@ -24,7 +24,7 @@ export function MobileHeader() {
                 className="p-2 text-white hover:text-primary transition-colors"
                 aria-label={t("aria.open_menu")}
             >
-                <Menu className="w-6 h-6" />
+                <Menu className="size-6" />
             </button>
         </header>
     );

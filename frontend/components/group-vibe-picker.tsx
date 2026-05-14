@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Users, Search, X, Sparkles } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import { getGroupVibe, RecommendationResponse } from "@/lib/api";
 import { MovieCard } from "@/components/ui/movie-card";
 
@@ -47,8 +47,8 @@ export function GroupVibePicker() {
         <div className="space-y-6">
             <div className="bg-card border rounded-xl p-6">
                 <div className="flex items-center gap-2 mb-4">
-                    <Users className="w-5 h-5 text-primary" />
-                    <h2 className="text-xl font-bold font-space">Group Vibe Check</h2>
+                    <Users className="size-5 text-primary" />
+                    <h2 className="text-xl font-semibold font-space">Group Vibe Check</h2>
                 </div>
 
                 <p className="text-sm text-muted-foreground mb-4">
@@ -76,7 +76,7 @@ export function GroupVibePicker() {
                     <div className="flex flex-wrap gap-2">
                         <AnimatePresence>
                             {usernames.map(username => (
-                                <motion.div
+                                <m.div
                                     key={username}
                                     initial={{ opacity: 0, scale: 0.8 }}
                                     animate={{ opacity: 1, scale: 1 }}
@@ -88,9 +88,9 @@ export function GroupVibePicker() {
                                         onClick={() => handleRemoveUser(username)}
                                         className="hover:text-destructive"
                                     >
-                                        <X className="w-3 h-3" />
+                                        <X className="size-3" />
                                     </button>
-                                </motion.div>
+                                </m.div>
                             ))}
                         </AnimatePresence>
                     </div>
@@ -101,9 +101,9 @@ export function GroupVibePicker() {
                         className="w-full py-3 bg-primary text-black font-bold rounded-md hover:bg-primary/90 disabled:opacity-50 flex items-center justify-center gap-2 transition-all"
                     >
                         {isLoading ? (
-                            <Sparkles className="w-4 h-4 animate-spin" />
+                            <Sparkles className="size-4 animate-spin" />
                         ) : (
-                            <Sparkles className="w-4 h-4" />
+                            <Sparkles className="size-4" />
                         )}
                         {isLoading ? "Analyzing Vibe..." : "Find Group Movies"}
                     </button>
@@ -117,7 +117,7 @@ export function GroupVibePicker() {
             {/* Results Grid */}
             {recommendations.length > 0 && (
                 <div className="space-y-4">
-                    <h3 className="text-lg font-bold">Group Recommendations</h3>
+                    <h3 className="text-lg font-semibold">Group Recommendations</h3>
                     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
                         {recommendations.map((item) => {
                             if (!item.movie) return null;

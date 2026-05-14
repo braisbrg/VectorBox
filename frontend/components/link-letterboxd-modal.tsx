@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import { X, Link2, Loader2, Check, ExternalLink } from "lucide-react";
 import { linkLetterboxd } from "@/lib/api";
 
@@ -64,14 +64,14 @@ export function LinkLetterboxdModal({
 
     return (
         <AnimatePresence>
-            <motion.div
+            <m.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm"
+                className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm"
                 onClick={handleClose}
             >
-                <motion.div
+                <m.div
                     initial={{ scale: 0.9, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     exit={{ scale: 0.9, opacity: 0 }}
@@ -80,7 +80,7 @@ export function LinkLetterboxdModal({
                 >
                     {/* Header */}
                     <div className="flex items-center justify-between p-4 border-b border-zinc-700">
-                        <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                        <h2 className="text-lg font-semibold text-white flex items-center gap-2">
                             <Link2 className="text-primary" size={20} />
                             Link Letterboxd
                         </h2>
@@ -96,19 +96,19 @@ export function LinkLetterboxdModal({
                     {/* Body */}
                     <form onSubmit={handleSubmit} className="p-6">
                         {success ? (
-                            <motion.div
+                            <m.div
                                 initial={{ scale: 0.8, opacity: 0 }}
                                 animate={{ scale: 1, opacity: 1 }}
                                 className="text-center py-8"
                             >
-                                <div className="w-16 h-16 mx-auto mb-4 bg-primary rounded-full flex items-center justify-center">
+                                <div className="size-16 mx-auto mb-4 bg-primary rounded-full flex items-center justify-center">
                                     <Check size={32} className="text-black" />
                                 </div>
                                 <p className="text-white text-lg font-medium">Linked!</p>
                                 <p className="text-zinc-400 text-sm mt-1">
                                     Your profile is now connected to @{username}
                                 </p>
-                            </motion.div>
+                            </m.div>
                         ) : (
                             <>
                                 {/* Error Message */}
@@ -136,14 +136,15 @@ export function LinkLetterboxdModal({
 
                                 {/* Username Input */}
                                 <div className="mb-6">
-                                    <label className="block text-sm font-medium text-zinc-400 mb-2 uppercase tracking-wider">
+                                    <label htmlFor="lb-username" className="block text-sm font-medium text-zinc-400 mb-2 uppercase tracking-wider">
                                         Letterboxd Username
                                     </label>
                                     <div className="flex items-center">
-                                        <span className="px-3 py-3 bg-zinc-800 border border-r-0 border-zinc-600 text-zinc-500">
+                                        <span className="p-3 bg-zinc-800 border border-r-0 border-zinc-600 text-zinc-500">
                                             letterboxd.com/
                                         </span>
                                         <input
+                                            id="lb-username"
                                             type="text"
                                             value={username}
                                             onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
@@ -160,7 +161,7 @@ export function LinkLetterboxdModal({
                                 </div>
 
                                 {/* Submit Button */}
-                                <motion.button
+                                <m.button
                                     type="submit"
                                     disabled={loading || !username}
                                     whileHover={{ scale: 1.02 }}
@@ -170,7 +171,7 @@ export function LinkLetterboxdModal({
                                     {loading ? (
                                         <>
                                             <Loader2 className="animate-spin" size={18} />
-                                            Linking...
+                                            Linking…
                                         </>
                                     ) : (
                                         <>
@@ -178,12 +179,12 @@ export function LinkLetterboxdModal({
                                             {currentLetterboxd ? "Update Profile" : "Link Profile"}
                                         </>
                                     )}
-                                </motion.button>
+                                </m.button>
                             </>
                         )}
                     </form>
-                </motion.div>
-            </motion.div>
+                </m.div>
+            </m.div>
         </AnimatePresence>
     );
 }

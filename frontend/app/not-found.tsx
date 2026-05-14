@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 
 export default function NotFound() {
     return (
-        <main className="min-h-screen bg-black flex flex-col items-center justify-center p-6">
+        <main className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-6">
             {/* Glitch Effect Container */}
             <div className="text-center space-y-8 max-w-md">
                 {/* 404 Display */}
@@ -55,10 +55,10 @@ export default function NotFound() {
 
                 {/* Decorative Grid Lines */}
                 <div className="pt-8 flex justify-center gap-2">
-                    {[...Array(5)].map((_, i) => (
+                    {["a","b","c","d","e"].map((id, i) => (
                         <div
-                            key={i}
-                            className="w-2 h-2 bg-primary/30"
+                            key={id}
+                            className="size-2 bg-primary/30"
                             style={{
                                 animation: `pulse 1s ease-in-out ${i * 0.2}s infinite`,
                             }}

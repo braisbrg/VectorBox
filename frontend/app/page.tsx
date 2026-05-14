@@ -1,5 +1,6 @@
 import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { Suspense } from 'react';
 import { Dashboard } from '@/components/dashboard';
 import { getFeedServerSide, FeedResponse } from '@/lib/api';
 
@@ -27,7 +28,7 @@ export default async function HomePage() {
     // sesión server-side. Actualmente desactivado porque el middleware.ts de
     // Next.js aún no existe y la app usa localStorage como fallback de auth
     // en cliente. Con localStorage activo, borrar solo la cookie no cierra
-    // la sesión en Chromium — el Dashboard sigue renderizando.
+    // la sesión en Chromium - el Dashboard sigue renderizando.
     // DEUDA: auth dual (cookie + localStorage) es un riesgo de seguridad.
     // Al migrar a Clerk, localStorage.vectorbox_user debe eliminarse.
     // if (!token) {
@@ -59,8 +60,10 @@ export default async function HomePage() {
 
     // 5. Render the App Shell with prefetched data
     return (
-        <main className="min-h-screen bg-black text-primary">
-            <Dashboard initialFeedData={initialFeedData} />
+        <main className="min-h-screen bg-zinc-950 text-primary">
+            <Suspense fallback={null}>
+                <Dashboard initialFeedData={initialFeedData} />
+            </Suspense>
         </main>
     );
 }

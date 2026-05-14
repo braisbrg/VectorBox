@@ -15,7 +15,7 @@ import {
     LogOut,
     UserCircle,
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useUser } from "@clerk/nextjs";
 import { AppTooltip } from "@/components/info-tooltip";
@@ -81,26 +81,25 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
     ];
 
     return (
-        <motion.aside
+        <m.aside
             initial={false}
             animate={{ width: isCollapsed ? 80 : 300 }}
-            className="hidden lg:flex fixed left-0 top-0 h-screen bg-black border-r border-zinc-800 flex-col z-50 shadow-2xl"
+            className="hidden lg:flex fixed left-0 top-0 h-screen bg-zinc-950 border-r border-zinc-800 flex-col z-50 shadow-2xl"
         >
             {/* Header */}
             <div className="p-4 border-b border-zinc-800 flex items-center justify-between h-[70px]">
                 <AnimatePresence mode="wait">
                     {!isCollapsed && (
-                        <motion.div
+                        <m.div
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
-                            className="flex items-center gap-2 overflow-hidden whitespace-nowrap"
-                        >
-                            <div className="w-8 h-8 bg-primary flex items-center justify-center">
+                            className="flex items-center gap-2 overflow-hidden whitespace-nowrap">
+                            <div className="size-8 bg-primary flex items-center justify-center">
                                 <span className="font-mono font-bold text-black text-xl">V</span>
                             </div>
                             <span className="font-mono font-bold text-lg tracking-wider text-white">VECTORBOX</span>
-                        </motion.div>
+                        </m.div>
                     )}
                 </AnimatePresence>
                 <button
@@ -109,9 +108,9 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                     aria-label={isCollapsed ? t("aria.expand_sidebar") : t("aria.collapse_sidebar")}
                 >
                     {isCollapsed ? (
-                        <ChevronRight className="w-5 h-5" />
+                        <ChevronRight className="size-5" />
                     ) : (
-                        <ChevronLeft className="w-5 h-5" />
+                        <ChevronLeft className="size-5" />
                     )}
                 </button>
             </div>
@@ -136,7 +135,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                             `}
                             title={isCollapsed ? item.label : ""}
                         >
-                            <Icon className={`flex-shrink-0 ${isCollapsed ? "w-6 h-6" : "w-5 h-5"} transition-colors group-hover:text-primary`} />
+                            <Icon className={`flex-shrink-0 ${isCollapsed ? "size-6" : "size-5"} transition-colors group-hover:text-primary`} />
 
                             {!isCollapsed && (
                                 <span className="text-sm font-mono uppercase tracking-wider truncate">
@@ -151,14 +150,14 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
             </nav>
 
             {/* Bottom Section */}
-            <div className="border-t border-zinc-800 bg-black p-3 space-y-4">
+            <div className="border-t border-zinc-800 bg-zinc-950 p-3 space-y-4">
 
                 {!isCollapsed && users && currentUserId && (
                     <div className="px-3 mb-2">
                         <DropdownMenu.Root>
                             <DropdownMenu.Trigger asChild>
                                 <button className="w-full flex items-center gap-2 px-3 py-2 bg-zinc-900 border border-zinc-800 hover:border-primary/50 transition-colors group cursor-pointer outline-none">
-                                    <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                                    <div className="size-2 rounded-full bg-green-500 animate-pulse" />
                                     <span className="text-xs font-mono text-zinc-400 group-hover:text-primary uppercase tracking-wider truncate">
                                         {displayName}
                                     </span>
@@ -167,7 +166,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
 
                             <DropdownMenu.Portal>
                                 <DropdownMenu.Content
-                                    className="z-[100] min-w-[160px] bg-black border border-zinc-800 p-1 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
+                                    className="z-[100] min-w-[160px] bg-zinc-950 border border-zinc-800 p-1 shadow-2xl animate-in fade-in zoom-in-95 duration-200"
                                     side="right"
                                     align="end"
                                     sideOffset={10}
@@ -176,7 +175,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                                         className="flex items-center gap-2 px-3 py-2 text-xs font-mono text-zinc-400 hover:text-black hover:bg-primary outline-none cursor-pointer transition-colors uppercase tracking-wider"
                                         onClick={() => onViewChange("profile")}
                                     >
-                                        <UserCircle className="w-4 h-4" />
+                                        <UserCircle className="size-4" />
                                         {t("sidebar.profile") || "Profile"}
                                     </DropdownMenu.Item>
                                     
@@ -186,7 +185,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                                         className="flex items-center gap-2 px-3 py-2 text-xs font-mono text-red-500 hover:text-black hover:bg-red-500 outline-none cursor-pointer transition-colors uppercase tracking-wider"
                                         onClick={handleLogout}
                                     >
-                                        <LogOut className="w-4 h-4" />
+                                        <LogOut className="size-4" />
                                         {t("app.logout")}
                                     </DropdownMenu.Item>
                                 </DropdownMenu.Content>
@@ -209,7 +208,7 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                                 `}
                                 title={isCollapsed ? item.label : ""}
                             >
-                                <Icon className={`flex-shrink-0 ${isCollapsed ? "w-5 h-5" : "w-4 h-4"}`} />
+                                <Icon className={`flex-shrink-0 ${isCollapsed ? "size-5" : "size-4"}`} />
                                 {!isCollapsed && (
                                     <span className="text-xs font-mono uppercase tracking-wider">
                                         {item.label}
@@ -243,6 +242,6 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                     </div>
                 )}
             </div>
-        </motion.aside>
+        </m.aside>
     );
 }

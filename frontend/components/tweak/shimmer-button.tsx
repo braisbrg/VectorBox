@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { m } from "framer-motion";
 import { cn } from "@/lib/utils";
 
 interface ShimmerButtonProps extends Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'onAnimationStart' | 'onDragStart' | 'onDragEnd' | 'onDrag' | 'style'> {
@@ -29,7 +29,7 @@ export function ShimmerButton({
     ...rest
 }: ShimmerButtonProps) {
     return (
-        <motion.button
+        <m.button
             type={type}
             disabled={disabled}
             onClick={onClick}
@@ -38,7 +38,7 @@ export function ShimmerButton({
             whileTap={{ scale: disabled ? 1 : 0.98 }}
             className={cn(
                 "group relative inline-flex items-center justify-center overflow-hidden",
-                "bg-black text-primary border-2 border-primary",
+                "bg-zinc-950 text-primary border-2 border-primary",
                 "font-bold uppercase tracking-wider",
                 "transition-all duration-300",
                 "hover:bg-primary hover:text-black",
@@ -70,7 +70,7 @@ export function ShimmerButton({
             <span className="relative z-10 flex items-center gap-2">
                 {children}
             </span>
-        </motion.button>
+        </m.button>
     );
 }
 

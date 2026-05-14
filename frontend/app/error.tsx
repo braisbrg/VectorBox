@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import Link from "next/link";
 
 /**
  * Global Error Boundary - Acid Design
@@ -19,7 +20,7 @@ export default function Error({
     }, [error]);
 
     return (
-        <main className="min-h-screen bg-black flex flex-col items-center justify-center p-6">
+        <main className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-6">
             {/* Glitch Effect Container */}
             <div className="text-center space-y-8 max-w-md">
                 {/* Error Code */}
@@ -44,7 +45,7 @@ export default function Error({
                         Something went wrong
                     </p>
                     <p className="text-white/40 font-mono text-xs">
-                        Reconnecting to the matrix...
+                        Reconnecting to the matrix…
                     </p>
                 </div>
 
@@ -57,21 +58,21 @@ export default function Error({
                     >
                         Try Again
                     </button>
-                    <a
+                    <Link
                         href="/"
                         className="px-8 py-4 bg-transparent text-primary font-mono uppercase tracking-wider hover:bg-primary/10 transition-colors border-2 border-primary text-center"
                         aria-label="Return to home page"
                     >
                         Go Home
-                    </a>
+                    </Link>
                 </div>
 
                 {/* Decorative Elements */}
                 <div className="pt-8 flex justify-center gap-2">
-                    {[...Array(5)].map((_, i) => (
+                    {["a","b","c","d","e"].map((id, i) => (
                         <div
-                            key={i}
-                            className="w-2 h-2 bg-primary/30"
+                            key={id}
+                            className="size-2 bg-primary/30"
                             style={{
                                 animation: `pulse 1s ease-in-out ${i * 0.2}s infinite`,
                             }}

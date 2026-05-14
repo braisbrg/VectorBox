@@ -2,7 +2,7 @@
 
 import { X, Globe, Tv, RotateCcw, Info, CheckCircle2, Check, Loader2 } from "lucide-react";
 import type { Contributor } from "@/types/feed";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { useState, useCallback } from "react";
 import { useLanguage } from "@/components/language-provider";
@@ -81,7 +81,7 @@ export function RightConsole({
         <aside className="hidden lg:flex fixed right-0 top-0 w-80 h-screen bg-[#050505] border-l border-zinc-800 flex-col z-40 overflow-hidden font-mono text-xs">
             <AnimatePresence mode="wait">
                 {!selectedMovie ? (
-                    <motion.div
+                    <m.div
                         key="global-controls"
                         initial={{ opacity: 0, x: 20 }}
                         animate={{ opacity: 1, x: 0 }}
@@ -89,9 +89,9 @@ export function RightConsole({
                         className="flex flex-col h-full"
                     >
                         {/* Header */}
-                        <div className="p-4 border-b border-zinc-800 bg-black flex items-center justify-between">
+                        <div className="p-4 border-b border-zinc-800 bg-zinc-950 flex items-center justify-between">
                             <span className="text-primary font-bold tracking-widest uppercase">SYS_CONSOLE_V2</span>
-                            <div className="w-2 h-2 bg-primary animate-pulse" />
+                            <div className="size-2 bg-primary animate-pulse" />
                         </div>
 
                         <div className="flex-1 overflow-y-auto p-4 space-y-8 custom-scrollbar">
@@ -137,7 +137,7 @@ export function RightConsole({
                                     >
                                         {COUNTRIES.map(c => <option key={c.code} value={c.code}>{c.name}</option>)}
                                     </select>
-                                    <Globe className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-zinc-500" />
+                                    <Globe className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-zinc-500" />
                                 </div>
 
                                 <div className="grid grid-cols-4 gap-2">
@@ -170,8 +170,9 @@ export function RightConsole({
                                 </span>
                                 <div className="grid grid-cols-2 gap-2">
                                     <div>
-                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">YEAR_MIN</label>
+                                        <label htmlFor="year-min-input" className="text-[9px] text-zinc-600 uppercase block mb-1">YEAR_MIN</label>
                                         <input
+                                            id="year-min-input"
                                             type="number"
                                             placeholder="1970"
                                             value={yearMin}
@@ -180,8 +181,9 @@ export function RightConsole({
                                         />
                                     </div>
                                     <div>
-                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">YEAR_MAX</label>
+                                        <label htmlFor="year-max-input" className="text-[9px] text-zinc-600 uppercase block mb-1">YEAR_MAX</label>
                                         <input
+                                            id="year-max-input"
                                             type="number"
                                             placeholder="2025"
                                             value={yearMax}
@@ -192,8 +194,9 @@ export function RightConsole({
                                 </div>
                                 <div className="grid grid-cols-2 gap-2">
                                     <div>
-                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">MAX_RUNTIME</label>
+                                        <label htmlFor="max-runtime-input" className="text-[9px] text-zinc-600 uppercase block mb-1">MAX_RUNTIME</label>
                                         <input
+                                            id="max-runtime-input"
                                             type="number"
                                             placeholder="120"
                                             value={maxRuntime}
@@ -202,8 +205,9 @@ export function RightConsole({
                                         />
                                     </div>
                                     <div>
-                                        <label className="text-[9px] text-zinc-600 uppercase block mb-1">MIN_SCORE</label>
+                                        <label htmlFor="min-score-input" className="text-[9px] text-zinc-600 uppercase block mb-1">MIN_SCORE</label>
                                         <input
+                                            id="min-score-input"
                                             type="number"
                                             placeholder="6.0"
                                             step="0.5"
@@ -225,20 +229,20 @@ export function RightConsole({
                         </div>
 
                         {/* Footer Status */}
-                        <div className="p-4 border-t border-zinc-800 bg-black">
+                        <div className="p-4 border-t border-zinc-800 bg-zinc-950">
                             <div className="flex justify-between items-center text-[9px] text-zinc-600">
                                 <span>STATUS: ONLINE</span>
                                 <span>V2.1.0_PROD</span>
                             </div>
                         </div>
-                    </motion.div>
+                    </m.div>
                 ) : (
-                    <motion.div
+                    <m.div
                         key="movie-inspector"
                         initial={{ opacity: 0, x: 20 }}
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: 20 }}
-                        className="flex flex-col h-full bg-black"
+                        className="flex flex-col h-full bg-zinc-950"
                     >
                         {/* Inspector Header */}
                         <div className="p-4 border-b border-zinc-800 flex items-center justify-between">
@@ -271,7 +275,7 @@ export function RightConsole({
 
                                     {/* Title & Metadata */}
                                     <div className="space-y-2">
-                                        <h2 className="text-lg font-bold uppercase leading-tight tracking-tighter">
+                                        <h2 className="text-lg font-semibold uppercase leading-tight tracking-tighter">
                                             {inspectedMovie.title}
                                         </h2>
                                         <div className="flex gap-4 text-[10px] text-zinc-500 font-bold">
@@ -284,6 +288,9 @@ export function RightConsole({
                                     <div
                                         className="p-4 border border-zinc-800 bg-zinc-900/30 cursor-pointer select-none"
                                         onClick={() => setScoreExpanded(v => !v)}
+                                        onKeyDown={(e) => { if (e.key === 'Enter') setScoreExpanded(v => !v); }}
+                                        role="button"
+                                        tabIndex={0}
                                     >
                                         <div className="flex justify-between items-center mb-1">
                                             <span className="text-[10px] text-zinc-500 uppercase italic font-bold">VECTORBOX_SCORE</span>
@@ -434,7 +441,7 @@ export function RightConsole({
                                 </div>
                             )}
                         </div>
-                    </motion.div>
+                    </m.div>
                 )}
             </AnimatePresence>
         </aside>

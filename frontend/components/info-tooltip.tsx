@@ -1,8 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Info, X } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import { useLanguage } from "@/components/language-provider";
 
 interface InfoTooltipProps {
@@ -23,23 +23,23 @@ export function InfoTooltip({ id, title, description, className = "" }: InfoTool
                 className="p-1 rounded-full hover:bg-primary/10 text-muted-foreground hover:text-primary transition-colors"
                 aria-label={t("aria.more_info")}
             >
-                <Info className="w-4 h-4" />
+                <Info className="size-4" />
             </button>
 
             <AnimatePresence>
                 {isOpen && (
                     <>
                         {/* Backdrop */}
-                        <motion.div
+                        <m.div
                             initial={{ opacity: 0 }}
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
                             onClick={() => setIsOpen(false)}
-                            className="fixed inset-0 bg-black/20 backdrop-blur-sm z-40"
+                            className="fixed inset-0 bg-zinc-950/20 backdrop-blur-sm z-40"
                         />
 
                         {/* Tooltip */}
-                        <motion.div
+                        <m.div
                             initial={{ opacity: 0, scale: 0.95, y: -10 }}
                             animate={{ opacity: 1, scale: 1, y: 0 }}
                             exit={{ opacity: 0, scale: 0.95, y: -10 }}
@@ -51,11 +51,11 @@ export function InfoTooltip({ id, title, description, className = "" }: InfoTool
                                     onClick={() => setIsOpen(false)}
                                     className="text-muted-foreground hover:text-foreground transition-colors"
                                 >
-                                    <X className="w-4 h-4" />
+                                    <X className="size-4" />
                                 </button>
                             </div>
                             <p className="text-sm text-muted-foreground leading-relaxed">{description}</p>
-                        </motion.div>
+                        </m.div>
                     </>
                 )}
             </AnimatePresence>
@@ -67,11 +67,11 @@ export function InfoTooltip({ id, title, description, className = "" }: InfoTool
 export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
     const [isOpen, setIsOpen] = useState(false);
     const [dismissed, setDismissed] = useState(false);
-    const [mounted, setMounted] = useState(false);
+    const mountedRef = useRef(false);
     const { t } = useLanguage();
 
     useEffect(() => {
-        setMounted(true);
+        mountedRef.current = true;
         const seen = localStorage.getItem("app_tooltip_seen");
         if (!seen) {
             // Auto-show on first visit after a delay
@@ -99,20 +99,20 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
             {isOpen && (
                 <>
                     {/* Backdrop - z-[49] to be below Sidebar (z-[50]) but above content */}
-                    <motion.div
+                    <m.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         onClick={() => setIsOpen(false)}
-                        className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[49]"
+                        className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[49]"
                     />
 
                     {/* Tooltip - z-[51] to be above Sidebar */}
-                    <motion.div
+                    <m.div
                         initial={{ opacity: 0, x: -20 }}
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: -20 }}
-                        className={`fixed w-80 bg-black border border-primary shadow-[0_0_30px_rgba(204,255,0,0.1)] p-6 z-[51] ${isCollapsed
+                        className={`fixed w-80 bg-zinc-950 border border-primary shadow-[0_0_30px_rgba(204,255,0,0.1)] p-6 z-[51] ${isCollapsed
                             ? "left-[80px] bottom-4"
                             : "left-[320px] bottom-4"
                             }`}
@@ -123,7 +123,7 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
                                 onClick={handleDismiss}
                                 className="text-zinc-500 hover:text-primary transition-colors"
                             >
-                                <X className="w-4 h-4" />
+                                <X className="size-4" />
                             </button>
                         </div>
 
@@ -184,13 +184,13 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
                                 {t("guide.got_it")}
                             </button>
                         </div>
-                    </motion.div>
+                    </m.div>
                 </>
             )}
         </AnimatePresence>
     );
 
-    if (!mounted) return null;
+    if (!mountedRef.current) return null;
 
     // If we are rendering the button
     return (
@@ -204,7 +204,7 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
                 `}
                 title={t("app.guide")}
             >
-                <Info className="flex-shrink-0 w-4 h-4" />
+                <Info className="flex-shrink-0 size-4" />
                 {!isCollapsed && (
                     <span className="text-xs font-mono uppercase tracking-wider truncate">
                         {t("app.guide")}

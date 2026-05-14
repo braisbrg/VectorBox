@@ -7,7 +7,7 @@ import { GridPattern } from "@/components/tweak/grid-pattern";
  */
 export default function Loading() {
     return (
-        <main className="min-h-screen bg-black text-primary relative">
+        <main className="min-h-screen bg-zinc-950 text-primary relative">
             {/* Ambient Background - matches Dashboard */}
             <GridPattern className="opacity-10 fixed inset-0 z-0" strokeColor="rgba(204, 255, 0, 0.08)" />
 
@@ -33,7 +33,7 @@ export default function Loading() {
                             </div>
                             <div className="flex flex-wrap gap-2">
                                 {[1, 2, 3, 4].map((i) => (
-                                    <Skeleton key={i} className="h-8 w-24 rounded-full bg-zinc-800/30" />
+                                    <Skeleton key={`tag-${i}`} className="h-8 w-24 rounded-full bg-zinc-800/30" />
                                 ))}
                             </div>
                         </div>
@@ -42,7 +42,7 @@ export default function Loading() {
                     {/* Feed Sections Skeleton */}
                     <div className="space-y-12">
                         {[1, 2, 3, 4].map((i) => (
-                            <div key={i} className="space-y-4">
+                            <div key={`section-${i}`} className="space-y-4">
                                 <div className="flex items-center gap-2 px-1">
                                     <Skeleton className="h-6 w-48 bg-zinc-800/60" />
                                 </div>

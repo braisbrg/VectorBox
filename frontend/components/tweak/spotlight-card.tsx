@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, useCallback } from "react";
-import { motion } from "framer-motion";
+import { m } from "framer-motion";
 import { cn } from "@/lib/utils";
 
 interface SpotlightCardProps {
@@ -64,7 +64,7 @@ export function SpotlightCard({
     }, [spotlightSize, spotlightColor]);
 
     return (
-        <motion.div
+        <m.div
             ref={containerRef}
             onMouseMove={handleMouseMove}
             onMouseEnter={handleMouseEnter}
@@ -85,7 +85,7 @@ export function SpotlightCard({
                 }}
             />
             {children}
-        </motion.div>
+        </m.div>
     );
 }
 

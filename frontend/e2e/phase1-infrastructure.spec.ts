@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Phase 1 — Infrastructure', () => {
+test.describe('Phase 1 - Infrastructure', () => {
   test('API health check returns ok', async ({ request }) => {
     const response = await request.get('http://localhost:8000/health');
     expect(response.status()).toBeLessThan(503);

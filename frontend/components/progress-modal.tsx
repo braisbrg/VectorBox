@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import { Loader2, CheckCircle, XCircle } from "lucide-react";
 import { getTaskStatus, TaskStatus } from "@/lib/api";
 
@@ -65,13 +65,13 @@ export function ProgressModal({ taskId, onComplete, onError }: ProgressModalProp
 
     return (
         <AnimatePresence>
-            <motion.div
+            <m.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-sm"
+                className="fixed inset-0 z-[9999] flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm"
             >
-                <motion.div
+                <m.div
                     initial={{ scale: 0.9, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     exit={{ scale: 0.9, opacity: 0 }}
@@ -80,14 +80,14 @@ export function ProgressModal({ taskId, onComplete, onError }: ProgressModalProp
                     {/* Header */}
                     <div className="flex items-center gap-3 mb-6">
                         {status?.status === "completed" ? (
-                            <CheckCircle className="w-8 h-8 text-lime-400" />
+                            <CheckCircle className="size-8 text-lime-400" />
                         ) : error ? (
-                            <XCircle className="w-8 h-8 text-red-400" />
+                            <XCircle className="size-8 text-red-400" />
                         ) : (
-                            <Loader2 className="w-8 h-8 text-lime-400 animate-spin" />
+                            <Loader2 className="size-8 text-lime-400 animate-spin" />
                         )}
                         <div>
-                            <h2 className="text-xl font-bold text-white">
+                            <h2 className="text-xl font-semibold text-white">
                                 {status?.status === "completed"
                                     ? "Complete!"
                                     : error
@@ -102,7 +102,7 @@ export function ProgressModal({ taskId, onComplete, onError }: ProgressModalProp
 
                     {/* Progress Bar */}
                     <div className="relative h-3 bg-zinc-800 rounded-full overflow-hidden mb-4">
-                        <motion.div
+                        <m.div
                             className="absolute inset-y-0 left-0 bg-gradient-to-r from-lime-500 to-lime-400 rounded-full"
                             initial={{ width: 0 }}
                             animate={{ width: `${status?.progress || 0}%` }}
@@ -127,8 +127,8 @@ export function ProgressModal({ taskId, onComplete, onError }: ProgressModalProp
                             Retry
                         </button>
                     )}
-                </motion.div>
-            </motion.div>
+                </m.div>
+            </m.div>
         </AnimatePresence>
     );
 }

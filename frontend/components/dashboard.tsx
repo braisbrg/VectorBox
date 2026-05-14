@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { LayoutList, Globe, Tv, Loader2, RotateCcw, Heart, User as UserIcon, LogOut } from "lucide-react";
 import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/constants";
-import { motion } from "framer-motion";
+import { m } from "framer-motion";
 import Image from "next/image";
 import { useUser } from "@clerk/nextjs";
 import { useLanguage } from "@/components/language-provider";
@@ -41,7 +41,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const handleLogout = useVectorboxLogout();
     const [currentUserSession, setCurrentUserSession] = useState<UserSession | null>(null);
     const [users, setUsers] = useState<VectorboxUser[]>([]);
-    const [isLoadingAuth, setIsLoadingAuth] = useState(true);
+    const isLoadingAuth = useRef(true);
     const [showOnboardingBanner, setShowOnboardingBanner] = useState(false);
     const [showImprovementBanner, setShowImprovementBanner] = useState(false);
     const [ratingsCount, setRatingsCount] = useState(0);
@@ -131,7 +131,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             }
         }
 
-        // Hydrate from backend /auth/me — source of truth for has_data + user_id.
+        // Hydrate from backend /auth/me - source of truth for has_data + user_id.
         getCurrentUser()
             .then((verifiedUser) => {
                 const fullSession: UserSession = {
@@ -150,13 +150,13 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 }
             })
             .finally(() => {
-                setIsLoadingAuth(false);
+                isLoadingAuth.current = false;
             });
 
         getUsers().then(setUsers).catch(err => console.error("Failed to fetch users", err));
     }, [isClerkLoaded, clerkUser, router]);
 
-    // FIX 3: Onboarding status check — redirect or show improvement banner
+    // FIX 3: Onboarding status check - redirect or show improvement banner
     useEffect(() => {
         if (!currentUserSession?.has_data) return;
 
@@ -213,8 +213,8 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     // Show loading briefly during hydration
     if (isLoadingAuth) {
         return (
-            <div className="min-h-screen bg-black flex items-center justify-center">
-                <Loader2 className="w-8 h-8 text-primary animate-spin" />
+            <div className="min-h-screen bg-zinc-950 flex items-center justify-center">
+                <Loader2 className="size-8 text-primary animate-spin" />
             </div>
         );
     }
@@ -235,7 +235,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     // ONBOARDING JAIL: If user has no data, lock them here
     if (!currentUserSession.has_data) {
         return (
-            <div className="min-h-screen bg-black text-foreground flex flex-col items-center justify-center p-4 relative overflow-hidden">
+            <div className="min-h-screen bg-zinc-950 text-foreground flex flex-col items-center justify-center p-4 relative overflow-hidden">
                 <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10 pointer-events-none" />
 
                 <div className="z-10 w-full max-w-2xl space-y-8 animate-in fade-in zoom-in duration-500">
@@ -271,7 +271,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                             onClick={handleLogout}
                             className="text-xs text-red-500 hover:text-red-400 flex items-center justify-center gap-1 mx-auto transition-colors font-mono"
                         >
-                            <LogOut className="w-3 h-3" /> {t("onboarding.abort")}
+                            <LogOut className="size-3" /> {t("onboarding.abort")}
                         </button>
                     </div>
                 </div>
@@ -303,7 +303,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                     <section className="relative py-4 overflow-hidden border-b border-zinc-800">
                         <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10" />
                         <div className="container relative z-10 px-6 mx-auto">
-                            <motion.div
+                            <m.div
                                 initial={{ opacity: 0, y: 10 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 className="flex flex-col md:flex-row md:items-baseline md:gap-4"
@@ -314,7 +314,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                                 <p className="text-[10px] text-zinc-500 font-mono uppercase tracking-[0.2em]">
                                     {t("dashboard.system_ready")} <span className="text-primary">{clerkUser?.username || clerkUser?.firstName || clerkUser?.fullName || currentUserSession.username}</span>
                                 </p>
-                            </motion.div>
+                            </m.div>
                         </div>
                     </section>
                 )}
@@ -323,14 +323,14 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                     {/* Onboarding complete welcome banner */}
                     <AnimatePresence>
                         {showOnboardingBanner && (
-                            <motion.div
+                            <m.div
                                 initial={{ opacity: 0, y: -10 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 exit={{ opacity: 0, height: 0 }}
                                 className="mb-4 border border-primary/30 bg-primary/5 p-4 flex items-center justify-between"
                             >
                                 <div className="flex items-center gap-3">
-                                    <Sparkles className="w-4 h-4 text-primary shrink-0" />
+                                    <Sparkles className="size-4 text-primary shrink-0" />
                                     <div>
                                         <p className="text-xs font-mono text-primary uppercase tracking-wider font-bold">
                                             Welcome to VectorBox
@@ -344,9 +344,9 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                                     onClick={() => setShowOnboardingBanner(false)}
                                     className="p-1 text-zinc-600 hover:text-zinc-400 transition-colors shrink-0"
                                 >
-                                    <X className="w-3 h-3" />
+                                    <X className="size-3" />
                                 </button>
-                            </motion.div>
+                            </m.div>
                         )}
                     </AnimatePresence>
 
@@ -384,12 +384,12 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                     ) : currentView === "settings" ? (
                         <SettingsView />
                     ) : currentView === "profile" ? (
-                        <div className="py-12 flex flex-col items-center justify-center text-center space-y-6">
-                            <div className="w-24 h-24 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-primary">
+                        <div className="py-12 flex flex-col items-center justify-center text-center gap-6">
+                        <div className="size-24 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-primary">
                                 <UserIcon size={48} />
                             </div>
                             <div className="space-y-2">
-                                <h2 className="text-3xl font-bold tracking-tighter uppercase font-mono italic">User Profile</h2>
+                                <h2 className="text-3xl font-semibold tracking-tighter uppercase font-mono italic">User Profile</h2>
                                 <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest">// Profile module coming soon //</p>
                             </div>
                             <button 
@@ -438,18 +438,25 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             {/* Mobile Bottom Sheet for Inspector */}
             <AnimatePresence>
                 {inspectedMovie && (
-                    <motion.div
+                    <m.div
                         initial={{ y: "100%" }}
                         animate={{ y: 0 }}
                         exit={{ y: "100%" }}
                         transition={{ type: "spring", damping: 25, stiffness: 200 }}
                         className="lg:hidden fixed inset-x-0 bottom-0 z-50 bg-[#0a0a0a] border-t border-zinc-800 rounded-t-2xl shadow-[0_-8px_30px_rgb(0,0,0,0.5)] max-h-[90vh] overflow-hidden flex flex-col"
                     >
-                        <div className="w-12 h-1.5 bg-zinc-800 rounded-full mx-auto my-4 shrink-0" onClick={() => setInspectedMovie(null)} />
+                        <div
+                            className="w-12 h-1.5 bg-zinc-800 rounded-full mx-auto my-4 shrink-0"
+                            role="button"
+                            tabIndex={0}
+                            aria-label="Close inspector"
+                            onClick={() => setInspectedMovie(null)}
+                            onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setInspectedMovie(null); }}
+                        />
                         <div className="overflow-y-auto px-6 pb-12">
                             {/* Reusing Inspector logic or simplified version for mobile */}
                             <div className="flex justify-between items-start mb-6">
-                                <h2 className="text-xl font-bold uppercase font-mono tracking-tighter">DATA_INSPECTOR_MOB</h2>
+                                <h2 className="text-xl font-semibold uppercase font-mono tracking-tighter">DATA_INSPECTOR_MOB</h2>
                                 <button onClick={() => setInspectedMovie(null)} className="p-2 text-zinc-500"><X /></button>
                             </div>
                             <div className="text-zinc-500 font-mono text-xs uppercase italic tracking-widest text-center py-20 border border-dashed border-zinc-800">
@@ -457,7 +464,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                                 <p className="mt-4 text-[10px] normal-case tracking-normal">Please use Desktop for full data analysis suite.</p>
                             </div>
                         </div>
-                    </motion.div>
+                    </m.div>
                 )}
             </AnimatePresence>
         </div>

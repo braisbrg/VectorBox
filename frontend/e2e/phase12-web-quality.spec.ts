@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { loginAs } from './fixtures/auth';
 
-test.describe('Phase 12 — Web Quality', () => {
+test.describe('Phase 12 - Web Quality', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
   });
@@ -33,14 +33,14 @@ test.describe('Phase 12 — Web Quality', () => {
     expect(cumulativeLayoutShift).toBeLessThan(0.25); // Allow some tolerance
   });
 
-  test('No keyboard traps — Enter on card button does not navigate', async ({ page }) => {
+  test('No keyboard traps - Enter on card button does not navigate', async ({ page }) => {
     try {
       await page.waitForSelector(
         'div[role="link"]',
         { timeout: 10_000 }
       );
     } catch (e) {
-      test.skip(true, "SKIP: Movie cards not loaded — cannot test keyboard traps");
+      test.skip(true, "SKIP: Movie cards not loaded - cannot test keyboard traps");
       return;
     }
     const card = page.locator('div[role="link"]').first();

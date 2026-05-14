@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Space_Grotesk, Space_Mono } from "next/font/google"; // Added Space Mono
 import { ClerkProvider } from "@clerk/nextjs";
+import { LazyMotion, domAnimation } from "framer-motion";
 import "./globals.css";
 import { Providers } from "./providers";
 import { LanguageProvider } from "@/components/language-provider";
@@ -35,13 +36,15 @@ export default function RootLayout({
             <body suppressHydrationWarning className={`${inter.className} ${spaceGrotesk.variable} ${spaceMono.variable} antialiased min-h-screen bg-background text-foreground overflow-x-hidden selection:bg-primary selection:text-black`}>
                 <ClerkProvider>
                     <AuthBridge />
-                    <LanguageProvider>
-                        <Providers>
-                            <MobileNavProvider>
-                                {children}
-                            </MobileNavProvider>
-                        </Providers>
-                    </LanguageProvider>
+                    <LazyMotion features={domAnimation}>
+                        <LanguageProvider>
+                            <Providers>
+                                <MobileNavProvider>
+                                    {children}
+                                </MobileNavProvider>
+                            </Providers>
+                        </LanguageProvider>
+                    </LazyMotion>
                 </ClerkProvider>
             </body>
         </html>

@@ -2,13 +2,13 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 export const metadata: Metadata = {
-    title: "Privacy Policy — VectorBox",
+    title: "Privacy Policy - VectorBox",
     description: "How VectorBox handles your data, cookies, and GDPR rights.",
 };
 
 export default function PrivacyPage() {
     return (
-        <main className="min-h-screen bg-black text-zinc-300">
+        <main className="min-h-screen bg-zinc-950 text-zinc-300">
             <div className="max-w-2xl mx-auto px-6 py-16">
                 {/* Back link */}
                 <Link
@@ -58,13 +58,13 @@ export default function PrivacyPage() {
                         </p>
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
                             <li>
-                                <strong className="text-zinc-300">Performance of a contract</strong> —
+                                <strong className="text-zinc-300">Performance of a contract</strong> -
                                 Processing your username, PIN, and preferences is
                                 necessary to provide the VectorBox recommendation
                                 service you have registered for.
                             </li>
                             <li>
-                                <strong className="text-zinc-300">Explicit consent</strong> —
+                                <strong className="text-zinc-300">Explicit consent</strong> -
                                 When you upload a Letterboxd CSV export or link your
                                 RSS feed, you explicitly consent to VectorBox importing
                                 and processing that data to generate recommendations.
@@ -79,14 +79,14 @@ export default function PrivacyPage() {
                         </h2>
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-3 list-disc list-inside">
                             <li>
-                                <strong className="text-zinc-300">Account identity</strong> —
+                                <strong className="text-zinc-300">Account identity</strong> -
                                 Authentication is handled by Clerk (a third-party identity
                                 provider). VectorBox stores your Clerk user ID and display
-                                name. We do not store passwords — authentication credentials
+                                name. We do not store passwords - authentication credentials
                                 are managed entirely by Clerk.
                             </li>
                             <li>
-                                <strong className="text-zinc-300">Movie ratings</strong> —
+                                <strong className="text-zinc-300">Movie ratings</strong> -
                                 Imported from your Letterboxd account via CSV export or RSS
                                 feed. These ratings power your personalized recommendations.
                             </li>
@@ -94,16 +94,16 @@ export default function PrivacyPage() {
                                 <strong className="text-zinc-300">
                                     Streaming preferences
                                 </strong>{" "}
-                                — Your selected streaming platforms (e.g., Netflix, HBO Max)
+                                - Your selected streaming platforms (e.g., Netflix, HBO Max)
                                 used to filter recommendations by availability.
                             </li>
                             <li>
-                                <strong className="text-zinc-300">Country code</strong> —
+                                <strong className="text-zinc-300">Country code</strong> -
                                 Used to determine regional streaming availability for
                                 recommended titles.
                             </li>
                             <li>
-                                <strong className="text-zinc-300">Minimum age</strong> —
+                                <strong className="text-zinc-300">Minimum age</strong> -
                                 VectorBox is intended for users aged 14 and over, in
                                 accordance with Spanish data protection law (LOPDGDD
                                 Art. 7). By registering, you confirm that you meet
@@ -187,15 +187,15 @@ export default function PrivacyPage() {
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-2 list-disc list-inside">
                             <li>
                                 <strong className="text-zinc-300">Clerk, Inc.</strong> (United States)
-                                — Used for user authentication and session management.
+                                - Used for user authentication and session management.
                             </li>
                             <li>
                                 <strong className="text-zinc-300">Groq, Inc.</strong> (United States)
-                                — Used for LLM-based query parsing and cinematic description generation.
+                                - Used for LLM-based query parsing and cinematic description generation.
                             </li>
                             <li>
                                 <strong className="text-zinc-300">OpenAI, LLC</strong> (United States)
-                                — Used as fallback LLM provider.
+                                - Used as fallback LLM provider.
                             </li>
                         </ul>
                         <p className="text-sm text-zinc-500 leading-relaxed mt-4">
@@ -203,7 +203,7 @@ export default function PrivacyPage() {
                             Clauses (SCCs) as established by the European Commission,
                             and both providers participate in the EU-US Data Privacy
                             Framework. Only the text of your search query is
-                            transmitted — no personal identifiers, usernames, or
+                            transmitted - no personal identifiers, usernames, or
                             rating history are shared with these providers.
                         </p>
                         <p className="text-sm text-zinc-500 leading-relaxed mt-3">
@@ -246,28 +246,28 @@ export default function PrivacyPage() {
                         </p>
                         <ul className="text-sm text-zinc-400 leading-relaxed space-y-2 list-disc list-inside">
                             <li>
-                                <strong className="text-zinc-300">Access</strong> — Request a
+                                <strong className="text-zinc-300">Access</strong> - Request a
                                 copy of the personal data we hold about you.
                             </li>
                             <li>
-                                <strong className="text-zinc-300">Rectification</strong> —
+                                <strong className="text-zinc-300">Rectification</strong> -
                                 Correct any inaccurate personal data.
                             </li>
                             <li>
-                                <strong className="text-zinc-300">Erasure</strong> — Request
+                                <strong className="text-zinc-300">Erasure</strong> - Request
                                 deletion of your personal data.
                             </li>
                             <li>
-                                <strong className="text-zinc-300">Portability</strong> —
+                                <strong className="text-zinc-300">Portability</strong> -
                                 Receive your data in a structured, machine-readable format.
                             </li>
                             <li>
-                                <strong className="text-zinc-300">Restriction</strong> —
+                                <strong className="text-zinc-300">Restriction</strong> -
                                 Request that we restrict the processing of your personal
                                 data under certain circumstances.
                             </li>
                             <li>
-                                <strong className="text-zinc-300">Objection</strong> — Object
+                                <strong className="text-zinc-300">Objection</strong> - Object
                                 to the processing of your personal data.
                             </li>
                         </ul>

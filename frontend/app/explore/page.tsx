@@ -5,25 +5,18 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { FeedContainer } from "@/components/feed-container";
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
+import { api } from "@/lib/api";
 
 export default function ExplorePage() {
-    const router = useRouter();
+    const { push } = useRouter();
     const [userId, setUserId] = useState<number | null>(null);
     const [isReady, setIsReady] = useState(false);
 
     useEffect(() => {
         const initSession = async () => {
             try {
-                const res = await fetch(`${API_URL}/api/onboarding/init-session`, {
-                    method: "POST",
-                    credentials: "include",
-                });
-                if (res.ok) {
-                    const data = await res.json();
-                    setUserId(data.user_id);
-                }
+                const { data } = await api.post("/api/onboarding/init-session");
+                setUserId(data.user_id);
             } catch (e) {
                 console.error("Failed to init anonymous session:", e);
             } finally {
@@ -67,7 +60,7 @@ export default function ExplorePage() {
                     </div>
                     <div className="flex gap-2 flex-wrap">
                         <button
-                            onClick={() => router.push("/onboarding")}
+                            onClick={() => push("/onboarding")}
                             className="border border-border text-zinc-400 px-3 py-1.5 font-mono text-xs
                                        hover:border-zinc-500 transition-colors"
                         >
@@ -87,7 +80,7 @@ export default function ExplorePage() {
                 {!isReady ? (
                     <div className="flex items-center justify-center py-20">
                         <div className="text-center space-y-4">
-                            <div className="w-8 h-8 border-2 border-primary border-t-transparent animate-spin mx-auto" />
+                            <div className="size-8 border-2 border-primary border-t-transparent animate-spin mx-auto" />
                             <p className="font-mono text-xs text-zinc-600 uppercase tracking-widest">Initializing Session...</p>
                         </div>
                     </div>
@@ -95,7 +88,7 @@ export default function ExplorePage() {
                     <FeedContainer userId={userId} scope="global" />
                 ) : (
                     <div className="text-center py-20 space-y-4">
-                        <Sparkles className="w-12 h-12 text-primary mx-auto opacity-60" />
+                        <Sparkles className="size-12 text-primary mx-auto opacity-60" />
                         <p className="font-mono text-sm text-zinc-500">Could not initialize session.</p>
                     </div>
                 )}

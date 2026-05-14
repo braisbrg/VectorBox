@@ -19,7 +19,7 @@ export const api = axios.create({
 
 // Auth: primary path is the Clerk session JWT (attached by AuthBridge's request
 // interceptor). Legacy httponly `vectorbox_token` cookie remains valid during
-// the Clerk migration — `withCredentials: true` keeps it flowing.
+// the Clerk migration - `withCredentials: true` keeps it flowing.
 
 api.interceptors.response.use(
     (response) => response,
@@ -102,7 +102,7 @@ export interface RecommendationResponse {
 }
 
 export interface RecommendationRequest {
-    // L-1: user_id removed — derived from JWT server-side
+    // L-1: user_id removed - derived from JWT server-side
     cluster_id?: number;
     year_min?: number;
     year_max?: number;
@@ -441,7 +441,7 @@ export const unrejectMovie = async (tmdbId: number): Promise<{ status: string; t
 };
 
 /**
- * Mark a movie as watched from the web (no rewatch tracking — ZIP/RSS still authoritative).
+ * Mark a movie as watched from the web (no rewatch tracking - ZIP/RSS still authoritative).
  */
 export const markWatched = async (tmdbId: number): Promise<{ status: string; tmdb_id: number; watched: boolean }> => {
     const response = await api.post(`/api/recommendations/movies/${tmdbId}/watched`);
@@ -449,7 +449,7 @@ export const markWatched = async (tmdbId: number): Promise<{ status: string; tmd
 };
 
 /**
- * Reroll the "Niche Picks" cluster — advances to the next cluster on the next feed load.
+ * Reroll the "Niche Picks" cluster - advances to the next cluster on the next feed load.
  */
 export const rerollCluster = async (): Promise<void> => {
     await api.post("/api/recommendations/feed/reroll-cluster");

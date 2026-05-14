@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { loginAs } from './fixtures/auth';
 
-test.describe('Phase 3 — Magic UI & Micro-interactions', () => {
+test.describe('Phase 3 - Magic UI & Micro-interactions', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
   });
@@ -15,7 +15,7 @@ test.describe('Phase 3 — Magic UI & Micro-interactions', () => {
       return;
     }
     
-    // Check if we are on a mobile viewport — BorderBeam animation may be disabled for perf
+    // Check if we are on a mobile viewport - BorderBeam animation may be disabled for perf
     const viewport = page.viewportSize();
     if (viewport && viewport.width < 768) {
       test.skip(true, 'SKIP: BorderBeam animation disabled on mobile viewports for performance');
@@ -83,7 +83,7 @@ test.describe('Phase 3 — Magic UI & Micro-interactions', () => {
     }
     const cardCount = await page.locator('div[role="link"]').count();
     if (cardCount === 0) {
-      console.warn('No cards in feed — DB may be empty');
+      console.warn('No cards in feed - DB may be empty');
       return; // soft pass
     }
 
@@ -92,10 +92,10 @@ test.describe('Phase 3 — Magic UI & Micro-interactions', () => {
     const providerBadge = page.locator(
       'svg.lucide-tv'
     ).first();
-    // Soft check — providers depend on ES data availability
+    // Soft check - providers depend on ES data availability
     const count = await providerBadge.count();
     if (count === 0) {
-      console.warn('No provider badges found — may be expected if no ES data');
+      console.warn('No provider badges found - may be expected if no ES data');
     }
   });
 });

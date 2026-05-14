@@ -1,6 +1,6 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
+import { m, AnimatePresence } from "framer-motion";
 import { X, LayoutList, Calendar, Sparkles, Film, Users, Settings, User as UserIcon, LogOut } from "lucide-react";
 import { useUser } from "@clerk/nextjs";
 import { useMobileNav } from "@/components/mobile-nav-context";
@@ -41,12 +41,12 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
     return (
         <AnimatePresence>
             {isOpen && (
-                <motion.div
+                <m.div
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                     exit={{ opacity: 0 }}
                     transition={{ duration: 0.2 }}
-                    className="fixed inset-0 z-50 bg-black/95 backdrop-blur-xl flex flex-col"
+                    className="fixed inset-0 z-50 bg-zinc-950/95 backdrop-blur-xl flex flex-col"
                     role="dialog"
                     aria-modal="true"
                     aria-label={t("ui.menu")}
@@ -59,7 +59,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                             className="p-2 text-white hover:text-primary transition-colors"
                             aria-label={t("aria.close_menu")}
                         >
-                            <X className="w-8 h-8" />
+                            <X className="size-8" />
                         </button>
                     </div>
 
@@ -69,7 +69,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                             const Icon = item.icon;
                             const isActive = currentView === item.id;
                             return (
-                                <motion.button
+                                <m.button
                                     key={item.id}
                                     initial={{ opacity: 0, y: 20 }}
                                     animate={{ opacity: 1, y: 0 }}
@@ -80,10 +80,10 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                                         ${isActive ? "text-primary font-bold" : "text-white/60 hover:text-white"}
                                     `}
                                 >
-                                    <Icon className={`w-6 h-6 ${isActive ? "text-primary" : "hidden"}`} />
+                                    <Icon className={`size-6 ${isActive ? "text-primary" : "hidden"}`} />
                                     <span>{item.label}</span>
-                                    {isActive && <div className="w-2 h-2 rounded-full bg-primary shadow-[0_0_10px_hsl(var(--primary))]" />}
-                                </motion.button>
+                                    {isActive && <div className="size-2 rounded-full bg-primary shadow-[0_0_10px_hsl(var(--primary))]" />}
+                                </m.button>
                             );
                         })}
                     </div>
@@ -93,8 +93,8 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                         {users && currentUserId && (
                             <div className="space-y-4">
                                 <div className="flex flex-col items-center gap-2">
-                                    <div className="w-12 h-12 rounded-full bg-primary/20 flex items-center justify-center border border-primary/50">
-                                        <UserIcon className="w-6 h-6 text-primary" />
+                                    <div className="size-12 rounded-full bg-primary/20 flex items-center justify-center border border-primary/50">
+                                        <UserIcon className="size-6 text-primary" />
                                     </div>
                                     <span className="text-lg font-mono text-white uppercase tracking-widest">
                                         {displayName}
@@ -106,7 +106,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                                         onClick={() => handleViewChange("profile")}
                                         className="flex flex-col items-center gap-2 p-4 bg-white/5 border border-white/10 hover:border-primary transition-colors group"
                                     >
-                                        <UserIcon className="w-5 h-5 group-hover:text-primary" />
+                                        <UserIcon className="size-5 group-hover:text-primary" />
                                         <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 group-hover:text-white">
                                             {t("sidebar.profile")}
                                         </span>
@@ -116,7 +116,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                                         onClick={handleLogout}
                                         className="flex flex-col items-center gap-2 p-4 bg-white/5 border border-white/10 hover:border-red-500 transition-colors group"
                                     >
-                                        <LogOut className="w-5 h-5 text-red-500 group-hover:text-red-400" />
+                                        <LogOut className="size-5 text-red-500 group-hover:text-red-400" />
                                         <span className="text-[10px] font-mono uppercase tracking-widest text-zinc-400 group-hover:text-white">
                                             {t("app.logout")}
                                         </span>
@@ -129,7 +129,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                             <LanguageToggle isCollapsed={false} />
                         </div>
                     </div>
-                </motion.div>
+                </m.div>
             )}
         </AnimatePresence>
     );

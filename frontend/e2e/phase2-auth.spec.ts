@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { loginAs, registerUser, getAuthToken, QA_USER } from './fixtures/auth';
 
-test.describe('Phase 2 — Auth Guard', () => {
+test.describe('Phase 2 - Auth Guard', () => {
   test('Redirect to login when unauthenticated', async ({ page }) => {
     await page.goto('/');
     await expect(page).toHaveURL(/login/);
@@ -79,7 +79,7 @@ test.describe('Phase 2 — Auth Guard', () => {
     await expect(page.getByText(/initialization required/i)).toBeVisible();
   });
 
-  test('IDOR — feed uses token identity not query param', async ({ page }) => {
+  test('IDOR - feed uses token identity not query param', async ({ page }) => {
     await loginAs(page);
     const token = await getAuthToken(page);
 
@@ -93,7 +93,7 @@ test.describe('Phase 2 — Auth Guard', () => {
     expect([200, 403]).toContain(response.status());
   });
 
-  test('IDOR — /hidden-gems blocked without auth', async ({ request }) => {
+  test('IDOR - /hidden-gems blocked without auth', async ({ request }) => {
     const response = await request.get(
       'http://localhost:8000/api/recommendations/hidden-gems?country_code=ES'
     );
@@ -124,7 +124,7 @@ test.describe('Phase 2 — Auth Guard', () => {
       await page.evaluate(() => localStorage.removeItem('vectorbox_user'));
     } catch {}
 
-    // 4. Navegar a root — el Dashboard llamará a /api/auth/me,
+    // 4. Navegar a root - el Dashboard llamará a /api/auth/me,
     //    recibirá el 401 mockeado, y el interceptor de axios hará
     //    window.location.href = "/login"
     try {

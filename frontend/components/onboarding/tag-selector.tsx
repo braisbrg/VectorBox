@@ -40,7 +40,7 @@ interface TagSelectorProps {
 }
 
 // Cycle order: neutral → avoided → neutral.
-// Avoid-first matches the original spec wireframe — first click expresses
+// Avoid-first matches the original spec wireframe - first click expresses
 // the most common signal (rule out content).
 const STATE_CYCLE: Record<TagState, TagState> = {
     neutral: "avoided",
@@ -74,11 +74,11 @@ export function TagSelector({ value, onChange, compact = false }: TagSelectorPro
             {!compact && (
                 <div className="flex items-center gap-4 text-[10px] font-mono text-zinc-600 uppercase tracking-widest">
                     <span className="flex items-center gap-1">
-                        <span className="w-2 h-2 border border-red-500/60 bg-red-500/20" />
+                        <span className="size-2 border border-red-500/60 bg-red-500/20" />
                         Avoid
                     </span>
                     <span className="flex items-center gap-1">
-                        <span className="w-2 h-2 border border-zinc-700" />
+                        <span className="size-2 border border-zinc-700" />
                         Neutral
                     </span>
                 </div>
@@ -127,9 +127,10 @@ export function tagStateToPreferences(
     states: Record<string, TagState>
 ): TagPreferences {
     return {
-        avoided: Object.entries(states)
-            .filter(([, v]) => v === "avoided")
-            .map(([k]) => k),
+        avoided: Object.entries(states).reduce((acc, [k, v]) => {
+            if (v === "avoided") acc.push(k);
+            return acc;
+        }, [] as string[]),
     };
 }
 

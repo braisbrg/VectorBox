@@ -17,7 +17,7 @@ export function AcidError({ message = "SYSTEM_FAILURE", onRetry, className }: Ac
             aria-atomic="true"
             className={cn(
                 "flex flex-col items-center justify-center p-8 min-h-[400px] w-full",
-                "bg-black border border-[#CCFF00]/20 rounded-xl",
+                "bg-zinc-950 border border-[#CCFF00]/20 rounded-xl",
                 "font-[family-name:var(--font-mono-acid)] text-[#CCFF00]",
                 "relative overflow-hidden",
                 className
@@ -30,11 +30,11 @@ export function AcidError({ message = "SYSTEM_FAILURE", onRetry, className }: Ac
             {/* Icon */}
             <div className="mb-6 relative">
                 <div className="absolute inset-0 bg-[#CCFF00] blur-xl opacity-20 animate-pulse" />
-                <AlertTriangle className="w-16 h-16 relative z-10" strokeWidth={1.5} />
+                <AlertTriangle className="size-16 relative z-10" strokeWidth={1.5} />
             </div>
 
             {/* Text */}
-            <h2 className="text-2xl font-bold tracking-widest mb-2 uppercase animate-glitch">
+            <h2 className="text-2xl font-semibold tracking-widest mb-2 uppercase animate-glitch">
                 {message}
             </h2>
             <p className="text-sm text-[#CCFF00]/60 mb-8 max-w-md text-center">
@@ -51,7 +51,7 @@ export function AcidError({ message = "SYSTEM_FAILURE", onRetry, className }: Ac
                 >
                     <div className="absolute inset-0 bg-[#CCFF00]/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
                     <span className="relative flex items-center gap-2 font-bold tracking-wider">
-                        <RefreshCw className="w-4 h-4 group-hover:animate-spin" />
+                        <RefreshCw className="size-4 group-hover:animate-spin" />
                         RELOAD_SYSTEM
                     </span>
                 </button>

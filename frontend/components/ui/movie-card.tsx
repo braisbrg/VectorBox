@@ -1,6 +1,5 @@
 "use client";
 
-import { motion } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
 import type { Contributor } from "@/types/feed";
@@ -80,7 +79,7 @@ export function MovieCard({
                 className="flex flex-col h-full"
             >
                 {/* Poster Area */}
-                <div className="relative aspect-[2/3] w-full overflow-hidden bg-black">
+                <div className="relative aspect-[2/3] w-full overflow-hidden bg-zinc-950">
                     {!imageError && posterPath ? (
                         <Image
                             src={getTMDBImageUrl(posterPath)}
@@ -92,18 +91,18 @@ export function MovieCard({
                             onError={() => setImageError(true)}
                         />
                     ) : (
-                        <div className="w-full h-full flex items-center justify-center text-zinc-800">
+                        <div className="size-full flex items-center justify-center text-zinc-800">
                             <Film size={48} strokeWidth={1} />
                         </div>
                     )}
 
-                    {/* VB Score Overlay (Top Left) — release badge for upcoming, score otherwise */}
+                    {/* VB Score Overlay (Top Left) - release badge for upcoming, score otherwise */}
                     {releaseBadge ? (
-                        <div className="absolute top-0 left-0 z-20 bg-black/80 border-r border-b border-zinc-800 px-1.5 py-0.5 font-mono text-[10px] font-black text-primary tracking-tighter shadow-[2px_2px_0px_rgba(0,0,0,0.5)]">
+                        <div className="absolute top-0 left-0 z-20 bg-zinc-950/80 border-r border-b border-zinc-800 px-1.5 py-0.5 font-mono text-[10px] font-black text-primary tracking-tighter shadow-[2px_2px_0px_rgba(0,0,0,0.5)]">
                             {releaseBadge}
                         </div>
                     ) : score > 0 && (
-                        <div className="absolute top-0 left-0 z-20 bg-black/80 border-r border-b border-zinc-800 px-1.5 py-0.5 font-mono text-[10px] font-black text-primary tracking-tighter shadow-[2px_2px_0px_rgba(0,0,0,0.5)]">
+                        <div className="absolute top-0 left-0 z-20 bg-zinc-950/80 border-r border-b border-zinc-800 px-1.5 py-0.5 font-mono text-[10px] font-black text-primary tracking-tighter shadow-[2px_2px_0px_rgba(0,0,0,0.5)]">
                             {score.toFixed(0)}
                         </div>
                     )}
@@ -116,7 +115,7 @@ export function MovieCard({
                 </div>
 
                 {/* Bottom Data Bar */}
-                <div className="bg-black p-3 border-t border-zinc-800 flex flex-col gap-1 z-20">
+                <div className="bg-zinc-950 p-3 border-t border-zinc-800 flex flex-col gap-1 z-20">
                     <div className="flex justify-between items-start gap-2">
                         <h3 className="font-mono text-[11px] font-bold text-zinc-100 uppercase tracking-tighter truncate flex-1 group-hover:text-primary transition-colors">
                             {displayTitle}
@@ -149,7 +148,7 @@ export function MovieCard({
                             onReject(id);
                         }}
                         disabled={isRejecting}
-                        className={`text-zinc-500 hover:text-red-500 p-1 bg-black/50 border border-zinc-800 hover:border-red-500 transition-all flex items-center gap-1 group/rej ${isRejecting ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        className={`text-zinc-500 hover:text-red-500 p-1 bg-zinc-950/50 border border-zinc-800 hover:border-red-500 transition-all flex items-center gap-1 group/rej ${isRejecting ? 'opacity-50 cursor-not-allowed' : ''}`}
                         title="Not Interested"
                     >
                         {isRejecting ? (
@@ -167,7 +166,7 @@ export function MovieCard({
                             onMarkWatched(id);
                         }}
                         disabled={isMarkingWatched}
-                        className={`text-zinc-400 hover:text-primary p-1 bg-black/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/seen ${isMarkingWatched ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        className={`text-zinc-400 hover:text-primary p-1 bg-zinc-950/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/seen ${isMarkingWatched ? 'opacity-50 cursor-not-allowed' : ''}`}
                         title="Mark as watched"
                         aria-label="Mark as watched"
                     >
@@ -184,7 +183,7 @@ export function MovieCard({
                         e.stopPropagation();
                         onInspect?.(id, contributors);
                     }}
-                    className="text-zinc-500 hover:text-primary p-1 bg-black/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/btn"
+                    className="text-zinc-500 hover:text-primary p-1 bg-zinc-950/50 border border-zinc-800 hover:border-primary transition-all flex items-center gap-1 group/btn"
                     title={t("movie.inspect") || "INSPECT"}
                 >
                     <Info size={10} className="group-hover/btn:animate-pulse" />
