@@ -77,11 +77,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Database connection failed: {e}")
         
-    # Initialize Redis Cache
+    # Initialize Redis — store as singleton on app.state so all request handlers
+    # share the connection pool rather than creating new clients per request.
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
     redis = aioredis.from_url(redis_url, encoding="utf8", decode_responses=True)
+    app.state.redis = redis
     FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
-    logger.info(f"Redis Cache initialized at {redis_url}")
+    logger.info(f"Redis singleton initialized at {redis_url}")
     
     # Initialize Qdrant collection
     qdrant = QdrantService()
@@ -97,6 +99,9 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down VectorBox Backend...")
     if hasattr(app.state, 'http_client'):
         await app.state.http_client.aclose()
+    if hasattr(app.state, 'redis'):
+        await app.state.redis.aclose()
+        logger.info("Redis singleton closed.")
     await close_services()
 
 
@@ -221,20 +226,16 @@ async def health_check(qdrant: QdrantService = Depends(get_qdrant_service)) -> H
         health_status["status"] = "unhealthy"
         logger.error(f"Health Check Failed (Postgres): {e}")
 
-    # 2. Redis Check
+    # 2. Redis Check — reuse the lifespan singleton instead of ad-hoc connection
     try:
-        from fastapi_cache import FastAPICache
-        # Access the redis client from the backend
-        redis_backend = FastAPICache.get_backend()
-        # FastAPICache stores the client in .redis if it's RedisBackend, 
-        # but let's try to ping if possible or just rely on the fact we initialized it.
-        # Better: create a new connection or use the global one if approachable.
-        # In lifespan we assigned it, but didn't store it globally accessible easily except via FastAPICache.
-        # Actually proper way:
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
-        r = aioredis.from_url(redis_url, encoding="utf8", decode_responses=True)
-        await r.ping()
-        await r.close()
+        redis = getattr(app.state, 'redis', None)
+        if redis:
+            await redis.ping()
+        else:
+            # Fallback during tests / cold boot
+            r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), encoding="utf8", decode_responses=True)
+            await r.ping()
+            await r.aclose()
         health_status["dependencies"]["redis"] = "ok"
     except Exception as e:
         health_status["dependencies"]["redis"] = f"down: {str(e)}"

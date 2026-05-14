@@ -1,5 +1,7 @@
 from datetime import timedelta
 from typing import AsyncGenerator, Optional
+import httpx
+from fastapi import Request
 from services.tmdb_client import TMDBClient
 from services.omdb_client import OMDbClient
 from services.qdrant_service import QdrantService
@@ -59,6 +61,20 @@ async def close_services():
         _omdb_client = None
         
     logger.info("All backend services closed.")
+
+
+async def get_redis(request: Request):
+    """
+    Returns the app-scoped Redis singleton stored by the lifespan handler.
+    Falls back to None if Redis is unavailable (never raises — callers must
+    guard against None to ensure graceful degradation).
+    """
+    return getattr(request.app.state, 'redis', None)
+
+
+async def get_http_client(request: Request) -> httpx.AsyncClient:
+    """Returns the global lifespan httpx.AsyncClient."""
+    return request.app.state.http_client
 
 
 # Auth Dependencies

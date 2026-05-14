@@ -23,7 +23,7 @@ from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from services.feed_service import FeedService
 from services.provider_service import ProviderService
-from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_current_or_anonymous_user, get_embedding_service
+from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, get_current_or_anonymous_user, get_embedding_service, get_redis
 from limiter import limiter
 from models.schemas import TokenResponse
 from services.embedding_service import EmbeddingService
@@ -483,6 +483,7 @@ async def get_feed(
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
     embedding: EmbeddingService = Depends(get_embedding_service),
+    redis=Depends(get_redis),
     background_tasks: BackgroundTasks = None
 ):
     """
@@ -519,7 +520,8 @@ async def get_feed(
             streaming_providers=provider_ids,
             tmdb=tmdb,
             qdrant=qdrant,
-            background_tasks=background_tasks
+            background_tasks=background_tasks,
+            redis_client=redis,
         )
             
     except Exception as e:

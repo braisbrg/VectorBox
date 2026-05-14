@@ -4,7 +4,7 @@ SQLAlchemy database models with security considerations
 from sqlalchemy import Column, Integer, String, Float, DateTime, Date, ForeignKey, Text, Boolean, Index
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import ARRAY, UUID, JSONB
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
 from config import Base
@@ -18,7 +18,7 @@ class User(Base):
     uuid = Column(UUID(as_uuid=True), default=uuid.uuid4, unique=True, nullable=False)
     username = Column(String(50), unique=True, index=True, nullable=False)
     email = Column(String(255), unique=True, index=True)  # For future auth
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     country_code = Column(String(2), default="ES")  # ISO 3166-1 alpha-2
     
     letterboxd_username = Column(String(50), nullable=True, index=True)  # Linked Letterboxd profile
@@ -33,7 +33,7 @@ class User(Base):
     onboarding_ratings_count = Column(Integer, nullable=False, server_default="0")
 
     # Activity tracking (anonymous user cleanup)
-    last_active_at = Column(DateTime, nullable=True, default=datetime.utcnow)
+    last_active_at = Column(DateTime(timezone=True), nullable=True, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     ratings = relationship("UserRating", back_populates="user", cascade="all, delete-orphan")
@@ -100,8 +100,8 @@ class Movie(Base):
     last_metadata_refresh = Column(DateTime, nullable=True)
     last_enriched = Column(DateTime, nullable=True)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
     
     # Relationships
     ratings = relationship("UserRating", back_populates="movie")
@@ -128,7 +128,7 @@ class UserRating(Base):
     watched_date = Column(DateTime)
     watch_count = Column(Integer, default=1, server_default="1")
     review = Column(Text)  # Optional review text
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     user = relationship("User", back_populates="ratings")
@@ -153,7 +153,7 @@ class UserCluster(Base):
     dominant_genres = Column(ARRAY(String))
     sample_movie_ids = Column(ARRAY(Integer))  # Representative movies
     medoid_movie_id = Column(Integer, nullable=True)  # Internal Movie.id of the medoid film
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     user = relationship("User", back_populates="clusters")
@@ -173,7 +173,7 @@ class StreamingProvider(Base):
     provider_name = Column(String(100))  # e.g., "Netflix", "HBO Max"
     country_code = Column(String(2))  # ISO 3166-1 alpha-2
     is_active = Column(Boolean, default=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     user = relationship("User", back_populates="streaming_providers")
@@ -191,7 +191,7 @@ class MovieAvailability(Base):
     movie_id = Column(Integer, ForeignKey("movies.id", ondelete="CASCADE"), nullable=False)
     country_code = Column(String(2), nullable=False)  # ISO 3166-1 alpha-2
     providers = Column(JSONB)  # List of provider names/IDs
-    last_updated = Column(DateTime, default=datetime.utcnow)
+    last_updated = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
     movie = relationship("Movie", backref="availability")

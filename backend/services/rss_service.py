@@ -159,6 +159,25 @@ class RSSService:
                     return
             await self.movie_service.enrich_movie(m)
 
+        # N+1 FIX: Pre-fetch all existing UserRatings for this user in one query.
+        # The loop below previously fired one SELECT per item; now it's a single batch.
+        # We collect all internal movie IDs we already know about from our batch lookups.
+        _known_movie_ids: set[int] = set()
+        for m in movies_by_tmdb.values():
+            _known_movie_ids.add(m.id)
+        for m in movies_by_uri.values():
+            _known_movie_ids.add(m.id)
+
+        existing_ratings_by_movie_id: Dict[int, "UserRating"] = {}
+        if _known_movie_ids:
+            _er_result = await self.db.execute(
+                select(UserRating).where(
+                    UserRating.user_id == user_id,
+                    UserRating.movie_id.in_(list(_known_movie_ids))
+                )
+            )
+            existing_ratings_by_movie_id = {ur.movie_id: ur for ur in _er_result.scalars().all()}
+
         for item in items:
             stats["processed"] += 1
             try:
@@ -249,14 +268,18 @@ class RSSService:
                         stats["errors"] += 1
                         continue
                 # 7. Upsert rating safely
-                # Pre-load existing rating to track rewatch count
-                existing_rating_result = await self.db.execute(
-                    select(UserRating).where(
-                        UserRating.user_id == user_id,
-                        UserRating.movie_id == movie.id
+                # Use pre-fetched batch map for known movies; fall back to a live query for
+                # movies just created via get_or_create_movie (not in the initial batch).
+                if movie.id in existing_ratings_by_movie_id:
+                    existing_rating = existing_ratings_by_movie_id[movie.id]
+                else:
+                    existing_rating_result = await self.db.execute(
+                        select(UserRating).where(
+                            UserRating.user_id == user_id,
+                            UserRating.movie_id == movie.id
+                        )
                     )
-                )
-                existing_rating = existing_rating_result.scalar_one_or_none()
+                    existing_rating = existing_rating_result.scalar_one_or_none()
 
                 # watch_count bump rule (idempotent):
                 #   - Only when RSS flags this entry as a rewatch (<letterboxd:rewatch>Yes</...>).

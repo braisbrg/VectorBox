@@ -210,20 +210,23 @@ class FeedService:
         streaming_providers: List[int],
         tmdb: TMDBClient,
         qdrant: QdrantService,
-        background_tasks = None
+        background_tasks = None,
+        redis_client = None,
     ) -> FeedResponse:
         """
         Generate the main feed using FULLY PARALLEL EXECUTION.
         Includes high-level Redis caching for blazing fast loads.
         """
         # --- CACHE INTERCEPT BLOCK ---
-        redis_url = REDIS_URL
-        r = None
+        # Prefer the injected lifespan singleton (shared connection pool).
+        # Only create a new client if nothing was injected (e.g. direct test calls).
+        r = redis_client
         prov_str = ",".join(map(str, sorted(streaming_providers)))
-        try:
-            r = aioredis.from_url(redis_url, decode_responses=True)
-        except Exception as e:
-            logger.warning(f"Redis connection failed: {e}")
+        if r is None:
+            try:
+                r = aioredis.from_url(REDIS_URL, decode_responses=True)
+            except Exception as e:
+                logger.warning(f"Redis connection failed: {e}")
         # --- END CACHE INTERCEPT ---
 
         # --- FIX 4: Pre-compute anti_vector once — Signal A and Signal B both need it ---

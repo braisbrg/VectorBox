@@ -510,6 +510,12 @@ class RecommendationEngine:
             anti_vector = precomputed_anti_vector if precomputed_anti_vector is not None else await self._get_anti_vector(user_id, db, qdrant)
             anti_vector_np = np.array(anti_vector) if anti_vector else None
 
+            # N+1 FIX: Batch-fetch vectors for top anchor candidates in a single Qdrant call
+            # instead of one get_vector() per iteration. We cap at 10 anchors since Signal A
+            # returns on the first anchor that produces sufficient results.
+            _top_anchor_tmdb_ids = [m.tmdb_id for _, _, m in scored_candidates[:10]]
+            _anchor_vectors_map: Dict[int, list] = await qdrant.get_vectors_batch(_top_anchor_tmdb_ids)
+
             for _, user_rating, anchor_movie in scored_candidates:
                 logger.info(f"[Because you watched] Anchor: {anchor_movie.title} ({anchor_movie.year}) rating={user_rating.rating} watch_count={getattr(user_rating, 'watch_count', 1)}")
 
@@ -518,7 +524,9 @@ class RecommendationEngine:
                 # Regenerating on the fly creates a different vector space and produces
                 # off-theme neighbours. Only fall back to fresh encoding when the anchor
                 # has no stored vector (e.g. just-ingested film).
-                anchor_vector = await qdrant.get_vector(anchor_movie.tmdb_id)
+                # Use the pre-fetched batch map; fall back to a live call only for anchors
+                # outside the initial top-10 window (rare — Signal A exits on first hit).
+                anchor_vector = _anchor_vectors_map.get(anchor_movie.tmdb_id) or await qdrant.get_vector(anchor_movie.tmdb_id)
 
                 if not anchor_vector and self.embedding_service:
                     text_override = anchor_movie.cinematic_description if anchor_movie.cinematic_description else None

@@ -2,7 +2,11 @@
 Qdrant vector database service for semantic search
 """
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
+from qdrant_client.models import (
+    Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue,
+    HnswConfigDiff, SearchParams, ScalarQuantization, ScalarQuantizationConfig,
+    ScalarType, QuantizationConfig, PayloadSchemaType,
+)
 from typing import List, Dict, Optional, Union
 from models.external_schemas import QdrantPayload
 import os
@@ -37,10 +41,16 @@ class QdrantService:
                         collection_name=self.COLLECTION_NAME,
                         vectors_config=VectorParams(
                             size=self.VECTOR_SIZE,
-                            distance=Distance.COSINE
+                            distance=Distance.COSINE,
+                            # HNSW tuning: m=32 increases graph connectivity for better recall
+                            # at the cost of ~2x index size vs default m=16. ef_construct=200
+                            # improves build quality. Both are safe for a 384-dim collection.
+                            hnsw_config=HnswConfigDiff(m=32, ef_construct=200),
                         )
                     )
                     logger.info("Collection created successfully")
+                    # Initialize payload indexes for filterable fields
+                    await self.init_payload_indexes()
                 except Exception as e:
                     # Handle Race Condition: 409 Conflict means it was created by another process
                     if "409" in str(e) or "already exists" in str(e):
@@ -49,10 +59,40 @@ class QdrantService:
                         raise e
             else:
                 logger.info(f"Collection {self.COLLECTION_NAME} already exists")
+                # Ensure payload indexes exist (idempotent — no-op if already present)
+                await self.init_payload_indexes()
         except Exception as e:
             logger.error(f"Failed to initialize Qdrant collection: {e}")
             raise
     
+    async def init_payload_indexes(self) -> None:
+        """
+        Create payload indexes for filterable fields. Idempotent — safe to call
+        on every startup; Qdrant returns a no-op for already-existing indexes.
+        These replace full payload scans for the vectorbox_score >= 55 filter
+        used in every recommendation path.
+        """
+        indexes = [
+            ("vectorbox_score", PayloadSchemaType.FLOAT),
+            ("vote_count", PayloadSchemaType.INTEGER),
+            ("year", PayloadSchemaType.INTEGER),
+            ("popularity", PayloadSchemaType.FLOAT),
+        ]
+        for field_name, field_schema in indexes:
+            try:
+                await self.client.create_payload_index(
+                    collection_name=self.COLLECTION_NAME,
+                    field_name=field_name,
+                    field_schema=field_schema,
+                )
+                logger.debug(f"Payload index ensured: {field_name}")
+            except Exception as e:
+                # 400 / "already exists" is expected on subsequent boots
+                if "already exists" in str(e).lower() or "400" in str(e):
+                    pass
+                else:
+                    logger.warning(f"Could not create payload index for {field_name}: {e}")
+
     async def upsert_movie_vector(
         self,
         movie_id: int,
@@ -338,17 +378,20 @@ class QdrantService:
                 offset=offset,
                 score_threshold=effective_threshold,
                 query_filter=qdrant_filter,
+                # Search-time HNSW ef: higher = better recall at cost of latency.
+                # ef=128 is the recommended production baseline for 384-dim MiniLM.
+                search_params=SearchParams(hnsw_ef=128, exact=False),
                 # [OPTIMIZATION] Payload Selector
                 # Only fetch essential fields for sorting/filtering.
                 # Exclude heavy text fields (overview, keywords, cast, directors)
                 with_payload=[
-                    "tmdb_id", 
-                    "title", 
-                    "year", 
-                    "vectorbox_score", 
-                    "vote_count", 
+                    "tmdb_id",
+                    "title",
+                    "year",
+                    "vectorbox_score",
+                    "vote_count",
                     "popularity",
-                    "poster_path", # Useful for debugging or quick UI
+                    "poster_path",  # Useful for debugging or quick UI
                     "vote_average"
                 ]
             )
