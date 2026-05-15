@@ -13,7 +13,7 @@ Phases (run in order, can be filtered with --phases):
                              movies that don't have it. Hits Groq.
     5. reset_profiles      — rebuilds user clusters. No external API.
 
-OMDb budget is tracked in the `api_budget` table (1000/day default).
+OMDb budget is tracked in the `api_budget` table (100k/day default — Patron tier).
 Groq budget is implicit: phases stop gracefully on DailyLimitExhausted.
 
 Usage:
@@ -57,7 +57,7 @@ logger = logging.getLogger("maintenance")
 # OMDb budget helpers (api_budget table)
 # ---------------------------------------------------------------------------
 
-DEFAULT_OMDB_DAILY_LIMIT = 1000
+DEFAULT_OMDB_DAILY_LIMIT = 100_000  # OMDb Patron tier (paid, $1/mo). Free tier was 1000.
 
 
 async def get_or_create_today_budget(db, override_limit: Optional[int] = None) -> ApiBudget:
