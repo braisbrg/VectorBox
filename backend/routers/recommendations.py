@@ -955,6 +955,96 @@ async def mark_watched(
     return {"status": "ok", "tmdb_id": tmdb_id, "watched": True}
 
 
+@router.get("/movies/watched-on-web")
+async def list_web_watches(
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """F-22: list films the user marked as watched directly on VectorBox
+    (i.e. `is_watched=true AND watch_count=0` — the sentinel `mark_watched`
+    sets for web actions). These never made it to the user's Letterboxd
+    account because we can't write there; this endpoint surfaces them so
+    the UI can offer either manual reconciliation or a CSV export."""
+    user_id = current_user.user_id
+
+    result = await db.execute(
+        select(
+            Movie.tmdb_id, Movie.title, Movie.year,
+            Movie.letterboxd_uri, Movie.poster_path,
+            UserRating.created_at,
+        )
+        .join(UserRating, Movie.id == UserRating.movie_id)
+        .where(UserRating.user_id == user_id)
+        .where(UserRating.is_watched.is_(True))
+        .where(UserRating.watch_count == 0)
+        .order_by(UserRating.created_at.desc())
+    )
+    rows = result.all()
+    return [
+        {
+            "tmdb_id": r.tmdb_id,
+            "title": r.title,
+            "year": r.year,
+            "letterboxd_uri": r.letterboxd_uri,
+            "poster_path": r.poster_path,
+            "watched_date": r.created_at.date().isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/movies/watched-on-web.csv")
+async def export_web_watches_csv(
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """F-22: Letterboxd-import-compatible CSV of the user's web-marked
+    watches. Letterboxd accepts a diary import with columns:
+        Letterboxd URI (preferred, unambiguous)
+        OR Title + Year
+        WatchedDate (YYYY-MM-DD)
+    See: https://letterboxd.com/about/importing-data/.
+
+    We emit all three when available so the user can drop the file
+    directly into Letterboxd's "Import" tool. Films we don't have a URI
+    for fall back to Title+Year matching on Letterboxd's side.
+    """
+    import csv
+    import io
+    from fastapi.responses import StreamingResponse
+
+    user_id = current_user.user_id
+
+    result = await db.execute(
+        select(Movie.title, Movie.year, Movie.letterboxd_uri, UserRating.created_at)
+        .join(UserRating, Movie.id == UserRating.movie_id)
+        .where(UserRating.user_id == user_id)
+        .where(UserRating.is_watched.is_(True))
+        .where(UserRating.watch_count == 0)
+        .order_by(UserRating.created_at.asc())
+    )
+    rows = result.all()
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["Letterboxd URI", "Title", "Year", "WatchedDate"])
+    for r in rows:
+        writer.writerow([
+            r.letterboxd_uri or "",
+            r.title or "",
+            r.year or "",
+            r.created_at.date().isoformat() if r.created_at else "",
+        ])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="vectorbox-web-watches-{user_id}.csv"'
+        },
+    )
+
+
 @router.post("/feed/reroll-cluster")
 async def reroll_cluster(
     current_user: TokenResponse = Depends(get_current_user),

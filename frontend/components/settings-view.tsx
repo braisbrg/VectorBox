@@ -10,6 +10,7 @@ import { useSettings } from "@/lib/hooks";
 import { syncRSS, VectorboxUser, getRejectedMovies, unrejectMovie, getTMDBImageUrl, USER_SESSION_KEY } from "@/lib/api";
 import { api } from "@/lib/api";
 import { UploadZone } from "@/components/upload-zone";
+import { WebWatchesPanel } from "@/components/web-watches-panel";
 import {
     TagSelector,
     TagState,
@@ -124,6 +125,9 @@ export function SettingsView() {
                         )}
                     </div>
                 )}
+
+                {/* F-22: Web Watches → Letterboxd export */}
+                <WebWatchesPanel />
 
                 {/* Letterboxd Data - Re-upload */}
                 {currentUser && (
