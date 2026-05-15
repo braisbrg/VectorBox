@@ -16,6 +16,7 @@ from config import get_db
 from dependencies import get_tmdb_client, get_current_user, get_qdrant_service
 from limiter import limiter
 import logging
+import os
 from difflib import SequenceMatcher
 from typing import Optional
 
@@ -30,10 +31,14 @@ logger = logging.getLogger(__name__)
 # cinema (cine galego/español de festival, 1-5 TMDB votes) is not rejected
 # along with the phantoms. Phantoms always fail title similarity because
 # the scraped title doesn't match the TMDB top-1.
-_FUZZY_TITLE_RATIO_STRICT = 0.95    # near-exact title match → bypass vote_count
-_FUZZY_TITLE_RATIO_MIN = 0.85       # weaker match still requires vote_count gate
-_FUZZY_VOTE_COUNT_MIN = 20          # below 20 the candidate must clear the strict ratio
-_FUZZY_YEAR_TOLERANCE = 1           # ± years
+#
+# All four thresholds are env-tunable (F-34) so operators can dial recall vs
+# precision without a redeploy. Defaults are the values validated against
+# user 212's 552-row watchlist audit on 2026-05-15.
+_FUZZY_TITLE_RATIO_STRICT = float(os.getenv("WATCHLIST_FUZZY_TITLE_STRICT", "0.95"))
+_FUZZY_TITLE_RATIO_MIN = float(os.getenv("WATCHLIST_FUZZY_TITLE_MIN", "0.85"))
+_FUZZY_VOTE_COUNT_MIN = int(os.getenv("WATCHLIST_FUZZY_VOTE_MIN", "20"))
+_FUZZY_YEAR_TOLERANCE = int(os.getenv("WATCHLIST_FUZZY_YEAR_TOLERANCE", "1"))
 
 
 def _normalise_for_title_match(text: str) -> str:
@@ -184,7 +189,12 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
             watchlist_added = 0
 
             try:
-                watchlist_items = await scraper.scrape_watchlist_recent(letterboxd_profile)
+                watchlist_items = await scraper.scrape_watchlist_all(letterboxd_profile)
+
+                # Collect the resolved tmdb_ids so we can reconcile at the end
+                # (F-31): set is_watchlist=false for any rating row whose
+                # movie isn't in the current Letterboxd watchlist anymore.
+                resolved_movie_ids: set[int] = set()
 
                 for item in watchlist_items:
                     film_slug = item["film_slug"]
@@ -230,6 +240,8 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
                     if not movie:
                         continue
 
+                    resolved_movie_ids.add(movie.id)
+
                     rating_stmt = select(UserRating).where(
                         UserRating.user_id == user_id,
                         UserRating.movie_id == movie.id
@@ -242,6 +254,36 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
                     else:
                         db.add(UserRating(user_id=user_id, movie_id=movie.id, is_watchlist=True))
                         watchlist_added += 1
+
+                # F-31 reconcile: anything currently flagged is_watchlist=true
+                # that wasn't resolved by this sync (i.e. user removed it from
+                # Letterboxd) gets demoted to is_watchlist=false. is_watched /
+                # rating are preserved — the row stays, only the watchlist
+                # flag flips. Safe ONLY because scrape_watchlist_all paginates
+                # the full list; otherwise we'd wrongly clear page-2+ entries.
+                # If the scrape returned 0 films we skip the reconcile to
+                # avoid wiping the watchlist on a transient Letterboxd outage.
+                watchlist_removed = 0
+                if resolved_movie_ids:
+                    from sqlalchemy import update as sql_update
+                    upd_result = await db.execute(
+                        sql_update(UserRating)
+                        .where(UserRating.user_id == user_id)
+                        .where(UserRating.is_watchlist.is_(True))
+                        .where(UserRating.movie_id.notin_(resolved_movie_ids))
+                        .values(is_watchlist=False)
+                    )
+                    watchlist_removed = upd_result.rowcount or 0
+                    if watchlist_removed:
+                        logger.info(
+                            f"[watchlist-reconcile] user_id={user_id} demoted {watchlist_removed} "
+                            f"rows whose film was no longer in the Letterboxd watchlist"
+                        )
+                else:
+                    logger.warning(
+                        f"[watchlist-reconcile] user_id={user_id} resolved 0 films; "
+                        f"skipping reconcile to avoid wiping on a transient scrape failure"
+                    )
 
             finally:
                 await scraper.close()
@@ -257,7 +299,10 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
             from config import REDIS_URL
             await invalidate_profile_summary(user_id, REDIS_URL)
             
-            logger.info(f"Background sync complete for user_id={user_id}. Watchlist added: {watchlist_added}")
+            logger.info(
+                f"Background sync complete for user_id={user_id}. "
+                f"Watchlist added: {watchlist_added}, demoted by reconcile: {watchlist_removed}"
+            )
 
         except Exception as e:
             logger.error(f"Background sync failed for user_id={user_id}: {e}")

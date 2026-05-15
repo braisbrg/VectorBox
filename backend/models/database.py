@@ -198,16 +198,38 @@ class StreamingProvider(Base):
 class MovieAvailability(Base):
     """Cache for movie streaming availability by country"""
     __tablename__ = "movie_availability"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     movie_id = Column(Integer, ForeignKey("movies.id", ondelete="CASCADE"), nullable=False)
     country_code = Column(String(2), nullable=False)  # ISO 3166-1 alpha-2
     providers = Column(JSONB)  # List of provider names/IDs
     last_updated = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    
+
     # Relationships
     movie = relationship("Movie", backref="availability")
-    
+
     __table_args__ = (
         Index('idx_movie_country', 'movie_id', 'country_code', unique=True),
+    )
+
+
+class ZipUpload(Base):
+    """Letterboxd ZIP-export idempotency log (F-35).
+
+    Keyed by (user_id, sha256 of the uploaded bytes). If the same user
+    re-uploads the same file, the second request is a no-op. Also stores
+    `max_watched_date` so a later upload with an older max is flagged as
+    a likely stale-backup warning.
+    """
+    __tablename__ = "zip_uploads"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    films_count = Column(Integer, nullable=True)
+    max_watched_date = Column(Date, nullable=True)
+    processed_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("uq_zip_uploads_user_sha", "user_id", "sha256", unique=True),
     )

@@ -22,8 +22,10 @@ from services.provider_service import ProviderService
 
 from services.data_processor import DataProcessor
 from services.task_store import get_task_store
-from models.database import User, Movie, UserRating
+from models.database import User, Movie, UserRating, ZipUpload
 from models.schemas import CSVUploadResponse, TokenResponse
+import hashlib
+from datetime import date as _date
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -622,12 +624,19 @@ async def upload_export(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    force: bool = False,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Upload Letterboxd export ZIP file.
     Parses ratings, watchlist, likes, and watched history.
+
+    F-35 idempotency:
+      - Returns 409 if (user, sha256) already processed.
+      - Returns 409 if max(Watched Date) in the new ZIP is older than the
+        last successfully processed ZIP for this user. Pass `?force=true`
+        to bypass the staleness check (user knows what they're doing).
     """
     user_id = current_user.user_id
 
@@ -638,14 +647,14 @@ async def upload_export(
         file.file.seek(0, 2)
         size = file.file.tell()
         file.file.seek(0)
-        
+
         if size > MAX_FILE_SIZE:
              raise HTTPException(status_code=413, detail="File too large (Max 10MB)")
 
         # Security: Zip Bomb & Path Traversal Check
         import zipfile
         import io
-        
+
         content = await file.read()
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
@@ -653,26 +662,93 @@ async def upload_export(
                 total_size = sum(info.file_size for info in zf.infolist())
                 if total_size > 100 * 1024 * 1024: # Max 100MB extracted
                     raise HTTPException(status_code=400, detail="Decompression bomb detected")
-                
+
                 # Check for path traversal
                 for info in zf.infolist():
                     if ".." in info.filename or info.filename.startswith("/"):
                         raise HTTPException(status_code=400, detail="Malicious path in ZIP detected")
-                        
+
             # Reset file cursor for DataProcessor
             file.file.seek(0)
-            
+
         except zipfile.BadZipFile:
              raise HTTPException(status_code=400, detail="Invalid ZIP file")
 
+        # F-35: idempotency by SHA-256 of the uploaded bytes. Duplicate uploads
+        # (same user + same file) short-circuit here before any expensive
+        # parsing / enrichment / Qdrant work runs.
+        sha256_hash = hashlib.sha256(content).hexdigest()
+        existing_zip = (await db.execute(
+            select(ZipUpload)
+            .where(ZipUpload.user_id == user_id)
+            .where(ZipUpload.sha256 == sha256_hash)
+        )).scalar_one_or_none()
+        if existing_zip is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "duplicate_zip",
+                    "message": (
+                        f"This ZIP was already processed on "
+                        f"{existing_zip.processed_at.date().isoformat()} "
+                        f"({existing_zip.films_count or '?'} films). Nothing to do."
+                    ),
+                    "processed_at": existing_zip.processed_at.isoformat(),
+                    "films_count": existing_zip.films_count,
+                },
+            )
+
         movies_data, errors = await DataProcessor.process_zip_export(file)
-        
+
         if not movies_data:
             raise HTTPException(
                 status_code=400,
                 detail="No valid movies found in ZIP export"
             )
-        
+
+        # F-35 staleness check. Compute the max Watched Date in this ZIP and
+        # compare against the freshest previously-uploaded ZIP. If the new
+        # ZIP is OLDER, the user is probably uploading a stale backup —
+        # warn (409) so they confirm with `?force=true` before we overwrite
+        # state with old data.
+        zip_max_watched: _date | None = None
+        for m in movies_data:
+            wd = m.get("watched_date")
+            if not wd:
+                continue
+            try:
+                # watched_date might be date, datetime, or ISO string
+                wd_date = wd if isinstance(wd, _date) else _date.fromisoformat(str(wd)[:10])
+            except (ValueError, TypeError):
+                continue
+            if zip_max_watched is None or wd_date > zip_max_watched:
+                zip_max_watched = wd_date
+
+        if not force and zip_max_watched is not None:
+            prev = (await db.execute(
+                select(ZipUpload)
+                .where(ZipUpload.user_id == user_id)
+                .where(ZipUpload.max_watched_date.isnot(None))
+                .order_by(ZipUpload.processed_at.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+            if prev is not None and prev.max_watched_date and zip_max_watched < prev.max_watched_date:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "reason": "stale_zip",
+                        "message": (
+                            f"This ZIP's most recent watched date "
+                            f"({zip_max_watched.isoformat()}) is older than your "
+                            f"previous upload ({prev.max_watched_date.isoformat()}). "
+                            f"It looks like a stale backup. Re-submit with "
+                            f"?force=true to proceed anyway."
+                        ),
+                        "zip_max_watched": zip_max_watched.isoformat(),
+                        "previous_max_watched": prev.max_watched_date.isoformat(),
+                    },
+                )
+
         # Ensure user exists
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
@@ -699,7 +775,23 @@ async def upload_export(
         task_store = get_task_store()
         task_id = task_store.generate_task_id()
         await task_store.create_task(task_id, 100, "Preparing upload...", user_id=user_id)
-        
+
+        # F-35: persist the upload audit row now (NOT after the background
+        # task finishes) so that an immediate re-upload during enrichment
+        # short-circuits on the duplicate check. The UNIQUE(user_id, sha256)
+        # constraint also guards against a concurrent duplicate request.
+        db.add(ZipUpload(
+            user_id=user_id,
+            sha256=sha256_hash,
+            films_count=len(movies_data),
+            max_watched_date=zip_max_watched,
+        ))
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.warning(f"[F-35] zip_uploads insert failed (likely race): {e}")
+
         # Process in background to avoid timeout
         background_tasks.add_task(
             enrich_movies_background,
@@ -707,7 +799,7 @@ async def upload_export(
             user_id,
             task_id
         )
-        
+
         return {
             "status": "processing",
             "message": f"Processing {len(movies_data)} movies from export",
