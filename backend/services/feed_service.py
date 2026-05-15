@@ -515,8 +515,10 @@ class FeedService:
             finally:
                 # Only close clients we created locally — the injected lifespan
                 # singleton is shared across all requests and must remain open.
+                # `aclose()` is the redis-py 5.x name; we're on 4.x so the
+                # async client only exposes `close()`. See backend/requirements.txt.
                 if r_is_local:
-                    await r.aclose()
+                    await r.close()
         # --- END CACHE SAVE ---
 
         return final_resp
