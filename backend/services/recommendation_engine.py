@@ -771,41 +771,78 @@ class RecommendationEngine:
 
         include_array = cast(theme["include_genres"], ARRAY(String))
 
-        query = (
-            select(Movie)
-            .where(Movie.genres.overlap(include_array))
-            .where(Movie.vectorbox_score >= theme["min_score"])
-            .where(Movie.vote_count >= theme["min_votes"])
-            .where(Movie.vote_average >= 5.0)
-            .where(Movie.year.isnot(None))
-            .where(Movie.vectorbox_score.isnot(None))
-        )
-        if watched_ids:
-            query = query.where(Movie.id.notin_(watched_ids))
+        def _build_theme_query(min_score: int, min_votes: int):
+            q = (
+                select(Movie)
+                .where(Movie.genres.overlap(include_array))
+                .where(Movie.vectorbox_score >= min_score)
+                .where(Movie.vote_count >= min_votes)
+                .where(Movie.vote_average >= 5.0)
+                .where(Movie.year.isnot(None))
+                .where(Movie.vectorbox_score.isnot(None))
+            )
+            if watched_ids:
+                q = q.where(Movie.id.notin_(watched_ids))
+            if "max_year" in theme:
+                q = q.where(Movie.year <= theme["max_year"])
+            if "min_runtime" in theme:
+                q = q.where(Movie.runtime >= theme["min_runtime"])
+            if "original_language_not" in theme:
+                q = q.where(Movie.original_language != theme["original_language_not"])
+            if "max_popularity" in theme:
+                q = q.where(Movie.popularity <= theme["max_popularity"])
+            return q
 
-        if "max_year" in theme:
-            query = query.where(Movie.year <= theme["max_year"])
-        if "min_runtime" in theme:
-            query = query.where(Movie.runtime >= theme["min_runtime"])
-        if "original_language_not" in theme:
-            query = query.where(Movie.original_language != theme["original_language_not"])
-        if "max_popularity" in theme:
-            query = query.where(Movie.popularity <= theme["max_popularity"])
+        def _apply_post_filters(rows) -> list:
+            exclude_genres = set(theme.get("exclude_genres", []))
+            require_any = set(theme.get("require_any", []))
+            keep = []
+            for movie in rows:
+                if movie.tmdb_id in seen_ids:
+                    continue
+                if exclude_genres and set(movie.genres or []) & exclude_genres:
+                    continue
+                if require_any and not (set(movie.genres or []) & require_any):
+                    continue
+                keep.append(movie)
+            return keep
 
-        candidates_result = await db.execute(query.limit(200))
-        candidates = candidates_result.scalars().all()
+        # F-21 dynamic threshold fallback: start with the theme's configured
+        # min_score / min_votes; if too few films survive seen/exclude filters,
+        # progressively relax until we have ≥ 5 candidates or hit the floors.
+        # Floors are conservative — below VBS 50 / vote_count 20 we'd be
+        # surfacing low-confidence films, which beats showing an empty row
+        # but should be rare.
+        TARGET_MIN = 5
+        SCORE_FLOOR = 50
+        VOTES_FLOOR = 20
+        SCORE_STEP = 5
 
-        exclude_genres = set(theme.get("exclude_genres", []))
-        require_any = set(theme.get("require_any", []))
-        filtered = []
-        for movie in candidates:
-            if movie.tmdb_id in seen_ids:
-                continue
-            if exclude_genres and set(movie.genres or []) & exclude_genres:
-                continue
-            if require_any and not (set(movie.genres or []) & require_any):
-                continue
-            filtered.append(movie)
+        current_score = theme["min_score"]
+        current_votes = theme["min_votes"]
+        filtered: list = []
+        while True:
+            candidates_result = await db.execute(
+                _build_theme_query(current_score, current_votes).limit(200)
+            )
+            filtered = _apply_post_filters(candidates_result.scalars().all())
+            if len(filtered) >= TARGET_MIN:
+                break
+            if current_score <= SCORE_FLOOR and current_votes <= VOTES_FLOOR:
+                break
+            # Relax the gates: drop score first (preserves vote-count signal),
+            # only ease votes once the score floor is reached.
+            if current_score > SCORE_FLOOR:
+                current_score = max(SCORE_FLOOR, current_score - SCORE_STEP)
+            else:
+                current_votes = max(VOTES_FLOOR, current_votes // 2)
+        if current_score != theme["min_score"] or current_votes != theme["min_votes"]:
+            logger.info(
+                f"[niche_picks] theme={theme['id']!r} relaxed quality gate: "
+                f"min_score {theme['min_score']}->{current_score}, "
+                f"min_votes {theme['min_votes']}->{current_votes} "
+                f"(needed ≥{TARGET_MIN}, got {len(filtered)})"
+            )
 
         if not filtered:
             return FeedSection(id="niche_picks", title=theme["title"], items=[])
