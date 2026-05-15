@@ -2,7 +2,6 @@ import asyncio
 import argparse
 import logging
 import os
-import re
 import sys
 from datetime import datetime, timedelta, date
 
@@ -14,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import AsyncSessionLocal
 from models.database import Movie
 from services.tmdb_client import TMDBClient
-from services.omdb_client import OMDbClient
+from services.omdb_client import OMDbClient, parse_oscar_wins, split_omdb_csv
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,23 +30,8 @@ REFRESH_STRATEGIES = [
 ]
 
 
-_OSCAR_WINS_RE = re.compile(r"won\s+(\d+)\s+oscar", re.IGNORECASE)
-
-
-def _parse_oscar_wins(awards: str) -> int:
-    """Extract Oscar win count from an OMDb `Awards` string.
-
-    OMDb format is free text, e.g.:
-      "Won 11 Oscars. 33 wins & 41 nominations total"
-      "Nominated for 3 BAFTA Film Awards. 5 wins & 12 nominations total"
-      "1 win & 5 nominations total"
-
-    Returns 0 if no Oscar-win pattern matches (covers nominees and non-Oscar awards).
-    """
-    if not awards:
-        return 0
-    m = _OSCAR_WINS_RE.search(awards)
-    return int(m.group(1)) if m else 0
+# parse_oscar_wins + split_omdb_csv are defined in services/omdb_client.py
+# (shared with services/movie_factory.py for new-film ingest).
 
 
 async def get_movies_to_refresh(db, strategy: str, limit: int, force: bool = False) -> list:
@@ -161,11 +145,13 @@ async def refresh_movie(movie: Movie, tmdb: TMDBClient, omdb: OMDbClient) -> boo
                     movie.mpaa_rating = omdb_data.Rated
                 if omdb_data.Awards and omdb_data.Awards != "N/A":
                     movie.awards_text = omdb_data.Awards
-                    movie.oscar_wins = _parse_oscar_wins(omdb_data.Awards)
-                if omdb_data.Country and omdb_data.Country != "N/A":
-                    movie.omdb_countries = [c.strip() for c in omdb_data.Country.split(",") if c.strip()]
-                if omdb_data.Language and omdb_data.Language != "N/A":
-                    movie.omdb_languages = [l.strip() for l in omdb_data.Language.split(",") if l.strip()]
+                    movie.oscar_wins = parse_oscar_wins(omdb_data.Awards)
+                countries = split_omdb_csv(omdb_data.Country)
+                if countries:
+                    movie.omdb_countries = countries
+                languages = split_omdb_csv(omdb_data.Language)
+                if languages:
+                    movie.omdb_languages = languages
             effective_votes = max(movie.vote_count or 0, movie.imdb_vote_count or 0)
             if effective_votes >= 10:
                 vb = omdb.calculate_vectorbox_score(

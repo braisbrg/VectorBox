@@ -2,10 +2,40 @@ import httpx
 import os
 import logging
 import orjson
-from typing import Optional, Dict, Any, Union
+import re
+from typing import Optional, Dict, Any, Union, List
 from models.external_schemas import OMDbResponse, VectorBoxScore, VectorBoxBreakdown
 
 logger = logging.getLogger(__name__)
+
+
+_OSCAR_WINS_RE = re.compile(r"won\s+(\d+)\s+oscar", re.IGNORECASE)
+
+
+def parse_oscar_wins(awards: Optional[str]) -> int:
+    """Extract Oscar win count from an OMDb `Awards` string.
+
+    OMDb format is free text, e.g.:
+      "Won 11 Oscars. 33 wins & 41 nominations total"
+      "Nominated for 3 BAFTA Film Awards. 5 wins & 12 nominations total"
+      "1 win & 5 nominations total"
+
+    Returns 0 if no Oscar-win pattern matches (covers nominees and non-Oscar awards).
+    """
+    if not awards:
+        return 0
+    m = _OSCAR_WINS_RE.search(awards)
+    return int(m.group(1)) if m else 0
+
+
+def split_omdb_csv(value: Optional[str]) -> Optional[List[str]]:
+    """Split an OMDb comma-separated field (e.g. Country, Language) into a
+    list, skipping the literal 'N/A' and empties. Returns None when there is
+    nothing to store, so callers can use the value to decide whether to write."""
+    if not value or value == "N/A":
+        return None
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    return parts or None
 
 class OMDbClient:
     def __init__(self, api_key: Optional[str] = None, client: httpx.AsyncClient = None):

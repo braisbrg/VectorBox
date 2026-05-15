@@ -5,7 +5,7 @@ from datetime import datetime
 
 from models.database import Movie
 from services.tmdb_client import TMDBClient
-from services.omdb_client import OMDbClient
+from services.omdb_client import OMDbClient, parse_oscar_wins, split_omdb_csv
 from services.embedding_service import EmbeddingService
 from services.cinematic_enricher import generate_cinematic_description
 from qdrant_client.models import PointStruct
@@ -76,6 +76,26 @@ class MovieFactory:
             # 3. Process Release Dates
             release_dates_map = self._process_release_dates(details)
 
+            # OMDb extended metadata (Rated/Awards/Country/Language) — silently
+            # skipped before; kept symmetrical with refresh_metadata.refresh_movie
+            # so a re-ingest of an existing tmdb_id never *drops* a field that the
+            # refresh script would persist.
+            mpaa_rating = None
+            awards_text = None
+            oscar_wins = 0
+            omdb_countries = None
+            omdb_languages = None
+            if omdb_data:
+                if omdb_data.Rated and omdb_data.Rated != "N/A":
+                    mpaa_rating = omdb_data.Rated
+                if omdb_data.Awards and omdb_data.Awards != "N/A":
+                    awards_text = omdb_data.Awards
+                    oscar_wins = parse_oscar_wins(omdb_data.Awards)
+                omdb_countries = split_omdb_csv(omdb_data.Country)
+                omdb_languages = split_omdb_csv(omdb_data.Language)
+
+            collection = details.get("belongs_to_collection") or {}
+
             # 4. Construct Movie Object (SQL)
             movie = Movie(
                 tmdb_id=tmdb_id,
@@ -87,12 +107,14 @@ class MovieFactory:
                 overview=details.get("overview"),
                 poster_path=details.get("poster_path"),
                 backdrop_path=details.get("backdrop_path"),
+                tagline=details.get("tagline") or None,
+                is_adult=bool(details.get("adult", False)),
                 vote_average=details.get("vote_average"),
                 vote_count=details.get("vote_count"),
                 popularity=details.get("popularity"),
                 original_language=details.get("original_language"),
                 letterboxd_uri=letterboxd_uri or f"https://letterboxd.com/tmdb/{tmdb_id}",
-                
+
                 # Extended Fields
                 imdb_id=imdb_id,
                 imdb_vote_count=imdb_vote_count,
@@ -101,11 +123,19 @@ class MovieFactory:
                 vectorbox_score=vectorbox_score,
                 title_es=details.get("title_es"),
                 overview_es=details.get("overview_es"),
-                collection_id=details.get("belongs_to_collection", {}).get("id") if details.get("belongs_to_collection") else None,
+                collection_id=collection.get("id"),
+                collection_name=collection.get("name"),
                 keywords=details.get("keywords_flat", []),
                 directors=details.get("directors", []),
                 cast=details.get("cast", []),
-                release_dates=release_dates_map
+                release_dates=release_dates_map,
+
+                # OMDb extended (migration o3p4q5r6s7t8)
+                mpaa_rating=mpaa_rating,
+                awards_text=awards_text,
+                oscar_wins=oscar_wins,
+                omdb_countries=omdb_countries,
+                omdb_languages=omdb_languages,
             )
 
             # 5. Generate Embedding

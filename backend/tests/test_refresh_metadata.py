@@ -22,7 +22,8 @@ from types import SimpleNamespace
 
 from models.database import Movie
 from models.external_schemas import OMDbResponse
-from scripts.refresh_metadata import refresh_movie, _parse_oscar_wins
+from scripts.refresh_metadata import refresh_movie
+from services.omdb_client import parse_oscar_wins
 
 
 class _StubTMDB:
@@ -233,19 +234,19 @@ async def test_refresh_preserves_existing_values_when_payload_lacks_keys():
 # ---------- helper ----------
 
 
-def test_parse_oscar_wins_recognises_won_n_oscars():
-    assert _parse_oscar_wins("Won 11 Oscars. 33 wins & 41 nominations total") == 11
-    assert _parse_oscar_wins("Won 3 Oscars") == 3
+def testparse_oscar_wins_recognises_won_n_oscars():
+    assert parse_oscar_wins("Won 11 Oscars. 33 wins & 41 nominations total") == 11
+    assert parse_oscar_wins("Won 3 Oscars") == 3
 
 
-def test_parse_oscar_wins_returns_zero_for_nominations_only():
-    assert _parse_oscar_wins("Nominated for 3 BAFTA Film Awards. 5 wins & 12 nominations total") == 0
-    assert _parse_oscar_wins("1 win & 5 nominations total") == 0
+def testparse_oscar_wins_returns_zero_for_nominations_only():
+    assert parse_oscar_wins("Nominated for 3 BAFTA Film Awards. 5 wins & 12 nominations total") == 0
+    assert parse_oscar_wins("1 win & 5 nominations total") == 0
 
 
-def test_parse_oscar_wins_empty_and_na():
-    assert _parse_oscar_wins("") == 0
-    assert _parse_oscar_wins(None) == 0
+def testparse_oscar_wins_empty_and_na():
+    assert parse_oscar_wins("") == 0
+    assert parse_oscar_wins(None) == 0
 
 
 # ---------- imdb_id backfill ----------
