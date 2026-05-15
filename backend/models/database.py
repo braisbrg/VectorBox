@@ -96,6 +96,18 @@ class Movie(Base):
     release_date_ww = Column(Date, nullable=True)
     is_upcoming = Column(Boolean, nullable=False, server_default="false")
 
+    # Extended metadata (added 2026-05-15 — see migration o3p4q5r6s7t8)
+    mpaa_rating = Column(String(10), nullable=True)            # OMDb Rated (G/PG/PG-13/R/NC-17/NR/TV-14)
+    awards_text = Column(Text, nullable=True)                  # OMDb Awards raw string
+    oscar_wins = Column(Integer, nullable=False, server_default="0")
+    omdb_countries = Column(ARRAY(String), nullable=True)      # OMDb Country split (e.g. ["USA", "UK"])
+    omdb_languages = Column(ARRAY(String), nullable=True)      # OMDb Language split (e.g. ["English", "Spanish"])
+    collection_id = Column(Integer, nullable=True)             # TMDB belongs_to_collection.id
+    collection_name = Column(String(200), nullable=True)
+    is_adult = Column(Boolean, nullable=False, server_default="false")
+    tagline = Column(Text, nullable=True)                      # TMDB tagline
+    backdrop_path = Column(String(255), nullable=True)         # TMDB backdrop_path (hero image)
+
     # Metadata freshness
     last_metadata_refresh = Column(DateTime, nullable=True)
     last_enriched = Column(DateTime, nullable=True)

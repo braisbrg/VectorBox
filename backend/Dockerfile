@@ -34,8 +34,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 # Copy application code
 COPY . .
 
-# Pre-download AI Model
+# Pre-download AI Model (HF_TOKEN needed for gated google/embeddinggemma-300m)
+ARG HF_TOKEN
 ENV SENTENCE_TRANSFORMERS_HOME=/models_cache
+ENV HF_TOKEN=${HF_TOKEN}
 RUN python download_model.py
 
 # Switch to non-root user

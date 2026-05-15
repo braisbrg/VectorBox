@@ -12,6 +12,7 @@ from config import get_db, REDIS_URL
 from models.database import Movie, UserRating
 from dependencies import get_tmdb_client, get_current_user
 from services.tmdb_client import TMDBClient
+from services.movie_service import MovieService
 from services.profile_cache import set_profile_dirty
 from models.schemas import TokenResponse
 
@@ -96,32 +97,17 @@ async def rate_movie(
     Updates the 'profile_dirty' flag in Redis for LLM profile summary regeneration.
     """
     try:
-        # 1. Ensure movie exists in local DB
-        stmt = select(Movie).where(Movie.tmdb_id == tmdb_id)
-        result = await db.execute(stmt)
-        movie = result.scalars().first()
-        
+        # 1. Ensure movie exists in local DB.
+        # Use MovieService.get_or_create_movie so the new row goes through the
+        # canonical MovieFactory path (TMDB + OMDb + Qdrant). This populates
+        # imdb_id, imdb_rating, metacritic_rating, vectorbox_score, keywords,
+        # directors, cast, tagline, mpaa_rating, awards, oscar_wins, etc. —
+        # otherwise Phase 1 of maintenance_orchestrator would skip the row
+        # forever (it filters by imdb_id IS NOT NULL).
+        movie_service = MovieService(db, tmdb=tmdb)
+        movie = await movie_service.get_or_create_movie(tmdb_id)
         if not movie:
-            # Fetch from TMDB and create if missing
-            details = await tmdb.get_movie_details(tmdb_id)
-            if not details:
-                 raise HTTPException(status_code=404, detail="Movie not found in TMDB.")
-            
-            movie = Movie(
-                tmdb_id=tmdb_id,
-                title=details.get("title"),
-                year=int(details["release_date"][:4]) if details.get("release_date") else None,
-                runtime=details.get("runtime"),
-                genres=[g["name"] for g in details.get("genres", [])],
-                overview=details.get("overview", ""),
-                poster_path=details.get("poster_path"),
-                popularity=details.get("popularity", 0),
-                vote_average=details.get("vote_average", 0),
-                vote_count=details.get("vote_count", 0),
-                original_language=details.get("original_language", "en")
-            )
-            db.add(movie)
-            await db.flush() # Get the movie.id
+            raise HTTPException(status_code=404, detail="Movie not found in TMDB.")
         
         # 2. Upsert UserRating
         # Note: Index elements must match the unique constraint (idx_user_movie)

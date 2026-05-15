@@ -3,7 +3,7 @@ sqlalchemy==2.0.49
 psycopg[binary]==3.3.4
 alembic==1.18.4
 pandas==2.3.3
-sentence-transformers==3.4.1
+sentence-transformers>=5.0.0
 scikit-learn==1.8.0
 qdrant-client==1.18.0
 redis==4.6.0

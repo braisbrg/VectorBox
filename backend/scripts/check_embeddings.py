@@ -33,13 +33,34 @@ logger = logging.getLogger("check_embeddings")
 
 
 def _build_reference_text(movie: Movie) -> str:
-    parts = [
-        movie.title or "",
-        str(movie.year or ""),
-        " ".join(movie.genres or []),
-        " ".join(movie.directors or []),
-    ]
-    return " ".join(p for p in parts if p).strip()
+    """Reference text for the embedding-quality cosine check.
+
+    Mirrors `reembed_catalog._build_text`'s fallback recipe — overview +
+    genres + keywords (+ directors + cast) — and INTENTIONALLY EXCLUDES
+    title. Including the title biased the score against films with short
+    or generic titles ('42', 'Z', 'Network'): the reference text became
+    title-heavy and dominated the cosine, even though the stored vector
+    (encoded from cinematic_description, 80 words of rich plot) was fine.
+    Same no-title rule applies catalog-wide — see CLAUDE.md "Embedding &
+    vector hygiene".
+
+    The quality score now genuinely measures: "is the cinematic_description
+    embedding in the same neighbourhood as the raw plot+metadata embedding
+    of the same movie?" Low score → Groq hallucinated or enriched the
+    wrong film.
+    """
+    parts: list[str] = []
+    if movie.overview:
+        parts.append(movie.overview)
+    if movie.genres:
+        parts.append("Genres: " + ", ".join(movie.genres))
+    if movie.keywords:
+        parts.append("Themes: " + ", ".join((movie.keywords or [])[:15]))
+    if movie.directors:
+        parts.append("Directors: " + ", ".join(movie.directors))
+    if movie.cast:
+        parts.append("Cast: " + ", ".join(movie.cast))
+    return ". ".join(parts).strip()
 
 
 async def check_movie_embedding(

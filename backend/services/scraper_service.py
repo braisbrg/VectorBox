@@ -53,34 +53,45 @@ class ScraperService:
                         film_slug = slug_raw
                     else:
                         film_slug = None
-                        
+
                     film_name = container.get("data-item-name")  # "Title (Year)"
-                    
+
+                    # Parse "Title (Year)" → (title, year). data-item-name preserves
+                    # accents and punctuation that the slug strips — use it as the
+                    # TMDB search query in the fuzzy fallback.
                     year = None
-                    if film_name and "(" in film_name:
-                        try:
-                            year_str = film_name.split("(")[-1].replace(")", "")
-                            year = int(year_str)
-                        except (ValueError, IndexError):
-                            pass
-                            
+                    title = None
+                    if film_name:
+                        m = re.match(r"^(.*?)\s*\((\d{4})\)\s*$", film_name)
+                        if m:
+                            title = m.group(1).strip() or None
+                            try:
+                                year = int(m.group(2))
+                            except ValueError:
+                                pass
+                        else:
+                            title = film_name.strip() or None
+
                     if film_slug:
                         films.append({
                             "film_slug": film_slug,
-                            "year": year
+                            "year": year,
+                            "title": title,
                         })
-                        
+
                 # Old structure (li.poster-container)
                 else:
                     div_poster = container.find("div", class_="film-poster")
                     if div_poster:
                         film_slug = div_poster.get("data-film-slug")
                         film_year = div_poster.get("data-film-release-year")
-                        
+                        # Old layout doesn't expose title cleanly; leave None and
+                        # the fuzzy gate will fall back to refusing the resolution.
                         if film_slug:
                             films.append({
                                 "film_slug": film_slug,
-                                "year": int(film_year) if film_year else None
+                                "year": int(film_year) if film_year else None,
+                                "title": None,
                             })
 
             logger.info(f"Found {len(films)} films in watchlist scrape")

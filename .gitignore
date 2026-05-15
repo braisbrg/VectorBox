@@ -42,6 +42,13 @@ ENV/
 htmlcov/
 *.log
 
+# Local run logs (re-embed / experiment / maintenance outputs)
+/reembed_log.txt
+/refresh_full_log.txt
+/experiment_results*.txt
+/check_embeddings*.txt
+/maintenance_log.txt
+
 # Node.js / Frontend
 node_modules/
 .next/

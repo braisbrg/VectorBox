@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Set
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
@@ -38,7 +38,7 @@ class ProviderService:
         
         if availability:
             # Check freshness
-            if availability.last_updated > datetime.utcnow() - timedelta(days=self.CACHE_DURATION_DAYS):
+            if availability.last_updated > datetime.now(timezone.utc) - timedelta(days=self.CACHE_DURATION_DAYS):
                 return availability.providers or []
             else:
                 logger.info(f"Provider cache stale for movie {movie_id}, refreshing...")
@@ -77,10 +77,10 @@ class ProviderService:
             movie_id=movie_id,
             country_code=country_code,
             providers=final_providers,
-            last_updated=datetime.utcnow()
+            last_updated=datetime.now(timezone.utc)
         ).on_conflict_do_update(
             index_elements=["movie_id", "country_code"],
-            set_={"providers": final_providers, "last_updated": datetime.utcnow()}
+            set_={"providers": final_providers, "last_updated": datetime.now(timezone.utc)}
         )
         try:
             await self.db.execute(upsert_stmt)
@@ -116,7 +116,7 @@ class ProviderService:
         
         for mid in movie_ids:
             avail = availability_map.get(mid)
-            if avail and avail.last_updated > datetime.utcnow() - timedelta(days=self.CACHE_DURATION_DAYS):
+            if avail and avail.last_updated > datetime.now(timezone.utc) - timedelta(days=self.CACHE_DURATION_DAYS):
                 final_results[mid] = avail.providers or []
             else:
                 missing_ids.append(mid)
@@ -169,10 +169,10 @@ class ProviderService:
                 movie_id=movie.id,
                 country_code=country_code,
                 providers=final_providers,
-                last_updated=datetime.utcnow()
+                last_updated=datetime.now(timezone.utc)
             ).on_conflict_do_update(
                 index_elements=["movie_id", "country_code"],
-                set_={"providers": final_providers, "last_updated": datetime.utcnow()}
+                set_={"providers": final_providers, "last_updated": datetime.now(timezone.utc)}
             )
             try:
                 await self.db.execute(upsert_stmt)
@@ -205,10 +205,10 @@ class ProviderService:
             movie_id=movie_id,
             country_code=country_code,
             providers=final_providers,
-            last_updated=datetime.utcnow()
+            last_updated=datetime.now(timezone.utc)
         ).on_conflict_do_update(
             index_elements=["movie_id", "country_code"],
-            set_={"providers": final_providers, "last_updated": datetime.utcnow()}
+            set_={"providers": final_providers, "last_updated": datetime.now(timezone.utc)}
         )
         try:
             await self.db.execute(stmt)

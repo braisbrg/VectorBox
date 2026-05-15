@@ -16,6 +16,10 @@ class OMDbResponse(BaseModel):
     imdbVotes: Optional[str] = None  # e.g. "1,234,567" — parsed to int by callers
     Ratings: List[OMDbRating] = Field(default_factory=list)
     Metascore: Optional[str] = None
+    Rated: Optional[str] = None       # MPAA: G/PG/PG-13/R/NC-17/NR/TV-14
+    Awards: Optional[str] = None      # raw "Won 3 Oscars. 33 wins & 41 nominations total"
+    Country: Optional[str] = None     # comma-separated countries
+    Language: Optional[str] = None    # comma-separated languages
 
     class Config:
         extra = "ignore"

@@ -1,9 +1,10 @@
-"""Re-embed every movie in the catalog without title (Variant A fix).
+"""Re-embed every movie in the catalog without title.
 
 Drops title from the encoded text to eliminate token-overlap leakage that
 makes BYW/Magic Box pull off-theme neighbours (Howl's → The Howling, Faster
-Faster → Fast X). Same model (all-MiniLM-L6-v2), same dimension (384), so
-the Qdrant collection stays in place — we just upsert new vectors.
+Faster → Fast X). Uses whatever model + dim `EmbeddingService` currently
+declares (today `google/embeddinggemma-300m`, 768-dim) — the collection
+must already exist with the matching dim.
 
 When `cinematic_description` is present (Groq-enriched, ~99% of catalog), it
 is used as the embedding text directly — captures deeper themes than the raw
