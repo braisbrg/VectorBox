@@ -290,7 +290,14 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
                 # tmdb is the injected singleton — never close it
 
             await db.commit()
-            
+
+            # F-37: keep onboarding_completed in sync after RSS ingest.
+            try:
+                from services.onboarding_service import maybe_complete_onboarding
+                await maybe_complete_onboarding(user_id, db)
+            except Exception as e:
+                logger.warning(f"[onboarding] post-RSS flag refresh failed for user_id={user_id}: {e}")
+
             # Imp 10: Invalidate feed cache after sync completes
             await _invalidate_feed_cache(user_id)
             

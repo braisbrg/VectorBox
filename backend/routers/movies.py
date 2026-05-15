@@ -13,6 +13,7 @@ from models.database import Movie, UserRating
 from dependencies import get_tmdb_client, get_current_user
 from services.tmdb_client import TMDBClient
 from services.movie_service import MovieService
+from services.onboarding_service import maybe_complete_onboarding
 from services.profile_cache import set_profile_dirty
 from models.schemas import TokenResponse
 
@@ -133,6 +134,12 @@ async def rate_movie(
         
         await db.execute(stmt)
         await db.commit()
+
+        # F-37: keep onboarding_completed in sync. The carousel endpoint sets
+        # this flag at ≥15 ratings, but this route used to skip it — users
+        # who built up their library via /movies/{id}/rate stayed flagged as
+        # in-onboarding forever.
+        await maybe_complete_onboarding(current_user.user_id, db)
 
         # 3. Mark profile as dirty in Redis
         await set_profile_dirty(current_user.user_id, REDIS_URL)

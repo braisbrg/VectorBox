@@ -600,6 +600,15 @@ async def enrich_movies_background(
         if task_id:
             await task_store.complete_task(task_id, "Upload complete!")
 
+        # F-37: flip onboarding_completed once the user crosses the rating
+        # threshold via ZIP. Previously this was only updated by the carousel
+        # /rate flow, so ZIP-imported users stayed flagged as in-onboarding.
+        try:
+            from services.onboarding_service import maybe_complete_onboarding
+            await maybe_complete_onboarding(user_id, db)
+        except Exception as e:
+            logger.warning(f"[onboarding] post-ZIP flag refresh failed for user_id={user_id}: {e}")
+
         asyncio.create_task(_enrich_user_movies_background(user_id))
         logger.info(f"[Upload] Scheduled post-upload enrichment for user {user_id}")
 
