@@ -229,7 +229,25 @@ async def natural_language_search(
         # Language filter
         if intent.original_language:
             qdrant_filters["original_language"] = intent.original_language
-            
+
+        # NEW (Sprint 1, migration o3p4q5r6s7t8): extended metadata filters.
+        # These payload fields aren't currently indexed in Qdrant — we pre-fetch
+        # the candidate set from Qdrant by the cheap filters, then DB-filter
+        # by the new dimensions before returning. Adding payload indexes is a
+        # follow-up (cheap once we know which dimensions get used in anger).
+        if intent.mpaa_ratings:
+            qdrant_filters["mpaa_ratings"] = intent.mpaa_ratings
+        if intent.min_oscar_wins:
+            qdrant_filters["min_oscar_wins"] = intent.min_oscar_wins
+        if intent.min_imdb_rating is not None:
+            qdrant_filters["min_imdb_rating"] = intent.min_imdb_rating
+        if intent.min_metacritic is not None:
+            qdrant_filters["min_metacritic"] = intent.min_metacritic
+        if intent.safe_mode:
+            # Default. Exclude TMDB 'adult' titles unless the user explicitly
+            # asks for them via the LLM-parsed safe_mode=False.
+            qdrant_filters["exclude_adult"] = True
+
         # 3.5. Exclude Watched Movies (authed users only — guests have no history)
         if current_user is not None:
             result = await db.execute(
@@ -283,6 +301,35 @@ async def natural_language_search(
             db_res = await db.execute(stmt)
             for m in db_res.scalars().all():
                 db_movies[m.tmdb_id] = m
+
+        # Sprint 1 post-filter (DB-side, since mpaa_rating / oscar_wins /
+        # is_adult aren't in the Qdrant payload yet — migration o3p4q5r6s7t8).
+        # Drop tmdb_ids from the candidate set when they fail any of these.
+        # Follow-up: extend reembed_catalog._qdrant_payload + run a one-time
+        # set_payload over all 7862 points, then move these checks into
+        # qdrant_service.search_similar alongside imdb_rating/metacritic.
+        if intent.mpaa_ratings or intent.min_oscar_wins or intent.safe_mode:
+            allowed_mpaa = set(intent.mpaa_ratings) if intent.mpaa_ratings else None
+            post_filter_drop: set[int] = set()
+            for tid, m in db_movies.items():
+                if allowed_mpaa is not None and (m.mpaa_rating or "") not in allowed_mpaa:
+                    post_filter_drop.add(tid)
+                    continue
+                if intent.min_oscar_wins and (m.oscar_wins or 0) < intent.min_oscar_wins:
+                    post_filter_drop.add(tid)
+                    continue
+                if intent.safe_mode and bool(m.is_adult):
+                    post_filter_drop.add(tid)
+                    continue
+            if post_filter_drop:
+                raw_results = [
+                    r for r in raw_results
+                    if int(r.get("metadata", {}).get("tmdb_id") or r["movie_id"]) not in post_filter_drop
+                ]
+                logger.info(
+                    f"After Sprint-1 post-filter (mpaa/oscar_wins/safe_mode): "
+                    f"{len(raw_results)} results (dropped {len(post_filter_drop)})"
+                )
 
         missing_details_ids = []
         for r in raw_results:

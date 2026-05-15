@@ -57,6 +57,53 @@ class MovieSearchIntent(BaseModel):
     original_language: Optional[str] = Field(None, description="ISO 639-1 language code.")
     reference_movie: Optional[str] = Field(None, description="If user asks for movies 'like' X, extract title.")
     quality_gate_bypass: bool = Field(False, description="Set True when user seeks campy, trashy, guilty-pleasure, so-bad-its-good, or B-movie content. Keeps low-scored films in results.")
+
+    # NEW (Sprint 1, migration o3p4q5r6s7t8): five filter dimensions sourced
+    # from OMDb/TMDB extended metadata. ~88-91% catalog coverage.
+    mpaa_ratings: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Allowed MPAA/TV content ratings as a list. Use for queries about "
+            "audience suitability. Examples: 'family-friendly' -> ['G','PG'], "
+            "'para niños' -> ['G','PG'], 'kids' -> ['G','PG'], 'teen' -> "
+            "['PG','PG-13'], 'rated R' / 'adultas' / 'maduras' -> ['R','NC-17']. "
+            "Leave null if the user does not constrain rating."
+        ),
+    )
+    min_oscar_wins: Optional[int] = Field(
+        None,
+        description=(
+            "Minimum count of Oscar wins the film must have. Use for queries "
+            "like 'oscar winners', 'ganadoras del Oscar', 'award-winning'. "
+            "Typically 1 (any Oscar) or 3 (multiple). Leave null otherwise."
+        ),
+    )
+    min_imdb_rating: Optional[float] = Field(
+        None,
+        description=(
+            "Minimum IMDb rating (0-10). Use for 'highly rated on IMDb', "
+            "'top-rated', 'bien valoradas'. Pair with min_rating only if "
+            "the user explicitly says 'on IMDb' / 'en IMDb'; otherwise prefer "
+            "min_rating (TMDB)."
+        ),
+    )
+    min_metacritic: Optional[int] = Field(
+        None,
+        description=(
+            "Minimum Metacritic score (0-100). Use for 'critically acclaimed', "
+            "'aclamadas por la crítica'. Typical cutoffs: 70 = generally "
+            "favourable, 80 = universal acclaim."
+        ),
+    )
+    safe_mode: bool = Field(
+        True,
+        description=(
+            "When True, exclude TMDB 'adult' titles from results. Default True. "
+            "Set False ONLY if the user explicitly requests adult / NSFW / porn "
+            "/ 'adultas para mayores' content."
+        ),
+    )
+
     reasoning: str = Field(..., description="Briefly explain interpretation logic.")
 
 class ReasonedMovie(BaseModel):
@@ -131,6 +178,21 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
        - "spaghetti western" -> "Italian western, gunslinger, Sergio Leone style"
        - "giallo" -> "Italian giallo, slasher mystery, Argento, Bava"
        - "j-horror" / "jhorror" -> "Japanese horror, ghosts, Ringu, Ju-On style"
+    8. Extended filter dimensions (only fill when the user query implies them):
+       - `mpaa_ratings`: list of allowed MPAA codes.
+            "family", "para niños", "para toda la familia" -> ["G","PG"]
+            "teen", "adolescentes" -> ["PG","PG-13"]
+            "adult", "rated R", "maduras", "para adultos" -> ["R","NC-17"]
+       - `min_oscar_wins`: integer.
+            "oscar winners", "ganadoras del Oscar", "premiadas en los Oscars" -> 1
+            "multiples Oscars", "que ganaron varios Oscars" -> 3
+       - `min_imdb_rating`: float 0-10. Only when user EXPLICITLY mentions IMDb.
+            "bien valoradas en IMDb", "highly rated on IMDb" -> 7.5
+       - `min_metacritic`: int 0-100. For critical acclaim phrasing.
+            "critically acclaimed", "aclamadas por la crítica" -> 75
+            "universally acclaimed" -> 85
+       - `safe_mode`: bool. Default True. Set False ONLY when user explicitly
+         seeks adult/NSFW/porn content (very rare; conservative default).
     """
 
     messages = [

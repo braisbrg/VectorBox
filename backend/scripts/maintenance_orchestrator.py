@@ -284,6 +284,22 @@ async def phase_embedding_repair(limit: int, dry_run: bool) -> dict:
                     continue
                 if ok:
                     stats["repaired"] += 1
+                    # B-21 fix (2026-05-15): the re-enriched vector is now in
+                    # Qdrant, but Movie.embedding_quality_score still holds the
+                    # stale low value. Recompute against the fresh reference
+                    # text so the next Phase 2/3 doesn't re-flag the same film
+                    # forever. Failures here are non-fatal — repair already
+                    # succeeded; quality_score will just stay stale.
+                    try:
+                        new_score = await check_movie_embedding(
+                            movie, qdrant, embedding_service
+                        )
+                        if new_score is not None:
+                            movie.embedding_quality_score = new_score
+                    except Exception as e:
+                        logger.warning(
+                            f"[Phase 3] quality_score recheck failed for {movie.title}: {e}"
+                        )
                 else:
                     stats["failed"] += 1
 
@@ -372,13 +388,25 @@ async def phase_backfill_descriptions(limit: int, dry_run: bool) -> dict:
 # ---------------------------------------------------------------------------
 
 async def phase_reset_profiles(dry_run: bool) -> dict:
-    stats = {"clusters_rebuilt": 0}
+    """Re-cluster every user that has at least one rating.
+
+    Criterion change (2026-05-15): previously filtered by `onboarding_completed=True`,
+    which excluded all real users — the flag is only flipped by the carousel
+    `/rate` endpoint at ≥15 ratings, never by the ZIP/RSS import paths even
+    though those users have thousands of ratings (B-20). Now matches
+    `scripts/reset_profiles.py`: anyone with a rating gets re-clustered.
+
+    Order change: the DELETE on `user_clusters` now happens only AFTER we've
+    confirmed there are users to rebuild — previously, an empty filter result
+    left the DB clusterless and never rebuilt (B-19).
+    """
+    stats = {"clusters_rebuilt": 0, "users_found": 0}
     if dry_run:
-        logger.info("[Phase 5] DRY-RUN — would re-cluster all users with onboarding completed")
+        logger.info("[Phase 5] DRY-RUN — would re-cluster every user with at least one rating")
         return stats
 
     from sqlalchemy import delete
-    from models.database import User, UserCluster
+    from models.database import User, UserCluster, UserRating
     from services.clustering_service import ClusteringService
 
     qdrant = QdrantService()
@@ -386,21 +414,33 @@ async def phase_reset_profiles(dry_run: bool) -> dict:
     clustering = ClusteringService(qdrant=qdrant)
 
     async with AsyncSessionLocal() as db:
-        users = (await db.execute(
-            select(User).where(User.onboarding_completed.is_(True))
+        # Same selector as scripts/reset_profiles.py — any user with a rating.
+        # Onboarding flag is not gating maintenance; we re-cluster real users
+        # regardless of how their ratings got in (carousel / ZIP / RSS).
+        user_ids = (await db.execute(
+            select(User.id)
+            .join(UserRating, User.id == UserRating.user_id)
+            .distinct()
         )).scalars().all()
-        logger.info(f"[Phase 5] Found {len(users)} users to re-cluster")
+        stats["users_found"] = len(user_ids)
+        logger.info(f"[Phase 5] Found {len(user_ids)} users to re-cluster")
 
-        # Wipe all clusters once, then rebuild per-user
+        if not user_ids:
+            # No-op — do NOT wipe existing clusters when we have nothing to
+            # rebuild (pre-fix Phase 5 would have left the DB clusterless).
+            logger.info("[Phase 5] No users to re-cluster, skipping cluster wipe.")
+            return stats
+
+        # Safe to wipe — at least one rebuild will follow.
         await db.execute(delete(UserCluster))
         await db.commit()
 
-        for u in users:
+        for uid in user_ids:
             try:
-                await clustering.create_user_clusters(u.id, db, groq_client=groq)
+                await clustering.create_user_clusters(uid, db, groq_client=groq)
                 stats["clusters_rebuilt"] += 1
             except Exception as e:
-                logger.warning(f"[Phase 5] Cluster rebuild failed for user {u.id}: {e}")
+                logger.warning(f"[Phase 5] Cluster rebuild failed for user {uid}: {e}")
 
     if groq is not None:
         try:
@@ -408,7 +448,7 @@ async def phase_reset_profiles(dry_run: bool) -> dict:
         except Exception:
             pass
 
-    logger.info(f"[Phase 5] Done: clusters_rebuilt={stats['clusters_rebuilt']}")
+    logger.info(f"[Phase 5] Done: clusters_rebuilt={stats['clusters_rebuilt']}/{stats['users_found']}")
     return stats
 
 
