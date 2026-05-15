@@ -102,3 +102,71 @@ def test_combined_filters_compose():
     assert intent.min_oscar_wins == 1
     assert intent.min_metacritic == 70
     assert intent.safe_mode is True  # default preserved
+
+
+# ---------- Sprint 2 filters ----------
+
+
+def test_sprint2_filters_default_to_none():
+    intent = MovieSearchIntent(semantic_query="anything", reasoning="...")
+    assert intent.countries is None
+    assert intent.spoken_languages is None
+    assert intent.awards_contains is None
+
+
+def test_countries_accepts_list_of_names():
+    intent = MovieSearchIntent(
+        semantic_query="korean cinema",
+        reasoning="user asked for Korean films",
+        countries=["South Korea"],
+    )
+    assert intent.countries == ["South Korea"]
+
+
+def test_european_query_yields_multi_country_list():
+    intent = MovieSearchIntent(
+        semantic_query="european arthouse",
+        reasoning="parser expanded 'European' to top film-producing countries",
+        countries=["France", "Germany", "Spain", "Italy", "United Kingdom"],
+    )
+    assert len(intent.countries) == 5
+
+
+def test_spoken_languages_accepts_list():
+    intent = MovieSearchIntent(
+        semantic_query="películas en gallego",
+        reasoning="user asked for Galician-spoken films",
+        spoken_languages=["Galician"],
+    )
+    assert intent.spoken_languages == ["Galician"]
+
+
+def test_awards_contains_accepts_list_of_substrings():
+    intent = MovieSearchIntent(
+        semantic_query="bafta and cannes winners",
+        reasoning="festival winner query",
+        awards_contains=["BAFTA", "Palme"],
+    )
+    assert intent.awards_contains == ["BAFTA", "Palme"]
+
+
+def test_sprint2_filters_compose_with_sprint1():
+    """A full-fat query like 'oscar-winning Korean thrillers in Mandarin
+    with BAFTA recognition' fills 5 dimensions (year, genre, countries,
+    spoken_languages, oscar_wins, awards_contains, min_metacritic)."""
+    intent = MovieSearchIntent(
+        semantic_query="korean thrillers, suspense, noir",
+        reasoning="composed multi-filter query",
+        include_genres=["Thriller"],
+        countries=["South Korea"],
+        spoken_languages=["Korean"],
+        min_oscar_wins=1,
+        min_metacritic=70,
+        awards_contains=["BAFTA"],
+    )
+    assert intent.countries == ["South Korea"]
+    assert intent.spoken_languages == ["Korean"]
+    assert intent.awards_contains == ["BAFTA"]
+    assert intent.min_oscar_wins == 1
+    # Sprint 1 defaults preserved
+    assert intent.safe_mode is True

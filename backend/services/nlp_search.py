@@ -104,6 +104,37 @@ class MovieSearchIntent(BaseModel):
         ),
     )
 
+    # Sprint 2 (2026-05-15): three more dimensions sourced from OMDb fields
+    # that are 87-99% populated catalog-wide.
+    countries: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Country-of-origin filter. Use OMDb's English country names as a "
+            "list: 'cine francés' -> ['France'], 'Korean cinema' -> ['South "
+            "Korea'], 'European films' -> ['France','Germany','Spain','Italy',"
+            "'United Kingdom']. Different from `original_language` (ISO code) — "
+            "use this when the user talks about geography, not language."
+        ),
+    )
+    spoken_languages: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Languages SPOKEN in the film (OMDb names, list): 'películas en "
+            "gallego' -> ['Galician'], 'spoken in Mandarin' -> ['Mandarin']. "
+            "A film can have several. Use this for queries about audio language "
+            "(richer than `original_language` which only names the primary)."
+        ),
+    )
+    awards_contains: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Free-text substrings to match against OMDb's `Awards` string. "
+            "'BAFTA winners' -> ['BAFTA'], 'Cannes' -> ['Palme', 'Cannes'], "
+            "'Golden Globe' -> ['Golden Globe']. AND-combined (every substring "
+            "must appear). Distinct from `min_oscar_wins` which is Oscar-only."
+        ),
+    )
+
     reasoning: str = Field(..., description="Briefly explain interpretation logic.")
 
 class ReasonedMovie(BaseModel):
@@ -193,6 +224,22 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
             "universally acclaimed" -> 85
        - `safe_mode`: bool. Default True. Set False ONLY when user explicitly
          seeks adult/NSFW/porn content (very rare; conservative default).
+       - `countries`: list of country-of-origin names (OMDb English form).
+            "cine francés" -> ["France"]
+            "Korean cinema" -> ["South Korea"]
+            "cine español" -> ["Spain"]
+            "cine japonés" / "cine asiático" -> ["Japan"] / ["Japan","South Korea","China","Hong Kong","Taiwan"]
+            "European films" -> ["France","Germany","Spain","Italy","United Kingdom"]
+         Use this for GEOGRAPHY, not language. Different from `original_language`.
+       - `spoken_languages`: list of OMDb language names spoken in the film.
+            "en gallego" / "in Galician" -> ["Galician"]
+            "in Mandarin" -> ["Mandarin"]
+            "Spanish-speaking" -> ["Spanish"]
+       - `awards_contains`: list of substrings to match in OMDb's Awards string.
+            "BAFTA winners" -> ["BAFTA"]
+            "Cannes" / "Palme d'Or" -> ["Palme"]  (the canonical substring in the Awards text)
+            "Golden Globe" -> ["Golden Globe"]
+         AND-combined — every substring must appear in `awards_text`.
     """
 
     messages = [
