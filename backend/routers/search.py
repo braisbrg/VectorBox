@@ -10,6 +10,12 @@ from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user
 from models.schemas import TokenResponse
 from services.nlp_search import parse_user_intent, search_with_reasoning, MovieSearchIntent
+from services.magic_search_ranking import (
+    compute_blended_score,
+    intent_complexity,
+    movie_passes_post_filter,
+    should_run_deep_analysis,
+)
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
@@ -303,59 +309,22 @@ async def natural_language_search(
                 db_movies[m.tmdb_id] = m
 
         # Sprint 1+2 post-filter (DB-side, since these columns aren't in the
-        # Qdrant payload yet — migration o3p4q5r6s7t8). Drop tmdb_ids from the
-        # candidate set when they fail any of the new dimensions. Follow-up:
-        # extend reembed_catalog._qdrant_payload + run a one-time set_payload
-        # over all 7862 points, then move these checks into
-        # qdrant_service.search_similar.
-        needs_post_filter = (
-            intent.mpaa_ratings or intent.min_oscar_wins or intent.safe_mode
-            or intent.countries or intent.spoken_languages or intent.awards_contains
-        )
-        if needs_post_filter:
-            allowed_mpaa = set(intent.mpaa_ratings) if intent.mpaa_ratings else None
-            wanted_countries = set(intent.countries) if intent.countries else None
-            wanted_languages = set(intent.spoken_languages) if intent.spoken_languages else None
-            awards_needles = [s.lower() for s in (intent.awards_contains or [])]
-            post_filter_drop: set[int] = set()
-            for tid, m in db_movies.items():
-                if allowed_mpaa is not None and (m.mpaa_rating or "") not in allowed_mpaa:
-                    post_filter_drop.add(tid)
-                    continue
-                if intent.min_oscar_wins and (m.oscar_wins or 0) < intent.min_oscar_wins:
-                    post_filter_drop.add(tid)
-                    continue
-                if intent.safe_mode and bool(m.is_adult):
-                    post_filter_drop.add(tid)
-                    continue
-                # Sprint 2: country / language / awards_contains. We OR within
-                # each list (any country match wins) and AND across lists
-                # (must clear every populated filter).
-                if wanted_countries is not None:
-                    movie_countries = set(m.omdb_countries or [])
-                    if movie_countries.isdisjoint(wanted_countries):
-                        post_filter_drop.add(tid)
-                        continue
-                if wanted_languages is not None:
-                    movie_langs = set(m.omdb_languages or [])
-                    if movie_langs.isdisjoint(wanted_languages):
-                        post_filter_drop.add(tid)
-                        continue
-                if awards_needles:
-                    awards_lower = (m.awards_text or "").lower()
-                    if not all(needle in awards_lower for needle in awards_needles):
-                        post_filter_drop.add(tid)
-                        continue
-            if post_filter_drop:
-                raw_results = [
-                    r for r in raw_results
-                    if int(r.get("metadata", {}).get("tmdb_id") or r["movie_id"]) not in post_filter_drop
-                ]
-                logger.info(
-                    f"After Magic-Search post-filter (mpaa/oscar/safe/countries/"
-                    f"languages/awards): {len(raw_results)} results "
-                    f"(dropped {len(post_filter_drop)})"
-                )
+        # Qdrant payload yet — migration o3p4q5r6s7t8). See
+        # services.magic_search_ranking.movie_passes_post_filter for the
+        # per-row decision matrix.
+        post_filter_drop = {
+            tid for tid, m in db_movies.items()
+            if not movie_passes_post_filter(m, intent)
+        }
+        if post_filter_drop:
+            raw_results = [
+                r for r in raw_results
+                if int(r.get("metadata", {}).get("tmdb_id") or r["movie_id"]) not in post_filter_drop
+            ]
+            logger.info(
+                f"After Magic-Search post-filter: {len(raw_results)} results "
+                f"(dropped {len(post_filter_drop)})"
+            )
 
         missing_details_ids = []
         for r in raw_results:
@@ -389,78 +358,22 @@ async def natural_language_search(
                     if not metadata.get("overview"):
                         metadata["overview"] = details.get("overview", "")
 
-            final_score = normalize_similarity_score(r["score"])
-
-            # Title Match Boost — narrowly scoped to "the user typed a film
-            # title verbatim and wants that film". Pre-Sprint-3 this boost
-            # was cosmetic (didn't affect order), so over-firing was tolerable;
-            # now that we re-sort by final_score it ACTUALLY decides ranking,
-            # and the "Deprisa, deprisa → Fast and Furious" class of error is
-            # one nudge away. Tightened gates:
-            #   1. No `reference_movie` set (LLM hasn't tagged this as a
-            #      "movies like X" query).
-            #   2. No other filter dimensions populated — a query with year /
-            #      genre / country / etc. is descriptive, not a title lookup.
-            #   3. Query is short (≤40 chars) — long natural-language queries
-            #      almost never coincidentally match a film title.
-            #   4. title_sim ≥ 0.85 (was 0.80) — stricter near-exact match.
-            # Blend weight reduced 50/50 → 70/30 in favour of semantics.
-            descriptive_filters_set = any((
-                intent.year_min, intent.year_max, intent.include_genres,
-                intent.min_runtime_minutes, intent.max_runtime_minutes,
-                intent.min_rating, intent.original_language,
-                intent.mpaa_ratings, intent.min_oscar_wins,
-                intent.min_imdb_rating, intent.min_metacritic,
-                intent.countries, intent.spoken_languages,
-                intent.awards_contains,
-            ))
-            title_boost_eligible = (
-                not intent.reference_movie
-                and not descriptive_filters_set
-                and len(search_req.query.strip()) <= 40
+            # Compound score: cosine → optional title boost → VBS sigmoid gate.
+            # See services.magic_search_ranking.compute_blended_score for the
+            # full decision tree + thresholds. Pulled out so the pipeline is
+            # testable without the FastAPI / Qdrant / DB stack.
+            final_score, title_sim, _quality_weight = compute_blended_score(
+                raw_cosine=r["score"],
+                query=search_req.query,
+                intent=intent,
+                title=metadata.get("title") or "",
+                vbs=(db_movie.vectorbox_score if db_movie else None),
             )
-            if title_boost_eligible:
-                title_sim = SequenceMatcher(
-                    None,
-                    search_req.query.lower(),
-                    metadata.get("title", "").lower(),
-                ).ratio()
-
-                if title_sim >= 0.85:
-                    title_score = 90 + (title_sim * 9)
-                    # 70/30 blend — semantic match still dominates; the
-                    # title boost only lifts a candidate when the query is
-                    # essentially the film's title verbatim.
-                    final_score = (final_score * 0.7) + (title_score * 0.3)
-                    logger.info(
-                        f"Title-match boost for {metadata.get('title')} "
-                        f"(sim={title_sim:.2f}): {final_score:.1f}"
-                    )
-
-            # Imp 3: Dynamic quality gate — sigmoid weight with floor.
-            # Old gate (midpoint=65, steepness=0.15) annihilated thematically-strong
-            # but obscure films (Sky High at VBS=63 got weight ≈ 0.4; Barrio at 78
-            # got 0.88; Cure 1997 at low VBS got near-zero). The new VBS catalog
-            # median sits around 55, so we anchor the midpoint there. We also add
-            # a 0.20 floor so a strong vector match cannot be fully zeroed by VBS,
-            # keeping legitimate cult/foreign/obscure cinema reachable.
-            #
-            # 2026-05-15 fix: when `vectorbox_score IS NULL` (the film has no
-            # OMDb / TMDB vote data — typically obscure brand-new films with no
-            # cultural footprint) the gate USED to be skipped entirely, leaving
-            # weight=1.0. Those rows then crowded the top of any Magic Search
-            # answer over films with real VBS. We now treat NULL as VBS=0 so
-            # they get the floor penalty (~0.20) — equivalent to "lowest known
-            # quality" — and don't outrank canonical references.
-            import math as _math
-            vb_score = (db_movie.vectorbox_score if db_movie else None) or 0
-            if intent.quality_gate_bypass:
-                midpoint, steepness, floor = 25, 0.10, 0.10
-            else:
-                midpoint, steepness, floor = 55, 0.10, 0.20
-            sigmoid = 1.0 / (1.0 + _math.exp(-steepness * (vb_score - midpoint)))
-            weight = floor + (1.0 - floor) * sigmoid
-            final_score = final_score * weight
+            if title_sim is not None and title_sim >= 0.85:
+                logger.info(
+                    f"Title-match boost for {metadata.get('title')} "
+                    f"(sim={title_sim:.2f}): {final_score:.1f}"
+                )
 
             result = {
                 "movie_id": tmdb_id,
@@ -522,31 +435,13 @@ async def natural_language_search(
             for r in results:
                 r["streaming_providers"] = []
 
-        # 7. Deep Analysis (Tier 2 LLM re-rank)
-        # Sprint 3 (2026-05-15): auto-trigger when the intent looks complex —
-        # a query that fills many filter dimensions almost always benefits
-        # from the Llama-3.3-70B nuance pass, and Groq Patron tier makes the
-        # extra call essentially free. Explicit `use_deep_analysis=True`
-        # from the client still works as an override.
-        intent_complexity = sum(
-            1 for v in (
-                intent.include_genres, intent.year_min, intent.year_max,
-                intent.min_runtime_minutes, intent.max_runtime_minutes,
-                intent.min_rating, intent.original_language,
-                intent.reference_movie, intent.mpaa_ratings,
-                intent.min_oscar_wins, intent.min_imdb_rating,
-                intent.min_metacritic, intent.countries,
-                intent.spoken_languages, intent.awards_contains,
-            ) if v
-        )
-        if intent.popularity_vibe != "any":
-            intent_complexity += 1
-        auto_deep = intent_complexity >= 3
-
-        if (search_req.use_deep_analysis or auto_deep) and results:
+        # Deep Analysis (Tier 2 LLM re-rank) — auto-trigger on complexity ≥ 3
+        # via services.magic_search_ranking.should_run_deep_analysis. Explicit
+        # `use_deep_analysis=True` still wins as an override.
+        if should_run_deep_analysis(intent, user_requested=search_req.use_deep_analysis) and results:
             logger.info(
                 f"Deep Analysis triggered (explicit={search_req.use_deep_analysis} "
-                f"auto={auto_deep} complexity={intent_complexity}). Calling Tier 2..."
+                f"complexity={intent_complexity(intent)}). Calling Tier 2..."
             )
             try:
                 # Pass results to Llama 70B
