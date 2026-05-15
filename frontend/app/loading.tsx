@@ -49,7 +49,7 @@ export default function Loading() {
                                 <div className="flex gap-4 overflow-hidden px-1">
                                     {[1, 2, 3, 4, 5, 6].map((j) => (
                                         <Skeleton
-                                            key={j}
+                                            key={`skeleton-card-${j}`}
                                             className="h-[280px] w-[200px] rounded-lg flex-shrink-0 bg-zinc-800/40 animate-pulse"
                                         />
                                     ))}

@@ -38,7 +38,10 @@ const getPersistedFilters = (): Partial<WatchlistFilters> | null => {
     return null;
 };
 
-export function WatchlistView({ userId, username, countryCode = "ES", streamingProviders = [], onInspect }: WatchlistViewProps) {
+// Stable module-level empty array — see feed-container for the same fix.
+const EMPTY_PROVIDERS: number[] = [];
+
+export function WatchlistView({ userId, username, countryCode = "ES", streamingProviders = EMPTY_PROVIDERS, onInspect }: WatchlistViewProps) {
     const [showFilters, setShowFilters] = useState(false);
     const [page, setPage] = useState(1);
     const LIMIT = 20;
@@ -167,8 +170,8 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                         if (activeFilters.length > 0) {
                             return (
                                 <div className="flex flex-wrap gap-1.5 mr-3">
-                                    {activeFilters.map((tag, idx) => (
-                                        <span key={idx} className="px-2 py-0.5 bg-amber-500/10 border border-amber-500/20 text-[10px] font-mono text-amber-500 uppercase tracking-wider rounded-sm">
+                                    {activeFilters.map((tag) => (
+                                        <span key={tag} className="px-2 py-0.5 bg-amber-500/10 border border-amber-500/20 text-[10px] font-mono text-amber-500 uppercase tracking-wider rounded-sm">
                                             {tag}
                                         </span>
                                     ))}
@@ -318,10 +321,14 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
 
             {/* Streaming Filters */}
             <div className="space-y-2">
-                <label className="text-sm font-medium flex items-center gap-2">
+                {/* Visual label only — the streaming-provider chips that
+                    follow are buttons, not form controls, so an associated
+                    <label htmlFor=…> isn't applicable. Use <p> to keep the
+                    a11y contract clean. */}
+                <p className="text-sm font-medium flex items-center gap-2">
                     <Tv className="size-4" />
                     Available On
-                </label>
+                </p>
                 <div className="flex flex-wrap gap-2">
                     {getProvidersForCountry(countryCode).map((provider) => (
                         <button

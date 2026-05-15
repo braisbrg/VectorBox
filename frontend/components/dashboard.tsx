@@ -8,7 +8,7 @@ import { m } from "framer-motion";
 import Image from "next/image";
 import { useUser } from "@clerk/nextjs";
 import { useLanguage } from "@/components/language-provider";
-import { api, VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem, FilterSearchParams, searchWithFilters, markWatched, rejectMovie } from "@/lib/api";
+import { api, VectorboxUser, UserSession, getCurrentUser, getUsers, FeedItem, FilterSearchParams, searchWithFilters, markWatched, rejectMovie, USER_SESSION_KEY } from "@/lib/api";
 import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
 
 import { FeedContainer } from "@/components/feed-container";
@@ -102,7 +102,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         if (!isClerkLoaded) return;
 
         if (!clerkUser) {
-            localStorage.removeItem("vectorbox_user");
+            localStorage.removeItem(USER_SESSION_KEY);
             router.push("/login");
             return;
         }
@@ -112,7 +112,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         api.post("/api/auth/claim-anonymous").catch(() => {});
 
         // Optimistic paint from cached session (Clerk JWT attached by AuthBridge)
-        const storedUser = localStorage.getItem("vectorbox_user");
+        const storedUser = localStorage.getItem(USER_SESSION_KEY);
         if (storedUser) {
             try {
                 const parsed = JSON.parse(storedUser);
@@ -127,7 +127,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 }
             } catch (e) {
                 console.warn("Corrupt local session", e);
-                localStorage.removeItem("vectorbox_user");
+                localStorage.removeItem(USER_SESSION_KEY);
             }
         }
 
@@ -141,7 +141,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                     has_data: verifiedUser.has_data,
                 };
                 setCurrentUserSession(fullSession);
-                localStorage.setItem("vectorbox_user", JSON.stringify(fullSession));
+                localStorage.setItem(USER_SESSION_KEY, JSON.stringify(fullSession));
             })
             .catch(async (err) => {
                 console.error("Session verification failed:", err);

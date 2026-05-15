@@ -119,10 +119,11 @@ export default function OnboardingCarouselPage() {
 
     // Skip - no API call needed, just advance the carousel
     const handleSkip = useCallback(() => {
-        if (currentIndex >= movies.length) return;
         setDirection(1);
-        setCurrentIndex(currentIndex + 1);
-    }, [currentIndex, movies.length]);
+        // Functional update so the callback can be safely fired in quick
+        // succession (keyboard "Space" auto-repeat) without stale closures.
+        setCurrentIndex((prev) => (prev >= movies.length ? prev : prev + 1));
+    }, [movies.length]);
 
     // Undo - client-side only (rating already sent; re-rating will overwrite on next swipe)
     const handleUndo = useCallback(() => {

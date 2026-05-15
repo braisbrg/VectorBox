@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { Upload, FileText, Loader2, FileArchive, Plus, User as UserIcon, RefreshCw, Check, AlertCircle, Link as LinkIcon, Save, ArrowRight } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
-import { uploadExportZIP, syncRSS, linkLetterboxd, VectorboxUser } from "@/lib/api";
+import { uploadExportZIP, syncRSS, linkLetterboxd, VectorboxUser, USER_SESSION_KEY } from "@/lib/api";
 import { m } from "framer-motion";
 import { ProgressModal } from "./progress-modal";
 import { useLanguage } from "@/components/language-provider";
@@ -130,12 +130,12 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
 
             // Persist to LocalStorage
             if (typeof window !== "undefined") {
-                const stored = localStorage.getItem("vectorbox_user");
+                const stored = localStorage.getItem(USER_SESSION_KEY);
                 if (stored) {
                     try {
                         const user = JSON.parse(stored);
                         user.letterboxd_username = data.letterboxd_username;
-                        localStorage.setItem("vectorbox_user", JSON.stringify(user));
+                        localStorage.setItem(USER_SESSION_KEY, JSON.stringify(user));
                     } catch (e) {
                         console.error("LS Error", e);
                     }

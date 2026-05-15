@@ -39,7 +39,12 @@ const TITLE_MAP: Record<string, string> = {
     "available_now": "sections.available_now"
 };
 
-export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = [], initialData, registeredUsers, onInspect, filteredResults, isFiltering, onClearFilterResults }: FeedContainerProps) {
+// Stable module-level empty array — passing a fresh `[]` literal as the
+// default for `streamingProviders` each render gives React Query a new
+// reference every time, invalidating its query key and re-fetching.
+const EMPTY_PROVIDERS: number[] = [];
+
+export function FeedContainer({ userId, scope, countryCode = "ES", streamingProviders = EMPTY_PROVIDERS, initialData, registeredUsers, onInspect, filteredResults, isFiltering, onClearFilterResults }: FeedContainerProps) {
     const { data: feedData, isLoading, error } = useQuery<FeedResponse>({
         queryKey: ["feed", userId, scope, countryCode, streamingProviders],
         queryFn: async () => getFeed(scope, countryCode, streamingProviders),
@@ -99,14 +104,14 @@ export function FeedContainer({ userId, scope, countryCode = "ES", streamingProv
                 aria-live="polite"
             >
                 {[1, 2, 3, 4].map((i) => (
-                    <div key={i} className="space-y-4">
+                    <div key={`skeleton-row-${i}`} className="space-y-4">
                         <div className="flex items-center gap-2 px-1">
                             <div className="h-5 w-40 bg-[oklch(0.14_0_0)]" />
                         </div>
                         <div className="flex gap-4 overflow-hidden px-1">
                             {[1, 2, 3, 4, 5, 6].map((j) => (
                                 <div
-                                    key={j}
+                                    key={`skeleton-card-${j}`}
                                     className="relative h-[280px] w-[185px] flex-shrink-0 bg-[oklch(0.08_0_0)] border border-[oklch(0.18_0_0)] overflow-hidden"
                                 >
                                     {/* shimmer sweep */}

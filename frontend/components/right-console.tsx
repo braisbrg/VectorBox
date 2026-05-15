@@ -348,8 +348,11 @@ export function RightConsole({
                                         </p>
                                         {selectedContributors && selectedContributors.length > 0 ? (
                                             <div className="space-y-2">
-                                                {selectedContributors.map((c: Contributor, i: number) => (
-                                                    <div key={i} className="space-y-0.5">
+                                                {selectedContributors.map((c: Contributor) => (
+                                                    <div
+                                                        key={`${c.type}:${c.seed_title ?? ""}:${c.director ?? c.actor ?? c.cluster_name ?? ""}`}
+                                                        className="space-y-0.5"
+                                                    >
                                                         {c.type === "anchor" && (
                                                             <>
                                                                 <p className="text-xs font-mono text-primary">

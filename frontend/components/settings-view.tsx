@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, RefreshCw, Undo2, Ban } from "lucide-react";
 import { useLanguage } from "@/components/language-provider";
 import { useSettings } from "@/lib/hooks";
-import { syncRSS, VectorboxUser, getRejectedMovies, unrejectMovie, getTMDBImageUrl } from "@/lib/api";
+import { syncRSS, VectorboxUser, getRejectedMovies, unrejectMovie, getTMDBImageUrl, USER_SESSION_KEY } from "@/lib/api";
 import { api } from "@/lib/api";
 import { UploadZone } from "@/components/upload-zone";
 import {
@@ -29,7 +29,7 @@ export function SettingsView() {
 
     useEffect(() => {
         try {
-            const user = JSON.parse(localStorage.getItem("vectorbox_user") || "{}");
+            const user = JSON.parse(localStorage.getItem(USER_SESSION_KEY) || "{}");
             setLetterboxdUsername(user?.letterboxd_username ?? null);
             if (user?.id) {
                 setCurrentUser({

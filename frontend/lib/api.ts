@@ -7,6 +7,11 @@ import type { Contributor } from "@/types/feed";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
+// Versioned localStorage key for the cached UserSession. Bump the suffix
+// whenever UserSession's shape changes so old client caches are ignored
+// instead of crashing on schema drift.
+export const USER_SESSION_KEY = "vectorbox_user:v1";
+
 // Create axios instance with defaults
 export const api = axios.create({
     baseURL: typeof window === "undefined" ? API_URL : undefined, // Proxy on client, Direct on server
@@ -27,7 +32,7 @@ api.interceptors.response.use(
         if (error.response) {
             console.error("API Error:", error.response.data);
             if (error.response.status === 401 && typeof window !== "undefined") {
-                localStorage.removeItem("vectorbox_user");
+                localStorage.removeItem(USER_SESSION_KEY);
             }
         } else if (error.request) {
             console.error("Network Error:", error.message);
@@ -271,7 +276,7 @@ export interface AuthResponse {
 export const logout = async (): Promise<void> => {
     // Clerk's signOut() handles real session invalidation; clear local cache.
     if (typeof window !== "undefined") {
-        localStorage.removeItem("vectorbox_user");
+        localStorage.removeItem(USER_SESSION_KEY);
     }
 };
 

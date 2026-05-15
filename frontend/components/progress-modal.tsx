@@ -132,5 +132,3 @@ export function ProgressModal({ taskId, onComplete, onError }: ProgressModalProp
         </AnimatePresence>
     );
 }
-
-export default ProgressModal;

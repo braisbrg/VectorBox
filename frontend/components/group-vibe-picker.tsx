@@ -15,14 +15,16 @@ export function GroupVibePicker() {
 
     const handleAddUser = (e?: React.FormEvent) => {
         e?.preventDefault();
-        if (currentInput.trim() && !usernames.includes(currentInput.trim())) {
-            setUsernames([...usernames, currentInput.trim()]);
-            setCurrentInput("");
-        }
+        const trimmed = currentInput.trim();
+        if (!trimmed) return;
+        // Functional update: avoids stale closure when the form is submitted
+        // twice in quick succession (e.g. Enter held down).
+        setUsernames((prev) => (prev.includes(trimmed) ? prev : [...prev, trimmed]));
+        setCurrentInput("");
     };
 
     const handleRemoveUser = (username: string) => {
-        setUsernames(usernames.filter(u => u !== username));
+        setUsernames((prev) => prev.filter((u) => u !== username));
     };
 
     const handleAnalyze = async () => {
