@@ -6,13 +6,13 @@ film page didn't expose a tmdb_id, and the search top-1 was accepted blindly.
 "Samuel and the Light" (1 vote, popularity 0.1151) landed in the user's
 watchlist even though the user had never added it.
 
-The gate now requires:
+Two-tier acceptance gate (revised 2026-05-15 after audit of user 212):
   - year within ±1 of scraped year (when both available)
-  - vote_count ≥ 20 (rules out long-tail noise like the 1-vote case)
-  - normalised-title SequenceMatcher ratio ≥ 0.85 vs candidate.title OR
-    candidate.original_title (handles accents/punctuation/transliterations)
-  - a scraped title is REQUIRED — without it (legacy poster layout) the
-    fuzzy resolution is refused rather than guessed
+  - scraped title is REQUIRED — without it (legacy poster layout) bail
+  - Tier A (strict): title SequenceMatcher ratio ≥ 0.95 → accept regardless
+    of vote_count (covers cine galego/español indie with 1-5 votes)
+  - Tier B (weak): 0.85 ≤ ratio < 0.95 → must also have vote_count ≥ 20
+  - ratio < 0.85 → reject
 """
 from routers.rss import _accept_fuzzy_match, _normalise_for_title_match
 
@@ -46,12 +46,43 @@ def test_accept_title_via_original_for_foreign_film():
 
 def test_reject_low_vote_count_phantom():
     """The exact pattern that hit user 212: 1-vote film wins TMDB top-1 on
-    sparse query, must be rejected by vote_count gate."""
+    sparse query with a wrong title — must be rejected. Combination of weak
+    title ratio (≪0.85) AND low vote_count fails Tier B."""
     assert _accept_fuzzy_match(
         _candidate(title="Samuel and the Light", release_date="2023-01-01",
                    vote_count=1, popularity=0.12),
         scraped_title="Some Other Title", scraped_year=2023, slug="some-other-slug",
     ) is False
+
+
+def test_accept_strict_title_match_bypasses_vote_count():
+    """Tier A: legitimate ultra-indie (cine galego/español de festival) with
+    very few TMDB votes. The slug matches the title near-exactly so we trust
+    the resolution even though vote_count=2. Real example pattern from user
+    212's watchlist (Dhogs, Samsara, Marisol llámame Pepa, etc.)."""
+    assert _accept_fuzzy_match(
+        _candidate(title="Dhogs", release_date="2017-09-22", vote_count=2, popularity=0.32),
+        scraped_title="Dhogs", scraped_year=2017, slug="dhogs",
+    ) is True
+
+
+def test_reject_weak_title_match_with_low_vote_count():
+    """Tier B failure: title ratio in [0.85, 0.95) but vote_count below floor.
+    This is the borderline phantom case — title partially matches but not
+    enough to bypass the vote-count safety net."""
+    assert _accept_fuzzy_match(
+        _candidate(title="A Free Park", release_date="2025-01-01", vote_count=3),
+        scraped_title="A Free Man", scraped_year=2025, slug="a-free-man",
+    ) is False
+
+
+def test_accept_weak_title_match_with_enough_votes():
+    """Tier B success: title partially matches (ratio ~0.86, in [0.85, 0.95))
+    and vote_count clears the floor — the safety net allows the match."""
+    assert _accept_fuzzy_match(
+        _candidate(title="Avatar 2", release_date="2022-12-15", vote_count=12_000),
+        scraped_title="Avatar", scraped_year=2022, slug="avatar",
+    ) is True
 
 
 def test_reject_year_mismatch():

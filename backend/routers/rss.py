@@ -25,8 +25,14 @@ logger = logging.getLogger(__name__)
 # Fuzzy-match gate thresholds for the watchlist-scrape fallback. Conservative
 # because a false positive lands the wrong film in a user's watchlist (see the
 # 2026-05-10 user-212 phantom "Samuel and the Light" incident).
-_FUZZY_TITLE_RATIO_MIN = 0.85       # difflib SequenceMatcher.ratio() on normalised titles
-_FUZZY_VOTE_COUNT_MIN = 20          # below 20 votes the candidate is too obscure to trust
+#
+# Two-tier acceptance — the higher tier exists so legitimate ultra-indie
+# cinema (cine galego/español de festival, 1-5 TMDB votes) is not rejected
+# along with the phantoms. Phantoms always fail title similarity because
+# the scraped title doesn't match the TMDB top-1.
+_FUZZY_TITLE_RATIO_STRICT = 0.95    # near-exact title match → bypass vote_count
+_FUZZY_TITLE_RATIO_MIN = 0.85       # weaker match still requires vote_count gate
+_FUZZY_VOTE_COUNT_MIN = 20          # below 20 the candidate must clear the strict ratio
 _FUZZY_YEAR_TOLERANCE = 1           # ± years
 
 
@@ -43,8 +49,22 @@ def _accept_fuzzy_match(
     scraped_year: Optional[int],
     slug: str,
 ) -> bool:
-    """Apply the layered fuzzy-match acceptance gate. Logs the verdict either
-    way so future watchlist false positives are traceable."""
+    """Two-tier acceptance gate for the TMDB top-1 fuzzy hit. Logs the verdict
+    either way so future watchlist false positives are traceable.
+
+    Order of checks: year match first (cheapest reject), then scraped_title
+    present (gate cannot run without it), then title-similarity tier decides
+    whether vote_count matters.
+
+    Tier A — strict title match (ratio ≥ 0.95) bypasses vote_count.
+        Covers legitimate ultra-indie cinema (1-vote festival entries,
+        Galician/Spanish indies, etc.) where the title matches near-exactly
+        but the film has too few TMDB votes for the standard gate.
+
+    Tier B — weak title match (0.85 ≤ ratio < 0.95) still requires
+        vote_count ≥ 20. Catches phantoms where TMDB's relevance ranker
+        promoted an unrelated low-vote film to the top.
+    """
     cand_title = candidate.get("title") or ""
     cand_orig = candidate.get("original_title") or ""
     cand_release = candidate.get("release_date") or ""
@@ -60,17 +80,8 @@ def _accept_fuzzy_match(
         )
         return False
 
-    # Vote-count floor. Indie films can be sparse; below 20 the top-1 fuzzy
-    # hit is almost always a misfire (the "Samuel and the Light" case was 1).
-    if cand_votes < _FUZZY_VOTE_COUNT_MIN:
-        logger.warning(
-            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=low_vote_count "
-            f"votes={cand_votes} popularity={cand_pop:.3f} cand_title={cand_title!r}"
-        )
-        return False
-
-    # Title similarity — required when we have a scraped title from
-    # data-item-name. If we don't (legacy poster layout), bail conservative.
+    # Title similarity — required gate. If we don't have a scraped title
+    # (legacy poster layout), we cannot run the gate.
     if not scraped_title:
         logger.warning(
             f"[watchlist-fuzzy] REJECT slug={slug!r} reason=no_scraped_title "
@@ -83,6 +94,14 @@ def _accept_fuzzy_match(
         SequenceMatcher(None, scraped_norm, _normalise_for_title_match(cand_title)).ratio(),
         SequenceMatcher(None, scraped_norm, _normalise_for_title_match(cand_orig)).ratio(),
     )
+
+    if best_ratio >= _FUZZY_TITLE_RATIO_STRICT:
+        logger.info(
+            f"[watchlist-fuzzy] ACCEPT(strict) slug={slug!r} cand_id={candidate.get('id')} "
+            f"cand_title={cand_title!r} year={cand_year} votes={cand_votes} title_ratio={best_ratio:.2f}"
+        )
+        return True
+
     if best_ratio < _FUZZY_TITLE_RATIO_MIN:
         logger.warning(
             f"[watchlist-fuzzy] REJECT slug={slug!r} reason=title_drift "
@@ -90,8 +109,16 @@ def _accept_fuzzy_match(
         )
         return False
 
+    # Tier B — weak match still requires vote_count floor.
+    if cand_votes < _FUZZY_VOTE_COUNT_MIN:
+        logger.warning(
+            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=weak_title_and_low_votes "
+            f"votes={cand_votes} popularity={cand_pop:.3f} cand_title={cand_title!r} ratio={best_ratio:.2f}"
+        )
+        return False
+
     logger.info(
-        f"[watchlist-fuzzy] ACCEPT slug={slug!r} cand_id={candidate.get('id')} "
+        f"[watchlist-fuzzy] ACCEPT(weak) slug={slug!r} cand_id={candidate.get('id')} "
         f"cand_title={cand_title!r} year={cand_year} votes={cand_votes} title_ratio={best_ratio:.2f}"
     )
     return True
