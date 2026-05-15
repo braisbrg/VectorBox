@@ -24,7 +24,7 @@ def get_model():
 class EmbeddingService:
     """Generate embeddings for movie metadata"""
     
-    MODEL_NAME = "all-MiniLM-L6-v2"  # Fast, 384 dimensions
+    MODEL_NAME = "google/embeddinggemma-300m"  # 768 dimensions
     
     def __init__(self):
         # Model is now loaded lazily via get_model()

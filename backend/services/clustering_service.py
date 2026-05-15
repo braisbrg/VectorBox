@@ -322,8 +322,8 @@ class ClusteringService:
         
         X = np.array(vectors)
         
-        if X.shape[1] != 384:
-            logger.error(f"Vector Dimension Mismatch! Expected 384, got {X.shape[1]}. Aborting clustering.")
+        if X.shape[1] != QdrantService.VECTOR_SIZE:
+            logger.error(f"Vector Dimension Mismatch! Expected {QdrantService.VECTOR_SIZE}, got {X.shape[1]}. Aborting clustering.")
             return []
         
         from sklearn.preprocessing import normalize

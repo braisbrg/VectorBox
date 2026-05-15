@@ -21,7 +21,7 @@ class QdrantService:
     """Qdrant vector database operations"""
     
     COLLECTION_NAME = "movies"
-    VECTOR_SIZE = 384  # all-MiniLM-L6-v2 embedding size
+    VECTOR_SIZE = 768  # google/embeddinggemma-300m embedding size
     
     def __init__(self):
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")

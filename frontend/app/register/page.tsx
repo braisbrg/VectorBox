@@ -13,6 +13,7 @@ export default function RegisterPage() {
                     },
                 }}
                 fallbackRedirectUrl="/"
+                signUpForceRedirectUrl="/login?migrate=true"
             />
         </main>
     );
