@@ -16,8 +16,85 @@ from config import get_db
 from dependencies import get_tmdb_client, get_current_user, get_qdrant_service
 from limiter import limiter
 import logging
+from difflib import SequenceMatcher
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Fuzzy-match gate thresholds for the watchlist-scrape fallback. Conservative
+# because a false positive lands the wrong film in a user's watchlist (see the
+# 2026-05-10 user-212 phantom "Samuel and the Light" incident).
+_FUZZY_TITLE_RATIO_MIN = 0.85       # difflib SequenceMatcher.ratio() on normalised titles
+_FUZZY_VOTE_COUNT_MIN = 20          # below 20 votes the candidate is too obscure to trust
+_FUZZY_YEAR_TOLERANCE = 1           # ± years
+
+
+def _normalise_for_title_match(text: str) -> str:
+    """Lowercase, strip non-alphanumerics. Used for fuzzy title comparison
+    so 'It's a Wonderful Life' matches 'Its a Wonderful Life' and en/em
+    dashes don't sabotage the ratio."""
+    return "".join(ch.lower() for ch in (text or "") if ch.isalnum() or ch.isspace()).strip()
+
+
+def _accept_fuzzy_match(
+    candidate: dict,
+    scraped_title: Optional[str],
+    scraped_year: Optional[int],
+    slug: str,
+) -> bool:
+    """Apply the layered fuzzy-match acceptance gate. Logs the verdict either
+    way so future watchlist false positives are traceable."""
+    cand_title = candidate.get("title") or ""
+    cand_orig = candidate.get("original_title") or ""
+    cand_release = candidate.get("release_date") or ""
+    cand_year = int(cand_release[:4]) if len(cand_release) >= 4 and cand_release[:4].isdigit() else None
+    cand_votes = candidate.get("vote_count") or 0
+    cand_pop = candidate.get("popularity") or 0.0
+
+    # Year (within tolerance, when both available)
+    if scraped_year and cand_year and abs(scraped_year - cand_year) > _FUZZY_YEAR_TOLERANCE:
+        logger.warning(
+            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=year_mismatch "
+            f"scraped_year={scraped_year} cand_year={cand_year} cand_title={cand_title!r}"
+        )
+        return False
+
+    # Vote-count floor. Indie films can be sparse; below 20 the top-1 fuzzy
+    # hit is almost always a misfire (the "Samuel and the Light" case was 1).
+    if cand_votes < _FUZZY_VOTE_COUNT_MIN:
+        logger.warning(
+            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=low_vote_count "
+            f"votes={cand_votes} popularity={cand_pop:.3f} cand_title={cand_title!r}"
+        )
+        return False
+
+    # Title similarity — required when we have a scraped title from
+    # data-item-name. If we don't (legacy poster layout), bail conservative.
+    if not scraped_title:
+        logger.warning(
+            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=no_scraped_title "
+            f"(legacy poster layout); fuzzy cannot be verified"
+        )
+        return False
+
+    scraped_norm = _normalise_for_title_match(scraped_title)
+    best_ratio = max(
+        SequenceMatcher(None, scraped_norm, _normalise_for_title_match(cand_title)).ratio(),
+        SequenceMatcher(None, scraped_norm, _normalise_for_title_match(cand_orig)).ratio(),
+    )
+    if best_ratio < _FUZZY_TITLE_RATIO_MIN:
+        logger.warning(
+            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=title_drift "
+            f"scraped={scraped_title!r} cand={cand_title!r} ratio={best_ratio:.2f}"
+        )
+        return False
+
+    logger.info(
+        f"[watchlist-fuzzy] ACCEPT slug={slug!r} cand_id={candidate.get('id')} "
+        f"cand_title={cand_title!r} year={cand_year} votes={cand_votes} title_ratio={best_ratio:.2f}"
+    )
+    return True
 
 router = APIRouter(
     tags=["rss"],
@@ -85,21 +162,35 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
                 for item in watchlist_items:
                     film_slug = item["film_slug"]
                     film_year = item.get("year")
+                    film_title = item.get("title")  # from data-item-name; preserves accents/punct
 
                     page_tmdb_id = await scraper.get_tmdb_id(film_slug)
                     tmdb_id = page_tmdb_id
                     if tmdb_id:
-                        logger.info(f"Found authoritative TMDB ID {tmdb_id} for {film_slug}")
+                        logger.info(
+                            f"[watchlist-resolve] PAGE slug={film_slug!r} tmdb_id={tmdb_id} title={film_title!r}"
+                        )
                     else:
-                        logger.info(f"No ID found on page for {film_slug}. Fallback to search...")
-                        params = {"query": film_slug.replace("-", " ")}
+                        # Fuzzy fallback. Query with the scraped title (richer than
+                        # the slug — keeps accents and punctuation) when available;
+                        # only fall back to slug-derived text if the title is
+                        # missing (old poster layout).
+                        query = film_title or film_slug.replace("-", " ")
+                        params = {"query": query}
                         if film_year:
                             params["year"] = film_year
+                        logger.info(
+                            f"[watchlist-resolve] PAGE_MISS slug={film_slug!r} trying fuzzy "
+                            f"query={query!r} year={film_year}"
+                        )
                         tmdb_results = await tmdb._make_request("/search/movie", params)
+                        candidate = None
                         if tmdb_results and tmdb_results.get("results"):
-                            top_match = tmdb_results["results"][0]
-                            tmdb_id = top_match["id"]
-                            logger.info(f"Found fuzzy match: {top_match['title']} (ID: {tmdb_id})")
+                            candidate = tmdb_results["results"][0]
+                        if candidate and _accept_fuzzy_match(candidate, film_title, film_year, film_slug):
+                            tmdb_id = candidate["id"]
+                        else:
+                            tmdb_id = None  # reject — better to lose the entry than insert a phantom
 
                     if not tmdb_id:
                         continue
@@ -110,11 +201,6 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
                     )
 
                     if not movie:
-                        continue
-
-                    # Year check only for fuzzy matches — reuse page_tmdb_id from first call, no second HTTP request
-                    if not page_tmdb_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
-                        logger.warning(f"Year mismatch for {film_slug}: {film_year} vs {movie.year}. Skipping.")
                         continue
 
                     rating_stmt = select(UserRating).where(
