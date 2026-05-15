@@ -234,17 +234,17 @@ async def test_refresh_preserves_existing_values_when_payload_lacks_keys():
 # ---------- helper ----------
 
 
-def testparse_oscar_wins_recognises_won_n_oscars():
+def test_parse_oscar_wins_recognises_won_n_oscars():
     assert parse_oscar_wins("Won 11 Oscars. 33 wins & 41 nominations total") == 11
     assert parse_oscar_wins("Won 3 Oscars") == 3
 
 
-def testparse_oscar_wins_returns_zero_for_nominations_only():
+def test_parse_oscar_wins_returns_zero_for_nominations_only():
     assert parse_oscar_wins("Nominated for 3 BAFTA Film Awards. 5 wins & 12 nominations total") == 0
     assert parse_oscar_wins("1 win & 5 nominations total") == 0
 
 
-def testparse_oscar_wins_empty_and_na():
+def test_parse_oscar_wins_empty_and_na():
     assert parse_oscar_wins("") == 0
     assert parse_oscar_wins(None) == 0
 
@@ -266,3 +266,40 @@ async def test_refresh_backfills_missing_imdb_id_from_tmdb():
     await refresh_movie(movie, tmdb, omdb)
 
     assert movie.imdb_id == "tt9999999"
+
+
+# ---------- TST-5: idempotency ----------
+
+
+@pytest.mark.asyncio
+async def test_refresh_is_idempotent():
+    """Running refresh_movie twice on the same payload produces the same final
+    Movie state — no incremental side effects (no double-counting of arrays,
+    no awards_text concatenation, no spurious flag flips). The maintenance
+    cron runs daily; idempotency is a hard requirement."""
+    tmdb_payload = _full_tmdb_payload()
+    omdb_response = _full_omdb_response()
+
+    tracked_fields = [
+        "imdb_rating", "metacritic_rating", "imdb_vote_count",
+        "mpaa_rating", "awards_text", "oscar_wins",
+        "omdb_countries", "omdb_languages",
+        "vote_count", "vote_average", "popularity",
+        "poster_path", "genres", "runtime", "overview",
+        "original_language", "keywords", "directors", "cast",
+        "title_es", "overview_es",
+        "tagline", "backdrop_path", "is_adult",
+        "collection_id", "collection_name", "vectorbox_score",
+    ]
+
+    movie = _make_movie()
+    await refresh_movie(movie, _StubTMDB(tmdb_payload), _StubOMDb(omdb_response))
+    snapshot_1 = {f: getattr(movie, f) for f in tracked_fields}
+
+    await refresh_movie(movie, _StubTMDB(tmdb_payload), _StubOMDb(omdb_response))
+    snapshot_2 = {f: getattr(movie, f) for f in tracked_fields}
+
+    assert snapshot_1 == snapshot_2, (
+        "refresh_movie is not idempotent. Differing fields: " +
+        str({k: (snapshot_1[k], snapshot_2[k]) for k in snapshot_1 if snapshot_1[k] != snapshot_2[k]})
+    )
