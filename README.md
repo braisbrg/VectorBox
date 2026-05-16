@@ -15,7 +15,7 @@ It's built for people who care about *what* they watch next, not just that somet
 The recommendation core is a three-signal hybrid system. Each signal captures a different dimension of taste, and they're fused through Reciprocal Rank Fusion (RRF) before a final diversity pass.
 
 ### Signal A — Because You Watched (Semantic Similarity)
-Picks a high-quality anchor from your history (scored by rating × recency decay × rewatch boost) and retrieves vector-space neighbours from Qdrant. Embeddings are generated from LLM-enriched cinematic descriptions — not just plot summaries, but tone, pacing, and visual style — using Groq's LLaMA models, then encoded with `all-MiniLM-L6-v2` (384 dimensions). An anti-vector built from your low-rated and rejected films penalizes candidates that resemble things you disliked.
+Picks a high-quality anchor from your history (scored by rating × recency decay × rewatch boost) and retrieves vector-space neighbours from Qdrant. Embeddings are generated from LLM-enriched cinematic descriptions — not just plot summaries, but tone, pacing, and visual style — using Groq's LLaMA models, then encoded with `google/embeddinggemma-300m` (768 dimensions; gated HuggingFace model — requires `HF_TOKEN`). An anti-vector built from your low-rated and rejected films penalizes candidates that resemble things you disliked.
 
 ### Signal B — Niche Picks (Thematic Discovery)
 Nine curated global themes (*Sleep Optional*, *Slow Burn*, *Subtitles Required*, *Bring Tissues*…) rotate automatically per feed refresh. Each theme carries its own genre, era, and language filters. This isn't taste-matching — it's mood-offering, designed to keep the feed from going stale.
@@ -34,7 +34,8 @@ All signals merge through RRF, then pass through a sigmoid quality weighting on 
 - **Qdrant** — vector database for semantic similarity search
 - **Redis 7** — section-level feed caching with per-TTL freshness controls
 - **Groq** (LLaMA 4 Scout) — cinematic description generation
-- **all-MiniLM-L6-v2** — sentence embeddings (384 dimensions)
+- **google/embeddinggemma-300m** — sentence embeddings (768 dimensions; requires `HF_TOKEN` for the gated model)
+- **Trakt API** — Signal C "similar films" source (replaced TMDB recommendations; requires `TRAKT_CLIENT_ID`)
 - **Clerk** — authentication (JWKS-based JWT verification)
 
 ### Frontend
@@ -91,6 +92,8 @@ Feed orchestration runs 10 section-generation tasks in parallel via `asyncio.gat
 - Docker Desktop with Compose v2
 - [TMDB API key](https://www.themoviedb.org/settings/api) + [OMDb API key](https://www.omdbapi.com/apikey.aspx)
 - [Groq API key](https://console.groq.com/) (for cinematic descriptions)
+- [HuggingFace token](https://huggingface.co/settings/tokens) with access granted to `google/embeddinggemma-300m` (gated model; required at first launch to download the embedding model)
+- [Trakt API client ID](https://trakt.tv/oauth/applications) (free; powers Signal C "similar films")
 - [Clerk account](https://clerk.com/) (for authentication)
 - A Letterboxd account (optional — can use the onboarding carousel instead)
 
