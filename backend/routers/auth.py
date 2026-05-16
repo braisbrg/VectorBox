@@ -29,12 +29,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-@router.post("/logout")
-async def logout():
-    """No-op retained for transition; Clerk's signOut() invalidates the real session."""
-    return {"message": "Logged out successfully"}
-
-
 @router.get("/me", response_model=TokenResponse)
 async def read_users_me(current_user: TokenResponse = Depends(get_current_user)):
     """Return the authenticated user's VectorBox profile."""

@@ -527,7 +527,9 @@ async def get_feed(
 
 
 @router.get("/watchlist")
+@limiter.limit("20/minute")
 async def get_watchlist(
+    request: Request,
     current_user: TokenResponse = Depends(get_current_user),
     page: int = 1,
     limit: int = 20,
@@ -634,7 +636,9 @@ async def get_watchlist(
 
 
 @router.get("/random-row", response_model=FeedSection)
+@limiter.limit("20/minute")
 async def get_random_row(
+    request: Request,
     current_user: TokenResponse = Depends(get_current_user),
     country_code: str = "ES",
     scope: str = "global",
@@ -707,7 +711,9 @@ async def get_random_row(
 
 
 @router.get("/hidden-gems", response_model=FeedSection)
+@limiter.limit("20/minute")
 async def get_hidden_gems_row(
+    request: Request,
     current_user: TokenResponse = Depends(get_current_user),
     country_code: str = "ES",
     db: AsyncSession = Depends(get_db),
@@ -800,7 +806,9 @@ async def get_hidden_gems_row(
 
 
 @router.post("/reject/{tmdb_id}")
+@limiter.limit("60/minute")
 async def reject_movie(
+    request: Request,
     tmdb_id: int,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -874,7 +882,9 @@ async def get_rejected_movies(
 
 
 @router.delete("/movies/{tmdb_id}/reject")
+@limiter.limit("60/minute")
 async def unreject_movie(
+    request: Request,
     tmdb_id: int,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -909,7 +919,9 @@ async def unreject_movie(
 
 
 @router.post("/movies/{tmdb_id}/watched")
+@limiter.limit("60/minute")
 async def mark_watched(
+    request: Request,
     tmdb_id: int,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1042,7 +1054,9 @@ async def export_web_watches_csv(
 
 
 @router.post("/feed/reroll-cluster")
+@limiter.limit("10/minute")
 async def reroll_cluster(
+    request: Request,
     current_user: TokenResponse = Depends(get_current_user),
 ):
     """Advance niche_theme_rotation and invalidate niche_picks cache."""

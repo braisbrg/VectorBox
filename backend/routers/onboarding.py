@@ -7,7 +7,6 @@ Public endpoints:
 
 Auth-required endpoints (Clerk JWT OR vb_anon_session cookie):
     POST /rate          — Save a single carousel rating to DB
-    POST /migrate-guest — Migrate localStorage ratings/tags to Postgres (legacy)
     POST /tags          — Save tag preferences (Settings UI)
     GET  /status        — Onboarding completion status
 """
@@ -106,11 +105,6 @@ TAG_WHITELIST = set(TAG_FILTERS.keys())
 # ---------------------------------------------------------------------------
 # Request / Response schemas
 # ---------------------------------------------------------------------------
-
-class MigrateGuestRequest(BaseModel):
-    # Onboarding caps at ~30 ratings; 200 is a generous ceiling that still bounds payload size.
-    ratings: Dict[int, constr(max_length=10)] = Field(..., max_length=200)
-    tags: Dict[constr(max_length=20), conlist(constr(max_length=40), max_length=30)] = Field(..., max_length=10)
 
 class TagsRequest(BaseModel):
     avoided: conlist(constr(max_length=40), max_length=30)
@@ -549,117 +543,6 @@ async def rate_movie(
         "signal": body.signal,
         "ratings_count": final_count,
     }
-
-
-# ---------------------------------------------------------------------------
-# POST /migrate-guest — Migrate localStorage ratings + tags to Postgres
-# ---------------------------------------------------------------------------
-
-@router.post("/migrate-guest")
-@limiter.limit("3/hour")
-async def migrate_guest(
-    request: Request,
-    body: MigrateGuestRequest,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-    current_user: TokenResponse = Depends(get_current_user),
-    qdrant: QdrantService = Depends(get_qdrant_service),
-):
-    """
-    Migrate guest localStorage ratings + tags to the authenticated user's profile.
-    Idempotency: if the user already has ratings, return skipped.
-    """
-    user_id = current_user.user_id
-
-    # Idempotency guard
-    existing_count = await db.scalar(
-        select(func.count(UserRating.id)).where(UserRating.user_id == user_id)
-    )
-    if existing_count and existing_count > 0:
-        return {"status": "skipped", "reason": "user already has ratings"}
-
-    # Save tag preferences
-    tag_data = {
-        "avoided": body.tags.get("avoided", []),
-    }
-    user_result = await db.execute(select(User).where(User.id == user_id))
-    user = user_result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    user.tag_preferences = tag_data
-
-    # Map signal → rating and insert UserRatings
-    # Batch fetch all candidate movies in a single query (no N+1)
-    valid_pairs: List[tuple[int, float]] = []
-    for tmdb_id_str, signal in body.ratings.items():
-        rating_value = SIGNAL_TO_RATING.get(signal)
-        if rating_value is None:
-            continue
-        try:
-            valid_pairs.append((int(tmdb_id_str), rating_value))
-        except (TypeError, ValueError):
-            continue
-
-    movies_by_tmdb: Dict[int, Movie] = {}
-    if valid_pairs:
-        tmdb_ids = [tid for tid, _ in valid_pairs]
-        movies_q = await db.execute(select(Movie).where(Movie.tmdb_id.in_(tmdb_ids)))
-        movies_by_tmdb = {m.tmdb_id: m for m in movies_q.scalars().all()}
-
-    rows: List[Dict] = []
-    for tmdb_id, rating_value in valid_pairs:
-        movie = movies_by_tmdb.get(tmdb_id)
-        if not movie:
-            logger.warning(f"[migrate-guest] Skipping tmdb_id={tmdb_id}: not in DB")
-            continue
-        rows.append({
-            "user_id": user_id,
-            "movie_id": movie.id,
-            "rating": rating_value,
-            "is_watched": True,
-            "watch_count": 1,
-        })
-
-    migrated = 0
-    if rows:
-        # Idempotent upsert — protects against retries after the existing_count guard passes
-        stmt = pg_insert(UserRating).values(rows).on_conflict_do_update(
-            index_elements=["user_id", "movie_id"],
-            set_={
-                "rating": pg_insert(UserRating).excluded.rating,
-                "is_watched": True,
-            },
-        )
-        result = await db.execute(stmt)
-        migrated = result.rowcount or len(rows)
-
-    # Update denormalized counters
-    user.onboarding_ratings_count = migrated
-    if migrated >= ONBOARDING_THRESHOLD:
-        user.onboarding_completed = True
-
-    await db.commit()
-
-    # Trigger clustering in background if enough ratings (AGENTS.md Background Tasks rule)
-    if migrated >= 5:
-        qdrant_singleton = qdrant
-
-        async def _run_clustering(uid: int):
-            from services.clustering_service import ClusteringService
-            async with AsyncSessionLocal() as session:
-                try:
-                    clustering = ClusteringService(qdrant=qdrant_singleton)
-                    await clustering.create_user_clusters(uid, session, groq_client=None)
-                except Exception as e:
-                    logger.error(f"[migrate-guest] Clustering failed for user {uid}: {e}")
-
-        background_tasks.add_task(_run_clustering, user_id)
-
-    # Invalidate profile cache
-    await set_profile_dirty(user_id, REDIS_URL)
-
-    return {"status": "ok", "migrated": migrated}
 
 
 # ---------------------------------------------------------------------------
