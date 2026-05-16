@@ -807,31 +807,37 @@ class RecommendationEngine:
                 keep.append(movie)
             return keep
 
-        # F-21 dynamic threshold fallback: start with the theme's configured
-        # min_score / min_votes; if too few films survive seen/exclude filters,
-        # progressively relax until we have ≥ 5 candidates or hit the floors.
-        # Floors are conservative — below VBS 50 / vote_count 20 we'd be
-        # surfacing low-confidence films, which beats showing an empty row
-        # but should be rare.
+        # F-21 dynamic threshold fallback. Fetch the candidate pool ONCE at
+        # the floor thresholds (ordered by VBS desc — top films we'd ever
+        # consider), then raise the gates in Python until we have ≥ 5
+        # survivors or hit the floors. Floors are conservative; below
+        # VBS 50 / vote_count 20 we'd be surfacing low-confidence films,
+        # which beats showing an empty row but should be rare.
         TARGET_MIN = 5
         SCORE_FLOOR = 50
         VOTES_FLOOR = 20
         SCORE_STEP = 5
 
+        pool_result = await db.execute(
+            _build_theme_query(SCORE_FLOOR, VOTES_FLOOR)
+            .order_by(Movie.vectorbox_score.desc())
+            .limit(200)
+        )
+        pool = _apply_post_filters(pool_result.scalars().all())
+
         current_score = theme["min_score"]
         current_votes = theme["min_votes"]
         filtered: list = []
         while True:
-            candidates_result = await db.execute(
-                _build_theme_query(current_score, current_votes).limit(200)
-            )
-            filtered = _apply_post_filters(candidates_result.scalars().all())
+            filtered = [
+                m for m in pool
+                if (m.vectorbox_score or 0) >= current_score
+                and (m.vote_count or 0) >= current_votes
+            ]
             if len(filtered) >= TARGET_MIN:
                 break
             if current_score <= SCORE_FLOOR and current_votes <= VOTES_FLOOR:
                 break
-            # Relax the gates: drop score first (preserves vote-count signal),
-            # only ease votes once the score floor is reached.
             if current_score > SCORE_FLOOR:
                 current_score = max(SCORE_FLOOR, current_score - SCORE_STEP)
             else:
