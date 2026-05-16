@@ -667,19 +667,47 @@ async def upload_export(
         # Security: Zip Bomb & Path Traversal Check
         import zipfile
         import io
+        import posixpath
 
         content = await file.read()
+        # Per-entry and aggregate caps. A real Letterboxd export is well under
+        # both — these are paranoid limits, not user-facing knobs.
+        MAX_ENTRY_SIZE = 50 * 1024 * 1024     # 50MB single CSV
+        MAX_TOTAL_UNCOMPRESSED = 100 * 1024 * 1024  # 100MB total
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                # Check for zip bomb (compression ratio)
-                total_size = sum(info.file_size for info in zf.infolist())
-                if total_size > 100 * 1024 * 1024: # Max 100MB extracted
-                    raise HTTPException(status_code=400, detail="Decompression bomb detected")
-
-                # Check for path traversal
+                total_size = 0
                 for info in zf.infolist():
-                    if ".." in info.filename or info.filename.startswith("/"):
-                        raise HTTPException(status_code=400, detail="Malicious path in ZIP detected")
+                    # Per-entry cap (defeats zip bombs that bury the payload
+                    # in a single inner file).
+                    if info.file_size > MAX_ENTRY_SIZE:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="ZIP entry exceeds 50MB cap",
+                        )
+                    total_size += info.file_size
+
+                    # Path traversal: normalize and reject anything that
+                    # escapes the implied root or uses an absolute path.
+                    # Covers '..', '..\\', 'C:\\foo', '/etc/passwd', NTFS
+                    # alternate streams, and posixpath edge cases.
+                    name = info.filename
+                    if (
+                        ".." in name.replace("\\", "/").split("/")
+                        or posixpath.isabs(name)
+                        or name.startswith(("/", "\\"))
+                        or (len(name) >= 2 and name[1] == ":")  # Windows drive
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Malicious path in ZIP detected",
+                        )
+
+                if total_size > MAX_TOTAL_UNCOMPRESSED:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Decompression bomb detected",
+                    )
 
             # Reset file cursor for DataProcessor
             file.file.seek(0)

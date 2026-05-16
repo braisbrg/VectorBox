@@ -182,25 +182,37 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
-    Catch-all handler to prevent information leakage
-    Security: Hide traceback in production
+    Catch-all handler to prevent information leakage.
+
+    Fail-safe: only treat the request as a dev environment when ENVIRONMENT
+    is explicitly "development". Any other value — including unset, typo'd,
+    or accidentally cleared — is treated as production and leaks nothing.
     """
-    is_production = os.getenv("ENVIRONMENT", "development") == "production"
-    
-    if is_production:
-        logger.error(f"Unhandled exception: {str(exc)}") # Log error but not full stack trace if sensitive? better to log full stack trace for admins but hide from user.
-        # Actually standard practice is log full trace, return generic message.
-        logger.error(f"Internal Server Error: {exc}", exc_info=True)
+    environment = os.getenv("ENVIRONMENT", "production")
+    is_development = environment == "development"
+
+    # Always log full traceback server-side. Server logs are not user-facing.
+    logger.error(f"Unhandled exception ({request.method} {request.url.path}): {exc}", exc_info=True)
+
+    if not is_development:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal Server Error"}
+            content={"detail": "Internal Server Error"},
         )
-    else:
-        logger.error(f"Unhandled exception: {exc}", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": str(exc), "trace": str(exc)}
-        )
+
+    # Dev-only: include the exception message + class to speed up debugging.
+    # We do NOT include a real traceback in the response body — that ships
+    # source paths and module names to the browser, which is fine in dev
+    # but trivially copy-pasted into a screenshot that ends up in a public
+    # issue tracker. Keep it minimal even in dev.
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": "Internal Server Error",
+            "dev_exception_class": type(exc).__name__,
+            "dev_exception_message": str(exc),
+        },
+    )
 
 
 # Health check endpoint (no rate limiting)
@@ -267,7 +279,20 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=(), "
+        "magnetometer=(), gyroscope=(), accelerometer=()"
+    )
+    # `preload` only takes effect once the apex domain is submitted to
+    # https://hstspreload.org — safe to advertise either way.
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=31536000; includeSubDomains; preload"
+    )
+    # API responses never render HTML; the lockdown CSP is correct.
+    # Docs routes (Swagger/ReDoc) are mounted only in non-production and
+    # served by FastAPI itself — if you re-enable them in production,
+    # carve out a route-specific exemption.
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     return response
 

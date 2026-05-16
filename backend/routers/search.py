@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import asyncio
 from config import get_db
-from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user
+from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user
 from models.schemas import TokenResponse
 from services.nlp_search import parse_user_intent, search_with_reasoning, MovieSearchIntent
 from services.magic_search_ranking import (
@@ -87,11 +87,11 @@ async def _item_to_item_search(
 from limiter import limiter
 
 @router.post("/natural", response_model=SearchResponse)
-@limiter.limit("5/minute")
+@limiter.limit("10/minute")
 async def natural_language_search(
     request: Request, # Request object is required for slowapi
     search_req: SearchRequest,
-    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
+    current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
@@ -101,6 +101,11 @@ async def natural_language_search(
     Advanced natural language search with semantic expansion and vibe filtering.
     Handles complex queries like "old gangster movie", "90s hidden gem", "short anime".
     Also handles "Movies like X" by detecting title matches.
+
+    Auth required: this endpoint fans out to Groq (Llama 4 Scout + optional
+    Llama 3.3 70B Deep Analysis). Leaving it open to guests turns it into a
+    paid-LLM proxy. The /onboarding/search endpoint covers the public-DB
+    title search use case for guests.
     """
     try:
         # Validate input for LLM injection
@@ -253,22 +258,21 @@ async def natural_language_search(
             # asks for them via the LLM-parsed safe_mode=False.
             qdrant_filters["exclude_adult"] = True
 
-        # 3.5. Exclude Watched Movies (authed users only — guests have no history)
-        if current_user is not None:
-            result = await db.execute(
-                select(Movie.tmdb_id)
-                .join(UserRating, Movie.id == UserRating.movie_id)
-                .where(UserRating.user_id == current_user.user_id)
-                .where(or_(
-                    UserRating.rating.isnot(None),
-                    UserRating.is_liked.is_(True),
-                    UserRating.is_watched.is_(True),
-                ))
-            )
-            watched_tmdb_ids = [row[0] for row in result.all() if row[0] is not None]
+        # 3.5. Exclude Watched Movies
+        result = await db.execute(
+            select(Movie.tmdb_id)
+            .join(UserRating, Movie.id == UserRating.movie_id)
+            .where(UserRating.user_id == current_user.user_id)
+            .where(or_(
+                UserRating.rating.isnot(None),
+                UserRating.is_liked.is_(True),
+                UserRating.is_watched.is_(True),
+            ))
+        )
+        watched_tmdb_ids = [row[0] for row in result.all() if row[0] is not None]
 
-            if watched_tmdb_ids:
-                qdrant_filters["exclude_tmdb_ids"] = watched_tmdb_ids
+        if watched_tmdb_ids:
+            qdrant_filters["exclude_tmdb_ids"] = watched_tmdb_ids
             
         # 4. Search Qdrant with Advanced Filters
         raw_results = await qdrant.search_similar(

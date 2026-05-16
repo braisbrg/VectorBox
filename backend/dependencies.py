@@ -270,15 +270,25 @@ async def get_current_user(
         user = result.scalar_one_or_none()
 
         # Fallback: legacy user exists by email without clerk_user_id — adopt it.
-        # Email is filtered through _extract_clerk_email which drops unverified entries.
+        # Hardening (H-1 from 2026-05 security audit):
+        #   - email must come from _extract_clerk_email (verified-only filter)
+        #   - target row's clerk_user_id MUST already be NULL — otherwise a new
+        #     Clerk user signing up with another Clerk user's email could
+        #     overwrite the existing binding and steal that account's data.
         if user is None and email and not is_anonymous:
-            result = await db.execute(select(User).where(User.email == email))
+            result = await db.execute(
+                select(User).where(
+                    User.email == email,
+                    User.clerk_user_id.is_(None),
+                )
+            )
             user = result.scalar_one_or_none()
             if user is not None:
                 logger.warning(
                     f"[CLERK] Adopting legacy user {user.id} (email={email}) "
-                    f"into clerk_user_id={clerk_user_id} — verify Clerk JWT template "
-                    f"only emits verified emails."
+                    f"into clerk_user_id={clerk_user_id}. Verify Clerk JWT "
+                    f"template only emits VERIFIED emails — this is a soft "
+                    f"account-takeover vector if the template emits unverified."
                 )
                 user.clerk_user_id = clerk_user_id
                 if user.username.startswith("guest_"):

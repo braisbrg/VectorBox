@@ -92,6 +92,12 @@ test-results/
 python_procs.txt
 backend/tests/fixtures/*.zip
 
+# pnpm audit / pip-audit dumps — frozen-in-time snapshots are misleading;
+# always re-run audits at build time instead of trusting the committed file.
+audit_results.json
+**/audit_results.json
+pip-audit-*.json
+
 # Playwright
 frontend/e2e/reports/
 frontend/e2e/test-results/

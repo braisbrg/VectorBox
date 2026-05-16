@@ -65,24 +65,30 @@ async def check_embedding_model_alignment():
 
 
 async def check_catalog_metadata_coverage():
+    """Catalog coverage smoke test.
+
+    Uses SQLAlchemy column references (NOT raw SQL interpolation) so that
+    even though `checks` only contains hardcoded developer-authored values
+    today, a future contributor can't accidentally turn this into a SQL
+    injection sink by sourcing a label from user input.
+    """
+    from sqlalchemy import or_
     print("\n=== catalog metadata coverage (post-refresh) ===")
     async with AsyncSessionLocal() as db:
         total = await db.scalar(select(func.count(Movie.id)))
         checks = [
-            ("imdb_rating", "imdb_rating IS NOT NULL", 90),
-            ("tagline", "tagline IS NOT NULL", 80),
-            ("mpaa_rating", "mpaa_rating IS NOT NULL", 80),
-            ("awards_text", "awards_text IS NOT NULL", 80),
-            ("omdb_countries", "omdb_countries IS NOT NULL", 95),
-            ("backdrop_path", "backdrop_path IS NOT NULL", 95),
-            ("oscar_wins > 0", "oscar_wins > 0", 5),
-            ("collection_id", "collection_id IS NOT NULL", 20),
-            ("is_adult = true", "is_adult = true", 0, "max"),
+            ("imdb_rating",     Movie.imdb_rating.isnot(None),     90, "min"),
+            ("tagline",         Movie.tagline.isnot(None),         80, "min"),
+            ("mpaa_rating",     Movie.mpaa_rating.isnot(None),     80, "min"),
+            ("awards_text",     Movie.awards_text.isnot(None),     80, "min"),
+            ("omdb_countries",  Movie.omdb_countries.isnot(None),  95, "min"),
+            ("backdrop_path",   Movie.backdrop_path.isnot(None),   95, "min"),
+            ("oscar_wins > 0",  Movie.oscar_wins > 0,               5, "min"),
+            ("collection_id",   Movie.collection_id.isnot(None),   20, "min"),
+            ("is_adult = true", Movie.is_adult.is_(True),           0, "max"),
         ]
-        for chk in checks:
-            col_label, sql_where, threshold = chk[:3]
-            mode = chk[3] if len(chk) > 3 else "min"
-            n = await db.scalar(text(f"SELECT COUNT(*) FROM movies WHERE {sql_where}"))
+        for col_label, predicate, threshold, mode in checks:
+            n = await db.scalar(select(func.count(Movie.id)).where(predicate))
             pct = 100 * n / total if total else 0
             detail = f"{n}/{total} ({pct:.1f}%)"
             ok = (pct >= threshold) if mode == "min" else (pct <= threshold)

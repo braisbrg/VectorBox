@@ -65,8 +65,12 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-      args:
-        HF_TOKEN: ${HF_TOKEN:-}
+      # HF_TOKEN is passed via BuildKit secret mount (see backend/Dockerfile),
+      # NOT as a build ARG — ARGs end up in `docker history`. Compose
+      # forwards the env var to BuildKit when DOCKER_BUILDKIT=1 (Compose
+      # v2.10+ enables it by default).
+      secrets:
+        - hf_token
     container_name: vectorbox-backend
     ports:
       - "8000:8000"
@@ -88,7 +92,9 @@ services:
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - OTEL_SERVICE_NAME=vectorbox-backend
       - PIP_CONFIG_FILE=/app/pip.conf
-      - TESTING_MODE=True
+      # TESTING_MODE disables rate limiting. Pulled from .env so prod
+      # cannot accidentally inherit a True value baked into this file.
+      - TESTING_MODE=${TESTING_MODE:-False}
     volumes:
       - ./backend:/app
       - ./backups:/app/backups
@@ -128,3 +134,10 @@ volumes:
   qdrant_data:
   redis_data:
   models_cache:
+
+secrets:
+  # HF_TOKEN is read from the host environment (or .env) at build time and
+  # mounted into the backend image as /run/secrets/hf_token only during
+  # the `download_model.py` RUN. It never lands in the final image.
+  hf_token:
+    environment: HF_TOKEN

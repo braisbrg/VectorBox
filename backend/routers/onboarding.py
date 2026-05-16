@@ -429,13 +429,17 @@ async def init_session(
     await db.commit()
     await db.refresh(user)
 
-    # Set httponly cookie
+    # Set httponly cookie. SameSite=Strict — this cookie is only ever read
+    # by same-site XHRs from the onboarding flow; there's no legitimate
+    # cross-site navigation that needs to attach it, so Strict eliminates
+    # the cross-origin POST CSRF surface that Lax leaves open on top-level
+    # navigation.
     cookie_value = sign_anon_session(user.id)
     response.set_cookie(
         key=ANON_COOKIE_NAME,
         value=cookie_value,
         httponly=True,
-        samesite="lax",
+        samesite="strict",
         secure=IS_PRODUCTION,
         max_age=ANON_SESSION_MAX_AGE,
         path="/",

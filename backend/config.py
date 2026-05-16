@@ -21,7 +21,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Anonymous session signing key (httponly cookie for guest users)
 _ANON_SESSION_DEFAULT = "vectorbox-anon-dev-secret"
 ANON_SESSION_SECRET = os.getenv("ANON_SESSION_SECRET", os.getenv("SECRET_KEY", _ANON_SESSION_DEFAULT))
-ANON_SESSION_MAX_AGE = 90 * 24 * 3600  # 90 days in seconds (7_776_000)
+# 30 days. The previous 90-day window was long enough that a stolen cookie
+# survived three quarters of password-rotation hygiene, and an inactive guest
+# could rack up taste data on a shared device with no expiry pressure.
+ANON_SESSION_MAX_AGE = 30 * 24 * 3600  # 30 days in seconds (2_592_000)
 IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
 
 # Refuse to boot in production with the dev-default cookie secret — anyone could
@@ -30,6 +33,27 @@ if IS_PRODUCTION and ANON_SESSION_SECRET == _ANON_SESSION_DEFAULT:
     raise RuntimeError(
         "ANON_SESSION_SECRET (or SECRET_KEY) must be set in production; "
         "the dev default would let anyone forge guest cookies."
+    )
+
+# Refuse to boot in production with rate limiting disabled. TESTING_MODE
+# silently kills the slowapi limiter — if it leaks into prod (via .env,
+# docker-compose, or an inherited env var) the API has no rate limits at all.
+if IS_PRODUCTION and os.getenv("TESTING_MODE", "False").lower() in ("true", "1", "yes"):
+    raise RuntimeError(
+        "TESTING_MODE must be False in production; otherwise slowapi rate "
+        "limits are no-ops and every paid LLM endpoint is unmetered."
+    )
+
+# Refuse to boot in production with a Clerk DEV instance. pk_test_ / sk_test_
+# keys come from Clerk's development instance which shows a banner, issues
+# short-lived sessions, and is shared with whoever has dashboard access to
+# that account — not safe as a production identity provider.
+_clerk_publishable = os.getenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "")
+_clerk_secret = os.getenv("CLERK_SECRET_KEY", "")
+if IS_PRODUCTION and (_clerk_publishable.startswith("pk_test_") or _clerk_secret.startswith("sk_test_")):
+    raise RuntimeError(
+        "Clerk development keys (pk_test_/sk_test_) detected in production. "
+        "Provision a production Clerk instance and swap to pk_live_/sk_live_."
     )
 
 # Cache versioning — bump to auto-invalidate all section/signal Redis keys on schema changes

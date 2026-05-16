@@ -131,12 +131,15 @@ async def claim_anonymous(
 
 
 def _clear_anon_cookie(response: Response):
-    """Expire the anonymous session cookie."""
+    """Expire the anonymous session cookie. SameSite=Strict matches the
+    attributes used when the cookie was originally set in /onboarding/init-session;
+    browsers require the clearing cookie to share SameSite/Secure/Path to
+    reliably overwrite the original."""
     response.set_cookie(
         key=ANON_COOKIE_NAME,
         value="",
         httponly=True,
-        samesite="lax",
+        samesite="strict",
         secure=IS_PRODUCTION,
         max_age=0,
         path="/",
