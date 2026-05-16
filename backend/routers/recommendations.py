@@ -46,6 +46,7 @@ async def _invalidate_user_feed_cache(user_id: int) -> None:
         import os
         import redis.asyncio as aioredis
         from config import FEED_CACHE_VERSION
+        from services.cache_service import scan_and_delete
         r = aioredis.from_url(
             os.environ.get("REDIS_URL", "redis://redis:6379"),
             decode_responses=True,
@@ -55,13 +56,7 @@ async def _invalidate_user_feed_cache(user_id: int) -> None:
                 f"section:{FEED_CACHE_VERSION}:{user_id}:*",
                 f"signal_cache:{user_id}:*",
             ):
-                cursor = 0
-                while True:
-                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
-                    if keys:
-                        await r.delete(*keys)
-                    if cursor == 0:
-                        break
+                await scan_and_delete(r, pattern)
             await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
         finally:
             await r.close()
@@ -996,6 +991,20 @@ async def list_web_watches(
     ]
 
 
+def _csv_safe(value) -> str:
+    """Defuse CSV/spreadsheet formula injection.
+
+    Excel/Numbers/LibreOffice treat any cell starting with `=`, `+`, `-`,
+    `@`, `\t`, or `\r` as a formula. A movie title like
+    `=HYPERLINK("https://evil","ok")` would execute on open. Prefix the
+    cell with a single quote — Excel renders it as text, never as a formula.
+    """
+    s = "" if value is None else str(value)
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
 @router.get("/movies/watched-on-web.csv")
 async def export_web_watches_csv(
     current_user: TokenResponse = Depends(get_current_user),
@@ -1017,10 +1026,10 @@ async def export_web_watches_csv(
     writer.writerow(["Letterboxd URI", "Title", "Year", "WatchedDate"])
     for r in rows:
         writer.writerow([
-            r.letterboxd_uri or "",
-            r.title or "",
-            r.year or "",
-            r.created_at.date().isoformat() if r.created_at else "",
+            _csv_safe(r.letterboxd_uri),
+            _csv_safe(r.title),
+            _csv_safe(r.year),
+            _csv_safe(r.created_at.date().isoformat() if r.created_at else ""),
         ])
     buf.seek(0)
     return StreamingResponse(
@@ -1049,36 +1058,16 @@ async def reroll_cluster(
             decode_responses=True,
         )
         try:
+            from services.cache_service import scan_and_delete
             rotation_key = f"niche_theme_rotation:{FEED_CACHE_VERSION}:{user_id}"
             current = await r.get(rotation_key)
             n_themes = len(GLOBAL_THEMES)
             next_index = ((int(current) + 1) if current is not None else 1) % n_themes
             await r.setex(rotation_key, 60 * 60 * 24 * 7, str(next_index))
 
-            cursor = 0
-            while True:
-                cursor, keys = await r.scan(
-                    cursor,
-                    match=f"section:{FEED_CACHE_VERSION}:{user_id}:niche_picks:*",
-                    count=100,
-                )
-                if keys:
-                    await r.delete(*keys)
-                    deleted += len(keys)
-                if cursor == 0:
-                    break
+            deleted += await scan_and_delete(r, f"section:{FEED_CACHE_VERSION}:{user_id}:niche_picks:*")
             # Invalidate the full feed snapshot so the UI refetches sections
-            feed_cursor = 0
-            while True:
-                feed_cursor, keys = await r.scan(
-                    feed_cursor,
-                    match=f"feed:{FEED_CACHE_VERSION}:{user_id}:*",
-                    count=100,
-                )
-                if keys:
-                    await r.delete(*keys)
-                if feed_cursor == 0:
-                    break
+            await scan_and_delete(r, f"feed:{FEED_CACHE_VERSION}:{user_id}:*")
             logger.info(
                 f"Niche theme reroll user {user_id}: theme → {next_index} "
                 f"({GLOBAL_THEMES[next_index]['title']}), deleted {deleted} niche_picks keys"

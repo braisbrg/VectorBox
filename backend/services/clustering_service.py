@@ -1148,23 +1148,15 @@ class ClusteringService:
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
         r = None
         try:
+            from services.cache_service import scan_and_delete
             r = redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
-            patterns = [
+            total_deleted = 0
+            for pattern in (
                 f"fastapi-cache:*{user_id}*",
                 f"section:{FEED_CACHE_VERSION}:{user_id}:*",
                 f"signal_cache:{user_id}:*",
-            ]
-            total_deleted = 0
-            for pattern in patterns:
-                cursor = 0
-                while True:
-                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
-                    if keys:
-                        await r.delete(*keys)
-                        total_deleted += len(keys)
-                    if cursor == 0:
-                        break
-            # Direct-key deletions (no scan needed)
+            ):
+                total_deleted += await scan_and_delete(r, pattern)
             await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
             if total_deleted:
                 logger.info(f"Cleared {total_deleted} cache keys due to cluster regeneration (user_id={user_id}).")

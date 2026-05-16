@@ -151,24 +151,14 @@ async def _invalidate_feed_cache(user_id: int) -> None:
         r = aioredis.from_url(redis_url, decode_responses=True)
         try:
             from services.feed_service import FEED_CACHE_VERSION
+            from services.cache_service import scan_and_delete
             deleted_count = 0
-            # Sweep all key patterns that encode user-specific feed state
-            patterns = [
+            for pattern in (
                 f"section:{FEED_CACHE_VERSION}:{user_id}:*",
                 f"signal_cache:{user_id}:*",
-            ]
-            for pattern in patterns:
-                cursor = 0
-                while True:
-                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
-                    if keys:
-                        await r.delete(*keys)
-                        deleted_count += len(keys)
-                    if cursor == 0:
-                        break
-            # Delete cluster rotation counter
+            ):
+                deleted_count += await scan_and_delete(r, pattern)
             await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
-
             if deleted_count:
                 logger.info(f"Invalidated {deleted_count} feed/signal cache keys and rotation for user_id={user_id}")
         finally:
