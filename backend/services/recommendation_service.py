@@ -273,93 +273,14 @@ class RecommendationService:
         )
 
     async def _get_anti_vector(self, user_id: int) -> Optional[List[float]]:
-        """Progressive anti-vector with recency decay — see
-        RecommendationEngine._get_anti_vector (recommendation_engine.py) for
-        the policy. Duplicated here to avoid the engine→service import cycle.
-        Returns L2-normalized weighted mean, or None when fewer than 3
-        negative films have vectors.
+        """Delegates to `utils.anti_vector.compute_anti_vector`.
 
-        Each weight is multiplied by a recency decay factor with a 365-day
-        half-life, so old rejections/low ratings gradually lose influence.
+        Kept as a thin instance method so the existing `self._get_anti_vector`
+        call sites (and the four sections that depend on it) don't change.
+        Full policy + rationale live in the utility.
         """
-        from datetime import datetime, timezone
-
-        rating_result = await self.db.execute(
-            select(UserRating, Movie.tmdb_id)
-            .join(Movie, UserRating.movie_id == Movie.id)
-            .where(UserRating.user_id == user_id)
-            .where(
-                or_(
-                    UserRating.is_rejected.is_(True),
-                    UserRating.rating <= 3.0,
-                )
-            )
-            .limit(50)
-        )
-        rows = rating_result.all()
-        if len(rows) < 3:
-            return None
-
-        tmdb_ids = [tmdb_id for _, tmdb_id in rows if tmdb_id is not None]
-        if len(tmdb_ids) < 3:
-            return None
-        vectors_map = await self.qdrant.get_vectors_batch(tmdb_ids)
-        if len(vectors_map) < 3:
-            return None
-
-        now = datetime.now(timezone.utc)
-        HALF_LIFE_DAYS = 365
-
-        weighted_vectors: list[np.ndarray] = []
-        weights: list[float] = []
-        for ur, tmdb_id in rows:
-            vec = vectors_map.get(tmdb_id)
-            if vec is None:
-                continue
-            if ur.is_rejected:
-                w = 2.0
-            elif ur.rating is None:
-                continue
-            elif ur.rating <= 2.0:
-                w = 1.5
-            elif ur.rating <= 2.5:
-                w = 1.0
-            elif ur.rating <= 3.0:
-                w = 0.4
-            else:
-                continue
-
-            # Recency decay: 365-day half-life
-            ref_date = ur.watched_date or ur.created_at
-            if ref_date is not None:
-                if ref_date.tzinfo is None:
-                    ref_date = ref_date.replace(tzinfo=timezone.utc)
-                days_ago = max(0, (now - ref_date).days)
-            else:
-                days_ago = HALF_LIFE_DAYS  # assume 1 half-life if undated
-            decay = 0.5 ** (days_ago / HALF_LIFE_DAYS)
-            w *= decay
-
-            if w < 0.05:
-                continue  # negligible weight — skip
-
-            weighted_vectors.append(np.array(vec) * w)
-            weights.append(w)
-
-        if len(weighted_vectors) < 3:
-            return None
-
-        loop = asyncio.get_running_loop()
-
-        def _compute_mean():
-            total_w = float(sum(weights))
-            mean_vec = np.sum(np.stack(weighted_vectors), axis=0) / total_w
-            norm = float(np.linalg.norm(mean_vec))
-            if norm > 0:
-                mean_vec = mean_vec / norm
-            return mean_vec.tolist()
-
-        return await loop.run_in_executor(None, _compute_mean)
+        from utils.anti_vector import compute_anti_vector
+        return await compute_anti_vector(user_id, self.db, self.qdrant)
 
     async def _filter_by_anti_vector(
         self,

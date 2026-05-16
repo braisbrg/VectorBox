@@ -1,0 +1,125 @@
+"""Anti-vector: weighted L2-normalized mean of a user's negative signals.
+
+Used by both `RecommendationEngine` and `RecommendationService` to pull
+candidate vectors AWAY from films a user has rejected or rated poorly,
+decayed by age so old dislikes lose influence.
+
+Lives in `utils/` rather than either service because the function is pure
+(no instance state, no business policy) and both services need it. Putting
+it in either service file would re-introduce the engine→service import
+cycle the previous duplicate copies were created to avoid.
+
+Note: this module is only the VECTOR computation. The downstream penalty
+policy (drop vs. demote, thresholds, multipliers) is intentionally NOT
+shared — `RecommendationEngine.get_because_you_watched_section` and
+`RecommendationService._compute_vibe_signal_raw` apply different penalty
+curves and that divergence is a design choice, not duplication.
+"""
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+from typing import Optional
+
+import numpy as np
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from models.database import Movie, UserRating
+from services.qdrant_service import QdrantService
+
+
+HALF_LIFE_DAYS = 365
+MIN_NEGATIVE_FILMS = 3       # below this the signal is too noisy — return None
+MAX_NEGATIVE_FILMS = 50      # cap query cost; older entries drop off via decay
+MIN_EFFECTIVE_WEIGHT = 0.05  # films whose decayed weight falls below this are skipped
+
+
+def _rating_weight(is_rejected: bool, rating: Optional[float]) -> Optional[float]:
+    """Map a negative rating to its raw (pre-decay) anti-vector weight.
+
+    Most users never rate below 3 stars, so the legacy <=2 floor produced
+    None for almost everyone. Mild 3-star negatives carry a small weight
+    so the vector stays alive for typical users.
+    """
+    if is_rejected:
+        return 2.0
+    if rating is None:
+        return None
+    if rating <= 2.0:
+        return 1.5
+    if rating <= 2.5:
+        return 1.0
+    if rating <= 3.0:
+        return 0.4
+    return None
+
+
+async def compute_anti_vector(
+    user_id: int,
+    db: AsyncSession,
+    qdrant: QdrantService,
+) -> Optional[list[float]]:
+    """Return the user's anti-vector, or None when there's too little signal.
+
+    Pulls up to 50 negative entries (`is_rejected=True` OR `rating <= 3.0`),
+    weights each by rating bucket × age-decay (365-day half-life), and
+    returns the L2-normalized weighted mean of their stored Qdrant vectors.
+    """
+    rating_result = await db.execute(
+        select(UserRating, Movie.tmdb_id)
+        .join(Movie, UserRating.movie_id == Movie.id)
+        .where(UserRating.user_id == user_id)
+        .where(or_(UserRating.is_rejected.is_(True), UserRating.rating <= 3.0))
+        .limit(MAX_NEGATIVE_FILMS)
+    )
+    rows = rating_result.all()
+    if len(rows) < MIN_NEGATIVE_FILMS:
+        return None
+
+    tmdb_ids = [tmdb_id for _, tmdb_id in rows if tmdb_id is not None]
+    if len(tmdb_ids) < MIN_NEGATIVE_FILMS:
+        return None
+
+    vectors_map = await qdrant.get_vectors_batch(tmdb_ids)
+    if len(vectors_map) < MIN_NEGATIVE_FILMS:
+        return None
+
+    now = datetime.now(timezone.utc)
+    weighted_vectors: list[np.ndarray] = []
+    weights: list[float] = []
+
+    for ur, tmdb_id in rows:
+        vec = vectors_map.get(tmdb_id)
+        if vec is None:
+            continue
+        raw_w = _rating_weight(bool(ur.is_rejected), ur.rating)
+        if raw_w is None:
+            continue
+
+        ref_date = ur.watched_date or ur.created_at
+        if ref_date is not None:
+            if ref_date.tzinfo is None:
+                ref_date = ref_date.replace(tzinfo=timezone.utc)
+            days_ago = max(0, (now - ref_date).days)
+        else:
+            days_ago = HALF_LIFE_DAYS  # undated rows assumed one half-life old
+        w = raw_w * (0.5 ** (days_ago / HALF_LIFE_DAYS))
+
+        if w < MIN_EFFECTIVE_WEIGHT:
+            continue
+        weighted_vectors.append(np.array(vec) * w)
+        weights.append(w)
+
+    if len(weighted_vectors) < MIN_NEGATIVE_FILMS:
+        return None
+
+    def _compute_mean() -> list[float]:
+        total = float(sum(weights))
+        mean = np.sum(np.stack(weighted_vectors), axis=0) / total
+        norm = float(np.linalg.norm(mean))
+        if norm > 0:
+            mean = mean / norm
+        return mean.tolist()
+
+    return await asyncio.get_running_loop().run_in_executor(None, _compute_mean)
