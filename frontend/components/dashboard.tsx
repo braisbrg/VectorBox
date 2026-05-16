@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { LayoutList, Globe, Tv, Loader2, RotateCcw, Heart, User as UserIcon, LogOut } from "lucide-react";
 import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/constants";
@@ -41,7 +41,11 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     const handleLogout = useVectorboxLogout();
     const [currentUserSession, setCurrentUserSession] = useState<UserSession | null>(null);
     const [users, setUsers] = useState<VectorboxUser[]>([]);
-    const isLoadingAuth = useRef(true);
+    // useState (not useRef) so the post-hydration re-render escapes the
+    // loading-spinner branch at line ~214. With useRef, the truthy object
+    // (`{current: ...}`) made `if (isLoadingAuth)` permanently true and the
+    // component stayed stuck on the loader.
+    const [isLoadingAuth, setIsLoadingAuth] = useState(true);
     const [showOnboardingBanner, setShowOnboardingBanner] = useState(false);
     const [showImprovementBanner, setShowImprovementBanner] = useState(false);
     const [ratingsCount, setRatingsCount] = useState(0);
@@ -150,7 +154,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 }
             })
             .finally(() => {
-                isLoadingAuth.current = false;
+                setIsLoadingAuth(false);
             });
 
         getUsers().then(setUsers).catch(err => console.error("Failed to fetch users", err));
