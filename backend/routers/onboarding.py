@@ -40,6 +40,7 @@ from models.schemas import TokenResponse
 from services.recommendation_engine import MOVIE_QUALITY_GATE
 from services.profile_cache import set_profile_dirty
 from services.qdrant_service import QdrantService
+from services.onboarding_service import ONBOARDING_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -514,7 +515,7 @@ async def rate_movie(
         )
         new_count = (count or 0) + (0 if existing_rating else 1)
         user.onboarding_ratings_count = new_count
-        if new_count >= 15:
+        if new_count >= ONBOARDING_THRESHOLD:
             user.onboarding_completed = True
 
     await db.commit()
@@ -631,7 +632,7 @@ async def migrate_guest(
 
     # Update denormalized counters
     user.onboarding_ratings_count = migrated
-    if migrated >= 15:
+    if migrated >= ONBOARDING_THRESHOLD:
         user.onboarding_completed = True
 
     await db.commit()

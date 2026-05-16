@@ -4,8 +4,6 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import asyncio
-from difflib import SequenceMatcher
-
 from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user
 from models.schemas import TokenResponse
@@ -15,6 +13,7 @@ from services.magic_search_ranking import (
     intent_complexity,
     movie_passes_post_filter,
     should_run_deep_analysis,
+    title_sim_score,
 )
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
@@ -549,7 +548,7 @@ async def search_movies(
             db_movie = db_movies.get(int(movie_id)) if movie_id else None
 
             # Title Match Boost (Weighted Average)
-            title_sim = SequenceMatcher(None, query.lower(), metadata.get("title", "").lower()).ratio()
+            title_sim = title_sim_score(query, metadata.get("title", ""))
             
             final_score = min(round(r["score"] * 100), 100)
             

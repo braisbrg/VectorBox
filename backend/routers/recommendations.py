@@ -955,19 +955,12 @@ async def mark_watched(
     return {"status": "ok", "tmdb_id": tmdb_id, "watched": True}
 
 
-@router.get("/movies/watched-on-web")
-async def list_web_watches(
-    current_user: TokenResponse = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """F-22: list films the user marked as watched directly on VectorBox
-    (i.e. `is_watched=true AND watch_count=0` — the sentinel `mark_watched`
-    sets for web actions). These never made it to the user's Letterboxd
-    account because we can't write there; this endpoint surfaces them so
-    the UI can offer either manual reconciliation or a CSV export."""
-    user_id = current_user.user_id
-
-    result = await db.execute(
+def _web_watches_query(user_id: int, *, ascending: bool):
+    """Films the user marked watched on VectorBox (sentinel: `is_watched=true
+    AND watch_count=0`) — set by `mark_watched` when the source is the web,
+    not a Letterboxd ZIP import."""
+    order = UserRating.created_at.asc() if ascending else UserRating.created_at.desc()
+    return (
         select(
             Movie.tmdb_id, Movie.title, Movie.year,
             Movie.letterboxd_uri, Movie.poster_path,
@@ -977,9 +970,19 @@ async def list_web_watches(
         .where(UserRating.user_id == user_id)
         .where(UserRating.is_watched.is_(True))
         .where(UserRating.watch_count == 0)
-        .order_by(UserRating.created_at.desc())
+        .order_by(order)
     )
-    rows = result.all()
+
+
+@router.get("/movies/watched-on-web")
+async def list_web_watches(
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """F-22: list films the user marked as watched directly on VectorBox.
+    These never made it to Letterboxd because we can't write there; the UI
+    uses this for manual reconciliation or to trigger the CSV export."""
+    rows = (await db.execute(_web_watches_query(current_user.user_id, ascending=False))).all()
     return [
         {
             "tmdb_id": r.tmdb_id,
@@ -999,31 +1002,15 @@ async def export_web_watches_csv(
     db: AsyncSession = Depends(get_db),
 ):
     """F-22: Letterboxd-import-compatible CSV of the user's web-marked
-    watches. Letterboxd accepts a diary import with columns:
-        Letterboxd URI (preferred, unambiguous)
-        OR Title + Year
-        WatchedDate (YYYY-MM-DD)
-    See: https://letterboxd.com/about/importing-data/.
-
-    We emit all three when available so the user can drop the file
-    directly into Letterboxd's "Import" tool. Films we don't have a URI
-    for fall back to Title+Year matching on Letterboxd's side.
-    """
+    watches. Columns: Letterboxd URI (preferred), Title, Year, WatchedDate.
+    See https://letterboxd.com/about/importing-data/. Title+Year is the
+    fallback match when URI is missing."""
     import csv
     import io
     from fastapi.responses import StreamingResponse
 
     user_id = current_user.user_id
-
-    result = await db.execute(
-        select(Movie.title, Movie.year, Movie.letterboxd_uri, UserRating.created_at)
-        .join(UserRating, Movie.id == UserRating.movie_id)
-        .where(UserRating.user_id == user_id)
-        .where(UserRating.is_watched.is_(True))
-        .where(UserRating.watch_count == 0)
-        .order_by(UserRating.created_at.asc())
-    )
-    rows = result.all()
+    rows = (await db.execute(_web_watches_query(user_id, ascending=True))).all()
 
     buf = io.StringIO()
     writer = csv.writer(buf)
