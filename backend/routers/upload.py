@@ -14,9 +14,14 @@ from slowapi.util import get_remote_address
 import logging
 
 from config import get_db
-from dependencies import get_current_user, verify_user_ownership, get_embedding_service, get_qdrant_service
+from dependencies import (
+    get_current_user,
+    verify_user_ownership,
+    get_embedding_service,
+    get_qdrant_service,
+    get_tmdb_client,
+)
 from services.embedding_service import EmbeddingService
-from services.qdrant_service import QdrantService
 from services.clustering_service import ClusteringService
 from services.provider_service import ProviderService
 
@@ -81,7 +86,7 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                 logger.warning("[Enrichment] No LLM API key available, skipping enrichment")
                 return
 
-            qdrant = QdrantService()
+            qdrant = await get_qdrant_service()
             embedding_service = await get_embedding_service()
             enriched_count = 0
             batch_size = 10
@@ -399,8 +404,7 @@ async def enrich_movies_background(
 
     try:
         # Shared TMDB client for parallel HTTP lookups (HTTP-safe, no DB)
-        from services.tmdb_client import TMDBClient
-        tmdb_client = TMDBClient()
+        tmdb_client = await get_tmdb_client()
 
         import os
         from openai import AsyncOpenAI

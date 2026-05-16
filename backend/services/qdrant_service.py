@@ -118,12 +118,8 @@ class QdrantService:
         if len(vector) != self.VECTOR_SIZE:
             raise ValueError(f"Vector size mismatch. Expected {self.VECTOR_SIZE}, got {len(vector)}")
         
-        # Convert Pydantic model to dict if necessary
-        payload = metadata
-        if hasattr(metadata, "model_dump"):
-             payload = metadata.model_dump(exclude_none=True)
-        elif hasattr(metadata, "dict"): # Compat
-             payload = metadata.dict(exclude_none=True)
+        # Accept either a Pydantic V2 model (QdrantPayload) or a plain dict.
+        payload = metadata.model_dump(exclude_none=True) if hasattr(metadata, "model_dump") else metadata
         
         try:
             point = PointStruct(
