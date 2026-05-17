@@ -26,7 +26,6 @@ from sqlalchemy import String, cast
 from config import get_db, REDIS_URL, AsyncSessionLocal, IS_PRODUCTION, ANON_SESSION_MAX_AGE
 from dependencies import (
     get_current_user,
-    get_optional_current_user,
     get_current_or_anonymous_user,
     get_qdrant_service,
     get_anonymous_user,
@@ -219,13 +218,21 @@ async def get_onboarding_movies(
     page: int = 1,
     exclude_ids: str = "",
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
 ):
     """
     Return 15 movies for the onboarding carousel.
     First 5: one per genre pole (guaranteed diversity).
     Next 10: diverse pool with genre/decade caps.
-    Guest-safe (no auth required). If authed, excludes already-rated movies.
+
+    Auth: requires either a Clerk JWT or a vb_anon_session cookie. The
+    /explore + /onboarding pages always call /init-session before this
+    endpoint, so the cookie is guaranteed by the time we hit /movies.
+    Switched from get_optional_current_user — which only saw Clerk JWTs
+    and treated anon-cookie guests as "no user" — so guests had no
+    rated-exclusion applied and got the same films again on /rate-more.
+    Now anonymous guest ratings are filtered out the same way as authed
+    user ratings.
     """
     # Build base exclusion set
     rated_movie_ids: set = set()

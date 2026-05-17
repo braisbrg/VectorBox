@@ -810,7 +810,7 @@ async def get_hidden_gems_row(
 async def reject_movie(
     request: Request,
     tmdb_id: int,
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Mark a movie as 'Not Interested'. Upserts UserRating with is_rejected=True."""
@@ -853,7 +853,7 @@ async def reject_movie(
 
 @router.get("/movies/rejected")
 async def get_rejected_movies(
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List all movies the user has marked as 'Not Interested'."""
@@ -886,7 +886,7 @@ async def get_rejected_movies(
 async def unreject_movie(
     request: Request,
     tmdb_id: int,
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Undo a 'Not Interested' rejection."""
@@ -923,7 +923,7 @@ async def unreject_movie(
 async def mark_watched(
     request: Request,
     tmdb_id: int,
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Mark a movie as watched from the web (no date or rewatch info available)."""

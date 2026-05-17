@@ -170,6 +170,24 @@ async def _create_clerk_user(
     db: AsyncSession, clerk_user_id: str, email: str, is_anonymous: bool,
     clerk_username: str = ""
 ) -> User:
+    # Pre-check: a different Clerk account ALREADY owns this email.
+    # The legacy-adoption path (only runs when clerk_user_id IS NULL on
+    # the existing row, per H-1 fix) doesn't apply here. INSERTing would
+    # blow up on the unique constraint on users.email, then mask itself
+    # as a 401 to the client (because the exception bubbles up through
+    # get_current_user → "Authentication failed"). Return 409 explicitly
+    # with a message the frontend can act on (redirect to log-in).
+    if email and not is_anonymous:
+        existing = await db.execute(
+            select(User).where(User.email == email, User.clerk_user_id.is_not(None))
+        )
+        owner = existing.scalar_one_or_none()
+        if owner is not None and owner.clerk_user_id != clerk_user_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="email_already_registered",
+            )
+
     # Priority: clerk username claim → email prefix → guest_
     if clerk_username and not is_anonymous:
         base_username = clerk_username

@@ -67,7 +67,7 @@ export default function ExplorePage() {
                             [ RATE MORE FILMS ]
                         </button>
                         <Link
-                            href="/login?migrate=true"
+                            href="/register?migrate=true"
                             className="border border-primary text-primary px-3 py-1.5 font-mono text-xs uppercase hover:bg-primary hover:text-background transition-colors"
                         >
                             [ SAVE PROFILE ]
