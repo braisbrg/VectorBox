@@ -160,12 +160,20 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         getUsers().then(setUsers).catch(err => console.error("Failed to fetch users", err));
     }, [isClerkLoaded, clerkUser, router]);
 
-    // Onboarding status check — show improvement banner, never force-redirect.
-    // Previously auto-redirected sub-15-rating users to /onboarding, which made
-    // the feed inaccessible for guests-just-migrated and ZIP-mid-enrichment
-    // users (same friction as the "data incomplete" wall removed from /feed).
-    // The improvement banner now covers all sparse states (0 < N < 35) so the
-    // user knows what's missing without being trapped.
+    // Onboarding status check — force /onboarding for sub-threshold users
+    // UNLESS they've explicitly dismissed it ("Skip for now" from /onboarding).
+    //
+    // Tiering:
+    //   1–14 ratings, no `vb_skip_onboarding`: force-redirect to /onboarding
+    //       (we need a minimum signal to make any meaningful rec).
+    //   1–14 ratings, `vb_skip_onboarding=true`: respect the user's skip,
+    //       show the improvement banner so they know what's missing.
+    //   15–34 ratings: improvement banner.
+    //   35+: nothing.
+    //
+    // The skip flag is auto-cleared once the user crosses the 15-rating
+    // threshold — once they have minimum data, the escape hatch is moot
+    // and we don't want it lingering for the next sub-threshold state.
     useEffect(() => {
         if (!currentUserSession?.has_data) return;
 
@@ -174,12 +182,31 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 const { ratings_count, completed } = data;
                 setRatingsCount(ratings_count);
 
-                if (!completed && ratings_count > 0 && ratings_count < 35) {
-                    setShowImprovementBanner(true);
+                const skipped = typeof window !== "undefined"
+                    && localStorage.getItem("vb_skip_onboarding") === "true";
+
+                if (!completed && ratings_count > 0 && ratings_count < 15) {
+                    if (skipped) {
+                        // User explicitly opted out — banner only, no redirect.
+                        setShowImprovementBanner(true);
+                    } else {
+                        router.replace("/onboarding");
+                        return;
+                    }
+                } else if (ratings_count >= 15) {
+                    // Threshold met — clear the escape-hatch flag so future
+                    // sub-threshold states (rare, but rating deletion exists)
+                    // can re-trigger the redirect.
+                    if (typeof window !== "undefined") {
+                        localStorage.removeItem("vb_skip_onboarding");
+                    }
+                    if (ratings_count < 35) {
+                        setShowImprovementBanner(true);
+                    }
                 }
             })
             .catch(() => { /* non-critical, ignore */ });
-    }, [currentUserSession?.has_data]);
+    }, [currentUserSession?.has_data, router]);
 
     // Clear invalid providers when country changes
     useEffect(() => {

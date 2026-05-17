@@ -296,6 +296,22 @@ export default function OnboardingCarouselPage() {
                         <span className="text-[10px] font-mono text-zinc-600 uppercase">
                             {ratedCount}/15 rated
                         </span>
+                        {/* Skip for now: only meaningful for signed-in users
+                            (Clerk session); guests can just navigate away from
+                            /onboarding without this. Sets a localStorage flag
+                            the Dashboard reads to suppress the sub-threshold
+                            auto-redirect. Flag auto-clears once ratings ≥ 15. */}
+                        {isSignedIn && ratedCount < 15 && (
+                            <button
+                                onClick={() => {
+                                    localStorage.setItem("vb_skip_onboarding", "true");
+                                    router.push("/");
+                                }}
+                                className="px-3 py-1.5 border border-zinc-700 text-zinc-400 font-mono uppercase tracking-wider text-[10px] hover:border-zinc-500 hover:text-zinc-300 transition-colors"
+                            >
+                                SKIP FOR NOW
+                            </button>
+                        )}
                         {ratedCount >= 15 && (
                             <button
                                 onClick={handleSaveProfile}
