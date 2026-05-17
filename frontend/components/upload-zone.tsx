@@ -436,6 +436,26 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                         </a>
                     </p>
                 </div>
+
+                {/* Skip escape — visible only when user has no data (i.e. UploadZone
+                    is rendered inside the ONBOARDING JAIL on dashboard.tsx). In
+                    Settings / feed-empty-state callsites the user already has
+                    ratings, so this button doesn't apply. Mirrors the Skip
+                    in /onboarding header — same flag (vb_skip_onboarding) so
+                    Dashboard suppresses both the JAIL and the sub-15 redirect. */}
+                {!activeUserProfile?.has_data && (
+                    <div className="mt-6 text-center">
+                        <button
+                            onClick={() => {
+                                localStorage.setItem("vb_skip_onboarding", "true");
+                                window.location.href = "/";
+                            }}
+                            className="text-xs text-zinc-500 hover:text-zinc-300 font-mono uppercase tracking-wider underline underline-offset-4 decoration-zinc-700 hover:decoration-zinc-500 transition-colors"
+                        >
+                            Skip for now — browse without imports
+                        </button>
+                    </div>
+                )}
             </div>
         </>
     );

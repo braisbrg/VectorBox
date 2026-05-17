@@ -264,8 +264,13 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         letterboxd_username: currentUserSession.letterboxd_username,
     };
 
-    // ONBOARDING JAIL: If user has no data, lock them here
-    if (!currentUserSession.has_data) {
+    // ONBOARDING JAIL: If user has no data, lock them here UNLESS they've
+    // explicitly skipped (flag set from /onboarding "Skip for now" or
+    // UploadZone's skip button). Synchronous localStorage read because
+    // this check runs during render, before any useEffect fires.
+    const skippedOnboarding = typeof window !== "undefined"
+        && localStorage.getItem("vb_skip_onboarding") === "true";
+    if (!currentUserSession.has_data && !skippedOnboarding) {
         return (
             <div className="min-h-screen bg-zinc-950 text-foreground flex flex-col items-center justify-center p-4 relative overflow-hidden">
                 <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10 pointer-events-none" />
