@@ -394,7 +394,12 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                         year={item.year}
                                         runtime={item.runtime}
                                         rating={item.rating}
-                                        matchScore={item.match_score}
+                                        // matchScore intentionally omitted: the backend
+                                        // passes 1.0 similarity for every watchlist item
+                                        // (they aren't similarity-ranked), which the
+                                        // normalizer renders as 99. Falling back to that
+                                        // in the badge when vectorbox_score is NULL
+                                        // showed a phantom "99" on films with no score.
                                         providers={item.streaming_providers}
                                         href={getLetterboxdUrl(item.id)}
                                         variant="grid"

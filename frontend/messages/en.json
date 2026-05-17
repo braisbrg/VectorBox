@@ -30,6 +30,9 @@
         "because_you_watched": "Because you watched...",
         "niche_picks": "Niche Picks",
         "hidden_gems": "Hidden Gems",
+        "upcoming": "On Your Radar",
+        "auteur": "From Your Favorite Directors",
+        "cult_actor": "Cast Picks",
 
         "wildcard": "Outside Your Comfort Zone",
         "random_picks": "Gacha Roll",
@@ -50,7 +53,8 @@
         "results_found": "movies detected",
         "no_results": "No matches in database.",
         "analyzing": "Analyzing intent...",
-        "searching": "Searching..."
+        "searching": "Searching...",
+        "loading": "Loading…"
     },
     "magic_search": {
         "high_intelligence": "High Intelligence",
