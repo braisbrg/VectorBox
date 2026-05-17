@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { m } from "framer-motion";
 import {
@@ -13,10 +13,12 @@ import {
 export default function OnboardingTagsPage() {
     const { push } = useRouter();
     const [states, setStates] = useState<Record<string, TagState>>({});
-    const mountedRef = useRef(false);
+    // useState (not useRef) so the post-hydration re-render escapes the
+    // [LOADING] branch below. Same trap as Dashboard (commit fd9122f).
+    const [hydrated, setHydrated] = useState(false);
 
     useEffect(() => {
-        mountedRef.current = true;
+        setHydrated(true);
         const saved = localStorage.getItem("vb_guest_tags:v1");
         if (saved) {
             try {
@@ -32,7 +34,7 @@ export default function OnboardingTagsPage() {
 
     const handleContinue = () => push("/onboarding");
 
-    if (!mountedRef.current) {
+    if (!hydrated) {
         return (
             <div className="min-h-screen flex items-center justify-center bg-background">
                 <span className="font-mono text-xs text-zinc-600">[ LOADING ]</span>

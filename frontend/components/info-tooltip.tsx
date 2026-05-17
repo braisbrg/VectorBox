@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { Info, X } from "lucide-react";
 import { m, AnimatePresence } from "framer-motion";
 import { useLanguage } from "@/components/language-provider";
@@ -67,11 +67,14 @@ export function InfoTooltip({ id, title, description, className = "" }: InfoTool
 export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
     const [isOpen, setIsOpen] = useState(false);
     const [dismissed, setDismissed] = useState(false);
-    const mountedRef = useRef(false);
+    // useState (not useRef) — mutating a ref does not trigger re-render, so
+    // the `if (!mounted) return null` guard below would stay truthy forever
+    // and the tooltip would never paint. Same trap as Dashboard (fd9122f).
+    const [mounted, setMounted] = useState(false);
     const { t } = useLanguage();
 
     useEffect(() => {
-        mountedRef.current = true;
+        setMounted(true);
         const seen = localStorage.getItem("app_tooltip_seen");
         if (!seen) {
             // Auto-show on first visit after a delay
@@ -190,7 +193,7 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
         </AnimatePresence>
     );
 
-    if (!mountedRef.current) return null;
+    if (!mounted) return null;
 
     // If we are rendering the button
     return (
