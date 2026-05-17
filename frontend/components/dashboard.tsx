@@ -160,7 +160,12 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         getUsers().then(setUsers).catch(err => console.error("Failed to fetch users", err));
     }, [isClerkLoaded, clerkUser, router]);
 
-    // FIX 3: Onboarding status check - redirect or show improvement banner
+    // Onboarding status check — show improvement banner, never force-redirect.
+    // Previously auto-redirected sub-15-rating users to /onboarding, which made
+    // the feed inaccessible for guests-just-migrated and ZIP-mid-enrichment
+    // users (same friction as the "data incomplete" wall removed from /feed).
+    // The improvement banner now covers all sparse states (0 < N < 35) so the
+    // user knows what's missing without being trapped.
     useEffect(() => {
         if (!currentUserSession?.has_data) return;
 
@@ -169,16 +174,12 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 const { ratings_count, completed } = data;
                 setRatingsCount(ratings_count);
 
-                if (!completed && ratings_count > 0 && ratings_count < 15) {
-                    router.replace("/onboarding");
-                    return;
-                }
-                if (ratings_count >= 15 && ratings_count < 35) {
+                if (!completed && ratings_count > 0 && ratings_count < 35) {
                     setShowImprovementBanner(true);
                 }
             })
             .catch(() => { /* non-critical, ignore */ });
-    }, [currentUserSession?.has_data, router]);
+    }, [currentUserSession?.has_data]);
 
     // Clear invalid providers when country changes
     useEffect(() => {

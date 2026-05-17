@@ -491,16 +491,17 @@ async def get_feed(
         if streaming_providers:
             provider_ids = [int(x) for x in streaming_providers.split(",") if x.strip()]
         
-        # v1.1: Check for incomplete ingestion state (Feed Error Boundary)
-        # If user has ratings BUT no clusters, ingestion likely failed/interrupted.
-        has_ratings = (await db.execute(select(UserRating).where(UserRating.user_id == user_id).limit(1))).scalar_one_or_none()
-        has_clusters = (await db.execute(select(UserCluster).where(UserCluster.user_id == user_id).limit(1))).scalar_one_or_none()
-        
-        if has_ratings and not has_clusters:
-            # Check if processing is actively happening? 
-            # Ideally we check task status, but "Incomplete" is safe fallback.
-            # If a task is running, the UI might flicker, but "Incomplete" is effectively true until clusters exist.
-            return FeedResponse(feed=[], status="incomplete")
+        # Decision (2026-05-17): users with sub-clustering ratings (e.g. just
+        # migrated from a guest with 3 rated films, or a fresh ZIP that's
+        # still enriching in background) should NOT see "data incomplete".
+        # The feed pipeline already gracefully degrades — personalized
+        # sections (BYW, Picked For You, Cult Actor) return None when their
+        # input signals are too sparse, and we filter those out client-side.
+        # Non-personalized sections (Hidden Gems, Niche Picks, Upcoming,
+        # Random Picks, Popular on Letterboxd) work fine without clusters.
+        # Old "data incomplete" gate forced a ZIP/onboarding wall on every
+        # sub-threshold user — same friction as the guest cap we already
+        # removed.
 
         # Services are now injected
         feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
@@ -810,10 +811,16 @@ async def get_hidden_gems_row(
 async def reject_movie(
     request: Request,
     tmdb_id: int,
+    background_tasks: BackgroundTasks,
     current_user: TokenResponse = Depends(get_current_or_anonymous_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Mark a movie as 'Not Interested'. Upserts UserRating with is_rejected=True."""
+    """Mark a movie as 'Not Interested'. Upserts UserRating with is_rejected=True.
+
+    Cache invalidation runs as a background task — same pattern as
+    mark_watched: keep the response fast so rapid-fire clicks don't
+    stack the SCAN+DELETE inside the request path.
+    """
     user_id = current_user.user_id
 
     # Find the internal movie by tmdb_id
@@ -846,7 +853,7 @@ async def reject_movie(
 
     await db.commit()
 
-    await _invalidate_user_feed_cache(user_id)
+    background_tasks.add_task(_invalidate_user_feed_cache, user_id)
 
     return {"status": "ok", "tmdb_id": tmdb_id, "rejected": True}
 
@@ -923,10 +930,19 @@ async def unreject_movie(
 async def mark_watched(
     request: Request,
     tmdb_id: int,
+    background_tasks: BackgroundTasks,
     current_user: TokenResponse = Depends(get_current_or_anonymous_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Mark a movie as watched from the web (no date or rewatch info available)."""
+    """Mark a movie as watched from the web (no date or rewatch info available).
+
+    Cache invalidation runs as a background task so the response returns
+    immediately. Otherwise rapid-fire clicks ("watched 3 films in a row")
+    were stacking the SCAN+DELETE inside the request path; each next click
+    waited for the previous one to finish, and the feed refetch the
+    frontend triggered after each click could land before the next commit
+    propagated → user saw the just-watched film reappear in the feed.
+    """
     user_id = current_user.user_id
 
     movie_result = await db.execute(
@@ -957,7 +973,7 @@ async def mark_watched(
 
     await db.commit()
 
-    await _invalidate_user_feed_cache(user_id)
+    background_tasks.add_task(_invalidate_user_feed_cache, user_id)
 
     return {"status": "ok", "tmdb_id": tmdb_id, "watched": True}
 

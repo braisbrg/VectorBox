@@ -267,17 +267,22 @@ async def get_onboarding_movies(
 
     if page > 1:
         shown_ids = [int(x) for x in exclude_ids.split(",") if x.strip()]
-        
-        # Get diverse pool excluding already shown
+
+        # Combine: films shown in current session + films already rated globally.
+        # The page-1 path applies rated_movie_ids — page-2+ was missing this,
+        # so films rated in a previous session could resurface when the user
+        # clicked "Rate more films" with an empty in-session `shown_ids`.
+        exclude_combined = set(shown_ids) | rated_movie_ids
+
         pool_query = (
             select(Movie)
             .where(*MOVIE_QUALITY_GATE)
-            .where(Movie.tmdb_id.notin_(shown_ids))
+            .where(Movie.tmdb_id.notin_(exclude_combined) if exclude_combined else True)
             .where(Movie.vote_count >= 500)
             .where(Movie.vectorbox_score >= 55)
             .where(Movie.poster_path.isnot(None))
         )
-        
+
         if avoided_tags_list:
             pool_query = _apply_tag_exclude_filters(pool_query, avoided_tags_list)
             
