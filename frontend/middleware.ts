@@ -7,7 +7,15 @@ const isPublicRoute = createRouteMatcher([
     "/privacy(.*)",
     "/terms(.*)",
     "/onboarding(.*)",
-    "/explore(.*)"
+    "/explore(.*)",
+    // API routes are public AT THE MIDDLEWARE LAYER — each backend
+    // endpoint decides its own auth via get_current_user /
+    // get_anonymous_user / get_current_or_anonymous_user. The middleware
+    // protecting /api/* broke the guest flow: POST /api/onboarding/init-
+    // session (which needs NO auth, it CREATES the anon session) was
+    // being redirected to /login → axios followed with POST → 405.
+    // Keep route-level Clerk enforcement on PAGE routes only.
+    "/api(.*)",
 ]);
 
 export default clerkMiddleware(async (auth, request) => {
