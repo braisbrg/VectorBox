@@ -38,8 +38,6 @@ const SIGNAL_BUTTONS: {
     { signal: "positive", key: "3", label: "LOVED IT",   icon: ThumbsUp,   color: "text-primary" },
 ];
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
-
 export default function OnboardingCarouselPage() {
     const router = useRouter();
     const { isSignedIn } = useAuth();
@@ -146,23 +144,22 @@ export default function OnboardingCarouselPage() {
         const shownIds = movies.map(m => m.tmdb_id).join(",");
         const savedTags = localStorage.getItem("vb_guest_tags");
         const avoided = savedTags ? JSON.parse(savedTags).avoided || [] : [];
-        
-        const params = new URLSearchParams({
-            page: nextPage.toString(),
-            exclude_ids: shownIds,
-            ...(avoided.length > 0 && { avoided_tags: avoided.join(",") }),
-        });
-        
+
         try {
-            const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
-            const response = await fetch(`${API_URL}/api/onboarding/movies?${params.toString()}`);
-            if (!response.ok) throw new Error("Failed to fetch more movies");
-            const newMovies = await response.json();
-            
-            setMovies(prev => {
-                const combined = [...prev, ...newMovies];
-                return combined;
-            });
+            // Use the `api` client (axios) so AuthBridge attaches the Clerk
+            // JWT — plain `fetch()` bypassed it and the request hung waiting
+            // for a response the dev proxy never resolved.
+            const { data: newMovies } = await api.get<OnboardingMovie[]>(
+                "/api/onboarding/movies",
+                {
+                    params: {
+                        page: nextPage,
+                        exclude_ids: shownIds,
+                        ...(avoided.length > 0 ? { avoided_tags: avoided.join(",") } : {}),
+                    },
+                },
+            );
+            setMovies(prev => [...prev, ...newMovies]);
             setPage(nextPage);
         } catch (e) {
             console.error("Failed to load more movies:", e);
@@ -213,12 +210,10 @@ export default function OnboardingCarouselPage() {
         setSearchLoading(true);
         const t = setTimeout(async () => {
             try {
-                const API_URL = process.env.NEXT_PUBLIC_API_URL || "";
-                const res = await fetch(
-                    `${API_URL}/api/onboarding/search?q=${encodeURIComponent(searchQuery)}`
+                const { data } = await api.get<OnboardingMovie[]>(
+                    "/api/onboarding/search",
+                    { params: { q: searchQuery } },
                 );
-                if (!res.ok) throw new Error("search failed");
-                const data: OnboardingMovie[] = await res.json();
                 if (!cancelled) setSearchResults(data);
             } catch (e) {
                 if (!cancelled) setSearchResults([]);

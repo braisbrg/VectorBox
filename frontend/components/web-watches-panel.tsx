@@ -81,14 +81,32 @@ export function WebWatchesPanel() {
                         your Letterboxd account — pick a flow below.
                     </p>
                 </div>
-                <a
-                    href="/api/recommendations/movies/watched-on-web.csv"
-                    download
+                <button
+                    type="button"
+                    onClick={async () => {
+                        // Plain <a href> navigation doesn't carry the
+                        // Authorization: Bearer header AuthBridge injects via
+                        // axios — Clerk JWT lives in memory, not in cookies.
+                        // Fetch through `api`, then trigger the download from
+                        // an in-memory Blob URL.
+                        const res = await api.get(
+                            "/api/recommendations/movies/watched-on-web.csv",
+                            { responseType: "blob" },
+                        );
+                        const url = URL.createObjectURL(res.data);
+                        const anchor = document.createElement("a");
+                        anchor.href = url;
+                        anchor.download = "vectorbox-watched.csv";
+                        document.body.appendChild(anchor);
+                        anchor.click();
+                        anchor.remove();
+                        URL.revokeObjectURL(url);
+                    }}
                     className="inline-flex items-center gap-2 px-3 py-1.5 border border-primary/30 text-xs text-primary hover:bg-primary/10 transition-colors uppercase tracking-wider"
                 >
                     <Download className="size-3.5" />
                     Letterboxd CSV
-                </a>
+                </button>
             </div>
 
             <p className="text-[10px] text-zinc-500 leading-relaxed">
