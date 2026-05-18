@@ -80,6 +80,7 @@ async def get_http_client(request: Request) -> httpx.AsyncClient:
 # Auth Dependencies
 from fastapi import Request, HTTPException, status, Depends
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 from functools import lru_cache
@@ -204,9 +205,30 @@ async def _create_clerk_user(
         is_anonymous=is_anonymous,
     )
     db.add(user)
-    await db.commit()
-    await db.refresh(user)
-    return user
+    try:
+        await db.commit()
+        await db.refresh(user)
+        return user
+    except IntegrityError:
+        # Defensive backstop: a concurrent request just inserted the same
+        # email between our pre-check and this commit (race on first signup
+        # when no prior row exists). Roll back, fetch whichever row landed
+        # first, and return it. Avoids the 401 cascade the user saw when
+        # two parallel claim-anonymous calls hit the same brand-new email.
+        await db.rollback()
+        if email:
+            existing = (await db.execute(
+                select(User).where(User.email == email)
+            )).scalar_one_or_none()
+            if existing is not None:
+                logger.warning(
+                    f"[CLERK] Concurrent insert race resolved — adopted "
+                    f"existing user.id={existing.id} for email={email}"
+                )
+                return existing
+        # Genuinely unexpected (no email, or some other constraint) — re-raise
+        # and let get_current_user surface it as 401.
+        raise
 
 
 async def _relink_clerk_user_email(

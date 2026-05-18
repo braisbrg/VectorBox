@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
-from sqlalchemy import select, update
+from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import AsyncSessionLocal, REDIS_URL, get_db, IS_PRODUCTION
@@ -76,26 +76,44 @@ async def claim_anonymous(
         _clear_anon_cookie(response)
         return {"status": "ok", "migrated": False, "message": "Same user"}
 
-    # Transfer ratings: reassign anonymous user's ratings to the registered user.
-    # Skip ratings for movies the registered user already rated (no overwrite).
+    # Transfer ratings via BULK SQL — NOT via ORM in-place mutation.
+    #
+    # The User.ratings relationship in models/database.py:39 is configured with
+    # `cascade="all, delete-orphan"`. The previous implementation loaded ratings
+    # into the ORM session and mutated `rating.user_id` directly. That changes
+    # the FK on the row but leaves the rating objects "attached" to anon_user
+    # in SQLAlchemy's identity map. The subsequent `db.delete(anon_user)` then
+    # triggered the cascade and SQLAlchemy issued
+    #   DELETE FROM user_ratings WHERE user_id = <anon_id>
+    # BEFORE flushing the UPDATEs, wiping all the just-reassigned ratings.
+    #
+    # Result: log said "Migrated N" (count was correct) but the new user ended
+    # up with 0 ratings. Bulk SQL bypasses the ORM identity map → cascade has
+    # nothing to cascade to.
     existing_movie_ids_result = await db.execute(
         select(UserRating.movie_id).where(UserRating.user_id == registered_user_id)
     )
     existing_movie_ids = set(existing_movie_ids_result.scalars().all())
 
-    anon_ratings_result = await db.execute(
-        select(UserRating).where(UserRating.user_id == anon_user.id)
-    )
-    anon_ratings = anon_ratings_result.scalars().all()
+    # Step 1: drop the anon's duplicates (registered user wins) — pure SQL DELETE.
+    if existing_movie_ids:
+        await db.execute(
+            delete(UserRating).where(
+                UserRating.user_id == anon_user.id,
+                UserRating.movie_id.in_(existing_movie_ids),
+            )
+        )
 
-    migrated_count = 0
-    for rating in anon_ratings:
-        if rating.movie_id not in existing_movie_ids:
-            rating.user_id = registered_user_id
-            migrated_count += 1
-        else:
-            # Delete duplicate — registered user's rating takes precedence
-            await db.delete(rating)
+    # Step 2: bulk-reassign the rest with a single UPDATE statement.
+    # `synchronize_session=False` is safe — we delete anon_user immediately
+    # after and don't read its ratings collection again.
+    reassign_result = await db.execute(
+        update(UserRating)
+        .where(UserRating.user_id == anon_user.id)
+        .values(user_id=registered_user_id)
+        .execution_options(synchronize_session=False)
+    )
+    migrated_count = reassign_result.rowcount or 0
 
     # Copy tag_preferences only if the registered user has none yet.
     # onboarding_completed / onboarding_ratings_count are NOT copied from anon —
@@ -113,9 +131,11 @@ async def claim_anonymous(
     ):
         registered_user.tag_preferences = anon_user.tag_preferences
 
-    # Delete the anonymous user (CASCADE will clean up remaining ratings, clusters)
+    # Delete the anonymous user. All its ratings have already been moved or
+    # deleted via the bulk SQL above, so no orphan-cascade fires. The user
+    # row's own CASCADE FKs (clusters, streaming_providers) clean up correctly.
     await db.delete(anon_user)
-    await db.flush()  # ensure reassigned ratings + delete are visible to the next query
+    await db.flush()  # ensure delete + tag_pref copy are visible to maybe_complete_onboarding
 
     # Recompute onboarding counter from the authoritative row count + flip
     # onboarding_completed when the threshold is met. Single source of truth

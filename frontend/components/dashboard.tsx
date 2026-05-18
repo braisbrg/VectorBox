@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { LayoutList, Globe, Tv, Loader2, RotateCcw, Heart, User as UserIcon, LogOut } from "lucide-react";
 import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/constants";
@@ -73,11 +73,37 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         }
     }, [searchParams]);
 
+    // Debounced feed invalidation. Rapid-fire watched/reject clicks were
+    // firing one invalidateQueries → one /feed refetch per click. 3+ clicks
+    // in a few seconds blew past the @limiter.limit("20/minute") on /feed
+    // and threw 429s, and stale feed pages came back showing the just-
+    // marked films. Coalesce into a single refetch 1.5s after the LAST click.
+    const invalidateFeedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const debouncedInvalidateFeed = useCallback(() => {
+        if (invalidateFeedTimerRef.current) {
+            clearTimeout(invalidateFeedTimerRef.current);
+        }
+        invalidateFeedTimerRef.current = setTimeout(() => {
+            queryClient.invalidateQueries({ queryKey: ["feed"] });
+            invalidateFeedTimerRef.current = null;
+        }, 1500);
+    }, [queryClient]);
+
+    // Cancel any pending invalidation on unmount so we don't fire a stale
+    // refetch after the user navigates away.
+    useEffect(() => {
+        return () => {
+            if (invalidateFeedTimerRef.current) {
+                clearTimeout(invalidateFeedTimerRef.current);
+            }
+        };
+    }, []);
+
     const handleInspectorMarkWatched = async (tmdbId: number) => {
         setInspectorActionLoading("watched");
         try {
             await markWatched(tmdbId);
-            queryClient.invalidateQueries({ queryKey: ["feed"] });
+            debouncedInvalidateFeed();
             setInspectedMovie(null);
         } catch (error) {
             console.error("Failed to mark as watched:", error);
@@ -90,7 +116,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         setInspectorActionLoading("rejected");
         try {
             await rejectMovie(tmdbId);
-            queryClient.invalidateQueries({ queryKey: ["feed"] });
+            debouncedInvalidateFeed();
             setInspectedMovie(null);
         } catch (error) {
             console.error("Failed to reject movie:", error);
@@ -111,9 +137,17 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
             return;
         }
 
-        // Catch users who signed up directly from onboarding (bypassing login/page.tsx)
-        // This promotes the anonymous session if a cookie is present.
-        api.post("/api/auth/claim-anonymous").catch(() => {});
+        // NOTE: claim-anonymous is intentionally NOT called here.
+        // The canonical caller is login/page.tsx's migrateGuestData() at
+        // /login?migrate=true (the post-Clerk-signup redirect target).
+        // A previous "safety net" here fired claim-anonymous IN PARALLEL with
+        // login/page.tsx's call after sign-up — both requests carried the same
+        // new Clerk JWT, both passed the duplicate-email pre-check (no existing
+        // user with that email on FIRST signup), both ran INSERT, and the
+        // second hit the unique constraint on `users.email`. The IntegrityError
+        // bubbled up as 401 and trapped the user. Backend now also catches
+        // IntegrityError defensively in `_create_clerk_user`, but the cleanest
+        // fix is to not fire the duplicate request in the first place.
 
         // Optimistic paint from cached session (Clerk JWT attached by AuthBridge)
         const storedUser = localStorage.getItem(USER_SESSION_KEY);

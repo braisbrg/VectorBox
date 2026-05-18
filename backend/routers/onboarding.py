@@ -530,6 +530,34 @@ async def rate_movie(
 
     await db.commit()
 
+    # Invalidate the user's feed cache so the next /feed render reflects this
+    # rating. mark_watched and reject_movie already do this; rate was the only
+    # mutation path missing it — which is why guests who rated films via the
+    # carousel and returned to /explore kept seeing the pre-rating sections.
+    async def _invalidate_after_rate(uid: int):
+        import os
+        import redis.asyncio as aioredis
+        from config import FEED_CACHE_VERSION
+        from services.cache_service import scan_and_delete
+        try:
+            r = aioredis.from_url(
+                os.environ.get("REDIS_URL", "redis://redis:6379"),
+                decode_responses=True,
+            )
+            try:
+                for pattern in (
+                    f"section:{FEED_CACHE_VERSION}:{uid}:*",
+                    f"signal_cache:{uid}:*",
+                ):
+                    await scan_and_delete(r, pattern)
+                await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{uid}")
+            finally:
+                await r.close()
+        except Exception as e:
+            logger.warning(f"[rate] Cache invalidation failed for user {uid}: {e}")
+
+    background_tasks.add_task(_invalidate_after_rate, user_id)
+
     # Trigger clustering when enough ratings accumulate
     final_count = user.onboarding_ratings_count if user else 0
     if final_count >= 5 and existing_rating is None:

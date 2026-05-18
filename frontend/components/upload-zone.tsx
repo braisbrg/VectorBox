@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { Upload, FileText, Loader2, FileArchive, Plus, User as UserIcon, RefreshCw, Check, AlertCircle, Link as LinkIcon, Save, ArrowRight } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
+import { useAuth } from "@clerk/nextjs";
 import { uploadExportZIP, syncRSS, linkLetterboxd, VectorboxUser, USER_SESSION_KEY } from "@/lib/api";
 import { m } from "framer-motion";
 import { ProgressModal } from "./progress-modal";
@@ -102,6 +103,10 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
 export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, activeSessionUserId, onSessionUserSelect }: UploadZoneProps) {
     const [isDragging, setIsDragging] = useState(false);
     const [file, setFile] = useState<File | null>(null);
+    // Used by the "Skip for now" button to route correctly: signed-in users
+    // go to dashboard `/`, guests go to `/explore` (the only public landing
+    // for unauthenticated users — middleware redirects `/` to /login).
+    const { isSignedIn } = useAuth();
 
     // Flattened State Logic
     // STRICT TYPE SAFETY: Use strict equality for ID lookup
@@ -448,7 +453,11 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                         <button
                             onClick={() => {
                                 localStorage.setItem("vb_skip_onboarding", "true");
-                                window.location.href = "/";
+                                // Guests land on /explore (the only public-route
+                                // home equivalent). Signed-in users land on the
+                                // dashboard. Sending a guest to `/` here would
+                                // bounce them through middleware → /login.
+                                window.location.href = isSignedIn ? "/" : "/explore";
                             }}
                             className="text-xs text-zinc-500 hover:text-zinc-300 font-mono uppercase tracking-wider underline underline-offset-4 decoration-zinc-700 hover:decoration-zinc-500 transition-colors"
                         >
