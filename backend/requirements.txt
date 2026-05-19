@@ -7,7 +7,7 @@ sentence-transformers>=5.0.0
 scikit-learn==1.8.0
 qdrant-client==1.18.0
 redis==4.6.0
-orjson>=3.11.8
+orjson>=3.11.9
 pillow>=12.2.0
 
 bcrypt==4.3.0
