@@ -86,23 +86,38 @@ def main():
         process = subprocess.run(audit_cmd, capture_output=True, text=True)
 
         output_lines = process.stdout.splitlines() + process.stderr.splitlines()
-        real_errors = []
+        vuln_found = False
+        significant_error = False
 
         for line in output_lines:
+            low = line.lower()
             # Suppress the known torch CPU wheel "not found on PyPI" error:
             # torch+cpu is from https://download.pytorch.org/whl/cpu, not PyPI.
             # This is not a vulnerability; it just can't be looked up on pypi.org.
-            if "dependency not found on pypi" in line.lower() and "torch" in line.lower():
+            if "dependency not found on pypi" in low and "torch" in low:
                 continue
             print(line)
-            if "vulnerabilities found" in line.lower() and "0 vulnerabilities found" not in line.lower():
-                real_errors.append(line)
+            # pip-audit announces findings as "Found N known vulnerabilities ..."
+            # (note the word order — the previous "vulnerabilities found" match
+            # never fired, silently passing every real finding: fail-open bug).
+            m = re.search(r"found\s+(\d+)\s+known\s+vulnerabilit", low)
+            if m and int(m.group(1)) > 0:
+                vuln_found = True
+            # Any non-warning error/traceback is treated as a real failure so we
+            # never fail-open on resolution/network errors either.
+            if ("error" in low or "traceback" in low) and "warning" not in low:
+                significant_error = True
 
-        if process.returncode != 0 and not real_errors:
+        if vuln_found or significant_error:
+            # Real vulnerabilities or a genuine audit error → fail closed.
+            exit_code = 1
+        elif process.returncode != 0:
+            # Non-zero with no vuln line and no error line: the only known cause
+            # is the suppressed torch+cpu "not found on PyPI" noise.
             print("Note: Suppressed known 'torch+cpu not found on PyPI' error (expected for CPU wheel builds).")
             exit_code = 0
         else:
-            exit_code = process.returncode
+            exit_code = 0
 
     except Exception as e:
         print(f"FATAL: Error running pip-audit: {e}")
