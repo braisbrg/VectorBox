@@ -9,6 +9,7 @@ import {
     tagStateToPreferences,
     preferencesToTagState,
 } from "@/components/onboarding/tag-selector";
+import { api } from "@/lib/api";
 
 export default function OnboardingTagsPage() {
     const { push } = useRouter();
@@ -19,6 +20,9 @@ export default function OnboardingTagsPage() {
 
     useEffect(() => {
         setHydrated(true);
+        // Make sure the guest has an anon session so the POST /tags below
+        // can authenticate via cookie. Idempotent — no-op if cookie already set.
+        api.post("/api/onboarding/init-session").catch(() => { /* offline ok */ });
         const saved = localStorage.getItem("vb_guest_tags:v1");
         if (saved) {
             try {
@@ -29,7 +33,11 @@ export default function OnboardingTagsPage() {
 
     const handleChange = (next: Record<string, TagState>) => {
         setStates(next);
-        localStorage.setItem("vb_guest_tags:v1", JSON.stringify(tagStateToPreferences(next)));
+        const prefs = tagStateToPreferences(next);
+        localStorage.setItem("vb_guest_tags:v1", JSON.stringify(prefs));
+        // Persist server-side too so claim-anonymous can copy the tags on
+        // signup. Fire-and-forget; localStorage is the offline fallback.
+        api.post("/api/onboarding/tags", prefs).catch(() => { /* offline ok */ });
     };
 
     const handleContinue = () => push("/onboarding");

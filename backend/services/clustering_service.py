@@ -209,6 +209,9 @@ class ClusteringService:
         )
 
         import os
+        # Scout produces more evocative labels ("Cinematic Emotional Odyssey")
+        # than 70B's drier ones ("Mind Bending Dramas") at equivalent semantic
+        # precision. Naming is a UX-facing surface; evocative wins.
         model_name = "meta-llama/llama-4-scout-17b-16e-instruct" if os.getenv("GROQ_API_KEY") else "gemini-2.5-flash"
         try:
             response = await groq_client.chat.completions.create(

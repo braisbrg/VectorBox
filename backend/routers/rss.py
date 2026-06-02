@@ -219,6 +219,12 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
                         else:
                             tmdb_id = None  # reject — better to lose the entry than insert a phantom
 
+                        # Persist the fuzzy result in the slug cache so the
+                        # next sync skips both the film-page scrape and the
+                        # TMDB search. Positive answers TTL 30d, MISS 7d
+                        # (see services/letterboxd_slug_cache.py).
+                        await scraper.set_resolved_tmdb_id(film_slug, tmdb_id)
+
                     if not tmdb_id:
                         continue
 

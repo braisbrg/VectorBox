@@ -154,6 +154,53 @@ class TraktClient:
         return related
 
 
+    async def _list_movies(
+        self,
+        endpoint: str,
+        page: int,
+        limit: int,
+        wrapped: bool,
+    ) -> List[Dict[str, Any]]:
+        """Internal: fetch a paginated Trakt movie list endpoint.
+
+        `wrapped=True` for /trending and /anticipated (items are {watchers/list_count, movie:{...}}).
+        `wrapped=False` for /popular (items are the movie dict directly).
+        Returns a list of movie dicts (each has `ids.tmdb`).
+        """
+        if not self.enabled:
+            return []
+        try:
+            resp = await self.client.get(
+                f"{TRAKT_BASE}{endpoint}",
+                params={"page": page, "limit": limit},
+                headers=self._headers(),
+            )
+        except Exception as e:
+            logger.warning(f"Trakt {endpoint} page={page} failed: {e}")
+            return []
+
+        if resp.status_code != 200:
+            logger.warning(f"Trakt {endpoint} HTTP {resp.status_code} page={page}")
+            return []
+
+        raw = resp.json() or []
+        if wrapped:
+            return [item["movie"] for item in raw if isinstance(item, dict) and "movie" in item]
+        return [item for item in raw if isinstance(item, dict)]
+
+    async def popular(self, page: int = 1, limit: int = 100) -> List[Dict[str, Any]]:
+        """Trakt /movies/popular — most-watched globally."""
+        return await self._list_movies("/movies/popular", page, limit, wrapped=False)
+
+    async def trending(self, page: int = 1, limit: int = 100) -> List[Dict[str, Any]]:
+        """Trakt /movies/trending — most users watching right now."""
+        return await self._list_movies("/movies/trending", page, limit, wrapped=True)
+
+    async def anticipated(self, page: int = 1, limit: int = 100) -> List[Dict[str, Any]]:
+        """Trakt /movies/anticipated — most added to watchlists (unreleased)."""
+        return await self._list_movies("/movies/anticipated", page, limit, wrapped=True)
+
+
 _singleton: Optional[TraktClient] = None
 
 

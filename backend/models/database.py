@@ -105,6 +105,11 @@ class Movie(Base):
     collection_id = Column(Integer, nullable=True)             # TMDB belongs_to_collection.id
     collection_name = Column(String(200), nullable=True)
     is_adult = Column(Boolean, nullable=False, server_default="false")
+    # Soft-delete flag for non-films (UFC/AEW events, wrestling PPVs, multi-hour
+    # cartoon vaults, etc.). Honoured by MOVIE_QUALITY_GATE so they never appear
+    # in recommendations — but NOT consulted by watchlist / history / direct
+    # lookup paths, so user-chosen entries remain visible.
+    is_excluded = Column(Boolean, nullable=False, server_default="false")
     tagline = Column(Text, nullable=True)                      # TMDB tagline
     backdrop_path = Column(String(255), nullable=True)         # TMDB backdrop_path (hero image)
 

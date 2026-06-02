@@ -178,9 +178,9 @@ export function Sidebar({ currentView, onViewChange, users, currentUserId, onUse
                                         <UserCircle className="size-4" />
                                         {t("sidebar.profile") || "Profile"}
                                     </DropdownMenu.Item>
-                                    
+
                                     <DropdownMenu.Separator className="h-px bg-zinc-800 my-1" />
-                                    
+
                                     <DropdownMenu.Item
                                         className="flex items-center gap-2 px-3 py-2 text-xs font-mono text-red-500 hover:text-black hover:bg-red-500 outline-none cursor-pointer transition-colors uppercase tracking-wider"
                                         onClick={handleLogout}

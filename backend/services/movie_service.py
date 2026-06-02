@@ -193,8 +193,9 @@ class MovieService:
             if movie.vectorbox_score is None or movie.imdb_id is None or movie.imdb_rating is None or force:
                 logger.info(f"Enriching OMDb data for {movie.title}...")
                 details = await self.tmdb.get_movie_details(movie.tmdb_id)
-                if details and details.get("imdb_id"):
-                    imdb_id = details.get("imdb_id")
+                # Normalize empty string / missing → None (TMDB sometimes returns "")
+                imdb_id = ((details or {}).get("imdb_id") or "").strip() or None
+                if imdb_id:
                     omdb_data = await self.omdb.fetch_movie_data(imdb_id)
                     vb_score_obj = self.omdb.calculate_vectorbox_score(
                         omdb_data,

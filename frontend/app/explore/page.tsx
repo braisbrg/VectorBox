@@ -2,13 +2,17 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import { FeedContainer } from "@/components/feed-container";
 import { api } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
+import { scheduleFeedInvalidation } from "@/lib/feed-invalidation";
 
 export default function ExplorePage() {
     const { push } = useRouter();
+    const searchParams = useSearchParams();
+    const queryClient = useQueryClient();
     const [userId, setUserId] = useState<number | null>(null);
     const [isReady, setIsReady] = useState(false);
 
@@ -25,6 +29,19 @@ export default function ExplorePage() {
         };
         initSession();
     }, []);
+
+    // Refresh the feed immediately when a guest returns from /onboarding via
+    // the VIEW EXPLORE button — they just rated films and the cached feed
+    // doesn't reflect them yet. delayMs=0 bypasses the 3s debounce since
+    // this is an explicit user "show me my new feed" intent.
+    useEffect(() => {
+        if (searchParams.get("onboarding_complete") === "true") {
+            scheduleFeedInvalidation(queryClient, 0);
+            const url = new URL(window.location.href);
+            url.searchParams.delete("onboarding_complete");
+            window.history.replaceState({}, "", url.pathname);
+        }
+    }, [searchParams, queryClient]);
 
     return (
         <div className="min-h-screen bg-background text-foreground flex flex-col">

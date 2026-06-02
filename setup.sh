@@ -71,7 +71,7 @@ echo -e "\033[1;32m✅ Qdrant Indexes Created.\033[0m"
 
 # 7. Datos en Tiempo Real (Tendencias)
 echo -e "\033[1;33m🔥 Fetching Trending Movies...\033[0m"
-$COMPOSE_CMD exec -T backend python scripts/popular_scraper.py
+$COMPOSE_CMD exec -T backend python scripts/maintenance_orchestrator.py --phases 8
 echo -e "\033[1;32m✅ Trending Movies Updated.\033[0m"
 
 # 8. Final

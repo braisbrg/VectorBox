@@ -100,7 +100,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                                         {displayName}
                                     </span>
                                 </div>
-                                
+
                                 <div className="grid grid-cols-2 gap-4">
                                     <button
                                         onClick={() => handleViewChange("profile")}
@@ -111,7 +111,7 @@ export function MobileNav({ currentView, onViewChange, users, currentUserId, onU
                                             {t("sidebar.profile")}
                                         </span>
                                     </button>
-                                    
+
                                     <button
                                         onClick={handleLogout}
                                         className="flex flex-col items-center gap-2 p-4 bg-white/5 border border-white/10 hover:border-red-500 transition-colors group"

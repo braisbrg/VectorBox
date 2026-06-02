@@ -9,8 +9,9 @@ scheduler = AsyncIOScheduler()
 async def run_trending_update():
     logger.info("Running scheduled job: Update Letterboxd Popular")
     try:
-        from scripts.popular_scraper import scrape_letterboxd_popular
-        await scrape_letterboxd_popular()
+        from scripts.maintenance_orchestrator import phase_popular_refresh
+        stats = await phase_popular_refresh(dry_run=False)
+        logger.info(f"Popular refresh done: {stats}")
     except Exception as e:
         logger.error(f"Trending update failed: {e}")
 

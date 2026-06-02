@@ -3,7 +3,7 @@ import asyncio
 import redis.asyncio as aioredis
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, or_
 
 from config import AsyncSessionLocal, REDIS_URL, FEED_CACHE_VERSION
 from models.database import UserRating, Movie
@@ -245,25 +245,31 @@ class FeedService:
             logger.warning(f"Anti-vector pre-compute failed for user_id={user_id}: {e}")
         # --- END FIX 4 ---
 
-        # --- PRE-POPULATE watched tmdb_ids so every signal excludes them ---
+        # --- PRE-POPULATE excluded tmdb_ids (watched OR rejected) so every signal excludes them ---
+        # BYW (Signal A) and other section builders that lean on this set rather than
+        # querying ratings themselves were leaking rejected films back into the feed
+        # after F5. Including is_rejected here is the upstream fix — section-level
+        # internal queries also got the same filter (round 5), this closes the path
+        # for builders that *only* consume the caller-supplied set.
         watched_tmdb_ids: Set[int] = set()
         try:
             async with AsyncSessionLocal() as session:
-                watched_result = await session.execute(
+                excluded_result = await session.execute(
                     select(UserRating.movie_id)
-                    .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+                    .where(UserRating.user_id == user_id)
+                    .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
                 )
-                watched_internal_ids = set(watched_result.scalars().all())
+                excluded_internal_ids = set(excluded_result.scalars().all())
 
-                if watched_internal_ids:
+                if excluded_internal_ids:
                     movies_result = await session.execute(
-                        select(Movie.tmdb_id).where(Movie.id.in_(watched_internal_ids))
+                        select(Movie.tmdb_id).where(Movie.id.in_(excluded_internal_ids))
                     )
                     watched_tmdb_ids = set(movies_result.scalars().all())
 
-            logger.info(f"Pre-populated {len(watched_tmdb_ids)} watched tmdb_ids for User {user_id}")
+            logger.info(f"Pre-populated {len(watched_tmdb_ids)} excluded tmdb_ids (watched+rejected) for User {user_id}")
         except Exception as e:
-            logger.error(f"Failed to pre-populate watched_tmdb_ids: {e}")
+            logger.error(f"Failed to pre-populate excluded tmdb_ids: {e}")
         # --- END PRE-POPULATE ---
 
         async def task_popular():

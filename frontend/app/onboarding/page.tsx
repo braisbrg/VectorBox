@@ -67,10 +67,23 @@ export default function OnboardingCarouselPage() {
     useEffect(() => {
         const hydrate = async () => {
             try {
-                // Init or resume anonymous session (sets httponly cookie)
-                const { data: sessionData } = await api.post("/api/onboarding/init-session");
+                // Init or resume anonymous session (sets httponly cookie).
+                // For authed users this is a no-op cookie-wise but returns
+                // ratings_count=0 (they don't have an anon session) — so we
+                // re-query /status below which works for both anon and authed.
+                await api.post("/api/onboarding/init-session");
                 if (!isMounted.current) return;
-                setRatedCount(sessionData.ratings_count || 0);
+
+                // Authoritative rating count regardless of auth state. Without
+                // this, an authed user coming from "Rate more films" sees a
+                // ratedCount of 0 and the VIEW FEED button stays hidden until
+                // they vote 15 NEW times.
+                try {
+                    const { data: statusData } = await api.get("/api/onboarding/status");
+                    if (isMounted.current) setRatedCount(statusData.ratings_count || 0);
+                } catch {
+                    // Non-fatal — leave at 0; user can still rate.
+                }
                 setSessionReady(true);
 
                 // Fetch carousel movies
@@ -313,12 +326,35 @@ export default function OnboardingCarouselPage() {
                             </button>
                         )}
                         {ratedCount >= 15 && (
-                            <button
-                                onClick={handleSaveProfile}
-                                className="px-3 py-1.5 bg-primary text-black font-bold font-mono uppercase tracking-wider text-[10px] hover:bg-primary/90 transition-colors"
-                            >
-                                SAVE PROFILE
-                            </button>
+                            isSignedIn ? (
+                                // Already authed (user came here from dashboard's "Rate more films")
+                                // — there's nothing to "save", they just want to go back. The
+                                // ?onboarding_complete=true param tells dashboard.tsx to invalidate
+                                // the feed query so the new ratings show up without F5.
+                                <button
+                                    onClick={() => router.push("/?onboarding_complete=true")}
+                                    className="px-3 py-1.5 bg-primary text-black font-bold font-mono uppercase tracking-wider text-[10px] hover:bg-primary/90 transition-colors"
+                                >
+                                    VIEW FEED
+                                </button>
+                            ) : (
+                                <>
+                                    {/* Guest came from /explore via "Rate more films" — bounce back
+                                        there with cache invalidation so the new ratings show up. */}
+                                    <button
+                                        onClick={() => router.push("/explore?onboarding_complete=true")}
+                                        className="px-3 py-1.5 border border-primary text-primary font-bold font-mono uppercase tracking-wider text-[10px] hover:bg-primary/10 transition-colors"
+                                    >
+                                        VIEW EXPLORE
+                                    </button>
+                                    <button
+                                        onClick={handleSaveProfile}
+                                        className="px-3 py-1.5 bg-primary text-black font-bold font-mono uppercase tracking-wider text-[10px] hover:bg-primary/90 transition-colors"
+                                    >
+                                        SAVE PROFILE
+                                    </button>
+                                </>
+                            )
                         )}
                     </div>
                 </div>

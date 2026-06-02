@@ -147,8 +147,13 @@ class TMDBClient:
             except orjson.JSONDecodeError as e:
                 logger.error(f"JSON Parse Error: {e}")
                 return None
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
+                # Transient transport errors — don't trip the circuit breaker.
+                # These are network hiccups (esp. with HTTP/2), not "TMDB is down".
+                logger.warning(f"TMDB transient transport error ({type(e).__name__}) on {endpoint}: {e or '<no message>'}")
+                return None
             except Exception as e:
-                logger.error(f"TMDB request failed: {e}")
+                logger.error(f"TMDB request failed ({type(e).__name__}) on {endpoint}: {e or '<no message>'}")
                 self._record_failure()
                 return None
 
@@ -356,6 +361,20 @@ class TMDBClient:
 
         return result
 
+    async def get_collection(self, collection_id: int) -> Optional[Dict]:
+        """Fetch all films in a TMDB collection (saga). Returns the collection
+        dict with `parts: [...]` listing every movie, or None on error.
+        Cache: 7 days (collections add new films rarely)."""
+        cache_key = f"tmdb:collection:{collection_id}"
+        r = await self._get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return orjson.loads(cached)
+        data = await self._make_request(f"/collection/{collection_id}")
+        if data:
+            await r.setex(cache_key, timedelta(days=7), orjson.dumps(data))
+        return data
+
     async def discover_movies(
         self,
         with_genres: Optional[List[int]] = None,
@@ -371,6 +390,8 @@ class TMDBClient:
         page: int = 1,
         primary_release_date_gte: Optional[str] = None,
         primary_release_date_lte: Optional[str] = None,
+        with_original_language: Optional[str] = None,
+        with_companies: Optional[str] = None,
     ) -> List[Dict]:
         """
         Discover movies using TMDB's Discover API.
@@ -405,6 +426,10 @@ class TMDBClient:
             params["primary_release_date.gte"] = primary_release_date_gte
         if primary_release_date_lte:
             params["primary_release_date.lte"] = primary_release_date_lte
+        if with_original_language:
+            params["with_original_language"] = with_original_language
+        if with_companies:
+            params["with_companies"] = with_companies
 
         try:
             # Optimized: Use the shared _make_request which uses the connection pool

@@ -115,17 +115,22 @@ async def claim_anonymous(
     )
     migrated_count = reassign_result.rowcount or 0
 
-    # Copy tag_preferences only if the registered user has none yet.
-    # onboarding_completed / onboarding_ratings_count are NOT copied from anon —
-    # `maybe_complete_onboarding` below recomputes the count from the post-merge
-    # row count, which is the authoritative source after the rating reassignment.
+    # Copy tag_preferences from anon → registered if registered has none yet.
+    # Guests now save tags server-side directly to the anon row via the same
+    # POST /api/onboarding/tags endpoint (round 7 — opened to anon sessions),
+    # so anon_user.tag_preferences is the authoritative source. The dead
+    # `not onboarding_completed` gate from the round-4 version is intentionally
+    # dropped — it never fires for fresh signups (count<15 keeps the flag
+    # False) but it can falsely fire for re-used test emails where the row
+    # is adopted via the IntegrityError race.
+    # onboarding_completed / onboarding_ratings_count are recomputed below by
+    # `maybe_complete_onboarding` from the post-merge row count.
     registered_result = await db.execute(
         select(User).where(User.id == registered_user_id)
     )
     registered_user = registered_result.scalar_one_or_none()
     if (
         registered_user
-        and not registered_user.onboarding_completed
         and anon_user.tag_preferences
         and not registered_user.tag_preferences
     ):

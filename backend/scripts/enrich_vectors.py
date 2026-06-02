@@ -183,17 +183,28 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
 
 
 MODEL_ALIASES = {
-    "gemini": "gemini-2.5-flash",
-    "scout":  "meta-llama/llama-4-scout-17b-16e-instruct",
-    "70b":    "llama-3.3-70b-versatile",
-    "8b":     "llama-3.1-8b-instant",
+    "gemini":  "gemini-2.5-flash",
+    "scout":   "meta-llama/llama-4-scout-17b-16e-instruct",
+    "70b":     "llama-3.3-70b-versatile",
+    "8b":      "llama-3.1-8b-instant",
+    "oss-120": "openai/gpt-oss-120b",
+    "oss-20":  "openai/gpt-oss-20b",
 }
 
 
-async def enrich_embeddings_via_groq(limit: int = None, model_only: str = None):
+async def enrich_embeddings_via_groq(
+    limit: int = None,
+    model_only: str = None,
+    model_chain_override: list[str] | None = None,
+):
     """
     Re-processes movies where has_enriched_embedding is False.
     Generates cinematic descriptions via LLM (Gemini preferred, Groq fallback) and re-upserts vectors.
+
+    Args:
+        model_only: Force a single model (mutually exclusive with model_chain_override).
+        model_chain_override: Restrict the fallback chain to a custom list of model IDs
+            (e.g. the top-4 for --smart). Forwarded to generate_cinematic_description.
     """
     import sys
     from openai import AsyncOpenAI
@@ -272,6 +283,7 @@ async def enrich_embeddings_via_groq(limit: int = None, model_only: str = None):
                         year=movie.year or 0,
                         groq_client=groq_client,
                         force_model=model_only,
+                        model_chain_override=model_chain_override,
                     )
 
                     # Generate embedding
@@ -402,7 +414,16 @@ if __name__ == "__main__":
         default=None,
         help="Restrict enrichment to a single model alias. No fallback to other models. "
              "Stops gracefully when the daily limit for that model is exhausted. "
-             "Example: --model-only gemini  OR  --model-only scout"
+             "Aliases: gemini | scout | 70b | 8b | oss-120 | oss-20. "
+             "Example: --model-only 70b  OR  --model-only oss-120"
+    )
+    parser.add_argument(
+        "--smart",
+        action="store_true",
+        help="Restrict enrichment to the top-4 models (70B, Scout, oss-120, oss-20) — "
+             "skips the weaker 8b-instant fallback. Use this when you want consistent "
+             "high-quality cinematic descriptions across the whole catalogue. "
+             "Mutually exclusive with --model-only."
     )
     parser.add_argument(
         "--reset-enrichment",
@@ -427,6 +448,10 @@ if __name__ == "__main__":
         asyncio.run(run_reset())
         sys.exit(0)
     
+    if args.smart and args.model_only:
+        print("Error: --smart and --model-only are mutually exclusive.")
+        sys.exit(1)
+
     model_only_id = None
     if args.model_only:
         if args.model_only not in MODEL_ALIASES:
@@ -434,8 +459,24 @@ if __name__ == "__main__":
             print(f"Valid options: {', '.join(MODEL_ALIASES.keys())}")
             sys.exit(1)
         model_only_id = MODEL_ALIASES[args.model_only]
-    
+
+    # --smart: skip the 8B fallback to keep quality uniform across catalogue.
+    smart_chain = (
+        [
+            "llama-3.3-70b-versatile",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+        ]
+        if args.smart
+        else None
+    )
+
     if args.enrich_embeddings:
-        asyncio.run(enrich_embeddings_via_groq(limit=args.limit, model_only=model_only_id))
+        asyncio.run(enrich_embeddings_via_groq(
+            limit=args.limit,
+            model_only=model_only_id,
+            model_chain_override=smart_chain,
+        ))
     else:
         asyncio.run(enrich_vectors(missing_only=not args.all, limit=args.limit))

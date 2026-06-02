@@ -247,8 +247,8 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
         {"role": "user", "content": f"### USER QUERY ###\n{user_query}\n### END USER QUERY ###"},
     ]
 
-    primary_model = "meta-llama/llama-4-scout-17b-16e-instruct" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
-    fallback_model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else None
+    primary_model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
+    fallback_model = "meta-llama/llama-4-scout-17b-16e-instruct" if os.environ.get("GROQ_API_KEY") else None
 
     try:
         return await client.chat.completions.create(

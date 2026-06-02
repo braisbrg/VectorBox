@@ -108,9 +108,12 @@ async def refresh_movie(movie: Movie, tmdb: TMDBClient, omdb: OMDbClient) -> boo
             movie.title_es = tmdb_data["title_es"]
         if tmdb_data.get("overview_es"):
             movie.overview_es = tmdb_data["overview_es"]
-        # imdb_id can change for very rare titles or be filled in late by TMDB
-        if not movie.imdb_id and tmdb_data.get("imdb_id"):
-            movie.imdb_id = tmdb_data["imdb_id"]
+        # imdb_id can change for very rare titles or be filled in late by TMDB.
+        # Normalize empty string → None to avoid UNIQUE-constraint collisions.
+        if not movie.imdb_id:
+            new_imdb = (tmdb_data.get("imdb_id") or "").strip() or None
+            if new_imdb:
+                movie.imdb_id = new_imdb
         # Extended TMDB metadata (migration o3p4q5r6s7t8)
         if tmdb_data.get("tagline"):
             movie.tagline = tmdb_data["tagline"]

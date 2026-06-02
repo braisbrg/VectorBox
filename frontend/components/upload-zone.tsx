@@ -146,7 +146,7 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                     }
                 }
             }
-            
+
             // UX: Slight delay before reload to let user see success
             setTimeout(() => {
                 window.location.reload();

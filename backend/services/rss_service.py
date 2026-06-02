@@ -454,7 +454,24 @@ class RSSService:
                             logger.info(f"Guest {username} Vector built from {len(titles)} movies: {', '.join(titles[:5])}...")
                         else:
                             logger.warning(f"Guest {username}: No vectors found for top 15 items.")
-                            
+
+                    # B-38: enrich (or substitute) the RSS centroid with a
+                    # likes-based centroid scraped from /{user}/likes/films/.
+                    # Likes carry all-time preference signal; the 0.6/0.4 blend
+                    # favors recency but lets all-time taste differentiate
+                    # this guest from "someone who watched some films lately".
+                    likes_vector = await self._maybe_fetch_likes_centroid(username)
+                    if likes_vector is not None:
+                        if user_vector is not None and len(likes_vector) == len(user_vector):
+                            blended = 0.6 * user_vector + 0.4 * likes_vector
+                            n = float(np.linalg.norm(blended))
+                            if n > 0:
+                                user_vector = blended / n
+                                logger.info(f"[GroupSync B-38] {username} centroid blended 0.6 RSS / 0.4 likes")
+                        elif user_vector is None:
+                            user_vector = likes_vector
+                            logger.info(f"[GroupSync B-38] {username} centroid from likes only (no RSS signal)")
+
                     # B. Get Watched (Exclusions)
                     # Note: We cannot get watchlist for guests via RSS easily
                     for item in items:
@@ -628,3 +645,103 @@ class RSSService:
         except Exception as e:
             logger.error(f"Error fetching vectors: {e}")
         return vectors
+
+    async def _maybe_fetch_likes_centroid(self, username: str) -> Optional[np.ndarray]:
+        """B-38: build a centroid from `/{user}/likes/films/` for the
+        RSS-only guest branch of group-sync.
+
+        Gated by a 6h Redis lock (`groupsync:likes_scraped:{username}`) so
+        a single bad actor cannot trigger repeated scrapes by re-hitting
+        `/api/rss/group/vibe`. The computed centroid itself is cached
+        (`groupsync:likes_vector:{username}`) with the same TTL — within
+        the lock window, subsequent group-sync calls hit Redis only.
+
+        Failures (network, no likes, no resolvable slugs, all films missing
+        from Qdrant) return None — caller treats that as "no enrichment",
+        never as a hard error.
+        """
+        import json as _json
+        import os
+        import redis.asyncio as aioredis
+        from services.scraper_service import ScraperService
+
+        redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+        r = aioredis.from_url(redis_url, decode_responses=True)
+        cache_key = f"groupsync:likes_vector:{username}"
+        lock_key = f"groupsync:likes_scraped:{username}"
+        ttl_s = 6 * 60 * 60
+
+        try:
+            cached = await r.get(cache_key)
+            if cached:
+                try:
+                    arr = np.array(_json.loads(cached), dtype=np.float32)
+                    if arr.size:
+                        logger.info(f"[GroupSync B-38] likes-centroid cache hit for {username}")
+                        return arr
+                except Exception:
+                    pass  # corrupt cache — fall through to rebuild
+
+            # Lock present but no usable cache → a previous scrape failed,
+            # don't retry until the lock TTL expires.
+            if await r.get(lock_key):
+                logger.info(f"[GroupSync B-38] {username} under cooldown, skipping likes scrape")
+                return None
+
+            # Take the lock first so concurrent group-sync calls don't both
+            # scrape. NX makes the SET atomic.
+            await r.set(lock_key, "1", ex=ttl_s, nx=True)
+
+            scraper = ScraperService()
+            tmdb_ids: List[int] = []
+            try:
+                likes = await scraper.scrape_user_likes(username, max_pages=10)
+                if not likes:
+                    logger.info(f"[GroupSync B-38] no likes scraped for {username}")
+                    return None
+                for it in likes[:50]:
+                    slug = it.get("film_slug")
+                    if not slug:
+                        continue
+                    tid = await scraper.get_tmdb_id(slug)
+                    if tid is not None:
+                        tmdb_ids.append(tid)
+                    if len(tmdb_ids) >= 50:
+                        break
+            finally:
+                await scraper.close()
+
+            if not tmdb_ids:
+                logger.info(f"[GroupSync B-38] no likes resolved to tmdb_ids for {username}")
+                return None
+
+            vectors = await self._fetch_vectors(tmdb_ids)
+            if not vectors:
+                logger.info(f"[GroupSync B-38] no Qdrant vectors for {username}'s likes")
+                return None
+
+            centroid = np.mean(vectors, axis=0)
+            norm = float(np.linalg.norm(centroid))
+            if norm == 0:
+                return None
+            centroid = (centroid / norm).astype(np.float32)
+
+            try:
+                await r.set(cache_key, _json.dumps(centroid.tolist()), ex=ttl_s)
+            except Exception as e:
+                logger.warning(f"[GroupSync B-38] cache write failed for {username}: {e}")
+
+            logger.info(
+                f"[GroupSync B-38] likes centroid built for {username} from {len(tmdb_ids)} films "
+                f"({len(vectors)} vectors hit)"
+            )
+            return centroid
+
+        except Exception as e:
+            logger.warning(f"[GroupSync B-38] likes enrichment failed for {username}: {e}")
+            return None
+        finally:
+            try:
+                await r.close()
+            except Exception:
+                pass

@@ -9,6 +9,7 @@ import { useRef, useState, useEffect, useCallback } from "react";
 import { MovieCard } from "@/components/ui/movie-card";
 import { useLanguage } from "@/components/language-provider";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { scheduleFeedInvalidation } from "@/lib/feed-invalidation";
 
 interface FeedItem {
     id: number;
@@ -81,8 +82,11 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
         try {
             await rejectMovie(tmdbId);
             if (isMounted.current) {
-                // Invalidate feed query so next load reflects the rejection
-                queryClient.invalidateQueries({ queryKey: ["feed"] });
+                // Shared 3s debounce — rapid-fire clicks across multiple cards
+                // coalesce into ONE /feed refetch. Direct invalidateQueries
+                // here bypassed the dashboard's debounce and was the actual
+                // cause of the 429 spiral + rejected-film flicker in round 6.
+                scheduleFeedInvalidation(queryClient);
             }
             onReject?.(tmdbId);
         } catch (error) {
@@ -111,7 +115,7 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
         try {
             await markWatched(tmdbId);
             if (isMounted.current) {
-                queryClient.invalidateQueries({ queryKey: ["feed"] });
+                scheduleFeedInvalidation(queryClient);
             }
             onReject?.(tmdbId);
         } catch (error) {

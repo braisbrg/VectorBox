@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { LayoutList, Globe, Tv, Loader2, RotateCcw, Heart, User as UserIcon, LogOut } from "lucide-react";
 import { STREAMING_PROVIDERS, COUNTRIES, getProvidersForCountry } from "@/lib/constants";
@@ -19,6 +19,7 @@ import { MobileHeader } from "@/components/mobile-header";
 import { MobileNav } from "@/components/mobile-nav";
 import { getUserClusters, ClusterInfo } from "@/lib/api";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { scheduleFeedInvalidation, cancelPendingFeedInvalidation } from "@/lib/feed-invalidation";
 import { AnimatePresence } from "framer-motion";
 import { X, Sparkles } from "lucide-react";
 import { InfoTooltip } from "@/components/info-tooltip";
@@ -66,44 +67,30 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     useEffect(() => {
         if (searchParams.get("onboarding_complete") === "true") {
             setShowOnboardingBanner(true);
-            // Strip param from URL without reload
+            // Immediate (delayMs=0) feed refresh — user just rated films in
+            // /onboarding and the cache is stale. Goes through the same
+            // singleton as debounced invalidations to keep one API surface.
+            scheduleFeedInvalidation(queryClient, 0);
             const url = new URL(window.location.href);
             url.searchParams.delete("onboarding_complete");
             window.history.replaceState({}, "", url.pathname);
         }
-    }, [searchParams]);
+    }, [searchParams, queryClient]);
 
-    // Debounced feed invalidation. Rapid-fire watched/reject clicks were
-    // firing one invalidateQueries → one /feed refetch per click. 3+ clicks
-    // in a few seconds blew past the @limiter.limit("20/minute") on /feed
-    // and threw 429s, and stale feed pages came back showing the just-
-    // marked films. Coalesce into a single refetch 1.5s after the LAST click.
-    const invalidateFeedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const debouncedInvalidateFeed = useCallback(() => {
-        if (invalidateFeedTimerRef.current) {
-            clearTimeout(invalidateFeedTimerRef.current);
-        }
-        invalidateFeedTimerRef.current = setTimeout(() => {
-            queryClient.invalidateQueries({ queryKey: ["feed"] });
-            invalidateFeedTimerRef.current = null;
-        }, 1500);
-    }, [queryClient]);
-
-    // Cancel any pending invalidation on unmount so we don't fire a stale
-    // refetch after the user navigates away.
+    // Feed invalidation goes through the module-level singleton in
+    // lib/feed-invalidation.ts so dashboard inspector clicks AND
+    // movie-carousel per-card clicks share a single 3s debounce window.
+    // (Round 6 had separate timers per component → carousel clicks bypassed
+    // the dashboard's debounce → 429-rate-limit spiral.)
     useEffect(() => {
-        return () => {
-            if (invalidateFeedTimerRef.current) {
-                clearTimeout(invalidateFeedTimerRef.current);
-            }
-        };
+        return () => cancelPendingFeedInvalidation();
     }, []);
 
     const handleInspectorMarkWatched = async (tmdbId: number) => {
         setInspectorActionLoading("watched");
         try {
             await markWatched(tmdbId);
-            debouncedInvalidateFeed();
+            scheduleFeedInvalidation(queryClient);
             setInspectedMovie(null);
         } catch (error) {
             console.error("Failed to mark as watched:", error);
@@ -116,7 +103,7 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
         setInspectorActionLoading("rejected");
         try {
             await rejectMovie(tmdbId);
-            debouncedInvalidateFeed();
+            scheduleFeedInvalidation(queryClient);
             setInspectedMovie(null);
         } catch (error) {
             console.error("Failed to reject movie:", error);
@@ -209,7 +196,10 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
     // threshold — once they have minimum data, the escape hatch is moot
     // and we don't want it lingering for the next sub-threshold state.
     useEffect(() => {
-        if (!currentUserSession?.has_data) return;
+        // Run for ALL authed users — including those with 0 ratings, who DO
+        // need the force-redirect to /onboarding. The previous `has_data` gate
+        // (backend: ratings_count > 0) silently dropped them on the dashboard.
+        if (!currentUserSession) return;
 
         api.get("/api/onboarding/status")
             .then(({ data }) => {
@@ -219,9 +209,20 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                 const skipped = typeof window !== "undefined"
                     && localStorage.getItem("vb_skip_onboarding") === "true";
 
-                if (!completed && ratings_count > 0 && ratings_count < 15) {
+                if (!completed && ratings_count < 15) {
+                    // 0 ratings = hard force, regardless of skip flag. A fresh
+                    // signup hasn't earned the right to skip — they have no
+                    // profile yet. Stale flag from a previous guest session
+                    // would otherwise strand them on an empty dashboard.
+                    if (ratings_count === 0) {
+                        if (typeof window !== "undefined") {
+                            localStorage.removeItem("vb_skip_onboarding");
+                        }
+                        router.replace("/onboarding");
+                        return;
+                    }
                     if (skipped) {
-                        // User explicitly opted out — banner only, no redirect.
+                        // User explicitly opted out mid-onboarding — banner only.
                         setShowImprovementBanner(true);
                     } else {
                         router.replace("/onboarding");
@@ -456,14 +457,14 @@ export function Dashboard({ initialFeedData }: DashboardProps) {
                         <SettingsView />
                     ) : currentView === "profile" ? (
                         <div className="py-12 flex flex-col items-center justify-center text-center gap-6">
-                        <div className="size-24 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-primary">
+                            <div className="size-24 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-primary">
                                 <UserIcon size={48} />
                             </div>
                             <div className="space-y-2">
                                 <h2 className="text-3xl font-semibold tracking-tighter uppercase font-mono italic">User Profile</h2>
                                 <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest">// Profile module coming soon //</p>
                             </div>
-                            <button 
+                            <button
                                 onClick={() => setCurrentView("feed")}
                                 className="px-6 py-2 bg-primary text-black font-bold uppercase tracking-wider text-xs hover:bg-primary/90 transition-colors"
                             >

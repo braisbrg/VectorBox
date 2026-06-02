@@ -3,7 +3,9 @@ import os
 import logging
 import orjson
 import re
+from datetime import timedelta
 from typing import Optional, Dict, Any, Union, List
+import redis.asyncio as redis
 from models.external_schemas import OMDbResponse, VectorBoxScore, VectorBoxBreakdown
 
 logger = logging.getLogger(__name__)
@@ -38,20 +40,34 @@ def split_omdb_csv(value: Optional[str]) -> Optional[List[str]]:
     return parts or None
 
 class OMDbClient:
+    MISS_CACHE_TTL = timedelta(days=30)
+
     def __init__(self, api_key: Optional[str] = None, client: httpx.AsyncClient = None):
         self.api_key = api_key or os.getenv("OMDB_API_KEY")
         self.base_url = "http://www.omdbapi.com/"
         self._external_client = client
         self.client = client if client else httpx.AsyncClient(timeout=10.0)
-        
+        self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        self.redis_client: Optional[redis.Redis] = None
+
         # [RESILIENCE] Circuit Breaker
-        self.cb_state = "CLOSED" 
+        self.cb_state = "CLOSED"
         self.cb_failure_count = 0
         self.cb_threshold = 3
         self.cb_reset_timeout = 60
         self.cb_last_failure_time = 0
 
+    async def _get_redis(self) -> redis.Redis:
+        if not self.redis_client:
+            self.redis_client = redis.from_url(
+                self.redis_url, encoding="utf-8", decode_responses=True
+            )
+        return self.redis_client
+
     async def close(self):
+        if self.redis_client:
+            await self.redis_client.close()
+            self.redis_client = None
         if not self._external_client:
             await self.client.aclose()
 
@@ -61,6 +77,12 @@ class OMDbClient:
         Returns Pydantic model OMDbResponse or None.
         """
         if not self.api_key or not imdb_id:
+            return None
+
+        # Negative cache: skip known-missing IDs (refreshed every 30d).
+        r = await self._get_redis()
+        miss_key = f"omdb:miss:{imdb_id}"
+        if await r.get(miss_key):
             return None
 
         # [RESILIENCE] Circuit Breaker Check
@@ -97,7 +119,10 @@ class OMDbClient:
                     # Validate with Pydantic
                     return OMDbResponse(**data)
                 else:
-                    logger.warning(f"OMDb Error for {imdb_id}: {data.get('Error')}")
+                    # Expected coverage gap (new/obscure film). Cache the miss
+                    # for 30 days so we stop re-asking OMDb and stop spamming logs.
+                    await r.setex(miss_key, self.MISS_CACHE_TTL, "1")
+                    logger.info(f"OMDb miss for {imdb_id}: {data.get('Error')} (cached 30d)")
             else:
                 logger.error(f"OMDb HTTP Error {response.status_code} for {imdb_id}")
                 if response.status_code >= 500:

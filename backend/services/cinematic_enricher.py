@@ -13,11 +13,33 @@ logger = logging.getLogger(__name__)
 
 
 def _get_model_chain() -> list[str]:
-    """Return the LLM model chain based on available API keys."""
+    """Return the LLM model chain based on available API keys.
+
+    Order is intentional, based on the prompt+model experiments (2026-05-27):
+      1. Scout (preview, Meta) — empirically the best for cinematic_description
+         prose. 1K RPD. Produces evocative 60-80 word output reliably. **Risk:
+         preview status — can be deprecated by Groq.** When that happens,
+         delete this entry; 70B (next) takes over automatically without
+         further changes.
+      2. Llama 3.3 70B (production, Meta) — production-stable fallback.
+         Quality is lower than Scout for this task (30-55 word output,
+         enumerative rather than evocative) but always available. Will be
+         primary once Scout deprecates.
+      3. GPT-OSS-120B (production, OpenAI) — highest peak quality observed
+         but TPD only 200K (~100-200 enrichments/day at default reasoning
+         effort). Useful as fallback for the residual capacity after Scout +
+         70B both exhaust; not viable as primary at our catalogue scale.
+      4. GPT-OSS-20B (production, OpenAI) — fast, but reliability ~88%
+         (3 empty responses in 24 calls during testing). Diversifies vendor.
+      5. Llama 3.1 8B (production, Meta) — last-resort. Weakest quality but
+         14.4K RPD ceiling means it never runs out.
+    """
     if os.getenv("GROQ_API_KEY"):
         return [
             "meta-llama/llama-4-scout-17b-16e-instruct",
             "llama-3.3-70b-versatile",
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
             "llama-3.1-8b-instant",
         ]
     if os.getenv("GEMINI_API_KEY"):
@@ -82,6 +104,7 @@ async def generate_cinematic_description(
     year: int,
     groq_client,  # AsyncOpenAI pointing to Groq — receive as parameter, never instantiate here
     force_model: str = None,
+    model_chain_override: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """
     Use Groq to generate a rich cinematic description for embedding.
@@ -123,6 +146,8 @@ async def generate_cinematic_description(
 
     if force_model:
         models = [force_model]
+    elif model_chain_override is not None:
+        models = model_chain_override
     else:
         models = _get_model_chain()
     messages = [
@@ -202,7 +227,8 @@ async def generate_profile_summary(
     Respond with ONLY a comma-separated list of 12-15 keywords. No sentences, no explanations, no punctuation other than commas.
     Focus on: tone (e.g. melancholic, darkly comedic), themes (e.g. moral ambiguity, identity), visual style (e.g. handheld gritty, long takes), pacing (e.g. slow burn, frenetic), and cinematic movements or affinities (e.g. French New Wave, A24, Korean revenge).
     Example format: slow burn, melancholic, morally complex, atmospheric, character-driven, contemplative, humanist, European art house, naturalistic lighting, existential themes, quiet intensity, bittersweet
-    Uses llama-4-scout-17b exclusively for high-fidelity profiling.
+    Uses the chain's primary model (currently
+    `meta-llama/llama-4-scout-17b-16e-instruct`) for high-fidelity profiling.
     """
     if not groq_client or not top_rated_films:
         return None

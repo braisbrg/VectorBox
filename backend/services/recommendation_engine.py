@@ -48,11 +48,17 @@ async def _ingest_movie_background(tmdb_id: int) -> None:
         except Exception as e:
             logger.error(f"Background auto-ingest failed for tmdb_id={tmdb_id}: {e}")
 
-# Minimum quality requirements for any movie to appear in recommendations
+# Minimum quality requirements for any movie to appear in recommendations.
+# Honoured by every discovery surface (feed engine, Magic Box, onboarding
+# carousel) and intentionally NOT consulted by user-chosen surfaces
+# (watchlist, watched history, direct movie lookup, title autocomplete) —
+# so flagged non-films / nicheless films stay accessible if the user added
+# them deliberately.
 MOVIE_QUALITY_GATE = [
     Movie.vote_count >= 10,
     Movie.year.isnot(None),
     Movie.vectorbox_score.isnot(None),
+    Movie.is_excluded.is_(False),
 ]
 
 # Global evocative themes rotating independently of user clusters
@@ -258,14 +264,15 @@ class RecommendationEngine:
         prefs = await ClusteringService.get_user_genre_preferences(user_id, db)
         fallback_genres = [g for g, _ in prefs[:3]] or ["Drama", "Thriller"]
 
-        # Get watched movie IDs to exclude
-        watched_result = await db.execute(
+        # Get watched + rejected movie IDs to exclude
+        excluded_result = await db.execute(
             select(UserRating.movie_id)
-            .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+            .where(UserRating.user_id == user_id)
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        watched_ids = set(watched_result.scalars().all())
+        excluded_ids = set(excluded_result.scalars().all())
 
-        # Query DB for high-score unwatched films matching genres (array overlap)
+        # Query DB for high-score unseen films matching genres (array overlap)
         candidates_result = await db.execute(
             select(Movie)
             .where(*MOVIE_QUALITY_GATE)
@@ -278,8 +285,8 @@ class RecommendationEngine:
         )
         candidates = candidates_result.scalars().all()
 
-        # Filter watched and seen
-        filtered = [m for m in candidates if m.tmdb_id not in seen_ids and m.id not in watched_ids][:10]
+        # Filter excluded and seen
+        filtered = [m for m in candidates if m.tmdb_id not in seen_ids and m.id not in excluded_ids][:10]
 
         if not filtered:
             return FeedSection(id="genre_fallback", title="Recommended for You", items=[])
@@ -670,12 +677,12 @@ class RecommendationEngine:
 
         theme = GLOBAL_THEMES[theme_index]
 
-        watched_result = await db.execute(
+        excluded_result = await db.execute(
             select(UserRating.movie_id)
             .where(UserRating.user_id == user_id)
-            .where(UserRating.is_watched.is_(True))
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        watched_ids = set(watched_result.scalars().all())
+        excluded_ids = set(excluded_result.scalars().all())
 
         from sqlalchemy.dialects.postgresql import ARRAY
         from sqlalchemy import cast, String
@@ -692,8 +699,8 @@ class RecommendationEngine:
                 .where(Movie.year.isnot(None))
                 .where(Movie.vectorbox_score.isnot(None))
             )
-            if watched_ids:
-                q = q.where(Movie.id.notin_(watched_ids))
+            if excluded_ids:
+                q = q.where(Movie.id.notin_(excluded_ids))
             if "max_year" in theme:
                 q = q.where(Movie.year <= theme["max_year"])
             if "min_runtime" in theme:
@@ -824,21 +831,22 @@ class RecommendationEngine:
             thresholds = _get_signal_c_thresholds(user_movie_count)
             logger.info(f"[Signal C] User {user_id} has {user_movie_count} movies, using thresholds: {thresholds}")
             
-            # Step 2: DB Query — Fetch high-quality unwatched candidates
-            # We exclude watched_tmdb_ids (converted to internal IDs)
-            watched_result = await db.execute(
+            # Step 2: DB Query — Fetch high-quality unseen candidates.
+            # Exclude both watched and rejected films (internal IDs).
+            excluded_result = await db.execute(
                 select(UserRating.movie_id)
-                .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+                .where(UserRating.user_id == user_id)
+                .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
             )
-            watched_internal_ids = set(watched_result.scalars().all())
-            
+            excluded_internal_ids = set(excluded_result.scalars().all())
+
             result = await db.execute(
                 select(Movie)
                 .where(*MOVIE_QUALITY_GATE)
                 .where(Movie.vectorbox_score >= thresholds["min_score"])
                 .where(Movie.popularity <= thresholds["max_popularity"])
                 .where(Movie.vote_count >= thresholds["min_votes"])
-                .where(Movie.id.notin_(watched_internal_ids) if watched_internal_ids else True)
+                .where(Movie.id.notin_(excluded_internal_ids) if excluded_internal_ids else True)
                 .order_by(desc(Movie.vectorbox_score))
                 .limit(200)
             )
@@ -1049,12 +1057,13 @@ class RecommendationEngine:
         if not excluded_genres:
             return None
 
-        # FIX 5: Push genre exclusion and watched filter to DB; use func.random() to avoid 1000-row scan
-        watched_result = await db.execute(
+        # FIX 5: Push genre exclusion and seen filter to DB; use func.random() to avoid 1000-row scan
+        excluded_result = await db.execute(
             select(UserRating.movie_id)
-            .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+            .where(UserRating.user_id == user_id)
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        watched_internal_ids = set(watched_result.scalars().all())
+        excluded_internal_ids = set(excluded_result.scalars().all())
 
         excluded_array = list(excluded_genres)
         q = (
@@ -1065,8 +1074,8 @@ class RecommendationEngine:
             .where(Movie.vote_count > 100)
             .where(~Movie.genres.overlap(excluded_array))
         )
-        if watched_internal_ids:
-            q = q.where(Movie.id.notin_(watched_internal_ids))
+        if excluded_internal_ids:
+            q = q.where(Movie.id.notin_(excluded_internal_ids))
         q = q.order_by(func.random()).limit(50)
         result = await db.execute(q)
         wildcard_candidates = [m for m in result.scalars().all() if m.tmdb_id not in seen_ids]
@@ -1107,20 +1116,21 @@ class RecommendationEngine:
         provider_service: ProviderService = None
     ) -> Optional[FeedSection]:
         """Random Picks"""
-        # FIX 5: Push watched filter to DB and use func.random() — avoids 500-row scan
-        watched_result = await db.execute(
+        # FIX 5: Push seen filter to DB and use func.random() — avoids 500-row scan
+        excluded_result = await db.execute(
             select(UserRating.movie_id)
-            .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+            .where(UserRating.user_id == user_id)
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        watched_internal_ids = set(watched_result.scalars().all())
+        excluded_internal_ids = set(excluded_result.scalars().all())
 
         q = (
             select(Movie)
             .where(*MOVIE_QUALITY_GATE)
             .where(Movie.vectorbox_score.between(1, 99))
         )
-        if watched_internal_ids:
-            q = q.where(Movie.id.notin_(watched_internal_ids))
+        if excluded_internal_ids:
+            q = q.where(Movie.id.notin_(excluded_internal_ids))
         q = q.order_by(func.random()).limit(30)
         result = await db.execute(q)
         candidates = result.scalars().all()
@@ -1164,13 +1174,27 @@ class RecommendationEngine:
         """Popular on Letterboxd"""
         trending_service = TrendingService(db)
         try:
-            popular_ids = await trending_service.get_popular_movie_ids()
+            popular_items = await trending_service.get_popular_movie_items()
         finally:
             await trending_service.close()
 
+        if not popular_items:
+            return None
+
+        # Soft curation: drop films with an explicitly-low Letterboxd rating
+        # (< 2.5). When `letterboxd_rating` is None (Trakt-sourced or legacy
+        # cache shape) we keep the film — Trakt fallback shouldn't be
+        # penalized for lacking a Letterboxd-specific signal.
+        LB_RATING_FLOOR = 2.5
+        filtered_items = [
+            it for it in popular_items
+            if it.get("letterboxd_rating") is None or it["letterboxd_rating"] >= LB_RATING_FLOOR
+        ]
+        popular_ids = [it["tmdb_id"] for it in filtered_items]
+
         if not popular_ids:
             return None
-            
+
         result = await db.execute(
             select(Movie)
             .where(Movie.tmdb_id.in_(popular_ids))
@@ -1179,20 +1203,21 @@ class RecommendationEngine:
         fetched_movies = result.scalars().all()
         movies_map = {m.tmdb_id: m for m in fetched_movies}
 
-        # FIX 8: Filter out movies the user has already watched
-        watched_result = await db.execute(
+        # FIX 8: Filter out movies the user has already watched OR rejected
+        excluded_result = await db.execute(
             select(UserRating.movie_id)
-            .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+            .where(UserRating.user_id == user_id)
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        watched_internal_ids = set(watched_result.scalars().all())
+        excluded_internal_ids = set(excluded_result.scalars().all())
         # Map internal IDs → tmdb_ids for comparison
-        if watched_internal_ids:
-            watched_tmdb_result = await db.execute(
-                select(Movie.tmdb_id).where(Movie.id.in_(watched_internal_ids))
+        if excluded_internal_ids:
+            excluded_tmdb_result = await db.execute(
+                select(Movie.tmdb_id).where(Movie.id.in_(excluded_internal_ids))
             )
-            watched_tmdb_ids = set(watched_tmdb_result.scalars().all())
+            excluded_tmdb_ids = set(excluded_tmdb_result.scalars().all())
         else:
-            watched_tmdb_ids = set()
+            excluded_tmdb_ids = set()
 
         # Batch-fetch providers (no N+1)
         if provider_service and fetched_movies:
@@ -1203,7 +1228,7 @@ class RecommendationEngine:
         
         items = []
         for tmdb_id in popular_ids:
-            if tmdb_id in watched_tmdb_ids:
+            if tmdb_id in excluded_tmdb_ids:
                 continue
             movie = movies_map.get(tmdb_id)
             if movie:

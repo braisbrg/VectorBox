@@ -556,23 +556,24 @@ class RecommendationService:
         
         candidates = (await self.db.execute(stmt)).scalars().all()
         
-        # Filter watched/excluded
-        watched_stmt = select(UserRating.movie_id).where(
-            UserRating.user_id == user_id, UserRating.is_watched.is_(True)
+        # Filter excluded (watched, rejected, or passed-in exclude_ids)
+        excluded_stmt = select(UserRating.movie_id).where(
+            UserRating.user_id == user_id,
+            or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)),
         )
-        watched_ids = set((await self.db.execute(watched_stmt)).scalars().all())
-        
+        excluded_ids_internal = set((await self.db.execute(excluded_stmt)).scalars().all())
+
         final_list = []
         dropped = 0
         for m in candidates:
-            if m.tmdb_id in exclude_ids or m.id in watched_ids:
+            if m.tmdb_id in exclude_ids or m.id in excluded_ids_internal:
                 dropped += 1
                 continue
             final_list.append(m)
 
         logger.info(
             f"[Signal Auteur] user={user_id} db_candidates={len(candidates)} "
-            f"dropped_watched_or_excluded={dropped} kept={len(final_list[:50])}"
+            f"dropped_excluded={dropped} kept={len(final_list[:50])}"
         )
         return final_list[:50]
 
@@ -736,12 +737,21 @@ class RecommendationService:
         # the Lambs while rejecting the obvious low-quality TMDB suggestions.
         signal_c_min_score = MIN_SIGNAL_C_SCORE
 
-        # 7. Filter and deduplicate
+        # 7. Filter and deduplicate. Build rejected_internal_ids — the caller's
+        # exclude_ids carries tmdb_ids of films the user has already rated, but
+        # cache hits and feed-section boundaries can let rejected films slip
+        # through that set. Hard-filter against the DB-of-record here.
+        rejected_stmt = select(UserRating.movie_id).where(
+            UserRating.user_id == user_id,
+            or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)),
+        )
+        rejected_internal_ids = set((await self.db.execute(rejected_stmt)).scalars().all())
+
         seen_local: Set[int] = set()
         unique: List[Movie] = []
         dropped_excluded = dropped_quality = 0
         for m in existing_movies:
-            if m.id in seen_local or m.tmdb_id in exclude_ids:
+            if m.id in seen_local or m.tmdb_id in exclude_ids or m.id in rejected_internal_ids:
                 dropped_excluded += 1
                 continue
             if cross_val_pass is not None and m.tmdb_id not in cross_val_pass:
@@ -953,12 +963,12 @@ class RecommendationService:
         if not top_directors:
             return FeedSection(id="auteur", title="From Your Favorite Directors", items=[])
 
-        watched_result = await self.db.execute(
+        excluded_result = await self.db.execute(
             select(UserRating.movie_id)
             .where(UserRating.user_id == user_id)
-            .where(UserRating.is_watched.is_(True))
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        watched_internal_ids = set(watched_result.scalars().all())
+        excluded_internal_ids = set(excluded_result.scalars().all())
 
         all_items: List[Tuple[Movie, str]] = []
         seen_local: Set[int] = set()
@@ -971,7 +981,7 @@ class RecommendationService:
             stmt = (
                 select(Movie)
                 .where(Movie.directors.any(director_name))
-                .where(Movie.id.notin_(watched_internal_ids))
+                .where(Movie.id.notin_(excluded_internal_ids))
                 .where(Movie.id.notin_(seen_local))
                 .where(Movie.vectorbox_score >= 60)
                 .where(Movie.vote_count >= 50)
@@ -1008,7 +1018,7 @@ class RecommendationService:
 
                 stmt = (
                     select(Movie)
-                    .where(Movie.id.notin_(watched_internal_ids))
+                    .where(Movie.id.notin_(excluded_internal_ids))
                     .where(Movie.tmdb_id.notin_(seen_ids))
                     .where(Movie.id.notin_(seen_local))
                     .where(Movie.directors.any(director_name))
@@ -1153,13 +1163,13 @@ class RecommendationService:
         # 3. Top 3 cult actors by weighted score (mirrors auteur)
         top_actors = sorted(actor_scores.items(), key=lambda x: x[1], reverse=True)[:3]
 
-        # Get watched internal IDs
-        watched_result = await self.db.execute(
+        # Get excluded internal IDs (watched + rejected)
+        excluded_result = await self.db.execute(
             select(UserRating.movie_id)
             .where(UserRating.user_id == user_id)
-            .where(UserRating.is_watched.is_(True))
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        watched_internal_ids = set(watched_result.scalars().all())
+        excluded_internal_ids = set(excluded_result.scalars().all())
 
         all_items: List[Tuple[Movie, str]] = []
         seen_local: Set[int] = set()
@@ -1192,7 +1202,7 @@ class RecommendationService:
             stmt = (
                 select(Movie)
                 .where(Movie.cast.overlap(actor_names))
-                .where(Movie.id.notin_(watched_internal_ids))
+                .where(Movie.id.notin_(excluded_internal_ids))
                 .where(Movie.vectorbox_score >= 60)
                 .where(Movie.vote_count >= 50)
                 .where(Movie.year.isnot(None))
@@ -1218,7 +1228,7 @@ class RecommendationService:
                 stmt = (
                     select(Movie)
                     .where(Movie.cast.overlap(extended_actors))
-                    .where(Movie.id.notin_(watched_internal_ids))
+                    .where(Movie.id.notin_(excluded_internal_ids))
                     .where(Movie.vectorbox_score >= 60)
                     .where(Movie.vote_count >= 50)
                     .where(Movie.year.isnot(None))

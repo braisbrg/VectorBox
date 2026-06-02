@@ -50,6 +50,23 @@ function LoginContent() {
     useEffect(() => {
         if (!isLoaded || !isSignedIn) return;
 
+        // Clear stale guest localStorage. Tags now persist server-side (the
+        // guest /onboarding/tags page POSTs to the API, and claim-anonymous
+        // copies tag_preferences atomically with ratings) so this is pure
+        // cleanup — no HTTP calls, no race window. Runs on BOTH paths
+        // (migrate + plain signin) so a stale vb_skip_onboarding from an
+        // earlier guest session doesn't strand a fresh signup.
+        const flushGuestState = () => {
+            [
+                "vb_guest_ratings",
+                "vb_guest_tags",
+                "vb_guest_tags:v1",
+                "vb_onboarding_progress",
+                "vb_onboarding_movies",
+                "vb_skip_onboarding",
+            ].forEach((k) => localStorage.removeItem(k));
+        };
+
         if (!isMigrate) {
             // FIX 4: Check if new user (0 ratings) → show onboarding chooser
             if (newUserCheckAttempted.current) return;
@@ -57,6 +74,7 @@ function LoginContent() {
 
             api.get("/api/onboarding/status")
                 .then(({ data }) => {
+                    flushGuestState();
                     if (data.ratings_count === 0) {
                         setMode("onboarding-chooser");
                     } else {
@@ -73,17 +91,9 @@ function LoginContent() {
         const migrateGuestData = async () => {
             setMigrating(true);
             try {
-                // Promote anonymous session to registered user (transfers ratings, deletes cookie)
+                // Promote anonymous session to registered user (transfers ratings + tag_preferences, deletes cookie)
                 await api.post("/api/auth/claim-anonymous");
-
-                // Clean up legacy localStorage if any exists
-                [
-                    "vb_guest_ratings",
-                    "vb_guest_tags",
-                    "vb_onboarding_progress",
-                    "vb_onboarding_movies",
-                ].forEach((k) => localStorage.removeItem(k));
-                
+                flushGuestState();
                 push("/?onboarding_complete=true");
             } catch (err) {
                 console.error("Migration failed:", err);

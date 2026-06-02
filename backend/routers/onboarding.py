@@ -595,9 +595,13 @@ async def save_tags(
     request: Request,
     body: TagsRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
 ):
-    """Save content tag preferences. Used by Settings UI."""
+    """Save content tag preferences. Used by Settings UI (authed) and the
+    guest /onboarding/tags page (anon cookie). Storing server-side for guests
+    is what makes the tag_preferences copy in claim-anonymous reliable —
+    previously guests-only-in-localStorage created an AuthBridge-timing race
+    after Clerk signup."""
     # Validate against whitelist
     unknown_avoided = set(body.avoided) - TAG_WHITELIST
     if unknown_avoided:
