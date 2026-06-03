@@ -15,6 +15,16 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 # Clerk auth (per-instance JWKS URL, e.g. https://<instance>.clerk.accounts.dev/.well-known/jwks.json)
 CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
 
+# Clerk issuer = the JWKS URL minus its `/.well-known/jwks.json` suffix
+# (Clerk's `iss` claim is exactly the instance base URL). Used to pin the
+# token's `iss` during JWT verification — defense-in-depth so a validly-signed
+# token from a *different* Clerk instance can't be replayed against this API.
+# `aud` is intentionally left unverified: Clerk session tokens don't carry it.
+CLERK_ISSUER = os.getenv(
+    "CLERK_ISSUER",
+    CLERK_JWKS_URL.replace("/.well-known/jwks.json", "").rstrip("/") if CLERK_JWKS_URL else "",
+)
+
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 

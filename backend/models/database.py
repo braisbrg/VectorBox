@@ -102,7 +102,11 @@ class Movie(Base):
     oscar_wins = Column(Integer, nullable=False, server_default="0")
     omdb_countries = Column(ARRAY(String), nullable=True)      # OMDb Country split (e.g. ["USA", "UK"])
     omdb_languages = Column(ARRAY(String), nullable=True)      # OMDb Language split (e.g. ["English", "Spanish"])
-    collection_id = Column(Integer, nullable=True)             # TMDB belongs_to_collection.id
+    # DATA-1: `collection_id` is declared once above (line ~85, with index=True).
+    # The duplicate definition that used to sit here silently shadowed it and
+    # dropped the index attr from the model. The DB already has the physical
+    # index (ix_movies_collection_id), so no migration is needed — this just
+    # realigns the ORM with the live schema.
     collection_name = Column(String(200), nullable=True)
     is_adult = Column(Boolean, nullable=False, server_default="false")
     # Soft-delete flag for non-films (UFC/AEW events, wrestling PPVs, multi-hour
@@ -111,7 +115,9 @@ class Movie(Base):
     # lookup paths, so user-chosen entries remain visible.
     is_excluded = Column(Boolean, nullable=False, server_default="false")
     tagline = Column(Text, nullable=True)                      # TMDB tagline
-    backdrop_path = Column(String(255), nullable=True)         # TMDB backdrop_path (hero image)
+    # DATA-1: `backdrop_path` is already declared above (line ~67). The duplicate
+    # that used to sit here silently shadowed it (no behavioural change, but
+    # confusing) — removed.
 
     # Metadata freshness
     last_metadata_refresh = Column(DateTime, nullable=True)

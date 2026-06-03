@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, conlist, constr
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, literal_column
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import ARRAY, array, insert as pg_insert
 from sqlalchemy import String, cast
@@ -494,36 +494,41 @@ async def rate_movie(
             detail=f"Movie tmdb_id={body.tmdb_id} not found in DB",
         )
 
-    # Upsert rating (idempotent — re-rating the same movie updates it)
-    existing = await db.execute(
-        select(UserRating).where(
-            UserRating.user_id == user_id,
-            UserRating.movie_id == movie.id,
-        )
-    )
-    existing_rating = existing.scalar_one_or_none()
-
-    if existing_rating is not None:
-        existing_rating.rating = rating_value
-        existing_rating.is_watched = True
-    else:
-        db.add(UserRating(
+    # Upsert rating (idempotent — re-rating the same movie updates it).
+    # CONC-1: atomic INSERT ... ON CONFLICT so two concurrent rates of the same
+    # film can't both pass a "not exists" check and then collide on the
+    # uq idx_user_movie unique index (which previously surfaced as a 500).
+    upsert = (
+        pg_insert(UserRating)
+        .values(
             user_id=user_id,
             movie_id=movie.id,
             rating=rating_value,
             is_watched=True,
             watch_count=1,
-        ))
+        )
+        .on_conflict_do_update(
+            index_elements=[UserRating.user_id, UserRating.movie_id],
+            set_={"rating": rating_value, "is_watched": True},
+        )
+        # `xmax = 0` is true for a freshly INSERTed row, false for an UPDATEd
+        # one — lets us tell a new rating from a re-rate atomically (used below
+        # to gate the clustering trigger) without a separate existence SELECT.
+        .returning(literal_column("(xmax = 0)"))
+    )
+    was_new_rating = (await db.execute(upsert)).scalar_one()
+    await db.flush()
 
-    # Update denormalized counter
+    # Update denormalized counter. CONC-2: derive the count from the DB *after*
+    # the upsert is flushed (the COUNT already reflects this rating), instead of
+    # the old stale "(pre-insert count) + 1", which lost increments under
+    # concurrent rates.
     user_result = await db.execute(select(User).where(User.id == user_id))
     user = user_result.scalar_one_or_none()
     if user:
-        # Count actual ratings for accuracy
-        count = await db.scalar(
+        new_count = await db.scalar(
             select(func.count(UserRating.id)).where(UserRating.user_id == user_id)
-        )
-        new_count = (count or 0) + (0 if existing_rating else 1)
+        ) or 0
         user.onboarding_ratings_count = new_count
         if new_count >= ONBOARDING_THRESHOLD:
             user.onboarding_completed = True
@@ -560,7 +565,7 @@ async def rate_movie(
 
     # Trigger clustering when enough ratings accumulate
     final_count = user.onboarding_ratings_count if user else 0
-    if final_count >= 5 and existing_rating is None:
+    if final_count >= 5 and was_new_rating:
         qdrant_singleton = qdrant
 
         async def _run_clustering(uid: int):

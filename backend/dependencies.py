@@ -83,32 +83,87 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
-from functools import lru_cache
+import asyncio
+import time
 import logging
 import jwt
 import httpx
 
-from config import get_db, CLERK_JWKS_URL
+from config import get_db, CLERK_JWKS_URL, CLERK_ISSUER
 from models.database import User, UserRating
 from models.schemas import TokenResponse
 
 
-@lru_cache(maxsize=1)
-def _get_clerk_jwks() -> dict:
-    """Fetch Clerk's JWKS. Cached in-process; cleared on key miss."""
+# ---------------------------------------------------------------------------
+# Clerk JWKS — async, bounded, and NOT attacker-triggerable (SEC-1 / REL-3)
+#
+# Previously this was a SYNC httpx.get inside an lru_cache, called from the
+# async auth path, and `_resolve_clerk_public_key` did cache_clear()+refetch on
+# ANY unknown `kid`. A flood of tokens carrying random `kid`s therefore forced
+# repeated *blocking* network calls on the event loop (unauthenticated soft-DoS)
+# and hammered Clerk. Now:
+#   - the fetch is async (httpx.AsyncClient) so it never blocks the loop,
+#   - a successful JWKS is cached in-process for _JWKS_TTL,
+#   - the on-miss refetch is rate-limited by _JWKS_MIN_REFRESH so an attacker
+#     spraying bogus kids can trigger at most one network call per cooldown.
+# ---------------------------------------------------------------------------
+_JWKS_TTL = 3600.0          # serve cached JWKS for up to 1h on the happy path
+_JWKS_MIN_REFRESH = 30.0    # ...but allow a forced refresh at most every 30s
+_jwks_cache: dict = {"keys": []}
+_jwks_fetched_at: float = 0.0
+_jwks_last_refresh_attempt: float = 0.0
+_jwks_lock = asyncio.Lock()
+
+
+async def _fetch_clerk_jwks() -> dict:
     if not CLERK_JWKS_URL:
         return {"keys": []}
-    return httpx.get(CLERK_JWKS_URL, timeout=5).json()
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(CLERK_JWKS_URL)
+        resp.raise_for_status()
+        return resp.json()
 
 
-def _resolve_clerk_public_key(token: str):
+async def _get_clerk_jwks(force: bool = False) -> dict:
+    """Return Clerk's JWKS, cached with a TTL. `force=True` requests a refresh
+    but is itself rate-limited (_JWKS_MIN_REFRESH) so it can't be weaponised."""
+    global _jwks_cache, _jwks_fetched_at, _jwks_last_refresh_attempt
+    now = time.monotonic()
+    fresh = (now - _jwks_fetched_at) < _JWKS_TTL
+    if _jwks_cache.get("keys") and fresh and not force:
+        return _jwks_cache
+    # A forced refresh (key miss) is throttled regardless of how many requests ask.
+    if force and (now - _jwks_last_refresh_attempt) < _JWKS_MIN_REFRESH:
+        return _jwks_cache
+    async with _jwks_lock:
+        now = time.monotonic()
+        # Re-check inside the lock: another coroutine may have just refreshed.
+        if _jwks_cache.get("keys") and (now - _jwks_fetched_at) < _JWKS_TTL and not force:
+            return _jwks_cache
+        if force and (now - _jwks_last_refresh_attempt) < _JWKS_MIN_REFRESH:
+            return _jwks_cache
+        _jwks_last_refresh_attempt = now
+        try:
+            data = await _fetch_clerk_jwks()
+            if data.get("keys"):
+                _jwks_cache = data
+                _jwks_fetched_at = now
+        except Exception as e:
+            logger.warning(f"Clerk JWKS fetch failed: {e}")
+        return _jwks_cache
+
+
+async def _resolve_clerk_public_key(token: str):
     kid = jwt.get_unverified_header(token).get("kid")
-    for key in _get_clerk_jwks().get("keys", []):
+    if not kid:
+        return None
+    for key in (await _get_clerk_jwks()).get("keys", []):
         if key.get("kid") == kid:
             return jwt.algorithms.RSAAlgorithm.from_jwk(key)
-    # Refresh once on miss (handles Clerk key rotation without container restart)
-    _get_clerk_jwks.cache_clear()
-    for key in _get_clerk_jwks().get("keys", []):
+    # Unknown kid: refresh ONCE (rate-limited) to handle Clerk key rotation
+    # without a container restart. Bogus-kid floods can't escalate past the
+    # _JWKS_MIN_REFRESH cooldown, so the loop is never spammed with fetches.
+    for key in (await _get_clerk_jwks(force=True)).get("keys", []):
         if key.get("kid") == kid:
             return jwt.algorithms.RSAAlgorithm.from_jwk(key)
     return None
@@ -282,19 +337,23 @@ async def get_current_user(
         )
 
     try:
-        public_key = _resolve_clerk_public_key(bearer)
+        public_key = await _resolve_clerk_public_key(bearer)
         if public_key is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Unknown Clerk signing key",
             )
-        payload = jwt.decode(
-            bearer,
-            public_key,
+        # SEC-4: pin the issuer (when configured) so a validly-signed token from
+        # a *different* Clerk instance can't be replayed here. `aud` stays
+        # unverified — Clerk session tokens don't carry an audience claim.
+        decode_kwargs = dict(
             algorithms=["RS256"],
             options={"verify_aud": False},
             leeway=timedelta(seconds=60),
         )
+        if CLERK_ISSUER:
+            decode_kwargs["issuer"] = CLERK_ISSUER
+        payload = jwt.decode(bearer, public_key, **decode_kwargs)
         clerk_user_id = payload.get("sub")
         if not clerk_user_id:
             raise HTTPException(
