@@ -1,7 +1,9 @@
 """
 RSS Service for syncing Letterboxd data and calculating group vibes
 """
+import asyncio
 import feedparser
+import httpx
 import logging
 import re
 from datetime import datetime
@@ -44,11 +46,13 @@ class RSSService:
                     api_key=os.getenv("GROQ_API_KEY"),
                     base_url="https://api.groq.com/openai/v1",
                     max_retries=0,
+                    timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
                 )
             elif os.getenv("GEMINI_API_KEY"):
                 self.groq_client = AsyncOpenAI(
                     api_key=os.getenv("GEMINI_API_KEY"),
                     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                    timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
                 )
         except ImportError:
             logger.warning("openai package not found, LLM features disabled for RSS")
@@ -61,9 +65,23 @@ class RSSService:
         """
         url = f"https://letterboxd.com/{username}/rss/"
         logger.info(f"Fetching RSS feed for {username}: {url}")
-        
-        feed = feedparser.parse(url)
-        
+
+        # REL-1: fetch the feed via a timed httpx client instead of letting
+        # feedparser.parse(url) do its own *unbounded, blocking* urllib fetch
+        # (global socket timeout None → can hang the worker forever). Parse the
+        # downloaded bytes in an executor so the (CPU-ish) XML parse also stays
+        # off the event loop.
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                resp = await client.get(url, headers={"User-Agent": "VectorBox/1.0 (+rss-sync)"})
+                resp.raise_for_status()
+                raw = resp.content
+        except httpx.HTTPError as e:
+            logger.error(f"Error fetching RSS feed for {username}: {e}")
+            return []
+
+        feed = await asyncio.get_running_loop().run_in_executor(None, feedparser.parse, raw)
+
         if feed.bozo:
             logger.error(f"Error parsing RSS feed for {username}: {feed.bozo_exception}")
             return []
