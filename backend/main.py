@@ -256,7 +256,9 @@ async def health_check(qdrant: QdrantService = Depends(get_qdrant_service)) -> H
             # Fallback during tests / cold boot
             r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), encoding="utf8", decode_responses=True)
             await r.ping()
-            await r.aclose()
+            # redis-py renamed close()→aclose() at 5.0.1; support both so the
+            # fallback health check doesn't itself error out (OBS-1).
+            await (r.aclose() if hasattr(r, "aclose") else r.close())
         health_status["dependencies"]["redis"] = "ok"
     except Exception as e:
         health_status["dependencies"]["redis"] = f"down: {str(e)}"
@@ -319,9 +321,15 @@ app.include_router(movies.router, prefix="/api/movies", tags=["Movies"])
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["Onboarding"])
 
 @app.get("/api/health", tags=["System"], include_in_schema=False)
-async def api_health_alias():
-    """Alias so frontend /api/health calls don't 404."""
-    return {"status": "healthy"}
+async def api_health_alias(qdrant: QdrantService = Depends(get_qdrant_service)):
+    """Alias so frontend /api/health calls don't 404.
+
+    OBS-1: delegate to the real deep check instead of returning a static
+    {"status":"healthy"}. The previous stub always reported healthy, so any
+    monitor/LB pointed at /api/health saw green during a Postgres/Redis/Qdrant
+    outage.
+    """
+    return await health_check(qdrant=qdrant)
 
 
 @app.get("/", tags=["System"], response_model=RootResponse)

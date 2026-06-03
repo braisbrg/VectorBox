@@ -153,11 +153,12 @@ def get_scout_client():
     groq_key = os.environ.get("GROQ_API_KEY")
     gemini_key = os.environ.get("GEMINI_API_KEY")
     if groq_key:
-        client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+        client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key, timeout=30.0)
     elif gemini_key:
         client = AsyncOpenAI(
             api_key=gemini_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
         )
     else:
         logger.warning("Neither GROQ_API_KEY nor GEMINI_API_KEY found.")

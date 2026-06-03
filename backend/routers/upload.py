@@ -77,11 +77,13 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                     api_key=groq_key,
                     base_url="https://api.groq.com/openai/v1",
                     max_retries=0,
+                    timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
                 )
             elif gemini_key:
                 llm_client = AsyncOpenAI(
                     api_key=gemini_key,
                     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                    timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
                 )
             else:
                 logger.warning("[Enrichment] No LLM API key available, skipping enrichment")
@@ -414,11 +416,13 @@ async def enrich_movies_background(
                 api_key=os.getenv("GROQ_API_KEY"),
                 base_url="https://api.groq.com/openai/v1",
                 max_retries=0,
+                timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
             )
         elif os.getenv("GEMINI_API_KEY"):
             groq_client = AsyncOpenAI(
                 api_key=os.getenv("GEMINI_API_KEY"),
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
             )
         else:
             groq_client = None

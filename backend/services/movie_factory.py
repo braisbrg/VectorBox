@@ -181,7 +181,10 @@ class MovieFactory:
 
             # Pre-compute the non-film flag from the materialised metadata
             # (matches the columns we're about to write to the SQL row).
-            _year = int(details.get("release_date", "0000")[:4]) if details.get("release_date") else None
+            # DATA-6: TMDB can return a non-empty but malformed release_date; the
+            # old `int(rd[:4])` would raise on e.g. "" after slicing or non-digits.
+            _rd = (details.get("release_date") or "")[:4]
+            _year = int(_rd) if _rd.isdigit() else None
             _genres = [g["name"] for g in details.get("genres", [])]
             _directors = details.get("directors", [])
             _excluded = is_likely_non_film(

@@ -93,11 +93,22 @@ class MovieService:
             
             # A. Build Movie & Point using Factory
             movie, point, providers_raw = await self.factory.build_movie(tmdb_id, letterboxd_uri)
-            
+
             if not movie:
                 return None
 
-            # B. Save to SQL
+            # B. Upsert to Qdrant FIRST (REL-2). The point is keyed by tmdb_id
+            # (movie_factory), so it needs nothing from the not-yet-committed PG
+            # row. Doing the vector write before the DB commit means a Qdrant
+            # failure aborts the whole ingest — we never persist a PG movie that
+            # is invisible to vector search (BYW / Magic Box). The only residual
+            # is a harmless orphan *vector* if the commit below then fails: a
+            # point with no PG row is simply never returned to users, and a
+            # later re-ingest of the same tmdb_id overwrites it in place.
+            if not skip_qdrant and point:
+                await self.qdrant.upsert_batch([point])
+
+            # C. Save to SQL
             self.db.add(movie)
             try:
                 await self.db.commit()
@@ -107,10 +118,6 @@ class MovieService:
                 logger.error(f"DB commit failed ingesting new movie: {e}")
                 raise
             logger.info(f"Created movie: {movie.title} (VB Score: {movie.vectorbox_score})")
-
-            # C. Upsert to Qdrant (if not skipped)
-            if not skip_qdrant and point:
-                await self.qdrant.upsert_batch([point])
 
             # D. Save Providers (if available)
             if providers_raw:
@@ -125,7 +132,11 @@ class MovieService:
             return movie
 
         except Exception as e:
+            # OBS-2: this used to swallow `e` silently (return None), hiding the
+            # cause of every failed ingest — including, now, a Qdrant upsert that
+            # aborts the ingest under the REL-2 ordering. Log before bailing.
             await self.db.rollback()
+            logger.error(f"Failed to ingest movie tmdb_id={tmdb_id}: {e}", exc_info=True)
             return None
 
     async def ensure_vector_exists(self, movie: Movie) -> bool:
