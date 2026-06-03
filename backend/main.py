@@ -149,6 +149,15 @@ allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
 allowed_origins = [o.strip() for o in allowed_origins_str.split(",") if o.strip()]
 logger.info(f"CORS allowed origins: {allowed_origins}")
 
+# Security (SEC-2): with allow_credentials=True a wildcard origin lets any site
+# make credentialed cross-origin calls. Refuse to boot in production with an
+# empty or wildcard allowlist — symmetric to the TRUSTED_HOSTS guard above.
+if IS_PRODUCTION and (not allowed_origins or "*" in allowed_origins):
+    raise RuntimeError(
+        "ALLOWED_ORIGINS must be an explicit allowlist in production (no '*'); "
+        "with allow_credentials=True a wildcard exposes credentialed CORS."
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,

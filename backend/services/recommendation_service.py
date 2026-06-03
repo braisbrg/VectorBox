@@ -8,6 +8,7 @@ import random
 import math
 import json
 import hashlib
+import uuid
 import numpy as np
 import redis.asyncio as redis
 
@@ -200,15 +201,18 @@ class RecommendationService:
             return ordered_movies
 
         # Cache Miss - Recompute with Lock to prevent cache stampedes (Fix 2.3/4.1)
+        # CONC-3: acquire the lock atomically with SET NX EX (single round-trip),
+        # so a crash can never leave a lock with no expiry (the old setnx-then-
+        # expire pair could). Tag it with a unique token and release only if the
+        # token is still ours, so a worker whose compute outran the 30s TTL can't
+        # delete a *different* worker's freshly-acquired lock.
         lock_key = f"lock:{cache_key}"
-        lock_acquired = await self.redis.setnx(lock_key, "locked")
-        
+        lock_token = uuid.uuid4().hex
+        lock_acquired = await self.redis.set(lock_key, lock_token, nx=True, ex=30)
+
         if lock_acquired:
             # We got the lock! We must compute, set the cache, and release the lock.
             try:
-                # Set a short expiration on the lock itself as a safety net
-                await self.redis.expire(lock_key, 30) # 30 seconds expiration
-                
                 # Signal Generation
                 result = await compute_method(user.id, **params)
 
@@ -222,11 +226,15 @@ class RecommendationService:
                     86400, # 24h TTL
                     json.dumps(signal_data)
                 )
-                
+
             finally:
-                # Always release the lock
-                await self.redis.delete(lock_key)
-                
+                # Compare-and-delete: only release the lock if it's still ours.
+                await self.redis.eval(
+                    "if redis.call('get', KEYS[1]) == ARGV[1] "
+                    "then return redis.call('del', KEYS[1]) else return 0 end",
+                    1, lock_key, lock_token,
+                )
+
             return result
             
         else:

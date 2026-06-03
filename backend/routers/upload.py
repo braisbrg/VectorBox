@@ -9,11 +9,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 import logging
 
 from config import get_db
+from limiter import limiter
 from dependencies import (
     get_current_user,
     verify_user_ownership,
@@ -34,7 +33,9 @@ from datetime import date as _date
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-limiter = Limiter(key_func=get_remote_address)
+# SEC-3: use the shared, proxy-aware limiter (keys on CF-Connecting-IP /
+# X-Forwarded-For) instead of a local Limiter(get_remote_address), which
+# bucketed every user behind the tunnel under the proxy's egress IP.
 
 # Legacy in-memory status (kept for backwards compatibility)
 upload_status = {}
