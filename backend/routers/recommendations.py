@@ -7,6 +7,7 @@ import logging
 import asyncio
 
 from config import get_db, AsyncSessionLocal
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from models.database import UserRating, Movie, UserCluster
 from models.schemas import (
     RecommendationRequest, 
@@ -104,7 +105,11 @@ async def _enrich_recommendations(
             
         # Check streaming availability
         streaming_available = False
-        # ... (keep existing streaming logic) ... 
+        # Reset per iteration: get_providers_batch omits movies whose TMDB
+        # provider fetch returned None (films with no providers anywhere), so
+        # a missing entry would otherwise raise UnboundLocalError on the first
+        # movie or leak the previous movie's provider list into this one.
+        streaming_providers = []
         if movie.id in providers_map:
              # ...
              # (reconstruct existing logic roughly)
@@ -831,26 +836,23 @@ async def reject_movie(
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
 
-    # Upsert: check if rating row exists
-    existing_result = await db.execute(
-        select(UserRating).where(
-            UserRating.user_id == user_id,
-            UserRating.movie_id == movie.id
-        )
-    )
-    existing = existing_result.scalar_one_or_none()
-
-    if existing:
-        existing.is_rejected = True
-    else:
-        new_rating = UserRating(
+    # CONC-1 parity with /onboarding/rate: atomic INSERT … ON CONFLICT so two
+    # concurrent rejects (double-click) can't both pass a "not exists" check
+    # and collide on the user/movie unique index → 500. On conflict only
+    # is_rejected flips; the rest of the row is preserved.
+    await db.execute(
+        pg_insert(UserRating)
+        .values(
             user_id=user_id,
             movie_id=movie.id,
             is_rejected=True,
             is_watched=False,
         )
-        db.add(new_rating)
-
+        .on_conflict_do_update(
+            index_elements=[UserRating.user_id, UserRating.movie_id],
+            set_={"is_rejected": True},
+        )
+    )
     await db.commit()
 
     background_tasks.add_task(_invalidate_user_feed_cache, user_id)
@@ -952,25 +954,23 @@ async def mark_watched(
     if not movie:
         raise HTTPException(status_code=404, detail="Movie not found")
 
-    existing_result = await db.execute(
-        select(UserRating).where(
-            UserRating.user_id == user_id,
-            UserRating.movie_id == movie.id,
-        )
-    )
-    existing = existing_result.scalar_one_or_none()
-
-    if existing:
-        existing.is_watched = True
-    else:
-        # watch_count=0 distinguishes "marked from web" from a real ZIP/RSS-counted watch
-        db.add(UserRating(
+    # CONC-1 parity with /onboarding/rate: atomic upsert. On conflict only
+    # is_watched flips — an existing row keeps its real watch_count; the
+    # insert path uses watch_count=0 ("marked from web" sentinel, see
+    # _web_watches_query).
+    await db.execute(
+        pg_insert(UserRating)
+        .values(
             user_id=user_id,
             movie_id=movie.id,
             is_watched=True,
             watch_count=0,
-        ))
-
+        )
+        .on_conflict_do_update(
+            index_elements=[UserRating.user_id, UserRating.movie_id],
+            set_={"is_watched": True},
+        )
+    )
     await db.commit()
 
     background_tasks.add_task(_invalidate_user_feed_cache, user_id)

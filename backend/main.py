@@ -100,7 +100,11 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, 'http_client'):
         await app.state.http_client.aclose()
     if hasattr(app.state, 'redis'):
-        await app.state.redis.aclose()
+        # redis-py 4.x async client only has close(); aclose() arrived in
+        # 5.0.1. We pin redis==4.6.0 — calling aclose() unconditionally raised
+        # AttributeError on every shutdown and skipped close_services() below.
+        r = app.state.redis
+        await (r.aclose() if hasattr(r, "aclose") else r.close())
         logger.info("Redis singleton closed.")
     await close_services()
 

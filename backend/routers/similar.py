@@ -35,11 +35,16 @@ async def _ingest_similar_background(tmdb_ids: List[int], tmdb: TMDBClient) -> N
     from services.movie_service import MovieService
     async with AsyncSessionLocal() as db:
         movie_service = MovieService(db, tmdb=tmdb)
-        for tid in tmdb_ids:
-            try:
-                await movie_service.get_or_create_movie(tid)
-            except Exception as e:
-                logger.error(f"[similar/background] Ingest failed for tmdb_id={tid}: {e}")
+        try:
+            for tid in tmdb_ids:
+                try:
+                    await movie_service.get_or_create_movie(tid)
+                except Exception as e:
+                    logger.error(f"[similar/background] Ingest failed for tmdb_id={tid}: {e}")
+        finally:
+            # Releases the lazily-created OMDb/Qdrant clients; tmdb is the
+            # injected singleton and is not closed by MovieService.close().
+            await movie_service.close()
 
 
 @router.get("/similar/{tmdb_id}")

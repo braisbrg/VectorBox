@@ -26,7 +26,13 @@ class QdrantService:
     def __init__(self):
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
         self.client = AsyncQdrantClient(url=qdrant_url)
-    
+
+    async def aclose(self):
+        """Close the underlying AsyncQdrantClient. Only for OWNED instances
+        (e.g. MovieService's lazy per-instance client) — never call on the
+        injected singleton from dependencies.py (anti-pattern #3)."""
+        await self.client.close()
+
     async def init_collection(self):
         """Initialize Qdrant collection if it doesn't exist"""
         try:
