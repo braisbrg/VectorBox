@@ -38,15 +38,24 @@ _tracer = get_tracer("recommendation_engine")
 
 
 async def _ingest_movie_background(tmdb_id: int) -> None:
-    """Background-safe movie ingestion: owns its own session, never re-raises."""
+    """Background-safe movie ingestion: owns its own session, never re-raises.
+
+    Reuses the TMDB singleton (a bare MovieService(session) builds its own
+    TMDBClient) and closes the service so the lazily-created OMDb/Qdrant
+    clients don't leak one connection pool per ingested movie.
+    """
     from config import AsyncSessionLocal
+    from dependencies import get_tmdb_client
+    tmdb = await get_tmdb_client()
     async with AsyncSessionLocal() as session:
+        movie_service = MovieService(session, tmdb=tmdb)
         try:
-            movie_service = MovieService(session)
             await movie_service.get_or_create_movie(tmdb_id)
             await session.commit()
         except Exception as e:
             logger.error(f"Background auto-ingest failed for tmdb_id={tmdb_id}: {e}")
+        finally:
+            await movie_service.close()
 
 # Minimum quality requirements for any movie to appear in recommendations.
 # Honoured by every discovery surface (feed engine, Magic Box, onboarding

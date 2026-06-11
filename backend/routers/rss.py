@@ -283,7 +283,10 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
 
             finally:
                 await scraper.close()
-                # tmdb is the injected singleton — never close it
+                # Releases the lazily-created OMDb/Qdrant clients owned by this
+                # task's MovieService. tmdb is the injected singleton — never
+                # closed by MovieService.close() (it doesn't own it).
+                await movie_service.close()
 
             await db.commit()
 

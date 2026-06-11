@@ -15,7 +15,7 @@ import redis.asyncio as redis
 from models.database import UserRating, Movie, UserCluster, User
 from models.schemas import FeedSection, FeedItem
 from services.tmdb_client import TMDBClient
-from services.trakt_client import TraktClient
+from services.trakt_client import TraktClient, get_trakt_client
 from services.qdrant_service import QdrantService
 from services.clustering_service import ClusteringService
 from services.movie_service import MovieService
@@ -51,15 +51,23 @@ ANTI_VECTOR_BATCH_LIMIT = 30  # bound batch fetch cost; tail of raw_recs left un
 
 
 async def _ingest_movie_rs_background(tmdb_id: int) -> None:
-    """Background task: ingest a missing movie using its own DB session."""
+    """Background task: ingest a missing movie using its own DB session.
+
+    Reuses the TMDB singleton and closes the service afterwards so the
+    lazily-created OMDb/Qdrant clients don't leak per ingest.
+    """
     from config import AsyncSessionLocal
+    from dependencies import get_tmdb_client
+    tmdb = await get_tmdb_client()
     async with AsyncSessionLocal() as session:
+        movie_service = MovieService(session, tmdb=tmdb)
         try:
-            movie_service = MovieService(session)
             await movie_service.get_or_create_movie(tmdb_id)
             await session.commit()
         except Exception as e:
             logger.error(f"Background ingest failed for tmdb_id={tmdb_id}: {e}")
+        finally:
+            await movie_service.close()
 
 class RecommendationService:
     """
@@ -81,7 +89,11 @@ class RecommendationService:
         self.db = db
         self.tmdb = tmdb
         self.qdrant = qdrant
-        self.trakt = trakt or TraktClient()  # default singleton; falls back gracefully if no TRAKT_CLIENT_ID
+        # Module singleton — RecommendationService is built several times per
+        # feed request (hybrid + auteur + cult_actor tasks); a fresh
+        # TraktClient() each time leaked an unclosed httpx.AsyncClient + Redis
+        # connection per instance. Falls back gracefully if no TRAKT_CLIENT_ID.
+        self.trakt = trakt or get_trakt_client()
         self.redis = redis_client
         self.clustering = ClusteringService(qdrant=qdrant)
         self.movie_service = MovieService(db, tmdb=tmdb)

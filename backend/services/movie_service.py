@@ -149,8 +149,13 @@ class MovieService:
                 return True
                 
             logger.warning(f"Vector missing for {movie.title} ({movie.tmdb_id}). Regenerating...")
-            
+
             keywords = await self.tmdb.get_movie_keywords(movie.tmdb_id)
+            # AGENTS.md: when re-encoding is unavoidable, prefer the Groq
+            # cinematic_description (the catalogue encoding) over the
+            # overview+genres+keywords fallback — otherwise the regenerated
+            # vector lives in a different text space than its neighbours.
+            text_override = movie.cinematic_description or None
             loop = asyncio.get_running_loop()
             vector = await loop.run_in_executor(
                 None,
@@ -159,7 +164,7 @@ class MovieService:
                     "overview": movie.overview,
                     "genres": movie.genres,
                     "keywords": keywords
-                })
+                }, text_override=text_override)
             )
 
             await self.qdrant.upsert_movie_vector(
@@ -261,6 +266,11 @@ class MovieService:
                     logger.error(f"DB commit failed enriching movie: {e}")
                     raise
 
+                # Same rule as ensure_vector_exists: re-encode from the
+                # cinematic_description when the movie has one, so a metadata
+                # refresh (OMDb/keywords/release_dates) can never silently
+                # replace a Groq-enriched vector with the fallback recipe.
+                text_override = movie.cinematic_description or None
                 loop = asyncio.get_running_loop()
                 vector = await loop.run_in_executor(
                     None,
@@ -269,7 +279,7 @@ class MovieService:
                         "overview": movie.overview,
                         "genres": movie.genres,
                         "keywords": movie.keywords or []
-                    })
+                    }, text_override=text_override)
                 )
 
                 if not skip_qdrant:
@@ -314,3 +324,7 @@ class MovieService:
             await self.tmdb.aclose()
         if self._omdb is not None:
             await self._omdb.close()
+        # _qdrant is always lazily self-created (never injected), so closing
+        # it here can't kill a shared singleton.
+        if self._qdrant is not None:
+            await self._qdrant.aclose()
