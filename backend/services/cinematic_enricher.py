@@ -145,23 +145,69 @@ async def generate_cinematic_description(
     keywords_str = ", ".join(keywords[:10]) if keywords else "None"
     directors_str = ", ".join(directors) if directors else "Unknown"
     cast_str = ", ".join(cast[:3]) if cast else "Unknown"
+    decade = f"{(year // 10) * 10}s" if year else "unspecified era"
 
+    # Prompt recipe "v2" (2026-06). This text is the embedding recipe — every
+    # caller (new ingest, RSS, re-enrich, maintenance) MUST use this exact
+    # prompt so the catalogue stays in one vector space. Design rules, learned
+    # the hard way from the title-token-leakage incident:
+    #   - NO proper nouns of ANY kind in the output. Not the film's title /
+    #     director / actor / character, and crucially not OTHER films, directors,
+    #     studios, or franchises (the old prompt literally said "fans of Kubrick,
+    #     A24 films" — those identity tokens create false similarity between
+    #     unrelated films, exactly like the title leak did).
+    #   - Comparables expressed ONLY as movements / subgenres / descriptive
+    #     categories ("magic realism", "Korean revenge thriller").
+    #   - No awards / "critically acclaimed" language: quality lives in VBS, not
+    #     in the thematic embedding, and "award-winning" glues unrelated films.
+    #   - Plain decade, not editorialised era tags ("Reagan-era", "post-9/11"),
+    #     which inject shared political tokens across unrelated genres.
+    system_content = (
+        "You are a cinematic analyst writing concise, evocative descriptions for "
+        "film-recommendation embeddings. Output plain prose only — no markdown, "
+        "lists, or headers. Avoid clichés ('masterpiece', 'unforgettable', "
+        "'must-see', 'tour de force'). Always respond in English regardless of "
+        "the film's original language.\n\n"
+        "STRICT NAME-BAN (critical for embedding quality): write NO proper noun "
+        "that identifies a specific entity — not this film's title, not any "
+        "director, actor, or character name, and NOT the names of OTHER films, "
+        "directors, studios, or franchises (never write things like 'A24', "
+        "'Kubrick', 'Studio Ghibli', 'Tarantino-esque', 'like The Matrix'). "
+        "Describe authorial style and comparable cinema ONLY as movements, "
+        "subgenres, or descriptive categories (e.g. 'magic realism', 'Korean "
+        "revenge thriller', 'slow-burn folk horror'). Do not copy character or "
+        "place names out of the plot synopsis. Identity tokens leak between "
+        "unrelated films and corrupt similarity search."
+    )
     prompt = (
-        f"Movie: {title} ({year})\n"
+        f"Film (title for your reference only — DO NOT write it): {title}\n"
+        f"Decade: {decade}\n"
         f"Genres: {genres_str}\n"
-        f"Keywords: {keywords_str}\n"
-        f"Directors: {directors_str}\n"
-        f"Cast: {cast_str}\n"
-        f"Plot: {overview or 'No plot available.'}\n\n"
-        "Write a rich cinematic description of this film in English. "
-        "Plain text only — no markdown, no headers, no bullet points. "
-        "Maximum 80 words. Cover ALL of the following:\n"
-        "- Tone (e.g. melancholic, tense, comedic, dreamlike)\n"
-        "- Themes (e.g. identity, revenge, family dysfunction)\n"
-        "- Visual style (e.g. handheld gritty, static long takes, neon-lit)\n"
-        "- Pacing (e.g. slow burn, frenetic, episodic)\n"
-        "- Audience affinity (e.g. fans of Kubrick, A24 films, Korean revenge cinema)\n"
-        "- Mood keywords (3-5 single words at the end)"
+        f"Themes/Keywords: {keywords_str}\n"
+        f"Director(s) (context only — DO NOT name): {directors_str}\n"
+        f"Lead cast (context only — DO NOT name): {cast_str}\n"
+        f"Plot synopsis (for understanding — do NOT copy names from it): "
+        f"{overview or 'No plot available.'}\n\n"
+        "Style examples (these illustrate tone; note they contain NO names):\n\n"
+        "Example A — a 1940s dark-fantasy war fable:\n"
+        "A dreamlike anti-fascist fable that weaves brutal wartime violence with "
+        "baroque dark fantasy through painterly amber-and-blue cinematography. "
+        "Pacing alternates between tense military encounters and contemplative "
+        "supernatural reverie. For viewers drawn to magic realism, gothic "
+        "fairy-tale horror, and historical allegory. Mood: haunting, melancholic, "
+        "mythic, brutal, transcendent.\n\n"
+        "Example B — a 1990s mob epic:\n"
+        "A propulsive epic tracking three decades of organized-crime life through "
+        "an amoral first-person voiceover. Frenetic editing, needle-drop "
+        "soundtrack, and restless camerawork give it a documentary-meets-rock-"
+        "opera energy. Pacing escalates from nostalgic to paranoid as excess and "
+        "betrayal unravel a brotherhood. For viewers drawn to non-romanticised "
+        "ensemble crime cinema and kinetic realism. Mood: kinetic, decadent, "
+        "paranoid, cynical, propulsive.\n\n"
+        "Now write the description for the film above. Maximum 80 words. Cover "
+        "tone, themes, visual/aural style, pacing, and the kind of viewer it "
+        "appeals to (as categories, never named fans), in flowing prose. End "
+        "with 3-5 single-word mood keywords. Absolutely no proper nouns."
     )
 
     if force_model:
@@ -171,14 +217,7 @@ async def generate_cinematic_description(
     else:
         models = _get_model_chain()
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a cinematic analyst. Respond ONLY with the description. "
-                "Always respond in English regardless of the film's language. "
-                "No markdown, no headers."
-            ),
-        },
+        {"role": "system", "content": system_content},
         {"role": "user", "content": prompt},
     ]
 
