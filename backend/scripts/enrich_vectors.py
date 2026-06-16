@@ -373,6 +373,12 @@ async def enrich_embeddings_via_groq(
                     movie.has_enriched_embedding = True
                     movie.enriched_by_model = model_used
                     movie.cinematic_description = description
+                    # Invalidate the stale quality score (it was computed against
+                    # the OLD vector). NULL == "needs audit": maintenance Phase 2
+                    # recomputes it against the new name-free reference. NULL is
+                    # treated as "allow through" by every runtime gate, which is
+                    # correct for a freshly-enriched film.
+                    movie.embedding_quality_score = None
                     successful_enrichments += 1
                     model_counts[model_used] = model_counts.get(model_used, 0) + 1
                     # Store first sample per model for quality comparison

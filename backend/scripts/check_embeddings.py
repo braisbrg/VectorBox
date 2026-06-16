@@ -49,6 +49,14 @@ def _build_reference_text(movie: Movie) -> str:
     of the same movie?" Low score → Groq hallucinated or enriched the
     wrong film.
     """
+    # Name-free reference (2026-06): drop Directors/Cast. The stored vector is
+    # encoded from the V2 cinematic_description, which is deliberately name-free,
+    # so director/cast tokens in the reference have NO counterpart in the vector
+    # to match — they only add unmatchable noise that depresses the cosine for
+    # legitimate films. Removing them aligns the reference with the actual
+    # embedding recipe (overview + genres + keywords, same as the legacy
+    # fallback) and sharpens the hallucination signal instead of blunting it:
+    # a wrong-film enrichment still embeds far from the real plot/genre/themes.
     parts: list[str] = []
     if movie.overview:
         parts.append(movie.overview)
@@ -56,10 +64,6 @@ def _build_reference_text(movie: Movie) -> str:
         parts.append("Genres: " + ", ".join(movie.genres))
     if movie.keywords:
         parts.append("Themes: " + ", ".join((movie.keywords or [])[:15]))
-    if movie.directors:
-        parts.append("Directors: " + ", ".join(movie.directors))
-    if movie.cast:
-        parts.append("Cast: " + ", ".join(movie.cast))
     return ". ".join(parts).strip()
 
 
@@ -182,6 +186,11 @@ async def _re_enrich_movie(
     movie.has_enriched_embedding = True
     movie.enriched_by_model = model_used
     movie.cinematic_description = description
+    # Invalidate the stale quality score so Phase 2 re-audits it against the new
+    # name-free reference. (Phase 3's caller recomputes it immediately via the
+    # B-21 path; this NULL is the correct default for the standalone --fix path
+    # and a safe fallback if that recompute fails.)
+    movie.embedding_quality_score = None
     return True
 
 
