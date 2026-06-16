@@ -183,13 +183,20 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
 
 
 MODEL_ALIASES = {
-    "gemini":  "gemini-2.5-flash",
-    "scout":   "meta-llama/llama-4-scout-17b-16e-instruct",
-    "70b":     "llama-3.3-70b-versatile",
-    "8b":      "llama-3.1-8b-instant",
-    "oss-120": "openai/gpt-oss-120b",
-    "oss-20":  "openai/gpt-oss-20b",
+    "gemini":      "gemini-2.5-flash",
+    "scout":       "meta-llama/llama-4-scout-17b-16e-instruct",
+    "70b":         "llama-3.3-70b-versatile",
+    "8b":          "llama-3.1-8b-instant",
+    "oss-120":     "openai/gpt-oss-120b",
+    "oss-20":      "openai/gpt-oss-20b",
+    "qwen3-32b":   "qwen/qwen3-32b",
+    "qwen3.6-27b": "qwen/qwen3.6-27b",
 }
+
+# When a restricted chain returns the legacy fallback (model_used=None) this
+# many times in a row, the day's quota for every model in the chain is almost
+# certainly exhausted — stop gracefully instead of churning thousands of films.
+STOP_AFTER_CONSECUTIVE_FALLBACKS = 8
 
 
 async def enrich_embeddings_via_groq(
@@ -220,6 +227,8 @@ async def enrich_embeddings_via_groq(
             api_key=groq_key,
             base_url="https://api.groq.com/openai/v1",
             max_retries=0,
+            timeout=40.0,  # REL-4: bound calls (SDK default 600s) so a hung
+                           # request can't stall an unattended bulk run
         )
         # Groq ~30 RPM free tier — conservative pacing
         batch_size = 10
@@ -266,6 +275,7 @@ async def enrich_embeddings_via_groq(
             print("No movies need enrichment.")
             return
 
+        consecutive_fallbacks = 0
         for batch_start in range(0, len(candidates), batch_size):
             batch = candidates[batch_start:batch_start + batch_size]
 
@@ -286,7 +296,29 @@ async def enrich_embeddings_via_groq(
                         model_chain_override=model_chain_override,
                     )
 
-                    # Generate embedding
+                    # model_used is None == every model in the (restricted) chain
+                    # returned the crude legacy concatenation. DON'T re-embed or
+                    # upsert that — it would overwrite a perfectly good existing
+                    # vector with worse text. Leave has_enriched_embedding=False so
+                    # the film is retried next session; stop the run if this keeps
+                    # happening (daily quota exhausted).
+                    if model_used is None:
+                        fallback_count += 1
+                        consecutive_fallbacks += 1
+                        if consecutive_fallbacks >= STOP_AFTER_CONSECUTIVE_FALLBACKS:
+                            await db.commit()
+                            remaining = await db.scalar(
+                                select(func.count()).select_from(Movie).where(Movie.has_enriched_embedding.is_(False))
+                            )
+                            print(f"\n{consecutive_fallbacks} consecutive fallbacks — chain quota exhausted. "
+                                  f"{successful_enrichments} enriched this session, {remaining} remaining. "
+                                  f"Run again to continue.\n")
+                            _print_enrichment_summary(total_processed, successful_enrichments, fallback_count, qdrant_errors, model_counts, model_samples)
+                            return
+                        continue
+                    consecutive_fallbacks = 0
+
+                    # Generate embedding from the LLM description
                     vector = embedding_service.generate_embedding(
                         {"title": movie.title, "overview": movie.overview, "genres": movie.genres, "keywords": movie.keywords or []},
                         text_override=description,
@@ -326,18 +358,15 @@ async def enrich_embeddings_via_groq(
                         continue
 
                     # Track results
-                    if model_used is not None:
-                        movie.has_enriched_embedding = True
-                        movie.enriched_by_model = model_used
-                        movie.cinematic_description = description
-                        successful_enrichments += 1
-                        model_counts[model_used] = model_counts.get(model_used, 0) + 1
-                        # Store first sample per model for quality comparison
-                        if model_used not in model_samples:
-                            preview = description[:200] + "..." if len(description) > 200 else description
-                            model_samples[model_used] = (movie.title, preview)
-                    else:
-                        fallback_count += 1
+                    movie.has_enriched_embedding = True
+                    movie.enriched_by_model = model_used
+                    movie.cinematic_description = description
+                    successful_enrichments += 1
+                    model_counts[model_used] = model_counts.get(model_used, 0) + 1
+                    # Store first sample per model for quality comparison
+                    if model_used not in model_samples:
+                        preview = description[:200] + "..." if len(description) > 200 else description
+                        model_samples[model_used] = (movie.title, preview)
 
                     db.add(movie)
 
@@ -426,6 +455,15 @@ if __name__ == "__main__":
              "Mutually exclusive with --model-only."
     )
     parser.add_argument(
+        "--chain",
+        type=str,
+        default=None,
+        help="Restrict enrichment to a custom, ordered chain of model aliases "
+             "(comma-separated). The 2026-06 sweep found qwen3-32b + oss-120 the "
+             "best free pair for V2 descriptions. Example: --chain qwen3-32b,oss-120. "
+             "Mutually exclusive with --model-only and --smart."
+    )
+    parser.add_argument(
         "--reset-enrichment",
         action="store_true",
         help="Reset has_enriched_embedding=False and enriched_by_model=None for ALL movies. "
@@ -448,8 +486,8 @@ if __name__ == "__main__":
         asyncio.run(run_reset())
         sys.exit(0)
     
-    if args.smart and args.model_only:
-        print("Error: --smart and --model-only are mutually exclusive.")
+    if sum(bool(x) for x in (args.model_only, args.smart, args.chain)) > 1:
+        print("Error: --model-only, --smart, and --chain are mutually exclusive.")
         sys.exit(1)
 
     model_only_id = None
@@ -460,23 +498,30 @@ if __name__ == "__main__":
             sys.exit(1)
         model_only_id = MODEL_ALIASES[args.model_only]
 
-    # --smart: skip the 8B fallback to keep quality uniform across catalogue.
-    smart_chain = (
-        [
+    if args.chain:
+        chain_override = []
+        for alias in (a.strip() for a in args.chain.split(",") if a.strip()):
+            if alias not in MODEL_ALIASES:
+                print(f"Error: Invalid model alias '{alias}' in --chain.")
+                print(f"Valid options: {', '.join(MODEL_ALIASES.keys())}")
+                sys.exit(1)
+            chain_override.append(MODEL_ALIASES[alias])
+    elif args.smart:
+        # --smart: skip the 8B fallback to keep quality uniform across catalogue.
+        chain_override = [
             "llama-3.3-70b-versatile",
             "meta-llama/llama-4-scout-17b-16e-instruct",
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
         ]
-        if args.smart
-        else None
-    )
+    else:
+        chain_override = None
 
     if args.enrich_embeddings:
         asyncio.run(enrich_embeddings_via_groq(
             limit=args.limit,
             model_only=model_only_id,
-            model_chain_override=smart_chain,
+            model_chain_override=chain_override,
         ))
     else:
         asyncio.run(enrich_vectors(missing_only=not args.all, limit=args.limit))
