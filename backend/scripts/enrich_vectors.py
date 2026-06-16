@@ -282,26 +282,38 @@ async def enrich_embeddings_via_groq(
             for movie in batch:
                 total_processed += 1
                 try:
-                    # Generate cinematic description — returns (description, model_id)
-                    description, model_used = await generate_cinematic_description(
-                        title=movie.title or "",
-                        overview=movie.overview or "",
-                        genres=movie.genres or [],
-                        keywords=movie.keywords or [],
-                        directors=movie.directors or [],
-                        cast=movie.cast or [],
-                        year=movie.year or 0,
-                        groq_client=groq_client,
-                        force_model=model_only,
-                        model_chain_override=model_chain_override,
-                    )
+                    async def _generate():
+                        return await generate_cinematic_description(
+                            title=movie.title or "",
+                            overview=movie.overview or "",
+                            genres=movie.genres or [],
+                            keywords=movie.keywords or [],
+                            directors=movie.directors or [],
+                            cast=movie.cast or [],
+                            year=movie.year or 0,
+                            groq_client=groq_client,
+                            force_model=model_only,
+                            model_chain_override=model_chain_override,
+                        )
 
-                    # model_used is None == every model in the (restricted) chain
-                    # returned the crude legacy concatenation. DON'T re-embed or
-                    # upsert that — it would overwrite a perfectly good existing
-                    # vector with worse text. Leave has_enriched_embedding=False so
-                    # the film is retried next session; stop the run if this keeps
-                    # happening (daily quota exhausted).
+                    # Generate cinematic description — returns (description, model_id).
+                    description, model_used = await _generate()
+
+                    # model_used is None == every model in the chain returned the
+                    # crude legacy concatenation. That happens for two very
+                    # different reasons: a transient network blip (it hits ALL
+                    # models at once) vs. real daily-quota exhaustion. Retry once
+                    # after a backoff to tell them apart — a blip clears, real
+                    # exhaustion persists — so a momentary hiccup doesn't truncate
+                    # the session (and waste the remaining daily quota).
+                    if model_used is None:
+                        await asyncio.sleep(10)
+                        description, model_used = await _generate()
+
+                    # Still None == genuinely exhausted/failing. DON'T re-embed or
+                    # upsert the legacy text — it would overwrite a good existing
+                    # vector. Leave has_enriched_embedding=False so the film is
+                    # retried next session; stop the run if this keeps happening.
                     if model_used is None:
                         fallback_count += 1
                         consecutive_fallbacks += 1
