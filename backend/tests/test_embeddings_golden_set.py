@@ -43,6 +43,10 @@ try:
 except ImportError:
     SearchParams = None  # type: ignore
 
+# Needs a populated Qdrant + Postgres (the live catalogue). Flagged so the
+# hermetic suite can exclude it with `pytest -m "not integration"`.
+pytestmark = pytest.mark.integration
+
 
 _ANCHORS_AND_NEIGHBOURS = {
     "Howl's Moving Castle": [
