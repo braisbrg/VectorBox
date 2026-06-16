@@ -169,7 +169,12 @@ def get_scout_client():
 
 async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     """
-    Tier 1: Uses Llama 4 Scout for sub-millisecond intent parsing.
+    Tier-1 intent parser. Primary = Llama 3.3 70B (best structured-output
+    discipline on the realistic query panel — see experiment_magicbox_parser).
+    Fallback = Qwen3-32B, which fixed Scout's failure modes in the 2026-06
+    re-run (no quinqui→Almodóvar hallucination, real country lists instead of
+    the invalid "Europe", correct awards_contains) at the same 1K RPD and
+    sub-2s latency. Scout was retired from this path as the weakest parser.
     """
     user_query = _normalize_typos(user_query)
     client = get_scout_client()
@@ -249,7 +254,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     ]
 
     primary_model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
-    fallback_model = "meta-llama/llama-4-scout-17b-16e-instruct" if os.environ.get("GROQ_API_KEY") else None
+    fallback_model = "qwen/qwen3-32b" if os.environ.get("GROQ_API_KEY") else None
 
     try:
         return await client.chat.completions.create(
@@ -267,6 +272,10 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
                     response_model=MovieSearchIntent,
                     messages=messages,
                     temperature=0.1,
+                    # Qwen3 is a reasoning model: disable chain-of-thought so it
+                    # doesn't burn the budget thinking before the tool call and
+                    # truncate the structured output.
+                    extra_body={"reasoning_effort": "none"},
                 )
             except Exception as e2:
                 logger.warning(f"Fallback model also failed: {e2}.")

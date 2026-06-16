@@ -12,31 +12,51 @@ from typing import List
 logger = logging.getLogger(__name__)
 
 
+# Per-model reasoning-effort overrides. Reasoning models otherwise spend the
+# token budget on chain-of-thought: Qwen3 leaks it as inline <think>…</think>
+# in the content unless effort='none'; gpt-oss empties out entirely at the
+# default/high effort on long prompts (the 2026-06 reasoning experiment showed
+# 'low' is the only reliable setting). Models not listed get no override.
+_REASONING_EFFORT = {
+    "qwen/qwen3-32b": "none",
+    "qwen/qwen3.6-27b": "none",
+    "openai/gpt-oss-120b": "low",
+    "openai/gpt-oss-20b": "low",
+}
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    """Remove any leaked <think>…</think> chain-of-thought (closed or dangling)
+    so it never contaminates a cinematic_description fed to the embedder."""
+    text = _THINK_RE.sub("", text)
+    low = text.lower()
+    if "<think>" in low:
+        text = text[: low.rfind("<think>")]
+    return text.strip()
+
+
 def _get_model_chain() -> list[str]:
     """Return the LLM model chain based on available API keys.
 
-    Order is intentional, based on the prompt+model experiments (2026-05-27):
-      1. Scout (preview, Meta) — empirically the best for cinematic_description
-         prose. 1K RPD. Produces evocative 60-80 word output reliably. **Risk:
-         preview status — can be deprecated by Groq.** When that happens,
-         delete this entry; 70B (next) takes over automatically without
-         further changes.
-      2. Llama 3.3 70B (production, Meta) — production-stable fallback.
-         Quality is lower than Scout for this task (30-55 word output,
-         enumerative rather than evocative) but always available. Will be
-         primary once Scout deprecates.
-      3. GPT-OSS-120B (production, OpenAI) — highest peak quality observed
-         but TPD only 200K (~100-200 enrichments/day at default reasoning
-         effort). Useful as fallback for the residual capacity after Scout +
-         70B both exhaust; not viable as primary at our catalogue scale.
-      4. GPT-OSS-20B (production, OpenAI) — fast, but reliability ~88%
-         (3 empty responses in 24 calls during testing). Diversifies vendor.
-      5. Llama 3.1 8B (production, Meta) — last-resort. Weakest quality but
-         14.4K RPD ceiling means it never runs out.
+    Order from the 2026-06 model sweep (V2-nameban prompt, all on Groq free
+    tier @ 1K RPD each — re-verified live against /v1/models):
+      1. Scout (Meta) — fast, reliable, 30K TPM (highest burst headroom).
+      2. Qwen3-32B — the most CONSISTENT full-structure output in the sweep
+         (tone/themes/style/pacing/affinity/mood every time, ~72 words).
+         Reasoning model → effort='none' (see _REASONING_EFFORT).
+      3. Llama 3.3 70B — reliable but terse for this task (~45 words, often
+         drops the audience-affinity segment); kept mid-chain for stability.
+      4. GPT-OSS-120B — richest prose (~81 words) but a reasoning model
+         (effort='low' required to avoid empties).
+      5. GPT-OSS-20B — fast vendor-diverse fallback (effort='low').
+      6. Llama 3.1 8B — last-resort floor; weakest but never runs out.
     """
     if os.getenv("GROQ_API_KEY"):
         return [
             "meta-llama/llama-4-scout-17b-16e-instruct",
+            "qwen/qwen3-32b",
             "llama-3.3-70b-versatile",
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
@@ -163,14 +183,17 @@ async def generate_cinematic_description(
     ]
 
     for model_id in models:
+        effort = _REASONING_EFFORT.get(model_id)
+        extra_body = {"reasoning_effort": effort} if effort else None
         try:
             response = await groq_client.chat.completions.create(
                 model=model_id,
                 messages=messages,
                 temperature=0.4,
                 max_tokens=1000,
+                extra_body=extra_body,
             )
-            description = response.choices[0].message.content.strip()
+            description = _strip_think(response.choices[0].message.content or "")
             if description and len(description) > 20:
                 return description, model_id
             logger.warning(f"Groq ({model_id}) returned empty/short description for '{title}', trying next model")
@@ -198,8 +221,9 @@ async def generate_cinematic_description(
                                 messages=messages,
                                 temperature=0.4,
                                 max_tokens=1000,
+                                extra_body=extra_body,
                             )
-                            description = response.choices[0].message.content.strip()
+                            description = _strip_think(response.choices[0].message.content or "")
                             if description and len(description) > 20:
                                 return description, model_id
                         except Exception as retry_err:
