@@ -43,9 +43,15 @@ logging.getLogger("openai").setLevel(logging.WARNING)
 
 
 MODELS = {
-    "scout": "meta-llama/llama-4-scout-17b-16e-instruct",
-    "70b":   "llama-3.3-70b-versatile",
+    "scout":       "meta-llama/llama-4-scout-17b-16e-instruct",
+    "70b":         "llama-3.3-70b-versatile",
+    "qwen3-32b":   "qwen/qwen3-32b",
+    "qwen3.6-27b": "qwen/qwen3.6-27b",
 }
+
+# Reasoning models burn the token budget on chain-of-thought before emitting the
+# tool call; disable it so structured parsing stays fast and doesn't truncate.
+_REASONING_OFF = {"qwen/qwen3-32b", "qwen/qwen3.6-27b"}
 
 
 # Realistic query panel covering the dimensions the schema models:
@@ -111,12 +117,14 @@ async def parse_with_model(client, query: str, model_id: str) -> tuple[Optional[
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"### USER QUERY ###\n{query}\n### END USER QUERY ###"},
     ]
+    extra = {"extra_body": {"reasoning_effort": "none"}} if model_id in _REASONING_OFF else {}
     try:
         intent = await client.chat.completions.create(
             model=model_id,
             response_model=MovieSearchIntent,
             messages=messages,
             temperature=0.1,
+            **extra,
         )
         # Strip None/default fields to keep the comparison readable
         d = intent.model_dump(exclude_defaults=True, exclude_none=True)

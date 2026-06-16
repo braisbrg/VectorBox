@@ -23,6 +23,29 @@ from services.movie_service import MovieService
 
 logger = logging.getLogger(__name__)
 
+
+def rss_watch_count_should_bump(rewatch: bool, incoming_date, existing_date) -> bool:
+    """Decide whether an RSS diary entry should increment watch_count.
+
+    Bump ONLY when Letterboxd flags the entry as a rewatch AND the incoming
+    watched_date is strictly later than the one already stored. This is what
+    keeps the sync idempotent: re-processing the same diary entry on every cron
+    tick must NOT inflate watch_count (the historical Wolf Beach / Eterna bug,
+    fixed 2026-05-10). ZIP uploads remain authoritative — they overwrite
+    watch_count via `excluded`.
+
+    Extracted to a module-level function so the regression test exercises the
+    REAL production rule instead of a hand-copied replica.
+    """
+    if not rewatch:
+        return False
+    if existing_date is None:
+        return True
+    if incoming_date is None:
+        return False
+    return incoming_date > existing_date
+
+
 class RSSService:
     def __init__(
         self,
@@ -308,8 +331,8 @@ class RSSService:
                 # remain authoritative — they overwrite watch_count via excluded.
                 incoming_date = item.get('watched_date')
                 existing_date = existing_rating.watched_date if existing_rating else None
-                rewatch_flag = bool(item.get('rewatch')) and (
-                    existing_date is None or (incoming_date is not None and incoming_date > existing_date)
+                rewatch_flag = rss_watch_count_should_bump(
+                    bool(item.get('rewatch')), incoming_date, existing_date
                 )
 
                 stmt = insert(UserRating).values(

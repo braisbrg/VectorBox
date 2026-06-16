@@ -27,11 +27,15 @@ pytest_plugins = ("pytest_asyncio",)
 from services.omdb_client import OMDbClient, parse_oscar_wins, split_omdb_csv
 
 
-# Skip the whole module when we can't reach the API.
-pytestmark = pytest.mark.skipif(
-    not os.getenv("OMDB_API_KEY"),
-    reason="OMDB_API_KEY not set — skipping live integration tests",
-)
+# Live OMDb calls → flagged `integration` (filter with `-m "not integration"`).
+# Also skipped entirely when the key is absent so CI without the secret stays green.
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not os.getenv("OMDB_API_KEY"),
+        reason="OMDB_API_KEY not set — skipping live integration tests",
+    ),
+]
 
 
 @pytest_asyncio.fixture
