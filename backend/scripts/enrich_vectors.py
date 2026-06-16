@@ -510,37 +510,36 @@ async def enrich_embeddings_parallel(models: list[str], limit: int = None):
                     movie_id = queue.get_nowait()
                 except asyncio.QueueEmpty:
                     break
-                movie = await db.get(Movie, movie_id)
-                if movie is None or movie.has_enriched_embedding:
-                    continue
+                # Wrap the WHOLE per-film body: a DB blip, network hiccup, or
+                # qdrant error must never kill the worker (which would propagate
+                # through gather and tear down the sibling worker too — that's
+                # how a session ends with quota to spare). DailyLimitExhausted is
+                # the only clean stop. Everything else → rollback + continue.
                 try:
-                    desc, used = await generate_cinematic_description(
-                        title=movie.title or "", overview=movie.overview or "",
-                        genres=movie.genres or [], keywords=movie.keywords or [],
-                        directors=movie.directors or [], cast=movie.cast or [],
-                        year=movie.year or 0, groq_client=client, force_model=model_id,
-                    )
-                except DailyLimitExhausted:
-                    # This model's daily quota is gone. Return the film so the
-                    # OTHER worker can still take it, then stop this worker.
-                    queue.put_nowait(movie_id)
-                    await db.commit()
-                    logger.info(f"[{model_id}] daily limit reached — worker stopping ({done} done)")
-                    return
-                except Exception as e:
-                    # Transient (e.g. network blip). Don't re-queue (avoids a hot
-                    # loop if it's persistent) — the film stays unenriched for the
-                    # next run. Brief backoff so a blip doesn't burn the queue.
-                    logger.warning(f"[{model_id}] {movie.title}: {e}")
-                    await asyncio.sleep(5)
-                    continue
+                    movie = await db.get(Movie, movie_id)
+                    if movie is None or movie.has_enriched_embedding:
+                        continue
+                    try:
+                        desc, used = await generate_cinematic_description(
+                            title=movie.title or "", overview=movie.overview or "",
+                            genres=movie.genres or [], keywords=movie.keywords or [],
+                            directors=movie.directors or [], cast=movie.cast or [],
+                            year=movie.year or 0, groq_client=client, force_model=model_id,
+                        )
+                    except DailyLimitExhausted:
+                        queue.put_nowait(movie_id)
+                        try:
+                            await db.commit()
+                        except Exception:
+                            await db.rollback()
+                        logger.info(f"[{model_id}] daily limit reached — worker stopping ({done} done)")
+                        return
 
-                if not desc or used is None:
-                    stats["fallback"] += 1
-                    await asyncio.sleep(3)
-                    continue
+                    if not desc or used is None:
+                        stats["fallback"] += 1
+                        await asyncio.sleep(2)
+                        continue
 
-                try:
                     loop = asyncio.get_running_loop()
                     async with embed_lock:
                         vector = await loop.run_in_executor(
@@ -554,25 +553,37 @@ async def enrich_embeddings_parallel(models: list[str], limit: int = None):
                     await qdrant.upsert_movie_vector(
                         movie_id=movie.tmdb_id, vector=vector.tolist(), metadata=_qdrant_payload(movie)
                     )
-                except Exception as e:
-                    logger.warning(f"[{model_id}] upsert {movie.title}: {e}")
-                    stats["qdrant_err"] += 1
-                    continue
 
-                movie.has_enriched_embedding = True
-                movie.enriched_by_model = used
-                movie.cinematic_description = desc
-                movie.embedding_quality_score = None  # invalidate stale; Phase 2 re-audits
-                stats["success"] += 1
-                stats["by_model"][used] = stats["by_model"].get(used, 0) + 1
-                done += 1
-                if done % 10 == 0:
-                    await db.commit()
-            await db.commit()
+                    movie.has_enriched_embedding = True
+                    movie.enriched_by_model = used
+                    movie.cinematic_description = desc
+                    movie.embedding_quality_score = None  # invalidate stale; Phase 2 re-audits
+                    stats["success"] += 1
+                    stats["by_model"][used] = stats["by_model"].get(used, 0) + 1
+                    done += 1
+                    if done % 10 == 0:
+                        await db.commit()
+                except Exception as e:
+                    logger.warning(f"[{model_id}] transient error on {movie_id}: {e}")
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
+                    await asyncio.sleep(5)
+                    continue
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
 
     import time
     started = time.time()
-    await asyncio.gather(*[worker(m) for m in models])
+    # return_exceptions=True: a fully-crashed worker (should be impossible now)
+    # still can't tear down its sibling — the other keeps draining.
+    results = await asyncio.gather(*[worker(m) for m in models], return_exceptions=True)
+    for m, r in zip(models, results):
+        if isinstance(r, Exception):
+            logger.error(f"[{m}] worker died: {r}")
     elapsed = time.time() - started
 
     async with AsyncSessionLocal() as db:
