@@ -227,6 +227,8 @@ async def enrich_embeddings_via_groq(
             api_key=groq_key,
             base_url="https://api.groq.com/openai/v1",
             max_retries=0,
+            timeout=40.0,  # REL-4: bound calls (SDK default 600s) so a hung
+                           # request can't stall an unattended bulk run
         )
         # Groq ~30 RPM free tier — conservative pacing
         batch_size = 10
