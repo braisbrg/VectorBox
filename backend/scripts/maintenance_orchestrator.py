@@ -315,13 +315,22 @@ def _build_groq_client():
             api_key=os.getenv("GROQ_API_KEY"),
             base_url="https://api.groq.com/openai/v1",
             max_retries=0,
+            timeout=40.0,  # REL-4: bound calls (SDK default 600s)
         )
     if os.getenv("GEMINI_API_KEY"):
         return AsyncOpenAI(
             api_key=os.getenv("GEMINI_API_KEY"),
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=40.0,  # REL-4
         )
     return None
+
+
+# The standardised enrichment chain (2026-06 model sweep): qwen3-32b is the most
+# consistent free model for V2 descriptions, gpt-oss-120b the richest. Phase 3
+# uses ONLY these two so a full 8-phase run stays consistent with the bulk
+# re-enrich (scripts/enrich_vectors.py --chain qwen3-32b,oss-120).
+REENRICH_CHAIN = ["qwen/qwen3-32b", "openai/gpt-oss-120b"]
 
 
 async def phase_embedding_repair(limit: int, dry_run: bool) -> dict:
@@ -359,7 +368,10 @@ async def phase_embedding_repair(limit: int, dry_run: bool) -> dict:
         try:
             for movie in movies:
                 try:
-                    ok = await _re_enrich_movie(movie, groq, qdrant, embedding_service)
+                    ok = await _re_enrich_movie(
+                        movie, groq, qdrant, embedding_service,
+                        model_chain_override=REENRICH_CHAIN,
+                    )
                 except DailyLimitExhausted as e:
                     logger.warning(f"[Phase 3] Groq daily limit hit ({e}). Stopping early.")
                     stats["stopped_early"] = True

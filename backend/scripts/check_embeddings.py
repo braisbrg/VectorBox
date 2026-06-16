@@ -116,8 +116,19 @@ async def check_movie_embedding(
     return quality
 
 
-async def _re_enrich_movie(movie: Movie, llm_client, qdrant: QdrantService, embedding_service: EmbeddingService) -> bool:
-    """Re-run cinematic enrichment for a single movie. Returns True on success."""
+async def _re_enrich_movie(
+    movie: Movie,
+    llm_client,
+    qdrant: QdrantService,
+    embedding_service: EmbeddingService,
+    model_chain_override: "list[str] | None" = None,
+) -> bool:
+    """Re-run cinematic enrichment for a single movie. Returns True on success.
+
+    `model_chain_override` restricts the LLM chain (e.g. the maintenance
+    orchestrator passes the standardised qwen3-32b + gpt-oss-120b pair so a
+    full 8-phase run matches the bulk re-enrich recipe). None = default chain.
+    """
     from services.cinematic_enricher import generate_cinematic_description
 
     try:
@@ -130,6 +141,7 @@ async def _re_enrich_movie(movie: Movie, llm_client, qdrant: QdrantService, embe
             cast=movie.cast or [],
             year=movie.year or 0,
             groq_client=llm_client,
+            model_chain_override=model_chain_override,
         )
     except Exception as e:
         logger.warning(f"Re-enrich LLM failed for {movie.title}: {e}")
@@ -154,22 +166,11 @@ async def _re_enrich_movie(movie: Movie, llm_client, qdrant: QdrantService, embe
     if vector is None:
         return False
 
-    payload = {
-        "tmdb_id": movie.tmdb_id,
-        "title": movie.title,
-        "year": movie.year,
-        "genres": movie.genres or [],
-        "overview": movie.overview or "",
-        "poster_path": movie.poster_path,
-        "vote_average": movie.vote_average,
-        "vote_count": movie.vote_count,
-        "runtime": movie.runtime,
-        "original_language": movie.original_language,
-        "keywords": movie.keywords or [],
-        "directors": movie.directors,
-        "cast": movie.cast,
-        "vectorbox_score": movie.vectorbox_score,
-    }
+    # Use the canonical payload builder (same as scripts/reembed_catalog.py and
+    # the bulk re-enrich) so a Phase-3-touched point isn't thinner than the rest
+    # — the old hand-rolled payload dropped imdb_rating/metacritic/title_es/es.
+    from scripts.reembed_catalog import _qdrant_payload
+    payload = _qdrant_payload(movie)
     try:
         await qdrant.upsert_movie_vector(
             movie_id=movie.tmdb_id, vector=vector.tolist(), metadata=payload
