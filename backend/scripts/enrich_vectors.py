@@ -447,6 +447,143 @@ def _print_enrichment_summary(total_processed, successful_enrichments, fallback_
     print("=" * 60 + "\n")
 
 
+async def enrich_embeddings_parallel(models: list[str], limit: int = None):
+    """Run ONE worker per model CONCURRENTLY, each pinned to its own model.
+
+    Why this is faster than the sequential --chain: every model has an
+    INDEPENDENT Groq rate-limit bucket (separate TPM/RPM/RPD). The sequential
+    chain tries the first model for every film, so the whole run bottlenecks on
+    that one model's TPM (qwen3-32b = 6K/min) while the second model's bucket
+    sits idle until the first model's DAILY limit is hit. Pinning one worker per
+    model lets the second enrich films during the first's per-minute cooldown —
+    combined TPM ≈ the sum, so the shared daily quota (still ~1K films/model)
+    drains in roughly half the wall-clock. Total/day is unchanged (RPD-bound);
+    each session just finishes ~2× sooner.
+
+    Films are pulled from a shared asyncio.Queue (get_nowait is atomic under the
+    single-threaded event loop, so no two workers grab the same film). Each
+    worker owns its own AsyncSession (never shared across tasks). Embedding
+    encode is serialised behind a lock — it's fast (~0.15s) and the model is a
+    shared singleton; the slow, rate-limited LLM calls are what run in parallel.
+    """
+    from openai import AsyncOpenAI
+    from services.cinematic_enricher import generate_cinematic_description, DailyLimitExhausted
+    from scripts.reembed_catalog import _qdrant_payload
+
+    if not os.environ.get("GROQ_API_KEY"):
+        logger.error("GROQ_API_KEY not set. Aborting.")
+        return
+
+    client = AsyncOpenAI(
+        api_key=os.environ["GROQ_API_KEY"],
+        base_url="https://api.groq.com/openai/v1",
+        max_retries=0,
+        timeout=40.0,  # REL-4
+    )
+    qdrant = QdrantService()
+    embedding_service = EmbeddingService()
+    await qdrant.init_collection()
+    embed_lock = asyncio.Lock()
+
+    async with AsyncSessionLocal() as db:
+        q = select(Movie.id).where(Movie.has_enriched_embedding.is_(False))
+        if limit:
+            q = q.limit(limit)
+        ids = list((await db.execute(q)).scalars().all())
+
+    logger.info(f"Parallel enrich: {len(ids)} films across {len(models)} concurrent workers {models}")
+    if not ids:
+        print("No movies need enrichment.")
+        return
+
+    queue: asyncio.Queue = asyncio.Queue()
+    for mid in ids:
+        queue.put_nowait(mid)
+
+    stats = {"success": 0, "fallback": 0, "qdrant_err": 0, "by_model": {}}
+
+    async def worker(model_id: str):
+        done = 0
+        async with AsyncSessionLocal() as db:
+            while True:
+                try:
+                    movie_id = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                movie = await db.get(Movie, movie_id)
+                if movie is None or movie.has_enriched_embedding:
+                    continue
+                try:
+                    desc, used = await generate_cinematic_description(
+                        title=movie.title or "", overview=movie.overview or "",
+                        genres=movie.genres or [], keywords=movie.keywords or [],
+                        directors=movie.directors or [], cast=movie.cast or [],
+                        year=movie.year or 0, groq_client=client, force_model=model_id,
+                    )
+                except DailyLimitExhausted:
+                    # This model's daily quota is gone. Return the film so the
+                    # OTHER worker can still take it, then stop this worker.
+                    queue.put_nowait(movie_id)
+                    await db.commit()
+                    logger.info(f"[{model_id}] daily limit reached — worker stopping ({done} done)")
+                    return
+                except Exception as e:
+                    # Transient (e.g. network blip). Don't re-queue (avoids a hot
+                    # loop if it's persistent) — the film stays unenriched for the
+                    # next run. Brief backoff so a blip doesn't burn the queue.
+                    logger.warning(f"[{model_id}] {movie.title}: {e}")
+                    await asyncio.sleep(5)
+                    continue
+
+                if not desc or used is None:
+                    stats["fallback"] += 1
+                    await asyncio.sleep(3)
+                    continue
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    async with embed_lock:
+                        vector = await loop.run_in_executor(
+                            None,
+                            lambda: embedding_service.generate_embedding(
+                                {"title": movie.title, "overview": movie.overview,
+                                 "genres": movie.genres, "keywords": movie.keywords or []},
+                                text_override=desc,
+                            ),
+                        )
+                    await qdrant.upsert_movie_vector(
+                        movie_id=movie.tmdb_id, vector=vector.tolist(), metadata=_qdrant_payload(movie)
+                    )
+                except Exception as e:
+                    logger.warning(f"[{model_id}] upsert {movie.title}: {e}")
+                    stats["qdrant_err"] += 1
+                    continue
+
+                movie.has_enriched_embedding = True
+                movie.enriched_by_model = used
+                movie.cinematic_description = desc
+                movie.embedding_quality_score = None  # invalidate stale; Phase 2 re-audits
+                stats["success"] += 1
+                stats["by_model"][used] = stats["by_model"].get(used, 0) + 1
+                done += 1
+                if done % 10 == 0:
+                    await db.commit()
+            await db.commit()
+
+    import time
+    started = time.time()
+    await asyncio.gather(*[worker(m) for m in models])
+    elapsed = time.time() - started
+
+    async with AsyncSessionLocal() as db:
+        remaining = await db.scalar(
+            select(func.count()).select_from(Movie).where(Movie.has_enriched_embedding.is_(False))
+        )
+    print(f"\nParallel session done in {elapsed:.0f}s. {stats['success']} enriched "
+          f"({stats['by_model']}), {stats['fallback']} fallbacks, {stats['qdrant_err']} qdrant errors. "
+          f"{remaining} remaining. Run again to continue.\n")
+
+
 if __name__ == "__main__":
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -480,6 +617,15 @@ if __name__ == "__main__":
              "(comma-separated). The 2026-06 sweep found qwen3-32b + oss-120 the "
              "best free pair for V2 descriptions. Example: --chain qwen3-32b,oss-120. "
              "Mutually exclusive with --model-only and --smart."
+    )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Run the --chain models CONCURRENTLY (one worker per model) instead "
+             "of sequential fallback. Each model has its own rate-limit bucket, so "
+             "this drains the shared daily quota in ~half the wall-clock. "
+             "Requires --chain with 2+ models. Example: "
+             "--chain qwen3-32b,oss-120 --parallel"
     )
     parser.add_argument(
         "--reset-enrichment",
@@ -535,7 +681,16 @@ if __name__ == "__main__":
     else:
         chain_override = None
 
-    if args.enrich_embeddings:
+    if args.parallel:
+        if not chain_override or len(chain_override) < 2:
+            print("Error: --parallel requires --chain with 2+ models "
+                  "(e.g. --chain qwen3-32b,oss-120 --parallel).")
+            sys.exit(1)
+        if not args.enrich_embeddings:
+            print("Error: --parallel only applies to --enrich-embeddings.")
+            sys.exit(1)
+        asyncio.run(enrich_embeddings_parallel(models=chain_override, limit=args.limit))
+    elif args.enrich_embeddings:
         asyncio.run(enrich_embeddings_via_groq(
             limit=args.limit,
             model_only=model_only_id,
