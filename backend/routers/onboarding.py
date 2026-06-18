@@ -27,6 +27,7 @@ from config import get_db, REDIS_URL, AsyncSessionLocal, IS_PRODUCTION, ANON_SES
 from dependencies import (
     get_current_user,
     get_current_or_anonymous_user,
+    get_optional_current_user,
     get_qdrant_service,
     get_anonymous_user,
     sign_anon_session,
@@ -412,12 +413,21 @@ async def init_session(
     response: Response,
     db: AsyncSession = Depends(get_db),
     anon_user: Optional[User] = Depends(get_anonymous_user),
+    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
 ):
     """
     Idempotent session initializer for guest users.
     If a valid vb_anon_session cookie is present, return the existing user.
     Otherwise, create a new anonymous user and set the cookie.
     """
+    # If the request is ALREADY authenticated (Clerk), never create an anon
+    # user. Both /explore and /onboarding ("Rate more films") call this on
+    # mount, so without this guard every page-open by a signed-in user minted a
+    # junk `guest_…` row + anon cookie. Return their real identity instead; the
+    # caller re-queries /status for the authoritative rating count.
+    if current_user is not None:
+        return {"user_id": current_user.user_id, "is_anonymous": False, "ratings_count": 0}
+
     if anon_user is not None:
         # Existing anonymous session — refresh last_active_at
         anon_user.last_active_at = datetime.utcnow()

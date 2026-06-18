@@ -7,37 +7,13 @@ import { m, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api";
 import { Loader2 } from "lucide-react";
 
-const ONBOARDING_PATHS = [
-    {
-        id: "letterboxd",
-        title: "SYNC LETTERBOXD",
-        description: "Upload your full watch history. Best for existing Letterboxd users with years of ratings.",
-        cta: "[ UPLOAD ZIP ]",
-        href: "/?upload=true",
-    },
-    {
-        id: "rate",
-        title: "RATE FILMS",
-        description: "Rate films one by one to build your taste profile. Best if you're new to tracking.",
-        cta: "[ START RATING ]",
-        href: "/onboarding",
-    },
-    {
-        id: "rss",
-        title: "CONNECT RSS",
-        description: "Auto-sync your Letterboxd diary. Requires a Letterboxd account with public RSS.",
-        cta: "[ CONNECT RSS ]",
-        href: "/?rss=true",
-    },
-];
-
 function LoginContent() {
     const { isLoaded, isSignedIn } = useAuth();
     const { push } = useRouter();
     const searchParams = useSearchParams();
     const isMigrate = searchParams.get("migrate") === "true";
     const redirectUrl = isMigrate ? "/login?migrate=true" : "/";
-    const [mode, setMode] = useState<"choose" | "letterboxd" | "onboarding-chooser">(
+    const [mode, setMode] = useState<"choose" | "letterboxd">(
         isMigrate ? "letterboxd" : "choose"
     );
     const [migrating, setMigrating] = useState(false);
@@ -68,20 +44,15 @@ function LoginContent() {
         };
 
         if (!isMigrate) {
-            // FIX 4: Check if new user (0 ratings) → show onboarding chooser
+            // After a plain sign-in: clear stale guest state and go to the
+            // dashboard. The dashboard is the SINGLE source of onboarding
+            // routing — it redirects 0-rating users to /onboarding. The old
+            // in-page onboarding-chooser was unreachable anyway (the <SignIn>
+            // forceRedirectUrl="/" navigates away before it could render).
             if (newUserCheckAttempted.current) return;
             newUserCheckAttempted.current = true;
-
-            api.get("/api/onboarding/status")
-                .then(({ data }) => {
-                    flushGuestState();
-                    if (data.ratings_count === 0) {
-                        setMode("onboarding-chooser");
-                    } else {
-                        push("/");
-                    }
-                })
-                .catch(() => push("/")); // TODO: handle 401 fallback more gracefully
+            flushGuestState();
+            push("/");
             return;
         }
 
@@ -129,49 +100,7 @@ function LoginContent() {
 
             <div className="z-10 w-full max-w-2xl px-4">
                 <AnimatePresence mode="wait">
-                    {mode === "onboarding-chooser" ? (
-                        <m.div
-                            key="onboarding-chooser"
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -20 }}
-                            transition={{ duration: 0.3 }}
-                            className="space-y-8"
-                        >
-                            <div className="text-center space-y-2">
-                                <h1 className="text-4xl md:text-5xl font-black tracking-tighter font-mono">
-                                    VECTOR<span className="text-primary">BOX</span>
-                                </h1>
-                                <p className="text-zinc-500 font-mono text-[10px] uppercase tracking-[0.3em]">
-                                    How do you want to get started?
-                                </p>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                {ONBOARDING_PATHS.map((path) => (
-                                    <button
-                                        key={path.id}
-                                        onClick={() => push(path.href)}
-                                        className="flex flex-col gap-4 p-5 border border-border text-left
-                                                   hover:border-primary hover:bg-primary/5 transition-all group"
-                                    >
-                                        <div className="space-y-2">
-                                            <p className="font-mono text-xs font-bold uppercase tracking-wider
-                                                          text-foreground group-hover:text-primary transition-colors">
-                                                {path.title}
-                                            </p>
-                                            <p className="font-mono text-[10px] text-zinc-500 leading-relaxed">
-                                                {path.description}
-                                            </p>
-                                        </div>
-                                        <span className="font-mono text-xs text-primary mt-auto">
-                                            {path.cta}
-                                        </span>
-                                    </button>
-                                ))}
-                            </div>
-                        </m.div>
-                    ) : mode === "choose" ? (
+                    {mode === "choose" ? (
                         <m.div
                             key="choose"
                             initial={{ opacity: 0, y: 20 }}
