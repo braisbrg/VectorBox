@@ -67,10 +67,11 @@ export default function OnboardingCarouselPage() {
     useEffect(() => {
         const hydrate = async () => {
             try {
-                // Init or resume anonymous session (sets httponly cookie).
-                // For authed users this is a no-op cookie-wise but returns
-                // ratings_count=0 (they don't have an anon session) — so we
-                // re-query /status below which works for both anon and authed.
+                // Init or resume anonymous session (sets httponly cookie) for
+                // GUESTS. For Clerk-authed users the backend now short-circuits
+                // and returns their real identity WITHOUT creating an anon row
+                // or cookie — so we always re-query /status below for the
+                // authoritative rating count (works for both anon and authed).
                 await api.post("/api/onboarding/init-session");
                 if (!isMounted.current) return;
 
