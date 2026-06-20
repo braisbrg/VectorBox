@@ -4,6 +4,10 @@ export default function RegisterPage() {
     return (
         <main className="min-h-screen flex items-center justify-center bg-background">
             <SignUp
+                // See login/page.tsx: hash routing keeps email-verification /
+                // SSO sub-steps on this page instead of path-navigating to a
+                // non-existent /register/* route (blank-page bug).
+                routing="hash"
                 appearance={{
                     elements: {
                         rootBox: "font-mono",

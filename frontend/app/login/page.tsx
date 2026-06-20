@@ -94,6 +94,18 @@ function LoginContent() {
         );
     }
 
+    // Already signed in on the plain-login path: the useEffect above is
+    // pushing to "/". Render a redirect spinner rather than the now-dead
+    // <SignIn/> (Clerk renders it blank once a session exists) so there's
+    // never a blank flash while navigation completes.
+    if (isSignedIn && !isMigrate) {
+        return (
+            <div className="min-h-screen flex items-center justify-center bg-background">
+                <Loader2 className="size-8 text-primary animate-spin" />
+            </div>
+        );
+    }
+
     return (
         <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden">
             <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10 pointer-events-none" />
@@ -158,6 +170,13 @@ function LoginContent() {
                             </button>
 
                             <SignIn
+                                // Hash routing keeps every sub-step (email-code
+                                // verification, OAuth/SSO callback, MFA) on THIS
+                                // page via the URL hash. Path routing — Clerk's
+                                // default — navigates to /login/factor-one etc.,
+                                // which 404s here because this is NOT a catch-all
+                                // route, producing a blank page stuck on /login.
+                                routing="hash"
                                 appearance={{
                                     elements: {
                                         rootBox: "font-mono",
