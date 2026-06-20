@@ -140,8 +140,16 @@ class TMDBClient:
                 if e.response.status_code == 429:  # Rate limited
                     logger.warning("TMDB rate limit hit, backing off...")
                     await asyncio.sleep(2)
+                elif e.response.status_code in (502, 503, 504):
+                    # Gateway/unavailable errors are TMDB-edge hiccups — same class
+                    # as the transport errors below. They spike when the watchlist
+                    # fires a burst of parallel /watch/providers fetches and TMDB's
+                    # CDN briefly 502s; that is NOT "TMDB is down", so don't trip the
+                    # breaker (tripping it made one bad film blank out providers for
+                    # the whole list via the cached-fallback path).
+                    logger.warning(f"TMDB transient gateway error {e.response.status_code} on {endpoint} — not tripping breaker")
                 elif e.response.status_code >= 500:
-                     # Server error - Trip Circuit Breaker
+                     # Genuine server error (500/etc.) - Trip Circuit Breaker
                      self._record_failure()
                 return None
             except orjson.JSONDecodeError as e:
