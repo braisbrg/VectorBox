@@ -606,9 +606,18 @@ class RecommendationEngine:
                     }
                     
                     loop = asyncio.get_running_loop()
+                    # lambda=0.8 (relevance-dominant): "Because you watched X" is a
+                    # SIMILARITY row — its whole point is that items resemble the
+                    # anchor. The MMR diversity term is kept only to break up
+                    # near-duplicates (saga/sequel flooding), which it still does
+                    # at 0.2 weight. At lambda=0.5 it was demoting genuinely on-
+                    # theme neighbours for being "too similar" and pulling weaker,
+                    # off-theme films up to fill the row (e.g. Howl's anchor: 0.85
+                    # surfaces NeverEnding Story / Bridge to Terabithia / Tinker
+                    # Bell over Dreams / Donkey Skin / Green Knight at 0.5).
                     mmr_func = functools.partial(
                         self.clustering.mmr_rerank,
-                        mmr_candidates, vectors_map_mmr, 15, lambda_param=0.5
+                        mmr_candidates, vectors_map_mmr, 15, lambda_param=0.8
                     )
                     mmr_results = await loop.run_in_executor(None, mmr_func)
                 except Exception as e:
