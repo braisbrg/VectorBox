@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import delete, cast, select, Date, func, case
+from sqlalchemy import delete, cast, select, Date, func
 import numpy as np
 
 from models.database import User, Movie, UserRating

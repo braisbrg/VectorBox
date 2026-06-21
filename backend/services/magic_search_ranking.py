@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from difflib import SequenceMatcher
-from typing import Iterable, Optional
+from typing import Optional
 
 from models.database import Movie
 from services.nlp_search import MovieSearchIntent

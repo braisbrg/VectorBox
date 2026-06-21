@@ -3,7 +3,6 @@ K-Means Clustering Service for User Taste Profiles
 Implements dynamic clustering: n_clusters = min(5, max(2, total_movies // 20))
 """
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
 from collections import Counter
 import numpy as np
 import math

@@ -5,7 +5,6 @@ import logging
 import os
 import httpx
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware

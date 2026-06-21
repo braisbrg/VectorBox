@@ -21,12 +21,6 @@ from services.recommendation_service import RecommendationService
 from services.embedding_service import EmbeddingService
 from services.movie_service import MovieService
 from services.trending_service import TrendingService
-from services.profile_cache import (
-    get_profile_summary_status, 
-    get_cached_profile_summary, 
-    set_cached_profile_summary
-)
-from services.cinematic_enricher import generate_profile_summary
 from config import REDIS_URL
 import time
 

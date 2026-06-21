@@ -1,5 +1,5 @@
 from datetime import timedelta
-from typing import AsyncGenerator, Optional
+from typing import Optional
 import httpx
 from fastapi import Request
 from services.tmdb_client import TMDBClient
