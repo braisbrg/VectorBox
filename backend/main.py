@@ -23,7 +23,7 @@ from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 
 from database import init_db
-from routers import upload, recommendations, tools, users, search, rss, auth, tasks, movies, onboarding
+from routers import upload, recommendations, users, search, rss, auth, tasks, movies, onboarding
 from routers.similar import router as similar_router
 from services.qdrant_service import QdrantService
 from models.schemas import HealthResponse, RootResponse
@@ -45,8 +45,6 @@ logger = logging.getLogger(__name__)
 from limiter import limiter
 
 
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.redis import RedisBackend
 from redis import asyncio as aioredis
 
 @asynccontextmanager
@@ -82,7 +80,6 @@ async def lifespan(app: FastAPI):
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
     redis = aioredis.from_url(redis_url, encoding="utf8", decode_responses=True)
     app.state.redis = redis
-    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
     logger.info(f"Redis singleton initialized at {redis_url}")
     
     # Initialize Qdrant collection
@@ -314,7 +311,6 @@ async def add_security_headers(request: Request, call_next):
 # Include routers
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
 app.include_router(recommendations.router, prefix="/api/recommendations", tags=["Recommendations"])
-app.include_router(tools.router, prefix="/api/tools", tags=["Tools"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(search.router, prefix="/api/search", tags=["Search"])
