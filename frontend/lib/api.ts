@@ -106,24 +106,6 @@ export interface RecommendationResponse {
     contributors?: Contributor[];
 }
 
-export interface RecommendationRequest {
-    // L-1: user_id removed - derived from JWT server-side
-    cluster_id?: number;
-    year_min?: number;
-    year_max?: number;
-    genres?: string[];
-    runtime_min?: number;
-    runtime_max?: number;
-    streaming_providers?: number[];
-    country_code?: string;
-    limit?: number;
-    min_vote_count?: number;
-    min_rating?: number;
-    original_language?: string;
-    include_keywords?: string[];
-    page?: number;
-}
-
 export interface FeedItem {
     id: number;
     title: string;
@@ -185,27 +167,6 @@ export const getUserClusters = async (userId: number): Promise<ClusterInfo[]> =>
     return response.data;
 };
 
-export const getRecommendationsByMood = async (
-    request: RecommendationRequest
-): Promise<RecommendationResponse[]> => {
-    const response = await api.post("/api/recommendations/by-mood", request);
-    return response.data;
-};
-
-export const getGeneralRecommendations = async (
-    request: RecommendationRequest
-): Promise<RecommendationResponse[]> => {
-    const response = await api.post("/api/recommendations/general", request);
-    return response.data;
-};
-
-export const getRandomMovieRecommendation = async (
-    request: RecommendationRequest
-): Promise<RecommendationResponse> => {
-    const response = await api.post("/api/recommendations/random", request);
-    return response.data;
-};
-
 export const getGroupVibe = async (usernames: string[]): Promise<RecommendationResponse[]> => {
     const response = await api.post("/api/rss/group/vibe", { usernames });
     return response.data;
@@ -250,16 +211,6 @@ export const getHiddenGemsRecommendation = async (): Promise<FeedSection> => {
     return response.data;
 };
 
-export interface GroupRecommendationRequest {
-    user_ids: number[];
-    year_min?: number;
-    year_max?: number;
-    genres?: string[];
-    runtime_min?: number;
-    runtime_max?: number;
-    limit?: number;
-}
-
 export interface FeedResponse {
     feed: FeedSection[];
     status?: "ok" | "incomplete" | "error";
@@ -272,13 +223,6 @@ export interface AuthResponse {
     has_data?: boolean;
     letterboxd_username?: string;
 }
-
-export const logout = async (): Promise<void> => {
-    // Clerk's signOut() handles real session invalidation; clear local cache.
-    if (typeof window !== "undefined") {
-        localStorage.removeItem(USER_SESSION_KEY);
-    }
-};
 
 export const getCurrentUser = async (): Promise<AuthResponse> => {
     const response = await api.get("/api/auth/me");
@@ -310,13 +254,6 @@ export const getFeed = async (
     }
 
     const response = await api.get(`/api/recommendations/feed?${params.toString()}`);
-    return response.data;
-};
-
-export const getGroupRecommendations = async (
-    request: GroupRecommendationRequest
-): Promise<RecommendationResponse[]> => {
-    const response = await api.post("/api/recommendations/group", request);
     return response.data;
 };
 
@@ -363,54 +300,6 @@ export const getWatchlist = async (
 
     const response = await api.get("/api/recommendations/watchlist", { params });
     return response.data;
-};
-
-/**
- * Server-Side Feed Fetcher (for Next.js SSR)
- * Uses native fetch to work in Server Components
- * Forwards cookies for authentication
- */
-export const getFeedServerSide = async (
-    scope: "global" | "watchlist" = "global",
-    countryCode: string = "ES",
-    streamingProviders: number[] = [],
-    cookieHeader?: string
-): Promise<FeedResponse | null> => {
-    try {
-        const params = new URLSearchParams();
-        params.append("scope", scope);
-        params.append("country_code", countryCode);
-        if (streamingProviders.length > 0) {
-            params.append("streaming_providers", streamingProviders.join(","));
-        }
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
-
-        try {
-            const response = await fetch(
-                `${API_URL}/api/recommendations/feed?${params.toString()}`,
-                {
-                    cache: "no-store", // Dynamic data, always fresh
-                    signal: controller.signal,
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
-                    },
-                }
-            );
-
-            if (!response.ok) {
-                return null;
-            }
-
-            return response.json();
-        } finally {
-            clearTimeout(timeoutId);
-        }
-    } catch (error) {
-        return null;
-    }
 };
 
 /**
