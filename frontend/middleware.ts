@@ -1,5 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
+import { resolveLocale } from "@/lib/i18n";
 
 const isPublicRoute = createRouteMatcher([
     "/login(.*)",
@@ -21,14 +22,37 @@ const isPublicRoute = createRouteMatcher([
 export default clerkMiddleware(async (auth, request) => {
     const { userId } = await auth();
 
+    // UI language: an explicit NEXT_LOCALE cookie (set by a prior visit or the
+    // user's manual switch) always wins. Otherwise negotiate from the browser/OS
+    // Accept-Language header — never geo-IP. We set it on BOTH the forwarded
+    // request (so the server render + first paint already use the right locale,
+    // no flash of English) and the response (so it persists for the browser).
+    const detectedLocale = request.cookies.get("NEXT_LOCALE")
+        ? null
+        : resolveLocale(request.headers.get("accept-language"));
+    if (detectedLocale) {
+        request.cookies.set("NEXT_LOCALE", detectedLocale);
+    }
+
+    const finalize = (res: NextResponse) => {
+        if (detectedLocale) {
+            res.cookies.set("NEXT_LOCALE", detectedLocale, {
+                path: "/",
+                maxAge: 60 * 60 * 24 * 365, // 1 year
+                sameSite: "lax",
+            });
+        }
+        return res;
+    };
+
     // Si está logueado e intenta ir a /login o /register, redirigir a home
     if (userId && (request.nextUrl.pathname.startsWith('/login') ||
         request.nextUrl.pathname.startsWith('/register'))) {
         // Allow /login?migrate=true to proceed (onboarding migration needs the login page)
-        if (request.nextUrl.pathname.startsWith('/login') && request.nextUrl.searchParams.get('migrate') === 'true') {
-            // Don't redirect - let the login page handle migration
-        } else {
-            return Response.redirect(new URL('/', request.url));
+        const isMigrate = request.nextUrl.pathname.startsWith('/login') &&
+            request.nextUrl.searchParams.get('migrate') === 'true';
+        if (!isMigrate) {
+            return finalize(NextResponse.redirect(new URL('/', request.url)));
         }
     }
 
@@ -36,8 +60,14 @@ export default clerkMiddleware(async (auth, request) => {
     // (no a la página hosted de Clerk) para que el guest pueda elegir
     // "Rate Films" sin pasar por sign-in.
     if (!isPublicRoute(request) && !userId) {
-        return NextResponse.redirect(new URL('/login', request.url));
+        return finalize(NextResponse.redirect(new URL('/login', request.url)));
     }
+
+    return finalize(
+        detectedLocale
+            ? NextResponse.next({ request: { headers: request.headers } })
+            : NextResponse.next()
+    );
 });
 
 export const config = {
