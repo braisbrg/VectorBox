@@ -6,7 +6,7 @@ import uuid
 import json
 import logging
 from typing import Optional, Dict
-from datetime import datetime
+from datetime import datetime, timezone
 from redis import asyncio as aioredis
 import os
 
@@ -47,8 +47,8 @@ class TaskStore:
             "total_steps": total_steps,
             "step": step,
             "user_id": user_id,  # Security: Ownership
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat()
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat()
         }
         await redis.setex(
             f"{self.TASK_PREFIX}{task_id}",
@@ -74,7 +74,7 @@ class TaskStore:
             task_data = json.loads(existing)
             task_data["progress"] = min(progress, 100)
             task_data["status"] = status
-            task_data["updated_at"] = datetime.utcnow().isoformat()
+            task_data["updated_at"] = datetime.now(timezone.utc).isoformat()
             if step:
                 task_data["step"] = step
             
@@ -96,7 +96,7 @@ class TaskStore:
             task_data = json.loads(existing)
             task_data["status"] = "failed"
             task_data["step"] = error
-            task_data["updated_at"] = datetime.utcnow().isoformat()
+            task_data["updated_at"] = datetime.now(timezone.utc).isoformat()
             
             await redis.setex(key, self.EXPIRY_SECONDS, json.dumps(task_data))
         logger.error(f"Failed task {task_id}: {error}")

@@ -6,7 +6,7 @@ from limiter import limiter
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert
-from datetime import datetime
+from datetime import datetime, timezone
 
 from config import get_db, REDIS_URL
 from models.database import Movie, UserRating
@@ -119,8 +119,8 @@ async def rate_movie(
             is_watchlist=request.is_watchlist,
             is_liked=request.is_liked,
             is_watched=True if request.rating is not None else False,
-            watched_date=datetime.utcnow() if request.rating is not None else None,
-            created_at=datetime.utcnow()
+            watched_date=datetime.now(timezone.utc) if request.rating is not None else None,
+            created_at=datetime.now(timezone.utc)
         ).on_conflict_do_update(
             index_elements=['user_id', 'movie_id'],
             set_={
@@ -128,7 +128,7 @@ async def rate_movie(
                 'is_watchlist': request.is_watchlist,
                 'is_liked': request.is_liked,
                 'is_watched': True if request.rating is not None else UserRating.is_watched,
-                'watched_date': datetime.utcnow() if request.rating is not None else UserRating.watched_date,
+                'watched_date': datetime.now(timezone.utc) if request.rating is not None else UserRating.watched_date,
             }
         )
         

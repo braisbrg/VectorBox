@@ -15,7 +15,6 @@ from config import get_db
 from limiter import limiter
 from dependencies import (
     get_current_user,
-    verify_user_ownership,
     get_embedding_service,
     get_qdrant_service,
     get_tmdb_client,
@@ -36,9 +35,6 @@ router = APIRouter()
 # SEC-3: use the shared, proxy-aware limiter (keys on CF-Connecting-IP /
 # X-Forwarded-For) instead of a local Limiter(get_remote_address), which
 # bucketed every user behind the tunnel under the proxy's egress IP.
-
-# Legacy in-memory status (kept for backwards compatibility)
-upload_status = {}
 
 async def _enrich_user_movies_background(user_id: int) -> None:
     """
@@ -265,14 +261,6 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             logger.error(f"[Enrichment] Pipeline failed for user {user_id}: {e}")
 
 
-@router.get("/status/{user_id}")
-async def get_upload_status(
-    user_id: int,
-    current_user: TokenResponse = Depends(verify_user_ownership)
-):
-    """Get current upload status for user (legacy endpoint)"""
-    return upload_status.get(user_id, {"status": "idle", "message": "", "progress": 0})
-
 async def process_single_movie(
     movie_data: dict,
     user_id: int,
@@ -390,15 +378,6 @@ async def enrich_movies_background(
     total_movies = len(movies_data)
     CHUNK_SIZE = 50
     enriched_count = 0
-
-    # Legacy status init
-    upload_status[user_id] = {
-        "status": "processing",
-        "message": "Starting batch enrichment...",
-        "progress": 0,
-        "total": total_movies,
-        "current": 0
-    }
 
     if task_id:
         await task_store.update_progress(task_id, 0, f"Starting batch processing of {total_movies} movies...")
@@ -599,13 +578,6 @@ async def enrich_movies_background(
             if groq_client:
                 await groq_client.close()
 
-        # Mark as complete (outside the session context — uses in-memory dict + Redis)
-        upload_status[user_id] = {
-            "status": "completed",
-            "message": "Upload complete!",
-            "progress": 100
-        }
-
         if task_id:
             await task_store.complete_task(task_id, "Upload complete!")
 
@@ -623,11 +595,6 @@ async def enrich_movies_background(
 
     except Exception as e:
         logger.error(f"Background enrichment failed for user {user_id}: {e}")
-        upload_status[user_id] = {
-            "status": "error",
-            "message": f"Enrichment failed: {str(e)}",
-            "progress": 0
-        }
         if task_id:
             try:
                 await task_store.update_progress(task_id, -1, f"Error: {str(e)}")

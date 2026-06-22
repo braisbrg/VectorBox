@@ -49,7 +49,7 @@ class QdrantService:
                             distance=Distance.COSINE,
                             # HNSW tuning: m=32 increases graph connectivity for better recall
                             # at the cost of ~2x index size vs default m=16. ef_construct=200
-                            # improves build quality. Both are safe for a 384-dim collection.
+                            # improves build quality. Both are safe for a 768-dim collection.
                             hnsw_config=HnswConfigDiff(m=32, ef_construct=200),
                         )
                     )
@@ -413,7 +413,7 @@ class QdrantService:
                 score_threshold=effective_threshold,
                 query_filter=qdrant_filter,
                 # Search-time HNSW ef: higher = better recall at cost of latency.
-                # ef=128 is the recommended production baseline for 384-dim MiniLM.
+                # ef=128 is the recommended production baseline for 768-dim embeddinggemma.
                 search_params=SearchParams(hnsw_ef=128, exact=False),
                 # [OPTIMIZATION] Payload Selector
                 # Only fetch essential fields for sorting/filtering.

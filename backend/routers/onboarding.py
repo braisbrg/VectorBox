@@ -13,7 +13,7 @@ Auth-required endpoints (Clerk JWT OR vb_anon_session cookie):
 import logging
 import random
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
@@ -430,7 +430,7 @@ async def init_session(
 
     if anon_user is not None:
         # Existing anonymous session — refresh last_active_at
-        anon_user.last_active_at = datetime.utcnow()
+        anon_user.last_active_at = datetime.now(timezone.utc)
         await db.commit()
         return {"user_id": anon_user.id, "is_anonymous": True, "ratings_count": anon_user.onboarding_ratings_count}
 
@@ -439,7 +439,7 @@ async def init_session(
     user = User(
         username=f"guest_{guest_suffix}",
         is_anonymous=True,
-        last_active_at=datetime.utcnow(),
+        last_active_at=datetime.now(timezone.utc),
     )
     db.add(user)
     await db.commit()
