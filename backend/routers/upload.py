@@ -38,7 +38,7 @@ router = APIRouter()
 
 async def _enrich_user_movies_background(user_id: int) -> None:
     """
-    Post-upload enrichment: enrich movies imported by this user that lack Scout embeddings.
+    Post-upload enrichment: enrich movies imported by this user that lack LLM-enriched embeddings.
     Runs silently after upload completes. On finish, invalidates cache and re-clusters.
     """
     import os
@@ -429,7 +429,7 @@ async def enrich_movies_background(
                         await task_store.update_progress(task_id, progress, msg)
 
                     # 1. Parallel Resolve & Ingest (each task owns its own session)
-                    # FIX 5: Skip Scout enrichment during bulk upload to preserve quota.
+                    # FIX 5: Skip LLM enrichment during bulk upload to preserve quota.
                     # The nightly enrich_vectors.py --enrich-embeddings script handles enrichment.
                     tasks = []
                     for m_data in chunk:

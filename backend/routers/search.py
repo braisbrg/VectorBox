@@ -102,8 +102,8 @@ async def natural_language_search(
     Handles complex queries like "old gangster movie", "90s hidden gem", "short anime".
     Also handles "Movies like X" by detecting title matches.
 
-    Auth required: this endpoint fans out to Groq (Llama 4 Scout + optional
-    Llama 3.3 70B Deep Analysis). Leaving it open to guests turns it into a
+    Auth required: this endpoint fans out to Groq (Llama 3.3 70B parser +
+    optional Deep Analysis). Leaving it open to guests turns it into a
     paid-LLM proxy. The /onboarding/search endpoint covers the public-DB
     title search use case for guests.
     """

@@ -41,21 +41,21 @@ def _get_model_chain() -> list[str]:
     """Return the LLM model chain based on available API keys.
 
     Order from the 2026-06 model sweep (V2-nameban prompt, all on Groq free
-    tier @ 1K RPD each — re-verified live against /v1/models):
-      1. Scout (Meta) — fast, reliable, 30K TPM (highest burst headroom).
-      2. Qwen3-32B — the most CONSISTENT full-structure output in the sweep
+    tier @ 1K RPD each — re-verified live against /v1/models). Llama 4 Scout
+    was removed 2026-06 (Groq deprecation; decommission 2026-07-17) — Qwen3-32B
+    is now the head:
+      1. Qwen3-32B — the most CONSISTENT full-structure output in the sweep
          (tone/themes/style/pacing/affinity/mood every time, ~72 words).
          Reasoning model → effort='none' (see _REASONING_EFFORT).
-      3. Llama 3.3 70B — reliable but terse for this task (~45 words, often
+      2. Llama 3.3 70B — reliable but terse for this task (~45 words, often
          drops the audience-affinity segment); kept mid-chain for stability.
-      4. GPT-OSS-120B — richest prose (~81 words) but a reasoning model
+      3. GPT-OSS-120B — richest prose (~81 words) but a reasoning model
          (effort='low' required to avoid empties).
-      5. GPT-OSS-20B — fast vendor-diverse fallback (effort='low').
-      6. Llama 3.1 8B — last-resort floor; weakest but never runs out.
+      4. GPT-OSS-20B — fast vendor-diverse fallback (effort='low').
+      5. Llama 3.1 8B — last-resort floor; weakest but never runs out.
     """
     if os.getenv("GROQ_API_KEY"):
         return [
-            "meta-llama/llama-4-scout-17b-16e-instruct",
             "qwen/qwen3-32b",
             "llama-3.3-70b-versatile",
             "openai/gpt-oss-120b",
@@ -290,8 +290,8 @@ async def generate_profile_summary(
     Respond with ONLY a comma-separated list of 12-15 keywords. No sentences, no explanations, no punctuation other than commas.
     Focus on: tone (e.g. melancholic, darkly comedic), themes (e.g. moral ambiguity, identity), visual style (e.g. handheld gritty, long takes), pacing (e.g. slow burn, frenetic), and cinematic movements or affinities (e.g. French New Wave, A24, Korean revenge).
     Example format: slow burn, melancholic, morally complex, atmospheric, character-driven, contemplative, humanist, European art house, naturalistic lighting, existential themes, quiet intensity, bittersweet
-    Uses the chain's primary model (currently
-    `meta-llama/llama-4-scout-17b-16e-instruct`) for high-fidelity profiling.
+    Uses the chain's primary model (currently `qwen/qwen3-32b`) for
+    high-fidelity profiling.
     """
     if not groq_client or not top_rated_films:
         return None

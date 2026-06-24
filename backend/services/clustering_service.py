@@ -208,10 +208,12 @@ class ClusteringService:
         )
 
         import os
-        # Scout produces more evocative labels ("Cinematic Emotional Odyssey")
-        # than 70B's drier ones ("Mind Bending Dramas") at equivalent semantic
-        # precision. Naming is a UX-facing surface; evocative wins.
-        model_name = "meta-llama/llama-4-scout-17b-16e-instruct" if os.getenv("GROQ_API_KEY") else "gemini-2.5-flash"
+        from services.cinematic_enricher import _strip_think
+        # Qwen3-32B replaced Llama 4 Scout here (Groq deprecation; decommission
+        # 2026-07-17). It's a reasoning model, so effort='none' suppresses the
+        # <think> block and _strip_think guards against any leak into the label.
+        model_name = "qwen/qwen3-32b" if os.getenv("GROQ_API_KEY") else "gemini-2.5-flash"
+        extra_body = {"reasoning_effort": "none"} if model_name.startswith("qwen/") else None
         try:
             response = await groq_client.chat.completions.create(
                 model=model_name,
@@ -226,9 +228,10 @@ class ClusteringService:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
-                max_tokens=40,
+                max_tokens=120,  # reasoning headroom even at effort='none'
+                extra_body=extra_body,
             )
-            label = response.choices[0].message.content.strip().rstrip(".!,;:")
+            label = _strip_think(response.choices[0].message.content or "").strip().rstrip(".!,;:")
             if label and 1 < len(label) < 60:
                 logger.info(f"LLM cluster label generated: '{label}'")
                 return label
