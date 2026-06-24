@@ -47,6 +47,8 @@ htmlcov/
 /refresh_full_log.txt
 /experiment_results*.txt
 /check_embeddings*.txt
+# A/B experiment result dumps written into backend/ by scripts/experiment_*.py
+backend/experiment_*.md
 /maintenance_log.txt
 
 # Node.js / Frontend

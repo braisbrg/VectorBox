@@ -8,14 +8,14 @@ VectorBox ingests your film history — via Letterboxd export, RSS feed, or an o
 
 It's built for people who care about *what* they watch next, not just that something is on.
 
-## ⚠️ Setup & CI/CD not updated 
+> **Note:** CI/CD is mid-rework (a dedicated sprint is planned) and a full UI rewrite is upcoming. The backend, data pipeline, and recommendation internals described below are current.
 
 ## How It Works — The Trident Engine
 
 The recommendation core is a three-signal hybrid system. Each signal captures a different dimension of taste, and they're fused through Reciprocal Rank Fusion (RRF) before a final diversity pass.
 
 ### Signal A — Because You Watched (Semantic Similarity)
-Picks a high-quality anchor from your history (scored by rating × recency decay × rewatch boost) and retrieves vector-space neighbours from Qdrant. Embeddings are generated from LLM-enriched cinematic descriptions — not just plot summaries, but tone, pacing, and visual style — using Groq's LLaMA models, then encoded with `google/embeddinggemma-300m` (768 dimensions; gated HuggingFace model — requires `HF_TOKEN`). An anti-vector built from your low-rated and rejected films penalizes candidates that resemble things you disliked.
+Picks a high-quality anchor from your history (scored by rating × recency decay × rewatch boost) and retrieves vector-space neighbours from Qdrant. Embeddings are generated from LLM-enriched cinematic descriptions — not just plot summaries, but tone, pacing, and visual style — using Groq-hosted open models (qwen3-32b primary; gpt-oss-120b / qwen3.6-27b in the batch chain), then encoded with `google/embeddinggemma-300m` (768 dimensions; gated HuggingFace model — requires `HF_TOKEN`). An anti-vector built from your low-rated and rejected films penalizes candidates that resemble things you disliked.
 
 ### Signal B — Niche Picks (Thematic Discovery)
 Nine curated global themes (*Sleep Optional*, *Slow Burn*, *Subtitles Required*, *Bring Tissues*…) rotate automatically per feed refresh. Each theme carries its own genre, era, and language filters. This isn't taste-matching — it's mood-offering, designed to keep the feed from going stale.
@@ -33,7 +33,7 @@ All signals merge through RRF, then pass through a sigmoid quality weighting on 
 - **PostgreSQL 15** + SQLAlchemy 2.0 (async) — film catalog, ratings, clusters
 - **Qdrant** — vector database for semantic similarity search
 - **Redis 7** — section-level feed caching with per-TTL freshness controls
-- **Groq** (LLaMA 4 Scout) — cinematic description generation
+- **Groq** (qwen3-32b; gpt-oss-120b / qwen3.6-27b in the batch chain) — cinematic description generation
 - **google/embeddinggemma-300m** — sentence embeddings (768 dimensions; requires `HF_TOKEN` for the gated model)
 - **Trakt API** — Signal C "similar films" source (replaced TMDB recommendations; requires `TRAKT_CLIENT_ID`)
 - **Clerk** — authentication (JWKS-based JWT verification)

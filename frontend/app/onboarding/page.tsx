@@ -637,7 +637,7 @@ export default function OnboardingCarouselPage() {
                         <p className="text-[10px] font-mono text-zinc-700 uppercase tracking-widest mb-3">
                             // YOUR TASTE MAP //
                         </p>
-                        {/* Decorative only - real placement requires Qdrant 384d → 2D PCA, deferred */}
+                        {/* Decorative only - real placement requires Qdrant 768d → 2D PCA, deferred */}
                         <div className="relative h-32 overflow-hidden">
                             {Object.entries(ratings).map(([tmdbId, signal]) => {
                                 const id = parseInt(tmdbId);

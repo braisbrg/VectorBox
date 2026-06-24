@@ -376,7 +376,7 @@ class QdrantService:
                 # mpaa_ratings, min_oscar_wins, exclude_adult are NOT in payload
                 # yet and are post-filtered in the caller against the DB. When
                 # those columns get added to _qdrant_payload (one-time
-                # set_payload pass on all 7862 points), they can move here too.
+                # set_payload pass on all points), they can move here too.
                 if "min_imdb_rating" in filters and filters["min_imdb_rating"] is not None:
                     must_conditions.append(
                         FieldCondition(
