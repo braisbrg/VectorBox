@@ -233,3 +233,47 @@ async def test_background_ingest_always_closes_movie_service(ingest_fails):
     service.get_or_create_movie.assert_awaited_once_with(550)
     # close() must run on success AND on failure (finally block).
     service.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# CLOSE-1/2/3 (2026-06-24 maintainability audit) — close/aclose hygiene
+# ---------------------------------------------------------------------------
+
+def test_all_service_clients_expose_aclose():
+    """dependencies.close_services() + callers use aclose() as the canonical
+    full-cleanup method. OMDb lacked it → AttributeError on every shutdown
+    (CLOSE-1). Every connection client must expose aclose()."""
+    from services.omdb_client import OMDbClient
+    from services.tmdb_client import TMDBClient
+    from services.qdrant_service import QdrantService
+    from services.trakt_client import TraktClient
+    from services.trending_service import TrendingService
+    from services.scraper_service import ScraperService
+
+    for cls in (OMDbClient, TMDBClient, QdrantService, TraktClient,
+                TrendingService, ScraperService):
+        assert callable(getattr(cls, "aclose", None)), f"{cls.__name__} missing aclose()"
+
+
+def test_recommendation_service_close_does_not_close_injected_tmdb():
+    """CLOSE-2: self.tmdb is the injected singleton (or None) — never owned here,
+    so close() must NOT aclose it (that would kill the shared client mid-request)."""
+    import inspect
+    from services.recommendation_service import RecommendationService
+
+    src = inspect.getsource(RecommendationService.close)
+    assert "self.tmdb.aclose" not in src and "self.tmdb.close" not in src, (
+        "RecommendationService.close() must not close the injected TMDB singleton"
+    )
+
+
+def test_tmdb_close_and_aclose_both_clean_up_redis():
+    """CLOSE-3: close() was httpx-only (leaked Redis); it now closes Redis too,
+    and aclose() delegates to it. Guard both against re-divergence."""
+    import inspect
+    from services.tmdb_client import TMDBClient
+
+    close_src = inspect.getsource(TMDBClient.close)
+    assert "redis_client" in close_src, "TMDBClient.close() must close Redis too"
+    aclose_src = inspect.getsource(TMDBClient.aclose)
+    assert "self.close()" in aclose_src, "TMDBClient.aclose() should delegate to close()"

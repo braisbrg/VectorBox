@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 MIN_QUALITY_SCORE = 55  # floor for Picked For You; pre-filtered into Signal A and re-checked in hybrid_reranking
 MIN_SIGNAL_C_SCORE = 62  # sweet spot between 55 (too permissive) and 68 (too strict)
-MIN_EMBED_QUALITY_SCORE = 0.35  # below this is MiniLM-only noise; produces false centroid matches
+MIN_EMBED_QUALITY_SCORE = 0.35  # below this is low-quality/fallback-embedding noise; produces false centroid matches
 
 # Signal C source: Trakt /related (replaced TMDB /recommendations on 2026-05-10
 # after experiment_signal_c.py vs experiment_trakt.py showed Trakt's collab
@@ -456,7 +456,7 @@ class RecommendationService:
             ordered = kept
         after_genre_count = len(ordered)
 
-        # T-04: Drop films with corrupt MiniLM-only embeddings — they reach the
+        # T-04: Drop films with corrupt low-quality embeddings — they reach the
         # centroid via accidental proximity, not real cinematic similarity.
         # NULL = unchecked (allow through), < 0.35 = noisy and worth dropping.
         ordered = [
@@ -820,15 +820,15 @@ class RecommendationService:
         signal_b_ids: Dict[int, float] = None,
         signal_c_ids: Dict[int, float] = None,
     ) -> List[FeedItem]:
-        def build_contributors(movie_id, sa, sb, sc):
-            sa, sb, sc = sa or {}, sb or {}, sc or {}
+        def build_contributors(movie_id, score_a, score_b, score_c):
+            score_a, score_b, score_c = score_a or {}, score_b or {}, score_c or {}
             raw = []
-            if movie_id in sa:
-                raw.append(("vibe", "Semantic Match", sa[movie_id]))
-            if movie_id in sb:
-                raw.append(("auteur", "Director/Actor You Follow", sb[movie_id]))
-            if movie_id in sc:
-                raw.append(("crowd", "Hidden Gem Signal", sc[movie_id]))
+            if movie_id in score_a:
+                raw.append(("vibe", "Semantic Match", score_a[movie_id]))
+            if movie_id in score_b:
+                raw.append(("auteur", "Director/Actor You Follow", score_b[movie_id]))
+            if movie_id in score_c:
+                raw.append(("crowd", "Hidden Gem Signal", score_c[movie_id]))
             if not raw:
                 return []
             total = sum(s for _, _, s in raw)
@@ -1328,8 +1328,11 @@ class RecommendationService:
         )
 
     async def close(self):
-        """Cleanup resources"""
-        if self.tmdb:
-            await self.tmdb.aclose()
+        """Cleanup resources.
+
+        `self.tmdb` is the injected singleton (or None) — never owned here, so it
+        must NOT be closed (that would kill the shared client mid-request for every
+        other caller). MovieService.close() closes only the TMDB it actually owns.
+        """
         if self.movie_service:
             await self.movie_service.close()

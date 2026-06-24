@@ -1,7 +1,8 @@
 """
-Embedding sanity check — compares stored Qdrant vectors against a simple MiniLM
-reference embedding generated from movie metadata. Low similarity scores indicate
-potentially corrupt or mismatched embeddings.
+Embedding sanity check — compares stored Qdrant vectors against an embeddinggemma
+reference embedding built from the shared name-free recipe (see
+utils.embedding_reference). Low similarity scores indicate potentially corrupt or
+mismatched embeddings.
 
 Usage:
     docker compose exec backend python scripts/check_embeddings.py --limit 500
@@ -27,44 +28,10 @@ from config import AsyncSessionLocal
 from models.database import Movie, UserRating
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
+from utils.embedding_reference import build_embedding_reference_text
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 logger = logging.getLogger("check_embeddings")
-
-
-def _build_reference_text(movie: Movie) -> str:
-    """Reference text for the embedding-quality cosine check.
-
-    Mirrors `reembed_catalog._build_text`'s fallback recipe — overview +
-    genres + keywords (+ directors + cast) — and INTENTIONALLY EXCLUDES
-    title. Including the title biased the score against films with short
-    or generic titles ('42', 'Z', 'Network'): the reference text became
-    title-heavy and dominated the cosine, even though the stored vector
-    (encoded from cinematic_description, 80 words of rich plot) was fine.
-    Same no-title rule applies catalog-wide — see CLAUDE.md "Embedding &
-    vector hygiene".
-
-    The quality score now genuinely measures: "is the cinematic_description
-    embedding in the same neighbourhood as the raw plot+metadata embedding
-    of the same movie?" Low score → Groq hallucinated or enriched the
-    wrong film.
-    """
-    # Name-free reference (2026-06): drop Directors/Cast. The stored vector is
-    # encoded from the V2 cinematic_description, which is deliberately name-free,
-    # so director/cast tokens in the reference have NO counterpart in the vector
-    # to match — they only add unmatchable noise that depresses the cosine for
-    # legitimate films. Removing them aligns the reference with the actual
-    # embedding recipe (overview + genres + keywords, same as the legacy
-    # fallback) and sharpens the hallucination signal instead of blunting it:
-    # a wrong-film enrichment still embeds far from the real plot/genre/themes.
-    parts: list[str] = []
-    if movie.overview:
-        parts.append(movie.overview)
-    if movie.genres:
-        parts.append("Genres: " + ", ".join(movie.genres))
-    if movie.keywords:
-        parts.append("Themes: " + ", ".join((movie.keywords or [])[:15]))
-    return ". ".join(parts).strip()
 
 
 async def check_movie_embedding(
@@ -85,7 +52,7 @@ async def check_movie_embedding(
     if not stored_vector:
         return None
 
-    reference_text = _build_reference_text(movie)
+    reference_text = build_embedding_reference_text(movie)
     if not reference_text:
         return None
 

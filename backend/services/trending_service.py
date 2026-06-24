@@ -72,3 +72,7 @@ class TrendingService:
         if self._redis:
             await self._redis.close()
         await self.movie_service.close()
+
+    async def aclose(self):
+        """Canonical full-cleanup alias — matches the other service clients."""
+        await self.close()

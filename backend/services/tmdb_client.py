@@ -70,7 +70,14 @@ class TMDBClient:
         self._lock = asyncio.Lock() # Added lock
     
     async def close(self):
-        """Close the httpx client if it was created internally."""
+        """Full cleanup: Redis + httpx (whichever this client owns). `aclose()` is an alias.
+
+        Previously closed only httpx, so callers using close() leaked the Redis
+        connection — Redis is now folded in so both methods do the same thing.
+        """
+        if self.redis_client:
+            await self.redis_client.close()
+            self.redis_client = None
         if not self._external_client and self.client:
             await self.client.aclose()
     
@@ -485,10 +492,6 @@ class TMDBClient:
         return all_results[:limit]
     
     async def aclose(self):
-        """Close Redis connection and HTTP client"""
-        if self.redis_client:
-            await self.redis_client.close()
-            self.redis_client = None
-        
+        """Canonical alias for close() (full Redis + httpx cleanup)."""
         await self.close()
         logger.info("TMDB client closed")

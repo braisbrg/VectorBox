@@ -25,6 +25,7 @@ from services.provider_service import ProviderService
 
 from services.data_processor import DataProcessor
 from services.task_store import get_task_store
+from utils.embedding_reference import build_embedding_reference_text
 from models.database import User, Movie, UserRating, ZipUpload
 from models.schemas import CSVUploadResponse, TokenResponse
 import hashlib
@@ -170,8 +171,9 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             clustering = ClusteringService(qdrant=qdrant)
             await clustering.create_user_clusters(user_id, db)
 
-            # T-03: Sanity-check embeddings against a MiniLM reference vector built from
-            # title/year/genres/directors. Restricted to medoids + top anchor candidates
+            # T-03: Sanity-check embeddings against an embeddinggemma reference vector built
+            # from the shared name-free recipe (overview + genres + keywords — see
+            # utils.embedding_reference). Restricted to medoids + top anchor candidates
             # (~10 movies) — these are the only movies that downstream feed sections actually
             # surface, so checking the rest wastes LLM/encoder budget.
             logger.info(f"[Sanity] Checking medoids + anchor candidates for user {user_id}")
@@ -213,10 +215,7 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                     stored = vectors_by_tmdb.get(movie.tmdb_id)
                     if not stored:
                         continue
-                    ref_text = (
-                        f"{movie.title or ''} {movie.year or ''} "
-                        f"{' '.join(movie.genres or [])} {' '.join(movie.directors or [])}"
-                    ).strip()
+                    ref_text = build_embedding_reference_text(movie)
                     if not ref_text:
                         continue
                     loop = asyncio.get_running_loop()

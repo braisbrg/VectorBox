@@ -71,6 +71,14 @@ class OMDbClient:
         if not self._external_client:
             await self.client.aclose()
 
+    async def aclose(self):
+        """Canonical full-cleanup alias — matches TMDB/Qdrant/Trakt.
+
+        dependencies.close_services() calls aclose() on every singleton; without
+        this, OMDb raised AttributeError on shutdown and leaked its connections.
+        """
+        await self.close()
+
     async def fetch_movie_data(self, imdb_id: str) -> Optional[OMDbResponse]:
         """
         Fetch movie data from OMDb by IMDb ID using connection pool.

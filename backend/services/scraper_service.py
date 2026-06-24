@@ -101,6 +101,10 @@ class ScraperService:
                 pass
             self._redis = None
 
+    async def aclose(self) -> None:
+        """Canonical full-cleanup alias — matches the other service clients."""
+        await self.close()
+
     # ------------------------------------------------------------------
     # HTTP — single source of truth for every letterboxd.com request
     # ------------------------------------------------------------------
