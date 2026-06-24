@@ -148,7 +148,7 @@ class DeepAnalysisResponse(BaseModel):
 
 # 2. Dual-Model Architecture
 
-def get_scout_client():
+def get_llm_client():
     """LLM client: Groq preferred, Gemini fallback."""
     groq_key = os.environ.get("GROQ_API_KEY")
     gemini_key = os.environ.get("GEMINI_API_KEY")
@@ -177,7 +177,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     sub-2s latency. Scout was retired from this path as the weakest parser.
     """
     user_query = _normalize_typos(user_query)
-    client = get_scout_client()
+    client = get_llm_client()
     if not client:
         return MovieSearchIntent(semantic_query=user_query, reasoning="No LLM available")
 
@@ -294,7 +294,7 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
     Tier 2: Uses Llama 3.3 70B for Deep Analysis (RAG Re-ranking).
     Analyzing Top 20 candidates to find the Top 5 that match the *nuance*.
     """
-    client = get_scout_client()
+    client = get_llm_client()
     if not client:
         return []
 
