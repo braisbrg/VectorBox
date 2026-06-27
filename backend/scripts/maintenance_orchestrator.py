@@ -41,6 +41,7 @@ import asyncio
 import logging
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta
 from typing import List, Optional
 
@@ -67,6 +68,37 @@ from scripts.reembed_catalog import _build_text as _embed_text, _qdrant_payload
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("maintenance")
+
+
+class _Progress:
+    """Throttled progress logger for the long per-item phase loops.
+
+    Emits one timestamped line at most every `min_interval` seconds (plus a
+    guaranteed final line at completion), so you can see a phase is alive
+    without spamming the log. Time-based rather than every-N-items so it
+    auto-adapts to both fast (recalc_vbs, thousands/s) and slow (Groq, ~1/s)
+    phases. Non-TTY friendly: plain INFO lines, no carriage-return bars.
+    """
+
+    def __init__(self, label: str, total: int, min_interval: float = 10.0):
+        self.label = label
+        self.total = total
+        self.min_interval = min_interval
+        self.t0 = time.monotonic()
+        self._last = self.t0
+
+    def step(self, done: int) -> None:
+        now = time.monotonic()
+        if done < self.total and (now - self._last) < self.min_interval:
+            return
+        self._last = now
+        elapsed = now - self.t0
+        rate = done / elapsed if elapsed > 0 else 0.0
+        eta_min = ((self.total - done) / rate / 60) if rate > 0 else 0.0
+        pct = (100 * done / self.total) if self.total else 100.0
+        logger.info(
+            f"{self.label} {done}/{self.total} ({pct:.0f}%) · {rate:.1f}/s · ETA {eta_min:.1f}m"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -183,8 +215,9 @@ async def phase_refresh_metadata(omdb_budget: int, dry_run: bool) -> dict:
 
         tmdb = TMDBClient()
         omdb = OMDbClient()
+        prog = _Progress("[Phase 1]", len(movies))
         try:
-            for movie in movies:
+            for i, movie in enumerate(movies, 1):
                 ok = await refresh_movie(movie, tmdb, omdb)
                 if ok:
                     stats["refreshed"] += 1
@@ -195,6 +228,7 @@ async def phase_refresh_metadata(omdb_budget: int, dry_run: bool) -> dict:
                 # Persist progress every 25 movies (resilient to interruption)
                 if stats["refreshed"] % 25 == 0 and stats["refreshed"] > 0:
                     await db.commit()
+                prog.step(i)
 
             await db.commit()
             await increment_omdb_used(db, stats["omdb_used"])
@@ -250,8 +284,10 @@ async def phase_embedding_audit(limit: int, dry_run: bool) -> dict:
         stats["unmeasurable"] = 0
         qdrant = QdrantService()
         embedding_service = EmbeddingService()
+        prog = _Progress("[Phase 2]", len(movies))
         try:
-            for movie in movies:
+            for i, movie in enumerate(movies, 1):
+                prog.step(i)
                 # Skip the cosine check when the reference text would be too
                 # thin to be meaningful. Without a real overview the reference
                 # is just "Genres: X. Cast: Y" — generic enough to score low
@@ -365,8 +401,10 @@ async def phase_embedding_repair(limit: int, dry_run: bool) -> dict:
 
         qdrant = QdrantService()
         embedding_service = EmbeddingService()
+        prog = _Progress("[Phase 3]", len(movies))
         try:
-            for movie in movies:
+            for i, movie in enumerate(movies, 1):
+                prog.step(i)
                 try:
                     ok = await _re_enrich_movie(
                         movie, groq, qdrant, embedding_service,
@@ -444,8 +482,10 @@ async def phase_backfill_descriptions(limit: int, dry_run: bool) -> dict:
             logger.warning("[Phase 4] No GROQ/GEMINI key — skipping backfill phase")
             return stats
 
+        prog = _Progress("[Phase 4]", len(movies))
         try:
-            for movie in movies:
+            for i, movie in enumerate(movies, 1):
+                prog.step(i)
                 try:
                     desc, model_used = await generate_cinematic_description(
                         title=movie.title or "",
@@ -533,12 +573,14 @@ async def phase_reset_profiles(dry_run: bool) -> dict:
         await db.execute(delete(UserCluster))
         await db.commit()
 
-        for uid in user_ids:
+        prog = _Progress("[Phase 5]", len(user_ids))
+        for i, uid in enumerate(user_ids, 1):
             try:
                 await clustering.create_user_clusters(uid, db, groq_client=groq)
                 stats["clusters_rebuilt"] += 1
             except Exception as e:
                 logger.warning(f"[Phase 5] Cluster rebuild failed for user {uid}: {e}")
+            prog.step(i)
 
     if groq is not None:
         try:
@@ -584,7 +626,9 @@ async def phase_recalc_vbs(dry_run: bool) -> dict:
         if dry_run or not movies:
             return stats
 
+        prog = _Progress("[Phase 6]", len(movies))
         for i, m in enumerate(movies, 1):
+            prog.step(i)
             previous = m.vectorbox_score
             vb = omdb.calculate_vectorbox_score(
                 _synthetic_omdb(m),
