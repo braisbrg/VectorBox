@@ -207,40 +207,73 @@ class ClusteringService:
             "\n\nRespond with ONLY the label. No quotes, no explanation, no trailing punctuation."
         )
 
-        import os
-        from services.cinematic_enricher import _strip_think
-        # Qwen3-32B replaced Llama 4 Scout here (Groq deprecation; decommission
-        # 2026-07-17). It's a reasoning model, so effort='none' suppresses the
-        # <think> block and _strip_think guards against any leak into the label.
-        model_name = "qwen/qwen3-32b" if os.getenv("GROQ_API_KEY") else "gemini-2.5-flash"
-        extra_body = {"reasoning_effort": "none"} if model_name.startswith("qwen/") else None
-        try:
-            response = await groq_client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You name film clusters honestly. Respond with ONLY a 2-4 word English label. "
-                            "No punctuation at the end. If films don't share a coherent theme, use a generic label."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                max_tokens=120,  # reasoning headroom even at effort='none'
-                extra_body=extra_body,
-            )
-            label = _strip_think(response.choices[0].message.content or "").strip().rstrip(".!,;:")
-            if label and 1 < len(label) < 60:
-                logger.info(f"LLM cluster label generated: '{label}'")
+        from services.cinematic_enricher import (
+            _strip_think, _get_model_chain, _REASONING_EFFORT,
+            _parse_retry_after, _is_daily_limit,
+        )
+        # Cascade across the model chain (qwen3-32b → 70B → gpt-oss-*) — each model
+        # has a SEPARATE TPM bucket, so a 429 on one tries the next instead of
+        # degrading. Labels are tiny (~500 tok) but qwen3-32b's TPM is only 6000,
+        # so re-clustering many users back-to-back used to 429 and drop straight to
+        # a genre label. If the WHOLE chain is per-minute rate-limited, wait the
+        # suggested time ONCE and retry rather than degrade — genres is the true
+        # last resort (chain fully exhausted / daily limit). Llama 4 Scout removed
+        # here (Groq decommission 2026-07-17); _strip_think guards <think> leaks.
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You name film clusters honestly. Respond with ONLY a 2-4 word English label. "
+                    "No punctuation at the end. If films don't share a coherent theme, use a generic label."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        async def _try_chain():
+            """One cascade pass over the model chain.
+
+            Returns (label, shortest_minute_429_wait). label is None if every
+            model failed; the wait is set only when the failures were recoverable
+            per-minute 429s (not daily limits / hard errors).
+            """
+            min_wait = None
+            for model_name in _get_model_chain():
+                effort = _REASONING_EFFORT.get(model_name)
+                extra_body = {"reasoning_effort": effort} if effort else None
+                try:
+                    response = await groq_client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        temperature=0.3,
+                        max_tokens=120,  # reasoning headroom even at effort='none'
+                        extra_body=extra_body,
+                    )
+                    label = _strip_think(response.choices[0].message.content or "").strip().rstrip(".!,;:")
+                    if label and 1 < len(label) < 60:
+                        logger.info(f"LLM cluster label '{label}' (model={model_name})")
+                        return label, None
+                except Exception as e:
+                    err = str(e)
+                    if "429" in err and not _is_daily_limit(err):
+                        w = _parse_retry_after(err)
+                        if w and (min_wait is None or w < min_wait):
+                            min_wait = w
+            return None, min_wait
+
+        label, wait = await _try_chain()
+        if label:
+            return label
+        # Whole chain per-minute rate-limited → wait once (capped — this runs in a
+        # background task, but don't stall a label for minutes) and retry.
+        if wait and wait < 30:
+            logger.info(f"Cluster naming: whole chain minute-limited, waiting {wait:.0f}s then retrying")
+            await asyncio.sleep(wait + 1)
+            label, _ = await _try_chain()
+            if label:
                 return label
-            
-            logger.warning(f"LLM cluster label fell back to genres (invalid response: '{label}')")
-            return fallback
-        except Exception as e:
-            logger.warning(f"LLM cluster label fell back to genres (Groq error: {e})")
-            return fallback
+        logger.warning("LLM cluster label fell back to genres (model chain exhausted)")
+        return fallback
     
     async def create_user_clusters(
         self,
