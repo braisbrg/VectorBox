@@ -51,8 +51,10 @@ def _get_model_chain() -> list[str]:
          drops the audience-affinity segment); kept mid-chain for stability.
       3. GPT-OSS-120B — richest prose (~81 words) but a reasoning model
          (effort='low' required to avoid empties).
-      4. GPT-OSS-20B — fast vendor-diverse fallback (effort='low').
-      5. Llama 3.1 8B — last-resort floor; weakest but never runs out.
+      4. GPT-OSS-20B — fast vendor-diverse floor (effort='low'). Llama 3.1 8B
+         was removed 2026-06 (Groq deprecation; decommission 2026-08-16) —
+         GPT-OSS-20B is Groq's recommended replacement and was already its
+         predecessor in the chain.
     """
     if os.getenv("GROQ_API_KEY"):
         return [
@@ -60,7 +62,6 @@ def _get_model_chain() -> list[str]:
             "llama-3.3-70b-versatile",
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
-            "llama-3.1-8b-instant",
         ]
     if os.getenv("GEMINI_API_KEY"):
         return ["gemini-2.5-flash"]
