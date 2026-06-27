@@ -24,7 +24,10 @@ services:
 
   # Qdrant Vector Database
   qdrant:
-    image: qdrant/qdrant:latest
+    # Pinned to match qdrant-client==1.18.0 (PERF-F): `:latest` was non-deterministic
+    # and resolved to 1.16.3 in cache, firing a client/server incompatibility warning
+    # on every call. Pin both server + client to the same version.
+    image: qdrant/qdrant:v1.18.0
     container_name: vectorbox-qdrant
     # Security: Ports removed for production (internal access only)
     ports:
