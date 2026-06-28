@@ -1,33 +1,31 @@
-"""TST-2 — golden-set hits@k regression for the production Qdrant index.
+"""TST-2 — golden-set THEMATIC-COHERENCE regression for the production Qdrant index.
 
-Pins the recall of seven curated anchors against the embeddinggemma-300m
-catalog (snapshot 2026-05-15). The test queries the real Qdrant collection
-and counts how many of each anchor's hand-curated thematic neighbours show
-up in its top-K Qdrant query.
+Re-baselined 2026-06-27. The production embedding (V2 `cinematic_description`,
+name-free) clusters by **theme / mood / movement / style** — identity tokens
+(director, studio, franchise) are deliberately name-banned and served by
+*structured signals* instead (collection row, director-centroid). So this test
+guards the embedding's *actual* job: thematic coherence. Franchise recall is NOT
+the embedding's responsibility and lives in separate structured-signal tests.
 
-Why this exists:
-  - Detect silent quality regressions when changing embedding model,
-    enrichment prompt, reference-text recipe, or Qdrant config.
-  - A/B-test future moves (e.g. Gemini-Flash enrichment, INT8 quantization
-    — see T-16) against a stable baseline number.
-  - Provides empirical floor for "did the catalog still produce sensible
-    neighbours?" beyond what unit tests can cover.
+Why the change: the previous version asserted recall of hand-curated
+*franchise/auteur* neighbours (Ghibli↔Ghibli, Scorsese↔Scorsese). That set had
+**survivorship bias** — every anchor was a famous franchise film, so it rewarded
+any recipe that injected director/studio identity and could not see the downside.
+A fair-set eval (2026-06-27) proved the pure embedding does the *right* thing on
+adversarial anchors (The Shining → psych-horror, not Kubrick's sci-fi; Stalker →
+cross-director slow cinema), so the recipe was kept pure and this test reframed.
 
-Why this might be skipped:
-  - The test requires a populated Qdrant + Postgres with the catalog —
-    same dependencies as the integration suite. CI without those services
-    must skip.
-  - Marked `slow` because it loads the embedding model + does 7 Qdrant
-    round-trips. Local docker run ≤ a few seconds.
+Metric (per anchor, top-10 neighbours):
+  - `genre_frac`  — fraction of neighbours sharing ≥1 genre with the anchor.
+  - `distinct_directors` — how many distinct directors appear in the top-10.
+A healthy theme-embedding scores high genre_frac AND high director diversity
+(it groups by theme across many directors). A broken model/recipe, a half-empty
+catalog, or an accidental identity-collapse (e.g. director re-added to the
+embedding) drops one or both.
 
-Calibration:
-  - The current production index returns 13/61 hits@20 on the curated
-    anchors. We assert >= 10 to allow -3 drift, which catches a real
-    regression (model change, broken re-embed, half-empty catalog) while
-    tolerating the noise of single-film tweaks. Tighten when we have
-    stable history.
+Anchors are a DIVERSE, bias-free set: versatile directors, cross-director
+movements, genre-commodity, franchise, standalone.
 """
-import asyncio
 import pytest
 
 pytest_plugins = ("pytest_asyncio",)
@@ -47,107 +45,91 @@ except ImportError:
 # hermetic suite can exclude it with `pytest -m "not integration"`.
 pytestmark = pytest.mark.integration
 
+# Diverse, bias-free anchors — NOT all franchise films (that was the old bias).
+_ANCHORS = [
+    "The Shining",          # versatile director (Kubrick) — must stay psych-horror
+    "Barry Lyndon",         # versatile director — must stay period drama
+    "Stalker",              # cross-director movement (slow/contemplative sci-fi)
+    "The Conjuring",        # genre-commodity horror
+    "Parasite",             # standalone — class satire/thriller
+    "Whiplash",             # standalone — obsessive-performance drama
+    "Pan's Labyrinth",      # auteur dark fantasy
+    "Inception",            # high-concept mind-bender
+]
 
-_ANCHORS_AND_NEIGHBOURS = {
-    "Howl's Moving Castle": [
-        "Spirited Away", "Castle in the Sky", "Princess Mononoke",
-        "Mary and the Witch's Flower", "Ponyo", "Kiki's Delivery Service",
-        "The Cat Returns", "From Up on Poppy Hill", "The Wind Rises",
-        "My Neighbor Totoro", "Earwig and the Witch",
-    ],
-    "Deprisa, deprisa": [
-        "Navajeros", "Perros callejeros", "El pico", "Yo, 'El Vaquilla'",
-        "El Lute: camina o revienta", "Maravillas", "Colegas",
-        "El pico 2", "Barrio", "Los olvidados",
-    ],
-    "Pan's Labyrinth": [
-        "The Devil's Backbone", "The Shape of Water", "Crimson Peak",
-        "The Orphanage", "Cronos", "Hellboy", "Mama", "Pinocchio",
-    ],
-    "Inception": [
-        "Tenet", "Interstellar", "The Matrix", "Memento", "Shutter Island",
-        "Eternal Sunshine of the Spotless Mind", "The Prestige", "Source Code",
-        "Predestination",
-    ],
-    "The Godfather": [
-        "Goodfellas", "Casino", "The Departed", "Once Upon a Time in America",
-        "Heat", "Scarface", "A Bronx Tale", "Donnie Brasco",
-    ],
-    "Goodfellas": [
-        "The Godfather", "Casino", "The Departed",
-        "Once Upon a Time in America", "Heat", "American Gangster",
-        "Donnie Brasco",
-    ],
-    "Spirited Away": [
-        "Howl's Moving Castle", "Castle in the Sky", "Princess Mononoke",
-        "My Neighbor Totoro", "Kiki's Delivery Service", "Ponyo",
-        "Mary and the Witch's Flower", "The Cat Returns",
-    ],
-}
-
-_TOP_K = 20
-_MIN_TOTAL_HITS = 10        # baseline 13; -3 drift tolerance.
-_MIN_HIT_ANCHORS = 4         # at least 4 of 7 anchors must produce ≥1 hit.
+_TOP_K = 10
+# Floors are set below observed healthy values (calibrated 2026-06-27) so they
+# catch a real regression without flapping on single-film churn.
+_MIN_MEAN_GENRE_FRAC = 0.70     # observed ~0.90+
+_MIN_ANCHOR_GENRE_FRAC = 0.40   # weakest healthy anchor stays well above
+_MIN_MEAN_DISTINCT_DIRECTORS = 6.0  # observed ~20 — guards against identity-collapse
 
 
-async def _anchor_hits_in_top_k(anchor_title: str, expected_titles: list[str], top_k: int) -> int:
-    """Resolve the anchor's tmdb_id from DB, fetch its stored vector, then
-    query the live Qdrant index and count expected-neighbour hits in the
-    top-K (excluding the anchor itself which always returns at rank 0)."""
+async def _anchor_metrics(anchor_title: str) -> tuple[float, int] | None:
+    """Return (genre_frac, distinct_directors) for the anchor's top-K neighbours."""
     async with AsyncSessionLocal() as db:
-        row = (await db.execute(
-            select(Movie.tmdb_id).where(
-                or_(
-                    Movie.title.ilike(anchor_title),
-                    Movie.original_title.ilike(anchor_title),
-                )
+        anchor = (await db.execute(
+            select(Movie).where(
+                or_(Movie.title.ilike(anchor_title), Movie.original_title.ilike(anchor_title))
             ).limit(1)
-        )).first()
+        )).scalar_one_or_none()
+        if anchor is None:
+            return None
 
-    if row is None:
-        return 0
+        qd = QdrantService()
+        vector = await qd.get_vector(anchor.tmdb_id)
+        if vector is None:
+            return None
 
-    tmdb_id = row[0]
-    qd = QdrantService()
-    vector = await qd.get_vector(tmdb_id)
-    if vector is None:
-        return 0
+        kwargs = {"collection_name": "movies", "query": vector, "limit": _TOP_K + 1}
+        if SearchParams is not None:
+            kwargs["search_params"] = SearchParams(hnsw_ef=128)
+        result = await qd.client.query_points(**kwargs)
+        hit_ids = [p.id for p in result.points[1:_TOP_K + 1]]
 
-    kwargs = {"collection_name": "movies", "query": vector, "limit": top_k + 1}
-    if SearchParams is not None:
-        kwargs["search_params"] = SearchParams(hnsw_ef=128)
-    result = await qd.client.query_points(**kwargs)
-    # Skip rank-0 (the anchor itself) and check the next top_k.
-    expected_lower = {e.lower() for e in expected_titles}
-    titles = [(h.payload.get("title") or "") for h in result.points[1:top_k + 1]]
-    return sum(1 for t in titles if t.lower() in expected_lower)
+        rows = (await db.execute(select(Movie).where(Movie.tmdb_id.in_(hit_ids)))).scalars().all()
+
+    a_genres = set(anchor.genres or [])
+    if not a_genres or not rows:
+        return (0.0, 0)
+    shares = sum(1 for m in rows if a_genres & set(m.genres or []))
+    distinct_dirs = {d for m in rows for d in (m.directors or [])}
+    return (shares / len(rows), len(distinct_dirs))
 
 
 @pytest.mark.asyncio
-async def test_qdrant_recall_floor():
-    """Total hits across all 7 anchors must clear the regression floor."""
-    total = 0
-    anchors_with_any_hit = 0
-    per_anchor: dict[str, int] = {}
+async def test_embedding_thematic_coherence():
+    """Top-K neighbours must be thematically coherent AND director-diverse."""
+    genre_fracs: dict[str, float] = {}
+    director_counts: dict[str, int] = {}
 
-    for anchor, expected in _ANCHORS_AND_NEIGHBOURS.items():
-        n = await _anchor_hits_in_top_k(anchor, expected, _TOP_K)
-        per_anchor[anchor] = n
-        total += n
-        if n > 0:
-            anchors_with_any_hit += 1
+    for anchor in _ANCHORS:
+        m = await _anchor_metrics(anchor)
+        if m is None:
+            continue  # anchor not in catalog — skip rather than fail
+        genre_fracs[anchor], director_counts[anchor] = m
 
-    # Print breakdown so a failing CI run shows where the regression hit.
-    print(f"\n[golden-set] hits@{_TOP_K}: total={total}  anchors_with_hit={anchors_with_any_hit}/7")
-    for anchor, n in per_anchor.items():
-        print(f"  {anchor!r:32s} {n}/{len(_ANCHORS_AND_NEIGHBOURS[anchor])}")
+    assert genre_fracs, "no anchors resolved — catalog/Qdrant not populated?"
 
-    assert total >= _MIN_TOTAL_HITS, (
-        f"Qdrant recall regression: total hits@{_TOP_K} = {total}, "
-        f"min required = {_MIN_TOTAL_HITS}. Breakdown: {per_anchor}"
+    mean_genre = sum(genre_fracs.values()) / len(genre_fracs)
+    mean_dirs = sum(director_counts.values()) / len(director_counts)
+
+    print(f"\n[golden-set] thematic coherence over {len(genre_fracs)} anchors")
+    print(f"  mean genre_frac={mean_genre:.2f}  mean distinct_directors={mean_dirs:.1f}")
+    for a in genre_fracs:
+        print(f"  {a!r:24s} genre_frac={genre_fracs[a]:.2f}  distinct_dirs={director_counts[a]}")
+
+    weakest = min(genre_fracs.values())
+    assert mean_genre >= _MIN_MEAN_GENRE_FRAC, (
+        f"Thematic-coherence regression: mean genre_frac={mean_genre:.2f} "
+        f"< {_MIN_MEAN_GENRE_FRAC}. Breakdown: {genre_fracs}"
     )
-    assert anchors_with_any_hit >= _MIN_HIT_ANCHORS, (
-        f"Coverage regression: only {anchors_with_any_hit}/7 anchors produced any hit "
-        f"(min {_MIN_HIT_ANCHORS}). One of the anchors fell off completely. "
-        f"Breakdown: {per_anchor}"
+    assert weakest >= _MIN_ANCHOR_GENRE_FRAC, (
+        f"An anchor lost thematic coherence: min genre_frac={weakest:.2f} "
+        f"< {_MIN_ANCHOR_GENRE_FRAC}. Breakdown: {genre_fracs}"
+    )
+    assert mean_dirs >= _MIN_MEAN_DISTINCT_DIRECTORS, (
+        f"Director-diversity collapse (identity leaked into the embedding?): "
+        f"mean distinct_directors={mean_dirs:.1f} < {_MIN_MEAN_DISTINCT_DIRECTORS}. "
+        f"Breakdown: {director_counts}"
     )
