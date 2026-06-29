@@ -41,25 +41,22 @@ def _get_model_chain() -> list[str]:
     """Return the LLM model chain based on available API keys.
 
     Order from the 2026-06 model sweep (V2-nameban prompt, all on Groq free
-    tier @ 1K RPD each — re-verified live against /v1/models). Llama 4 Scout
-    was removed 2026-06 (Groq deprecation; decommission 2026-07-17) — Qwen3-32B
-    is now the head:
+    tier @ 1K RPD each — re-verified live against /v1/models, limits 2026-06-29).
+    Llama 4 Scout (decommission 2026-07-17), Llama 3.1 8B + Llama 3.3 70B
+    (decommission 2026-08-16) all removed — Qwen3-32B is the head:
       1. Qwen3-32B — the most CONSISTENT full-structure output in the sweep
-         (tone/themes/style/pacing/affinity/mood every time, ~72 words).
+         (tone/themes/style/pacing/affinity/mood every time, ~72 words). 6K TPM.
          Reasoning model → effort='none' (see _REASONING_EFFORT).
-      2. Llama 3.3 70B — reliable but terse for this task (~45 words, often
-         drops the audience-affinity segment); kept mid-chain for stability.
-      3. GPT-OSS-120B — richest prose (~81 words) but a reasoning model
-         (effort='low' required to avoid empties).
-      4. GPT-OSS-20B — fast vendor-diverse floor (effort='low'). Llama 3.1 8B
-         was removed 2026-06 (Groq deprecation; decommission 2026-08-16) —
-         GPT-OSS-20B is Groq's recommended replacement and was already its
-         predecessor in the chain.
+      2. Qwen3.6-27B — top-tier prose, own 8K-TPM bucket (drained 2,872 films in
+         the V2 re-enrich at ~0.5s/film); replaced Llama 3.3 70B 2026-06-29 when
+         Groq deprecated it. Reasoning model → effort='none'.
+      3. GPT-OSS-120B — richest prose (~81 words), reasoning (effort='low'). 8K TPM.
+      4. GPT-OSS-20B — fast vendor-diverse floor (effort='low'). 8K TPM.
     """
     if os.getenv("GROQ_API_KEY"):
         return [
             "qwen/qwen3-32b",
-            "llama-3.3-70b-versatile",
+            "qwen/qwen3.6-27b",
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
         ]

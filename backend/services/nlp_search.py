@@ -169,12 +169,13 @@ def get_llm_client():
 
 async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     """
-    Tier-1 intent parser. Primary = Llama 3.3 70B (best structured-output
-    discipline on the realistic query panel — see experiment_magicbox_parser).
-    Fallback = Qwen3-32B, which fixed Scout's failure modes in the 2026-06
-    re-run (no quinqui→Almodóvar hallucination, real country lists instead of
-    the invalid "Europe", correct awards_contains) at the same 1K RPD and
-    sub-2s latency. Scout was retired from this path as the weakest parser.
+    Tier-1 intent parser. Primary = GPT-OSS-120B (chosen 2026-06-29 after a live
+    benchmark on the real prompt + response model: flat ~1.1s, 5/5 valid — the
+    fastest and most consistent; effort='low'). Fallback = Qwen3-32B
+    (vendor-diverse, proven on the multilingual panel — no quinqui→Almodóvar
+    hallucination, real country lists, correct awards_contains; effort='none').
+    Both qwen models spike to ~18s on some queries, so neither is the primary.
+    Llama 3.3 70B removed (Groq decommission 2026-08-16).
     """
     user_query = _normalize_typos(user_query)
     client = get_llm_client()
@@ -253,7 +254,13 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
         {"role": "user", "content": f"### USER QUERY ###\n{user_query}\n### END USER QUERY ###"},
     ]
 
-    primary_model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
+    # Parser model order — benchmarked live 2026-06-29 on the REAL prompt +
+    # response model: gpt-oss-120b parses in a flat ~1.1s, 5/5 valid (the fastest
+    # and most CONSISTENT). Both qwen3-32b and qwen3.6-27b spike to ~18s on some
+    # queries (reasoning), so qwen3-32b is the vendor-diverse FALLBACK only.
+    # (Llama 3.3 70B removed — Groq decommission 2026-08-16.)
+    _EFFORT = {"openai/gpt-oss-120b": "low", "qwen/qwen3-32b": "none"}
+    primary_model = "openai/gpt-oss-120b" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
     fallback_model = "qwen/qwen3-32b" if os.environ.get("GROQ_API_KEY") else None
 
     try:
@@ -262,6 +269,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
             response_model=MovieSearchIntent,
             messages=messages,
             temperature=0.1,
+            extra_body={"reasoning_effort": _EFFORT[primary_model]} if primary_model in _EFFORT else None,
         )
     except Exception as e:
         if fallback_model:
@@ -272,10 +280,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
                     response_model=MovieSearchIntent,
                     messages=messages,
                     temperature=0.1,
-                    # Qwen3 is a reasoning model: disable chain-of-thought so it
-                    # doesn't burn the budget thinking before the tool call and
-                    # truncate the structured output.
-                    extra_body={"reasoning_effort": "none"},
+                    extra_body={"reasoning_effort": _EFFORT[fallback_model]} if fallback_model in _EFFORT else None,
                 )
             except Exception as e2:
                 logger.warning(f"Fallback model also failed: {e2}.")
@@ -291,7 +296,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
 
 async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List[ReasonedMovie]:
     """
-    Tier 2: Uses Llama 3.3 70B for Deep Analysis (RAG Re-ranking).
+    Tier 2: Uses GPT-OSS-120B for Deep Analysis (RAG Re-ranking).
     Analyzing Top 20 candidates to find the Top 5 that match the *nuance*.
     """
     client = get_llm_client()
@@ -316,7 +321,7 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
     For each selected movie, write a 1-sentence 'AI Reason' explaining why it fits this specific request perfectly.
     """
 
-    model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
+    model = "openai/gpt-oss-120b" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -326,6 +331,9 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
                 {"role": "user", "content": f"Candidates:\n{context_str}"},
             ],
             temperature=0.3, # Slight creativity for reasoning
+            # gpt-oss-120b is a reasoning model (replaced 70B 2026-06-29) — min
+            # effort keeps the structured rerank clean. None for gemini.
+            extra_body={"reasoning_effort": "low"} if model.startswith("openai/") else None,
         )
         return response.selected_items
     except Exception as e:

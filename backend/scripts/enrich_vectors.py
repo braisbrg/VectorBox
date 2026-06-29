@@ -184,7 +184,6 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
 
 MODEL_ALIASES = {
     "gemini":      "gemini-2.5-flash",
-    "70b":         "llama-3.3-70b-versatile",
     "oss-120":     "openai/gpt-oss-120b",
     "oss-20":      "openai/gpt-oss-20b",
     "qwen3-32b":   "qwen/qwen3-32b",
@@ -607,13 +606,13 @@ if __name__ == "__main__":
         default=None,
         help="Restrict enrichment to a single model alias. No fallback to other models. "
              "Stops gracefully when the daily limit for that model is exhausted. "
-             "Aliases: gemini | 70b | oss-120 | oss-20 | qwen3-32b | qwen3.6-27b. "
-             "Example: --model-only 70b  OR  --model-only oss-120"
+             "Aliases: gemini | oss-120 | oss-20 | qwen3-32b | qwen3.6-27b. "
+             "Example: --model-only qwen3-32b  OR  --model-only oss-120"
     )
     parser.add_argument(
         "--smart",
         action="store_true",
-        help="Restrict enrichment to the 4 high-quality models (70B, qwen3-32b, oss-120, oss-20). "
+        help="Restrict enrichment to the 4 high-quality models (qwen3-32b, qwen3.6-27b, oss-120, oss-20). "
              "Use this when you want consistent high-quality cinematic descriptions across "
              "the whole catalogue. Mutually exclusive with --model-only."
     )
@@ -681,8 +680,8 @@ if __name__ == "__main__":
     elif args.smart:
         # --smart: the 4 high-quality models, quality uniform across catalogue.
         chain_override = [
-            "llama-3.3-70b-versatile",
             "qwen/qwen3-32b",
+            "qwen/qwen3.6-27b",
             "openai/gpt-oss-120b",
             "openai/gpt-oss-20b",
         ]

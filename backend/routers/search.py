@@ -102,7 +102,7 @@ async def natural_language_search(
     Handles complex queries like "old gangster movie", "90s hidden gem", "short anime".
     Also handles "Movies like X" by detecting title matches.
 
-    Auth required: this endpoint fans out to Groq (Llama 3.3 70B parser +
+    Auth required: this endpoint fans out to Groq (GPT-OSS-120B parser +
     optional Deep Analysis). Leaving it open to guests turns it into a
     paid-LLM proxy. The /onboarding/search endpoint covers the public-DB
     title search use case for guests.
@@ -447,7 +447,7 @@ async def natural_language_search(
                 f"complexity={intent_complexity(intent)}). Calling Tier 2..."
             )
             try:
-                # Pass results to Llama 70B
+                # Pass results to GPT-OSS-120B (deep-analysis rerank)
                 reasoned_picks = await search_with_reasoning(search_req.query, results)
                 
                 if reasoned_picks:
