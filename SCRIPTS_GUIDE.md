@@ -69,7 +69,7 @@ Every strategy dedupes against existing `Movie.tmdb_id` before processing, so re
 | `popular` *(default)* | TMDB Discover | `vote_count.desc`, `vote_count≥50` | Bulk seed with well-known films |
 | `recent` | TMDB Discover, last 90 days | `primary_release_date.desc`, `vote_count≥20` | Keep DB current with new releases |
 | `upcoming` | TMDB Discover, next 180 days | `popularity.desc`, no vote floor | Seed upcoming films, sets `is_upcoming=True` + fetches per-country release dates |
-| `top_rated` | TMDB Discover | `vote_average.desc`, `vote_count≥1500` | Critics' favorites — high-bar vote count filters out obscure 10/10s |
+| `top_rated` | TMDB Discover | `vote_average.desc`, `vote_count≥1000` | Critics' favorites — high-bar vote count filters out obscure 10/10s (floor 1500→1000 on 2026-07-03: the ≥1500 tier was fully absorbed) |
 | `by_language` | TMDB Discover | `with_original_language=<iso>` + `vote_count.desc`, `vote_count≥30` | Combat anglo bias. Requires `--language es\|ja\|ko\|fr\|de\|it\|...` |
 | `classic` | TMDB Discover, pre-1990 | `vote_count.desc`, `vote_count≥100` | Old cinema that vote_count.desc on the global pool drowns out |
 | `trending` | TMDB `/trending/movie/week` | TMDB internal trending score | What's hot this week (small pool, ~60 films) |
