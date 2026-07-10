@@ -16,54 +16,32 @@ export function AcidError({ message = "SYSTEM_FAILURE", onRetry, className }: Ac
             aria-live="assertive"
             aria-atomic="true"
             className={cn(
-                "flex flex-col items-center justify-center p-8 min-h-[400px] w-full",
-                "bg-zinc-950 border border-[#CCFF00]/20 rounded-xl",
-                "font-[family-name:var(--font-mono-acid)] text-[#CCFF00]",
-                "relative overflow-hidden",
+                "relative flex min-h-[400px] w-full flex-col items-center justify-center p-8",
+                "border border-border-2 bg-bg-2 font-mono text-primary",
                 className
             )}
         >
-            {/* Background Glitch Effect */}
-            <div className="absolute inset-0 bg-[url('/noise.svg')] opacity-10 pointer-events-none" />
-            <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[#CCFF00]/5 to-transparent pointer-events-none animate-pulse" />
+            <AlertTriangle className="mb-6 size-16" strokeWidth={1.5} />
 
-            {/* Icon */}
-            <div className="mb-6 relative">
-                <div className="absolute inset-0 bg-[#CCFF00] blur-xl opacity-20 animate-pulse" />
-                <AlertTriangle className="size-16 relative z-10" strokeWidth={1.5} />
-            </div>
-
-            {/* Text */}
-            <h2 className="text-2xl font-semibold tracking-widest mb-2 uppercase animate-glitch">
-                {message}
-            </h2>
-            <p className="text-sm text-[#CCFF00]/60 mb-8 max-w-md text-center">
-                CRITICAL_ERROR: The system encountered an unrecoverable state.
-                Protocol initiated: MANUAL_RESET_REQUIRED.
+            <h2 className="mb-2 font-display text-2xl uppercase tracking-widest">{message}</h2>
+            <p className="mb-8 max-w-md text-center text-sm text-fg-3">
+                CRITICAL_ERROR: the system reached an unrecoverable state. Protocol initiated:
+                MANUAL_RESET_REQUIRED.
             </p>
 
-            {/* Action */}
             {onRetry && (
                 <button
                     onClick={onRetry}
                     aria-label="Retry loading"
-                    className="group relative px-8 py-3 bg-transparent border border-[#CCFF00] overflow-hidden transition-all hover:bg-[#CCFF00]/10"
+                    className="inline-flex min-h-[44px] items-center gap-2 border border-primary bg-transparent px-6 py-3 font-bold uppercase tracking-wider text-primary shadow-[2px_2px_0_0_var(--primary)] transition-transform hover:-translate-x-px hover:-translate-y-px active:translate-x-0.5 active:translate-y-0.5"
                 >
-                    <div className="absolute inset-0 bg-[#CCFF00]/20 translate-y-full group-hover:translate-y-0 transition-transform duration-300" />
-                    <span className="relative flex items-center gap-2 font-bold tracking-wider">
-                        <RefreshCw className="size-4 group-hover:animate-spin" />
-                        RELOAD_SYSTEM
-                    </span>
+                    <RefreshCw className="size-4" />
+                    RELOAD_SYSTEM
                 </button>
             )}
 
-            {/* Decoration */}
-            <div className="absolute top-2 left-2 text-[10px] opacity-40">
-                ERR_CODE: 0xDEADBEEF
-            </div>
-            <div className="absolute bottom-2 right-2 text-[10px] opacity-40">
-                SYS_HALT
-            </div>
+            <div className="absolute left-2 top-2 text-[10px] text-fg-3 opacity-60">ERR_CODE: 0xDEADBEEF</div>
+            <div className="absolute bottom-2 right-2 text-[10px] text-fg-3 opacity-60">SYS_HALT</div>
         </div>
     );
 }

@@ -200,6 +200,9 @@ def movie_passes_post_filter(movie: Movie, intent: MovieSearchIntent) -> bool:
         if not all(n in haystack for n in needles):
             return False
 
+    if intent.min_vectorbox_score is not None and (movie.vectorbox_score or 0) < intent.min_vectorbox_score:
+        return False
+
     return True
 
 

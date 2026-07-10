@@ -28,6 +28,7 @@ class RateMovieRequest(BaseModel):
 @router.get("/{tmdb_id}")
 async def get_movie_details(
     tmdb_id: int,
+    country: str = "ES",
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client)
 ):
@@ -40,8 +41,16 @@ async def get_movie_details(
         stmt = select(Movie).where(Movie.tmdb_id == tmdb_id)
         result = await db.execute(stmt)
         movie = result.scalars().first()
-        
+
         if movie:
+            # availability chips for the dossier + quick-look (prototype "availability · {CC}")
+            streaming_providers: list[str] = []
+            try:
+                from services.provider_service import ProviderService
+                p_data = await ProviderService(db, tmdb).get_providers(movie.id, country)
+                streaming_providers = [p["provider_name"] for p in p_data]
+            except Exception:
+                logger.warning(f"Provider lookup failed for movie {tmdb_id}", exc_info=True)
             return {
                 "tmdb_id": movie.tmdb_id,
                 "title": movie.title,
@@ -50,14 +59,17 @@ async def get_movie_details(
                 "genres": movie.genres or [],
                 "overview": movie.overview,
                 "poster_url": movie.poster_path, # FeedItem expects poster_url
+                "backdrop_path": movie.backdrop_path,
+                "directors": movie.directors or [],
+                "cast": movie.cast or [],
+                "tagline": movie.tagline,
                 "match_score": movie.vectorbox_score or 0,
                 "vectorbox_score": movie.vectorbox_score,
                 "imdb_rating": movie.imdb_rating,
                 "metacritic_rating": movie.metacritic_rating,
-
-                "letterboxd_rating": movie.letterboxd_rating,
                 "title_es": movie.title_es,
-                "overview_es": movie.overview_es
+                "overview_es": movie.overview_es,
+                "streaming_providers": streaming_providers,
             }
             
         # 2. Fallback to TMDB
@@ -86,9 +98,10 @@ async def get_movie_details(
 @router.post("/{tmdb_id}/rate")
 @limiter.limit("60/minute")
 async def rate_movie(
-    http_request: Request,
+    # slowapi needs the starlette Request named `request` (see rss.py group/vibe).
+    request: Request,
     tmdb_id: int,
-    request: RateMovieRequest,
+    payload: RateMovieRequest,
     db: AsyncSession = Depends(get_db),
     current_user: TokenResponse = Depends(get_current_user),
     tmdb: TMDBClient = Depends(get_tmdb_client)
@@ -115,20 +128,22 @@ async def rate_movie(
         stmt = insert(UserRating).values(
             user_id=current_user.user_id,
             movie_id=movie.id,
-            rating=request.rating,
-            is_watchlist=request.is_watchlist,
-            is_liked=request.is_liked,
-            is_watched=True if request.rating is not None else False,
-            watched_date=datetime.now(timezone.utc) if request.rating is not None else None,
+            rating=payload.rating,
+            is_watchlist=payload.is_watchlist,
+            is_liked=payload.is_liked,
+            is_watched=True if payload.rating is not None else False,
+            watched_date=datetime.now(timezone.utc) if payload.rating is not None else None,
             created_at=datetime.now(timezone.utc)
         ).on_conflict_do_update(
             index_elements=['user_id', 'movie_id'],
             set_={
-                'rating': request.rating,
-                'is_watchlist': request.is_watchlist,
-                'is_liked': request.is_liked,
-                'is_watched': True if request.rating is not None else UserRating.is_watched,
-                'watched_date': datetime.now(timezone.utc) if request.rating is not None else UserRating.watched_date,
+                # Preserve an existing rating when the caller only toggles
+                # watchlist/like (rating=None) — e.g. dossier "+ watchlist".
+                'rating': payload.rating if payload.rating is not None else UserRating.rating,
+                'is_watchlist': payload.is_watchlist,
+                'is_liked': payload.is_liked,
+                'is_watched': True if payload.rating is not None else UserRating.is_watched,
+                'watched_date': datetime.now(timezone.utc) if payload.rating is not None else UserRating.watched_date,
             }
         )
         

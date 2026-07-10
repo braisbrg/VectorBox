@@ -1,12 +1,37 @@
 import os
 import re
 import instructor
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal
 from openai import AsyncOpenAI
 import logging
 
 logger = logging.getLogger(__name__)
+
+# LLM sometimes emits a language NAME ("Spanish") instead of the ISO 639-1 code
+# the catalogue stores ("es") — that mismatch silently zero-results the query
+# (observed live on "cine quinqui"). Map the common names; drop unknown names
+# rather than pass a value that can only over-filter to nothing.
+_LANG_NAME_TO_ISO = {
+    "spanish": "es", "castilian": "es", "english": "en", "french": "fr",
+    "german": "de", "italian": "it", "portuguese": "pt", "japanese": "ja",
+    "korean": "ko", "mandarin": "zh", "chinese": "zh", "cantonese": "zh",
+    "russian": "ru", "hindi": "hi", "arabic": "ar", "swedish": "sv",
+    "danish": "da", "norwegian": "no", "finnish": "fi", "dutch": "nl",
+    "polish": "pl", "turkish": "tr", "greek": "el", "hebrew": "he",
+    "thai": "th", "catalan": "ca", "basque": "eu", "galician": "gl",
+    "farsi": "fa", "persian": "fa", "vietnamese": "vi", "indonesian": "id",
+}
+
+
+def normalize_language(value: Optional[str]) -> Optional[str]:
+    """Coerce an LLM language value to an ISO 639-1 code (or None)."""
+    if not value:
+        return None
+    s = value.strip().lower()
+    if len(s) == 2:
+        return s
+    return _LANG_NAME_TO_ISO.get(s)  # unknown → None (drop the over-filter)
 
 # Curated typo / informal-spelling normalisation applied BEFORE the LLM.
 # Only includes terms where Llama 4 Scout 17B has been observed to drift
@@ -53,8 +78,16 @@ class MovieSearchIntent(BaseModel):
     min_runtime_minutes: Optional[int] = Field(None, description="Min duration in minutes.")
     max_runtime_minutes: Optional[int] = Field(None, description="Max duration in minutes.")
     min_rating: Optional[float] = Field(None, description="Minimum TMDB vote_average (0-10).")
+    min_vectorbox_score: Optional[float] = Field(None, description="Minimum VectorBox quality score Q (0-100). Used by the rail quality slider.")
     popularity_vibe: Literal["blockbuster", "hidden_gem", "any"] = Field("any", description="Select 'hidden_gem' for obscure/underrated, 'blockbuster' for famous/hits.")
-    original_language: Optional[str] = Field(None, description="ISO 639-1 language code.")
+    original_language: Optional[str] = Field(None, description="ISO 639-1 language code (e.g. 'es', 'en', 'ko'). Use the 2-letter code, never the language name.")
+
+    @field_validator("original_language")
+    @classmethod
+    def _coerce_lang_iso(cls, v):
+        # Defends against the LLM emitting "Spanish" instead of "es".
+        return normalize_language(v)
+
     reference_movie: Optional[str] = Field(None, description="If user asks for movies 'like' X, extract title.")
     quality_gate_bypass: bool = Field(False, description="Set True when user seeks campy, trashy, guilty-pleasure, so-bad-its-good, or B-movie content. Keeps low-scored films in results.")
 
@@ -268,7 +301,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
             model=primary_model,
             response_model=MovieSearchIntent,
             messages=messages,
-            temperature=0.1,
+            temperature=0,  # structured extraction — determinism over creativity (cuts search volatility)
             extra_body={"reasoning_effort": _EFFORT[primary_model]} if primary_model in _EFFORT else None,
         )
     except Exception as e:
@@ -279,7 +312,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
                     model=fallback_model,
                     response_model=MovieSearchIntent,
                     messages=messages,
-                    temperature=0.1,
+                    temperature=0,
                     extra_body={"reasoning_effort": _EFFORT[fallback_model]} if fallback_model in _EFFORT else None,
                 )
             except Exception as e2:

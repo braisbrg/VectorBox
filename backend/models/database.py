@@ -71,7 +71,6 @@ class Movie(Base):
     original_language = Column(String(10))  # New: For language filtering
     keywords = Column(ARRAY(String))  # New: For vibe filtering
     letterboxd_uri = Column(String(500))  # From CSV
-    letterboxd_rating = Column(Float)  # Scraped from Popular Chart
     directors = Column(ARRAY(String))  # Signal B: Auteur Expert
     cast = Column(ARRAY(String))  # Top 3 Cast Members
     

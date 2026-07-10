@@ -108,6 +108,18 @@ class RecommendationRequest(BaseModel):
         return v
 
 
+class FilteredSearchRequest(BaseModel):
+    """Rail EXECUTE_QUERY: filter-first, taste-ranked. Hard constraints define the
+    pool (whole catalogue), the user's taste centroid ranks within it."""
+    year_min: Optional[conint(ge=1800, le=2100)] = None
+    year_max: Optional[conint(ge=1800, le=2100)] = None
+    max_runtime: Optional[conint(ge=1, le=1000)] = None
+    min_score: Optional[confloat(ge=0, le=100)] = None  # VBS quality floor Q 0-100
+    genres: Optional[List[constr(max_length=50)]] = None
+    providers: Optional[List[int]] = None  # TMDB provider IDs to require (match is robust vs names)
+    country_code: constr(min_length=2, max_length=2) = "ES"
+
+
 class RecommendationResponse(BaseModel):
     """Movie recommendation with similarity score"""
     movie: MovieMetadata
@@ -186,6 +198,7 @@ class FeedItem(BaseModel):
     title_es: Optional[str] = None
     overview_es: Optional[str] = None
     letterboxd_rating: Optional[float] = None
+    backdrop_url: Optional[str] = None  # wide art for the feed hero
 
 
 class FeedSection(BaseModel):

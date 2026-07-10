@@ -309,6 +309,17 @@ class QdrantService:
                         HasIdCondition(has_id=filters["exclude_tmdb_ids"])
                     )
 
+                # 6b. F8: restrict the search to an allowed TMDB-id set. Streaming
+                # availability isn't a Qdrant payload field (it lives in Postgres), so
+                # the rail's provider filter is resolved to a film-id set and pushed in
+                # HERE — keeping provider filtering filter-at-source (taste-rank WITHIN
+                # the provider catalogue) instead of a post-filter on a small pool.
+                if "include_tmdb_ids" in filters and filters["include_tmdb_ids"]:
+                    from qdrant_client.models import HasIdCondition
+                    must_conditions.append(
+                        HasIdCondition(has_id=filters["include_tmdb_ids"])
+                    )
+
                 # 7. Vote Count Filter
                 if "min_vote_count" in filters and filters["min_vote_count"]:
                     must_conditions.append(
@@ -317,7 +328,18 @@ class QdrantService:
                             range={"gte": filters["min_vote_count"]}
                         )
                     )
-                
+
+                # 7b. VectorBox quality floor (payload field) — lets the rail Q slider
+                # filter the whole catalogue at search time instead of post-filtering a
+                # taste-ranked top-N (which starved: Q90 matched only ~2 of the 200).
+                if "min_vectorbox_score" in filters and filters["min_vectorbox_score"]:
+                    must_conditions.append(
+                        FieldCondition(
+                            key="vectorbox_score",
+                            range={"gte": filters["min_vectorbox_score"]}
+                        )
+                    )
+
                 if "max_vote_count" in filters and filters["max_vote_count"]:
                     must_conditions.append(
                         FieldCondition(

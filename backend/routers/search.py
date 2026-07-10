@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import asyncio
 from config import get_db
-from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user
+from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user
 from models.schemas import TokenResponse
 from services.nlp_search import parse_user_intent, search_with_reasoning, MovieSearchIntent
 from services.magic_search_ranking import (
@@ -91,7 +91,10 @@ from limiter import limiter
 async def natural_language_search(
     request: Request, # Request object is required for slowapi
     search_req: SearchRequest,
-    current_user: TokenResponse = Depends(get_current_user),
+    # Optional auth: magic box is a pre-login guest feature (handoff pre-login
+    # splash). current_user is only used to exclude watched films — guests
+    # simply skip that filter. Rate limit above applies either way.
+    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
@@ -258,18 +261,20 @@ async def natural_language_search(
             # asks for them via the LLM-parsed safe_mode=False.
             qdrant_filters["exclude_adult"] = True
 
-        # 3.5. Exclude Watched Movies
-        result = await db.execute(
-            select(Movie.tmdb_id)
-            .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(UserRating.user_id == current_user.user_id)
-            .where(or_(
-                UserRating.rating.isnot(None),
-                UserRating.is_liked.is_(True),
-                UserRating.is_watched.is_(True),
-            ))
-        )
-        watched_tmdb_ids = [row[0] for row in result.all() if row[0] is not None]
+        # 3.5. Exclude Watched Movies (signed-in users only — guests have none)
+        watched_tmdb_ids = []
+        if current_user is not None:
+            result = await db.execute(
+                select(Movie.tmdb_id)
+                .join(UserRating, Movie.id == UserRating.movie_id)
+                .where(UserRating.user_id == current_user.user_id)
+                .where(or_(
+                    UserRating.rating.isnot(None),
+                    UserRating.is_liked.is_(True),
+                    UserRating.is_watched.is_(True),
+                ))
+            )
+            watched_tmdb_ids = [row[0] for row in result.all() if row[0] is not None]
 
         if watched_tmdb_ids:
             qdrant_filters["exclude_tmdb_ids"] = watched_tmdb_ids
@@ -478,189 +483,6 @@ async def natural_language_search(
     except Exception as e:
         import traceback
         logger.error(f"Search failed: {e}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail="Search service unavailable")
-
-@router.get("/movies", response_model=SearchResponse)
-async def search_movies(
-    query: str,
-    db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client),
-    qdrant: QdrantService = Depends(get_qdrant_service),
-    embedding_service: EmbeddingService = Depends(get_embedding_service),
-    current_user: TokenResponse = Depends(get_current_user)
-):
-    """
-    Hybrid search:
-    1. Search Qdrant for local matches
-    2. If insufficient results, search TMDB
-    3. Auto-populate Qdrant with new TMDB discoveries
-    """
-    try:
-        # Validate input
-        query = validate_user_query(query)
-
-        # 1. Generate query vector — this endpoint takes a raw title string and
-        # finds Qdrant matches; title MUST be in the embedding (opt-in).
-        loop = asyncio.get_running_loop()
-        query_vector = await loop.run_in_executor(
-            None,
-            lambda: embedding_service.generate_embedding({
-                "title": query,
-                "overview": "",
-                "genres": [],
-                "keywords": []
-            }, include_title=True).tolist()
-        )
-        
-        # 2. Search Qdrant (Local)
-        local_results = await qdrant.search_similar(
-            query_vector=query_vector,
-            limit=10,
-            score_threshold=0.6 # High threshold for exact-ish matches
-        )
-        
-        results = []
-        seen_ids = set()
-        
-        # Process local results
-        # Process local results
-        
-        # Collect IDs to fetch from DB
-        tmdb_ids = []
-        for r in local_results:
-            metadata = r.get("metadata", {})
-            movie_id = metadata.get("tmdb_id") or r["movie_id"]
-            if movie_id:
-                tmdb_ids.append(int(movie_id))
-        
-        # Fetch from DB
-        db_movies = {}
-        if tmdb_ids:
-            stmt = select(Movie).where(Movie.tmdb_id.in_(tmdb_ids))
-            db_res = await db.execute(stmt)
-            for m in db_res.scalars().all():
-                db_movies[m.tmdb_id] = m
-
-        for r in local_results:
-            metadata = r.get("metadata", {})
-            # Use TMDB ID from metadata if available, otherwise fallback to internal ID (which might be wrong for external links)
-            movie_id = metadata.get("tmdb_id") or r["movie_id"]
-            if movie_id:
-                seen_ids.add(int(movie_id))
-            
-            # Enrich from DB if available
-            db_movie = db_movies.get(int(movie_id)) if movie_id else None
-
-            # Title Match Boost (Weighted Average)
-            title_sim = title_sim_score(query, metadata.get("title", ""))
-            
-            final_score = min(round(r["score"] * 100), 100)
-            
-            if title_sim > 0.8:
-                title_score = 90 + (title_sim * 9)
-                final_score = (final_score * 0.5) + (title_score * 0.5)
-
-            results.append({
-                "movie_id": movie_id,
-                "title": metadata.get("title", "Unknown"),
-                "overview": metadata.get("overview", ""),
-                "poster_path": metadata.get("poster_path"),
-                "score": round(final_score, 0),
-                "year": metadata.get("year"),
-                "runtime": metadata.get("runtime"),
-                "genres": metadata.get("genres", []),
-                "vote_average": metadata.get("vote_average"),
-                # Phase 12 Fields (from DB)
-                "vectorbox_score": db_movie.vectorbox_score if db_movie else None,
-                "imdb_rating": db_movie.imdb_rating if db_movie else None,
-                "metacritic_rating": db_movie.metacritic_rating if db_movie else None,
-
-                "title_es": db_movie.title_es if db_movie else None,
-                "overview_es": db_movie.overview_es if db_movie else None
-            })
-            
-        # 3. Fallback to TMDB if few results
-        if len(results) < 5:
-            logger.info(f"Few local results ({len(results)}), searching TMDB for: {query}")
-            
-            try:
-                # Search TMDB
-                tmdb_results = await tmdb._make_request("/search/movie", {"query": query})
-                
-                if tmdb_results and tmdb_results.get("results"):
-                    unseen_ids = [m["id"] for m in tmdb_results["results"][:5] if int(m["id"]) not in seen_ids]
-                    
-                    if unseen_ids:
-                        detail_tasks = [tmdb.get_movie_details(mid) for mid in unseen_ids]
-                        kw_tasks = [tmdb.get_movie_keywords(mid) for mid in unseen_ids]
-                        
-                        details_results = await asyncio.gather(*detail_tasks, return_exceptions=True)
-                        kw_results = await asyncio.gather(*kw_tasks, return_exceptions=True)
-                        
-                        for tmdb_id, details, keywords_res in zip(unseen_ids, details_results, kw_results):
-                            if isinstance(details, Exception) or not details:
-                                continue
-                            
-                            keywords = keywords_res if not isinstance(keywords_res, Exception) else []
-                            
-                            # Extract metadata (FIX 3: now inside the for loop)
-                            title = details.get("title")
-                            overview = details.get("overview", "")
-                            year = int(details["release_date"][:4]) if details.get("release_date") else None
-                            genres = [g["name"] for g in details.get("genres", [])]
-                        
-                            # Generate embedding
-                            loop = asyncio.get_running_loop()
-                            vector = await loop.run_in_executor(
-                                None,
-                                lambda: embedding_service.generate_embedding({
-                                    "title": title,
-                                    "overview": overview,
-                                    "genres": genres,
-                                    "keywords": keywords
-                                }).tolist()
-                            )
-                            
-                            # Prepare metadata for Qdrant
-                            payload = {
-                                "title": title,
-                                "overview": overview,
-                                "year": year,
-                                "runtime": details.get("runtime"),
-                                "genres": genres,
-                                "poster_path": details.get("poster_path"),
-                                "vote_average": details.get("vote_average"),
-                                "vote_count": details.get("vote_count"),
-                                "tmdb_id": tmdb_id
-                            }
-                            
-                            # Upsert to Qdrant (Fire & Forget / Async)
-                            # Note: In production, consider background task
-                            await qdrant.upsert_movie_vector(tmdb_id, vector, payload)
-                            logger.info(f"Auto-populated movie: {title} ({tmdb_id})")
-                            
-                            # Add to results
-                            results.append({
-                                "movie_id": tmdb_id,
-                                "title": title,
-                                "overview": overview,
-                                "poster_path": payload["poster_path"],
-                                "score": 100 if query.lower() in title.lower() else 80, # Artificial score for exact matches
-                                "year": year,
-                                "runtime": payload["runtime"],
-                                "genres": genres,
-                                "vote_average": payload["vote_average"]
-                            })
-                        
-            except Exception as e:
-                logger.error(f"TMDB fallback failed: {e}")
-        
-        return SearchResponse(
-            results=results,
-            intent={"semantic_query": query}
-        )
-    except Exception as e:
-        logger.error(f"Movie search failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Search service unavailable")
 
 

@@ -1,9 +1,7 @@
 """Regression tests for the 2026-06-11 full-project review fixes:
 
-  - REV-1  _enrich_recommendations: movies missing from the providers map
-           (TMDB returned None — film has no providers anywhere) must get an
-           empty provider list, not raise UnboundLocalError on the first movie
-           or inherit the previous movie's providers.
+  - REV-1  (tests removed in F5 2026-07-10 — _enrich_recommendations deleted
+           with its orphan-endpoint consumers)
   - REV-2  Re-encoding a movie vector (ensure_vector_exists / enrich_movie)
            must pass text_override=cinematic_description when available, so a
            metadata refresh can't silently replace a Groq-enriched vector with
@@ -41,81 +39,10 @@ def _make_movie(internal_id: int, tmdb_id: int, title: str, **extra):
     return movie
 
 
-def _db_returning_movies(movies):
-    """AsyncSession stub whose execute() yields the given ORM movies."""
-    result = Mock()
-    result.scalars.return_value.all.return_value = movies
-    db = Mock()
-    db.execute = AsyncMock(return_value=result)
-    return db
-
-
 # ---------------------------------------------------------------------------
-# REV-1 — _enrich_recommendations provider-map gaps
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_enrich_recommendations_movie_missing_from_providers_map():
-    """First movie absent from the providers map → empty list, no crash.
-
-    Before the fix this raised UnboundLocalError (streaming_providers was
-    only assigned inside `if movie.id in providers_map`), which the route's
-    broad except turned into a 500 for the whole request.
-    """
-    from routers.recommendations import _enrich_recommendations
-    from models.schemas import RecommendationRequest
-
-    movie = _make_movie(1, 101, "Obscure Festival Film")
-    db = _db_returning_movies([movie])
-
-    provider_service = Mock()
-    provider_service.get_providers_batch = AsyncMock(return_value={})  # no entry at all
-
-    with patch("routers.recommendations.ProviderService", return_value=provider_service):
-        recs = await _enrich_recommendations(
-            results=[{"movie_id": 1, "score": 0.9}],
-            user_id=1,
-            db=db,
-            request=RecommendationRequest(),  # country_code defaults to "ES"
-            tmdb=Mock(),
-        )
-
-    assert len(recs) == 1
-    assert recs[0].streaming_providers == []
-    assert recs[0].streaming_available is False
-
-
-@pytest.mark.asyncio
-async def test_enrich_recommendations_no_stale_provider_carryover():
-    """A movie absent from the map must NOT inherit the previous movie's
-    provider list (the stale-variable variant of the same bug)."""
-    from routers.recommendations import _enrich_recommendations
-    from models.schemas import RecommendationRequest
-
-    with_providers = _make_movie(1, 101, "Popular Film")
-    without_providers = _make_movie(2, 102, "Obscure Film")
-    db = _db_returning_movies([with_providers, without_providers])
-
-    provider_service = Mock()
-    provider_service.get_providers_batch = AsyncMock(return_value={
-        1: [{"provider_id": 8, "provider_name": "Netflix"}],
-        # movie 2 intentionally missing (TMDB fetch returned None)
-    })
-
-    with patch("routers.recommendations.ProviderService", return_value=provider_service):
-        recs = await _enrich_recommendations(
-            results=[{"movie_id": 1, "score": 0.9}, {"movie_id": 2, "score": 0.8}],
-            user_id=1,
-            db=db,
-            request=RecommendationRequest(),
-            tmdb=Mock(),
-        )
-
-    assert len(recs) == 2
-    assert recs[0].streaming_providers == ["Netflix"]
-    assert recs[1].streaming_providers == []  # not ["Netflix"]
-
-
+# REV-1 tests removed in F5 cleanup (2026-07-10): `_enrich_recommendations` was
+# deleted along with its only consumers (the orphan POST /general, /by-mood,
+# /random, /group endpoints — never called by the frontend).
 # ---------------------------------------------------------------------------
 # REV-2 — re-encode prefers cinematic_description (text_override)
 # ---------------------------------------------------------------------------

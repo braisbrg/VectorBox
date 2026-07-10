@@ -2,11 +2,9 @@
 
 import { useEffect } from "react";
 import Link from "next/link";
+import { AcidError } from "@/components/ui/acid-error";
 
-/**
- * Global Error Boundary - Acid Design
- * Catches runtime errors and provides reset functionality
- */
+// Global error boundary — states gallery 02 "error — generic" (AcidError).
 export default function Error({
     error,
     reset,
@@ -15,69 +13,20 @@ export default function Error({
     reset: () => void;
 }) {
     useEffect(() => {
-        // Log error to monitoring service
         console.error("Application error:", error);
     }, [error]);
 
     return (
-        <main className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-6">
-            {/* Glitch Effect Container */}
-            <div className="text-center space-y-8 max-w-md">
-                {/* Error Code */}
-                <div className="relative">
-                    <h1 className="text-[120px] md:text-[180px] font-black font-space text-transparent leading-none"
-                        style={{
-                            WebkitTextStroke: "2px hsl(var(--primary))",
-                        }}
-                    >
-                        ERR
-                    </h1>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="text-primary font-mono text-sm uppercase tracking-widest animate-pulse">
-                            System Failure
-                        </span>
-                    </div>
-                </div>
-
-                {/* Message */}
-                <div className="space-y-2">
-                    <p className="text-white/80 font-mono text-lg uppercase tracking-wide">
-                        Something went wrong
-                    </p>
-                    <p className="text-white/40 font-mono text-xs">
-                        Reconnecting to the matrix…
-                    </p>
-                </div>
-
-                {/* Action Buttons */}
-                <div className="flex flex-col sm:flex-row gap-4 justify-center pt-4">
-                    <button
-                        onClick={reset}
-                        className="px-8 py-4 bg-primary text-black font-black font-mono uppercase tracking-wider hover:bg-white transition-colors border-2 border-primary"
-                        aria-label="Try again"
-                    >
-                        Try Again
-                    </button>
+        <main className="flex min-h-screen flex-col items-center justify-center bg-bg p-6">
+            <div className="w-full max-w-xl">
+                <AcidError message="SYSTEM_FAILURE" onRetry={reset} />
+                <div className="mt-3 text-center">
                     <Link
-                        href="/"
-                        className="px-8 py-4 bg-transparent text-primary font-mono uppercase tracking-wider hover:bg-primary/10 transition-colors border-2 border-primary text-center"
-                        aria-label="Return to home page"
+                        href="/feed"
+                        className="inline-block border border-border-2 px-4 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-fg-2 transition-colors hover:border-primary hover:text-primary"
                     >
-                        Go Home
+                        ← back to feed
                     </Link>
-                </div>
-
-                {/* Decorative Elements */}
-                <div className="pt-8 flex justify-center gap-2">
-                    {["a","b","c","d","e"].map((id, i) => (
-                        <div
-                            key={id}
-                            className="size-2 bg-primary/30"
-                            style={{
-                                animation: `pulse 1s ease-in-out ${i * 0.2}s infinite`,
-                            }}
-                        />
-                    ))}
                 </div>
             </div>
         </main>

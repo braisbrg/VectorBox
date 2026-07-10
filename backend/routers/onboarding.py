@@ -18,7 +18,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, conlist, constr
-from sqlalchemy import select, func, desc, literal_column
+from sqlalchemy import select, func, desc, literal_column, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import ARRAY, array, insert as pg_insert
 from sqlalchemy import String, cast
@@ -164,7 +164,12 @@ def _apply_diversity_filters(candidates: List[Movie], limit: int) -> List[Movie]
 # ---------------------------------------------------------------------------
 
 SIGNAL_TO_RATING = {
-    "positive": 4.5,
+    # 4-signal cold-start scale. "positive" (liked) → 4.0: strong-but-sub-maximal
+    # (a quick tap shouldn't hit the _director_weight ≥4.5 ceiling of 2.0).
+    # "favorite" → 5.0 + is_liked: the max weight is EARNED only by an explicit
+    # favorite (deliberate 5★), not a generic positive. Forward-only.
+    "favorite": 5.0,
+    "positive": 4.0,
     "neutral": 3.0,
     "negative": 1.5,
 }
@@ -508,6 +513,12 @@ async def rate_movie(
     # CONC-1: atomic INSERT ... ON CONFLICT so two concurrent rates of the same
     # film can't both pass a "not exists" check and then collide on the
     # uq idx_user_movie unique index (which previously surfaced as a 500).
+    # "favorite" → explicit like (Letterboxd's like ≡ 5★ favorite).
+    is_favorite = body.signal == "favorite"
+    # watch_count=0 marks these as WEB-WATCHES (seen via our carousel, not yet on
+    # Letterboxd) so they flow into the watched-on-web list + CSV export (which
+    # exports watched-only, no rating — our SIGNAL_TO_RATING is an inference, not
+    # the user's real star). Self-cleans: a later ZIP import bumps watch_count≥1.
     upsert = (
         pg_insert(UserRating)
         .values(
@@ -515,11 +526,15 @@ async def rate_movie(
             movie_id=movie.id,
             rating=rating_value,
             is_watched=True,
-            watch_count=1,
+            is_liked=is_favorite,
+            watch_count=0,
         )
         .on_conflict_do_update(
             index_elements=[UserRating.user_id, UserRating.movie_id],
-            set_={"rating": rating_value, "is_watched": True},
+            # OR-preserve is_liked so re-rating a Letterboxd-liked film as merely
+            # "liked" (not favorite) doesn't strip its existing like. Don't touch
+            # watch_count on conflict (keep an imported film's real count).
+            set_={"rating": rating_value, "is_watched": True, "is_liked": or_(UserRating.is_liked, is_favorite)},
         )
         # `xmax = 0` is true for a freshly INSERTed row, false for an UPDATEd
         # one — lets us tell a new rating from a re-rate atomically (used below
