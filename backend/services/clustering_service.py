@@ -211,7 +211,7 @@ class ClusteringService:
             _strip_think, _get_model_chain, _REASONING_EFFORT,
             _parse_retry_after, _is_daily_limit,
         )
-        # Cascade across the model chain (qwen3-32b → 70B → gpt-oss-*) — each model
+        # Cascade across the model chain (qwen3-32b → qwen3.6-27b → gpt-oss-*) — each model
         # has a SEPARATE TPM bucket, so a 429 on one tries the next instead of
         # degrading. Labels are tiny (~500 tok) but qwen3-32b's TPM is only 6000,
         # so re-clustering many users back-to-back used to 429 and drop straight to

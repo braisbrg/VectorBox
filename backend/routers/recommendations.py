@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, or_, func
+from sqlalchemy import select, desc, func
 from typing import List, Optional, Set, Dict
 import random
 import logging
@@ -10,14 +10,12 @@ from config import get_db, AsyncSessionLocal
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from models.database import UserRating, Movie, UserCluster
 from models.schemas import (
-    RecommendationRequest, 
-    RecommendationResponse, 
-    MovieMetadata, 
+    MovieMetadata,
     ClusterInfo,
-    GroupRecommendationRequest,
     FeedResponse,
     FeedSection,
-    FeedItem
+    FeedItem,
+    FilteredSearchRequest
 )
 from services.clustering_service import ClusteringService
 from services.tmdb_client import TMDBClient
@@ -28,7 +26,6 @@ from dependencies import get_tmdb_client, get_qdrant_service, get_current_user, 
 from limiter import limiter
 from models.schemas import TokenResponse
 from services.embedding_service import EmbeddingService
-from utils.scoring import normalize_similarity_score
 
 router = APIRouter(
     tags=["recommendations"]
@@ -64,167 +61,55 @@ async def _invalidate_user_feed_cache(user_id: int) -> None:
     except Exception as e:
         logger.warning(f"Feed cache invalidation failed for user_id={user_id}: {e}")
 
-async def _enrich_recommendations(
-    results: List[Dict],
-    user_id: int,
-    db: AsyncSession,
-    request: RecommendationRequest,
-    tmdb: TMDBClient
-) -> List[RecommendationResponse]:
-    """
-    Enrich recommendation results with TMDB data and streaming info
-    """
-    if not results:
-        return []
-        
-    movie_ids = [r["movie_id"] for r in results]
-    
-    # Fetch movies from DB
-    stmt = select(Movie).where(Movie.id.in_(movie_ids))
-    db_movies = await db.execute(stmt)
-    movies_map = {m.id: m for m in db_movies.scalars().all()}
-    
-    # Fetch streaming providers if requested
-    providers_map = {}
-    if request.streaming_providers or request.country_code:
-        # tmdb is passed in
-        provider_service = ProviderService(db, tmdb)
-        # We need TMDB IDs for provider lookup
-        # ProviderService.get_providers_batch takes internal IDs.
-        providers_map = await provider_service.get_providers_batch(movie_ids, request.country_code or "ES")
-
-    recommendations = []
-    allowed_providers = set(request.streaming_providers) if request.streaming_providers else None
-    
-    for result in results:
-        movie = movies_map.get(result["movie_id"])
-        # Drop Debugging
-        if not movie:
-            logger.warning(f"Enrichment: Movie {result['movie_id']} not found in DB map.")
-            continue
-            
-        # Check streaming availability
-        streaming_available = False
-        # Reset per iteration: get_providers_batch omits movies whose TMDB
-        # provider fetch returned None (films with no providers anywhere), so
-        # a missing entry would otherwise raise UnboundLocalError on the first
-        # movie or leak the previous movie's provider list into this one.
-        streaming_providers = []
-        if movie.id in providers_map:
-             # ...
-             # (reconstruct existing logic roughly)
-             providers = providers_map[movie.id]
-             streaming_providers = [p["provider_name"] for p in providers]
-             
-             if allowed_providers:
-                available_ids = {p["provider_id"] for p in providers}
-                if not allowed_providers.isdisjoint(available_ids):
-                    streaming_available = True
-             else:
-                streaming_available = bool(providers)
-
-        # Filter by streaming if requested
-        if request.streaming_providers and not streaming_available:
-            logger.info(f"Dropped {movie.title}: Streaming unmatched (Required: {request.streaming_providers})")
-            continue
-
-        # Filter by VectorBox Score if min_rating is requested
-        # We treat None as 50 (neutral) to avoid dropping movies just because OMDb data is missing
-        stats_score = movie.vectorbox_score if movie.vectorbox_score is not None else 50
-        
-        # DEBUG: Log the comparison
-        if request.min_rating:
-             if stats_score < request.min_rating:
-                 logger.info(f"Dropped {movie.title}: Score {stats_score} < Min {request.min_rating}")
-                 continue
-        
-        final_score = normalize_similarity_score(result["score"])
-
-        recommendations.append(RecommendationResponse(
-            movie=MovieMetadata(
-                tmdb_id=movie.tmdb_id,
-                title=movie.title,
-                original_title=movie.original_title,
-                year=movie.year,
-                runtime=movie.runtime,
-                genres=movie.genres or [],
-                overview=movie.overview,
-                poster_path=movie.poster_path,
-                backdrop_path=movie.backdrop_path,
-                vote_average=movie.vote_average,
-                vectorbox_score=movie.vectorbox_score,
-                imdb_rating=movie.imdb_rating,
-                metacritic_rating=movie.metacritic_rating,
-
-                title_es=movie.title_es,
-                overview_es=movie.overview_es
-            ),
-            similarity_score=round(final_score, 0),
-            streaming_available=streaming_available,
-            streaming_providers=streaming_providers,
-            contributors=result.get("contributors", [])
-        ))
-        
-    return recommendations
-
-
-@router.post("/general", response_model=List[RecommendationResponse])
-@limiter.limit("30/minute")
-async def get_general_recommendations(
-    http_request: Request,
-    request: RecommendationRequest,
-    current_user: TokenResponse = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
+@router.post("/feed/filtered", response_model=FeedResponse)
+@limiter.limit("20/minute")
+async def filtered_feed(
+    # slowapi needs the starlette Request named `request`.
+    request: Request,
+    payload: FilteredSearchRequest,
+    # Anon-friendly (guest /explore rail), same as GET /feed.
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
     tmdb: TMDBClient = Depends(get_tmdb_client),
-    qdrant: QdrantService = Depends(get_qdrant_service)
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding: EmbeddingService = Depends(get_embedding_service),
+    redis=Depends(get_redis),
+    background_tasks: BackgroundTasks = None,
 ):
-    """
-    Get general movie recommendations based on user's taste profile
-    """
+    """F8: rail EXECUTE_QUERY as a SECTIONED feed. Same constraints as POST /filtered,
+    but returns the full FeedResponse built from the WIDE rows only (Trident, Because
+    You Watched, Hidden Gems) with the filter applied at each section's own search;
+    the narrow rows (auteur/actor/niche/popular/wildcard/random/upcoming) are skipped.
+    Providers are a post-filter (not a Qdrant payload field)."""
+    qf: Dict = {}
+    if payload.year_min:
+        qf["year_min"] = payload.year_min
+    if payload.year_max:
+        qf["year_max"] = payload.year_max
+    if payload.max_runtime:
+        qf["max_runtime"] = payload.max_runtime
+    if payload.genres:
+        qf["include_genres"] = payload.genres
+    if payload.min_score:
+        qf["min_vectorbox_score"] = payload.min_score
+
     try:
-        # L-1: user_id always derived from JWT (no more request.user_id)
-        user_id = current_user.user_id
-        
-        clustering = ClusteringService(qdrant=qdrant)
-        
-        # Build filters
-        filters = {}
-        if request.year_min:
-            filters["year_min"] = request.year_min
-        if request.year_max:
-            filters["year_max"] = request.year_max
-        if request.runtime_max:
-            filters["max_runtime"] = request.runtime_max
-        if request.genres:
-            filters["include_genres"] = request.genres
-        if request.min_vote_count:
-            filters["min_vote_count"] = request.min_vote_count
-        if request.min_rating:
-            filters["min_vectorbox_score"] = request.min_rating
-        if request.original_language:
-            filters["original_language"] = request.original_language
-        if request.include_keywords:
-            filters["include_keywords"] = request.include_keywords
-        if request.watchlist_only:
-            filters["watchlist_only"] = True
-        if request.streaming_providers:
-            filters["streaming_providers"] = request.streaming_providers
-        if request.country_code:
-            filters["country_code"] = request.country_code
-            
-        results = await clustering.get_item_based_recommendations(
-            user_id=user_id,
-            db=db,
-            filters=filters,
-            limit=request.limit,
-            page=request.page # Pagination
+        feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
+        return await feed_service.get_main_feed(
+            user_id=current_user.user_id,
+            country_code=payload.country_code or "ES",
+            streaming_providers=[],
+            tmdb=tmdb,
+            qdrant=qdrant,
+            background_tasks=background_tasks,
+            redis_client=redis,
+            filters=qf or None,
+            provider_filter=payload.providers or None,
         )
-        
-        return await _enrich_recommendations(results, user_id, db, request, tmdb)
-        
     except Exception as e:
-        logger.error(f"General recommendation failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate recommendations")
+        import traceback
+        traceback.print_exc()
+        logger.error(f"Filtered feed generation failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate filtered feed")
 
 
 @router.get("/clusters/{user_id}", response_model=List[ClusterInfo])
@@ -288,187 +173,342 @@ async def get_user_clusters(
     return cluster_infos
 
 
-@router.post("/by-mood", response_model=List[RecommendationResponse])
+@router.get("/why/{tmdb_id}")
 @limiter.limit("30/minute")
-async def get_recommendations_by_mood(
-    http_request: Request,
-    request: RecommendationRequest,
+async def why_this_film(
+    request: Request,
+    tmdb_id: int,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client),
-    qdrant: QdrantService = Depends(get_qdrant_service)
+    qdrant: QdrantService = Depends(get_qdrant_service),
 ):
+    """Recommendation-legibility breakdown for one film vs the current user.
+
+    Feeds the ACID UI's why-this surfaces (rail D1 / dossier D2 / /why page D3):
+      - trident:   {vibe, auteur, gems} presentation-layer split (sums to 1).
+                   Heuristic over real signals — vibe = nearest-anchor cosine,
+                   auteur = director overlap with the user's 4★+ films,
+                   gems = quality x low-popularity. NOT the engine's internal
+                   RRF weights (those aren't persisted per film).
+      - anchors:   the user's rated films most similar to this one (weights
+                   normalized over the top 3).
+      - neighbors: nearest films in the user's rated library by cosine distance.
+      - cluster:   the user's taste cluster whose medoid is nearest this film.
+      - rank/rank_pool: null — no persisted per-day ranked pool yet (UI hides).
     """
-    Get movie recommendations for a specific mood (cluster)
-    """
-    if request.cluster_id is None:
-        raise HTTPException(status_code=400, detail="cluster_id is required")
-    
-    # IDOR Protection
-    # L-1: user_id always derived from JWT
+    import numpy as np
+
     user_id = current_user.user_id
 
-    try:
-        clustering = ClusteringService(qdrant=qdrant)
-        
-        # Build filters
-        filters = {}
-        if request.year_min:
-            filters["year_min"] = request.year_min
-        if request.year_max:
-            filters["year_max"] = request.year_max
-        if request.runtime_max:
-            filters["max_runtime"] = request.runtime_max
-        if request.genres:
-            filters["include_genres"] = request.genres
-        if request.min_vote_count:
-            filters["min_vote_count"] = request.min_vote_count
-        if request.min_rating:
-            filters["min_vectorbox_score"] = request.min_rating
-        if request.original_language:
-            filters["original_language"] = request.original_language
-        if request.include_keywords:
-            filters["include_keywords"] = request.include_keywords
-        if request.watchlist_only:
-            filters["watchlist_only"] = True
-        if request.streaming_providers:
-            filters["streaming_providers"] = request.streaming_providers
-        if request.country_code:
-            filters["country_code"] = request.country_code
-        
-        # Get recommendations
-        results = await clustering.get_cluster_recommendations(
-            user_id=user_id,
-            db=db,
-            cluster_id=request.cluster_id,
-            filters=filters,
-            limit=request.limit,
-            page=request.page # Pagination
+    movie = (
+        await db.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
+    ).scalar_one_or_none()
+    if not movie:
+        raise HTTPException(status_code=404, detail="Movie not in catalogue")
+
+    # Stored catalogue vector only — regenerating on the fly creates an
+    # asymmetric vector space (see CLAUDE.md embedding hygiene).
+    target_vec = await qdrant.get_vector(tmdb_id)
+
+    # User's rated library (most recent 300 caps the vector fetch).
+    rated_rows = (
+        await db.execute(
+            select(UserRating, Movie)
+            .join(Movie, Movie.id == UserRating.movie_id)
+            .where(
+                UserRating.user_id == user_id,
+                UserRating.rating.isnot(None),
+                Movie.tmdb_id != tmdb_id,
+            )
+            .order_by(desc(UserRating.created_at))
+            .limit(300)
         )
-        
-        return await _enrich_recommendations(results, user_id, db, request, tmdb)
-        
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.error(f"Mood recommendation failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate recommendations")
+    ).all()
 
+    neighbors: list[dict] = []
+    anchors: list[dict] = []
+    max_sim = 0.0
 
-@router.post("/random", response_model=RecommendationResponse)
-@limiter.limit("30/minute")
-async def get_random_recommendation(
-    http_request: Request,
-    request: RecommendationRequest,
-    current_user: TokenResponse = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client),
-    qdrant: QdrantService = Depends(get_qdrant_service)
-):
-    """
-    Get a single random movie recommendation
-    """
-    try:
-        # IDOR Protection
-        # L-1: user_id always derived from JWT
-        user_id = current_user.user_id
-        
-        # Reuse general recommendations logic but pick one
-        clustering = ClusteringService(qdrant=qdrant)
-        filters = {}
-        # ... (simplified filter building)
-        if request.genres: filters["include_genres"] = request.genres
-        
-        results = await clustering.get_item_based_recommendations(
-            user_id=user_id,
-            db=db,
-            filters=filters,
-            limit=50 # Get a pool
+    if target_vec is not None and rated_rows:
+        rated_tmdb_ids = [m.tmdb_id for _, m in rated_rows]
+        vec_map = await qdrant.get_vectors_batch(rated_tmdb_ids)
+
+        scored = []  # (sim, rating_row, movie_row)
+        t = np.asarray(target_vec, dtype=np.float32)
+        t_norm = np.linalg.norm(t) or 1.0
+        for rating_row, movie_row in rated_rows:
+            v = vec_map.get(movie_row.tmdb_id)
+            if v is None:
+                continue
+            v = np.asarray(v, dtype=np.float32)
+            sim = float(np.dot(t, v) / (t_norm * (np.linalg.norm(v) or 1.0)))
+            scored.append((sim, rating_row, movie_row))
+        scored.sort(key=lambda s: s[0], reverse=True)
+
+        if scored:
+            max_sim = max(0.0, scored[0][0])
+
+        neighbors = [
+            {
+                "tmdb_id": m.tmdb_id,
+                "title": m.title,
+                "year": m.year,
+                "dist": round(max(0.0, 1.0 - sim), 2),
+                "poster_url": m.poster_path,
+            }
+            for sim, _, m in scored[:5]
+        ]
+
+        anchor_pool = [(sim, r, m) for sim, r, m in scored if (r.rating or 0) >= 3.5][:3]
+        weight_total = sum(max(s, 0.0) for s, _, _ in anchor_pool) or 1.0
+        anchors = [
+            {
+                "tmdb_id": m.tmdb_id,
+                "title": m.title,
+                "year": m.year,
+                "rating": r.rating,
+                "weight": round(max(sim, 0.0) / weight_total, 2),
+                "reason": (
+                    f"rewatched {r.watch_count}x" if (r.watch_count or 0) > 1
+                    else f"rated {r.rating:g}★"
+                    + (f" · {r.watched_date.strftime('%b %Y').lower()}" if r.watched_date else "")
+                ),
+                "poster_url": m.poster_path,
+            }
+            for sim, r, m in anchor_pool
+        ]
+
+    # Cluster: nearest medoid among the user's taste clusters.
+    cluster_out = None
+    clusters = (
+        await db.execute(select(UserCluster).where(UserCluster.user_id == user_id))
+    ).scalars().all()
+    if target_vec is not None and clusters:
+        medoid_ids = [c.medoid_movie_id for c in clusters if c.medoid_movie_id]
+        if medoid_ids:
+            medoid_movies = (
+                await db.execute(select(Movie).where(Movie.id.in_(medoid_ids)))
+            ).scalars().all()
+            medoid_tmdb = {m.id: m.tmdb_id for m in medoid_movies}
+            medoid_vecs = await qdrant.get_vectors_batch(list(medoid_tmdb.values()))
+            t = np.asarray(target_vec, dtype=np.float32)
+            t_norm = np.linalg.norm(t) or 1.0
+            best = None
+            for c in clusters:
+                mv = medoid_vecs.get(medoid_tmdb.get(c.medoid_movie_id))
+                if mv is None:
+                    continue
+                v = np.asarray(mv, dtype=np.float32)
+                sim = float(np.dot(t, v) / (t_norm * (np.linalg.norm(v) or 1.0)))
+                if best is None or sim > best[0]:
+                    best = (sim, c)
+            if best:
+                c = best[1]
+                cluster_out = {
+                    "id": c.cluster_id,
+                    "name": c.cluster_label,
+                    "movie_count": c.movie_count,
+                    "avg_rating": c.avg_rating,
+                }
+
+    # Auteur signal: does this film's director appear in the user's 4★+ films?
+    auteur_out = None
+    auteur_matches = 0
+    director = (movie.directors or [None])[0]
+    if director and rated_rows:
+        auteur_matches = sum(
+            1
+            for r, m in rated_rows
+            if (r.rating or 0) >= 4.0 and director in (m.directors or [])
         )
+        if auteur_matches:
+            auteur_out = {
+                "name": director,
+                "films_rated": auteur_matches,
+                "note": f"{auteur_matches} film{'s' if auteur_matches != 1 else ''} of theirs rated 4★+",
+            }
 
-        if not results:
-             raise HTTPException(status_code=404, detail="No movies found matching criteria")
+    # Gem signal: high quality x low visibility.
+    votes = movie.imdb_vote_count or movie.vote_count or 0
+    quality = (movie.vectorbox_score or 50.0) / 100.0
+    obscurity = 1.0 if votes < 5000 else 0.6 if votes < 20000 else 0.3 if votes < 100000 else 0.1
+    gem_out = (
+        {"vote_count": votes, "note": f"under-watched · Q{round((movie.vectorbox_score or 0)):d}"}
+        if obscurity >= 0.6 and quality >= 0.7
+        else None
+    )
 
-        enriched = await _enrich_recommendations(results, user_id, db, request, tmdb)
-        if not enriched:
-            raise HTTPException(status_code=404, detail="No movies found matching criteria")
-            
-        return random.choice(enriched)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Random picker failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to pick random movie")
+    # Trident: normalize the three raw signals into a presentation split.
+    vibe_raw = max(max_sim, 0.05)
+    auteur_raw = min(1.0, 0.45 * auteur_matches)
+    gems_raw = quality * obscurity
+    total = vibe_raw + auteur_raw + gems_raw
+    trident = {
+        "vibe": round(vibe_raw / total, 2),
+        "auteur": round(auteur_raw / total, 2),
+        "gems": round(gems_raw / total, 2),
+    }
+
+    # Rank within the live picked_for_you pool (TTL-bounded; None on cache miss).
+    from services.feed_service import get_cached_rank
+    rank_info = await get_cached_rank(user_id, tmdb_id)
+
+    return {
+        "tmdb_id": movie.tmdb_id,
+        "title": movie.title,
+        "year": movie.year,
+        "runtime": movie.runtime,
+        "director": director,
+        "q": movie.vectorbox_score,
+        "poster_url": movie.poster_path,
+        "trident": trident,
+        "anchors": anchors,
+        "neighbors": neighbors,
+        "cluster": cluster_out,
+        "auteur": auteur_out,
+        "gem": gem_out,
+        "rank": rank_info[0] if rank_info else None,
+        "rank_pool": rank_info[1] if rank_info else None,
+    }
 
 
-@router.post("/group", response_model=List[RecommendationResponse])
+@router.get("/space")
 @limiter.limit("10/minute")
-async def get_group_recommendations(
-    http_request: Request,  # required by slowapi
-    request: GroupRecommendationRequest,
+async def vector_space(
+    request: Request,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client),
-    qdrant: QdrantService = Depends(get_qdrant_service)
+    qdrant: QdrantService = Depends(get_qdrant_service),
 ):
-    """
-    Get recommendations for a group of users.
-    Requester must be a member of the group — otherwise an unauthenticated
-    guest could enumerate any pair of users' watchlist intersections.
-    """
-    if current_user.user_id not in request.user_ids:
-        raise HTTPException(status_code=403, detail="Access denied")
+    """2-D projection of the user's taste map for the ACID /space canvas.
 
-    try:
-        # 1. Find Watchlist Intersection — batch query instead of per-user loop
-        result = await db.execute(
-            select(UserRating.movie_id, UserRating.user_id).where(
-                UserRating.user_id.in_(request.user_ids),
-                UserRating.is_watchlist.is_(True)
-            )
+    - points: rated films (seen=true) + watchlist films (seen=false), each with
+      normalized [0,1] coords, cluster_id (nearest user-cluster medoid), Q and
+      `dc` = cosine distance to the user's taste centroid in the full 768-d
+      space (drives the "nearest to your centroid" drawer).
+    - centroid: the YOU marker, projected through the same PCA basis.
+    - PCA via numpy SVD: deterministic (sign-fixed), no extra deps.
+      ponytail: linear PCA is the floor; swap to UMAP only if real users say
+      the layout reads poorly.
+    """
+    import numpy as np
+
+    user_id = current_user.user_id
+
+    # Cap rated and watchlist separately — rated films are the substance of
+    # the map ("seen"), watchlist is context ("unseen"). A single recency cap
+    # let a freshly-imported watchlist crowd out the rated library.
+    rated_q = (
+        select(UserRating, Movie)
+        .join(Movie, Movie.id == UserRating.movie_id)
+        .where(
+            UserRating.user_id == user_id,
+            UserRating.rating.isnot(None),
+            UserRating.is_rejected.is_(False),
         )
-        watchlist_movies: dict = {}
-        for movie_id, user_id in result.all():
-            watchlist_movies[movie_id] = watchlist_movies.get(movie_id, 0) + 1
-        
-        threshold = len(request.user_ids) if len(request.user_ids) <= 2 else len(request.user_ids) / 2
-        intersection_ids = [mid for mid, count in watchlist_movies.items() if count >= threshold]
-        
-        recommendations = []
-        if intersection_ids:
-            result = await db.execute(select(Movie).where(Movie.id.in_(intersection_ids)))
-            movies = result.scalars().all()
-            raw_results = [{"movie_id": m.id, "score": 1.0} for m in movies]
-            
-            enrich_req = RecommendationRequest(
-                limit=request.limit
-            )
-            recommendations = await _enrich_recommendations(raw_results, request.user_ids[0], db, enrich_req, tmdb)
-            
-        # 2. Fallback
-        if len(recommendations) < 5:
-            remaining_limit = request.limit - len(recommendations)
-            clustering = ClusteringService(qdrant=qdrant)
-            general_results = await clustering.get_item_based_recommendations(
-                user_id=request.user_ids[0],
-                db=db,
-                limit=remaining_limit
-            )
-            
-            enrich_req = RecommendationRequest(limit=remaining_limit)
-            general_recs = await _enrich_recommendations(general_results, request.user_ids[0], db, enrich_req, tmdb)
-            
-            existing_ids = {r.movie.tmdb_id for r in recommendations}
-            for rec in general_recs:
-                if rec.movie.tmdb_id not in existing_ids:
-                    recommendations.append(rec)
-                    
-        return recommendations[:request.limit]
+        .order_by(desc(UserRating.created_at))
+        .limit(450)
+    )
+    watch_q = (
+        select(UserRating, Movie)
+        .join(Movie, Movie.id == UserRating.movie_id)
+        .where(
+            UserRating.user_id == user_id,
+            UserRating.rating.is_(None),
+            UserRating.is_watchlist.is_(True),
+            UserRating.is_rejected.is_(False),
+        )
+        .order_by(desc(UserRating.created_at))
+        .limit(150)
+    )
+    rows = list((await db.execute(rated_q)).all()) + list((await db.execute(watch_q)).all())
+    if len(rows) < 3:
+        return {"points": [], "centroid": None, "clusters": [], "total": 0}
 
-    except Exception as e:
-        logger.error(f"Group recommendation failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate group recommendations")
+    vec_map = await qdrant.get_vectors_batch([m.tmdb_id for _, m in rows])
+    placed = [(r, m, vec_map[m.tmdb_id]) for r, m in rows if m.tmdb_id in vec_map]
+    if len(placed) < 3:
+        return {"points": [], "centroid": None, "clusters": [], "total": 0}
+
+    clusters = (
+        await db.execute(select(UserCluster).where(UserCluster.user_id == user_id))
+    ).scalars().all()
+    medoid_ids = [c.medoid_movie_id for c in clusters if c.medoid_movie_id]
+    medoid_tmdb: Dict[int, int] = {}
+    if medoid_ids:
+        medoid_movies = (
+            await db.execute(select(Movie).where(Movie.id.in_(medoid_ids)))
+        ).scalars().all()
+        medoid_tmdb = {m.id: m.tmdb_id for m in medoid_movies}
+    medoid_vecs = await qdrant.get_vectors_batch(list(medoid_tmdb.values())) if medoid_tmdb else {}
+
+    def _project():
+        X = np.asarray([v for _, _, v in placed], dtype=np.float32)
+        # Rated-only centroid = the taste center (watchlist shouldn't drag YOU).
+        rated_mask = np.asarray([(r.rating is not None) for r, _, _ in placed])
+        center_of = X[rated_mask] if rated_mask.any() else X
+        centroid_vec = center_of.mean(axis=0)
+
+        mean = X.mean(axis=0)
+        Xc = X - mean
+        # SVD → top-2 principal axes; fix sign so layout is stable across reloads.
+        _, _, Vt = np.linalg.svd(Xc, full_matrices=False)
+        basis = Vt[:2]
+        for i in range(2):
+            if basis[i][np.argmax(np.abs(basis[i]))] < 0:
+                basis[i] = -basis[i]
+        coords = Xc @ basis.T                      # (n, 2)
+        c_xy = (centroid_vec - mean) @ basis.T     # (2,)
+
+        # Normalize everything into [0,1] with a small margin.
+        all_xy = np.vstack([coords, c_xy])
+        lo, hi = all_xy.min(axis=0), all_xy.max(axis=0)
+        span = np.where((hi - lo) > 1e-6, hi - lo, 1.0)
+        norm = lambda p: ((p - lo) / span * 0.9 + 0.05)  # noqa: E731
+        coords_n = norm(coords)
+        c_n = norm(c_xy)
+
+        # Cosine distance to centroid in full 768-d.
+        cn = centroid_vec / (np.linalg.norm(centroid_vec) or 1.0)
+        Xn = X / np.maximum(np.linalg.norm(X, axis=1, keepdims=True), 1e-9)
+        dc = 1.0 - Xn @ cn
+
+        # Cluster per point via nearest medoid (cosine).
+        cluster_ids = [None] * len(placed)
+        if medoid_vecs:
+            order = [c for c in clusters if medoid_tmdb.get(c.medoid_movie_id) in medoid_vecs]
+            M = np.asarray([medoid_vecs[medoid_tmdb[c.medoid_movie_id]] for c in order], dtype=np.float32)
+            Mn = M / np.maximum(np.linalg.norm(M, axis=1, keepdims=True), 1e-9)
+            sims = Xn @ Mn.T                      # (n, k)
+            nearest = sims.argmax(axis=1)
+            cluster_ids = [order[j].cluster_id for j in nearest]
+
+        return coords_n, c_n, dc, cluster_ids
+
+    loop = asyncio.get_running_loop()
+    coords_n, c_n, dc, cluster_ids = await loop.run_in_executor(None, _project)
+
+    points = [
+        {
+            "tmdb_id": m.tmdb_id,
+            "title": m.title,
+            "year": m.year,
+            "poster_url": m.poster_path,
+            "x": round(float(coords_n[i][0]), 4),
+            "y": round(float(coords_n[i][1]), 4),
+            "cluster_id": cluster_ids[i],
+            "seen": r.rating is not None,
+            "q": m.vectorbox_score,
+            "dc": round(float(dc[i]), 3),
+        }
+        for i, (r, m, _) in enumerate(placed)
+    ]
+    return {
+        "points": points,
+        "centroid": {"x": round(float(c_n[0]), 4), "y": round(float(c_n[1]), 4)},
+        "clusters": [{"id": c.cluster_id, "name": c.cluster_label} for c in clusters],
+        "total": len(points),
+    }
 
 
 @router.get("/feed", response_model=FeedResponse)
@@ -637,7 +677,30 @@ async def get_watchlist(
             item = await feed_service.engine.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=flat_providers)
             final_items.append(item)
 
-    return {"items": final_items, "total": total_items, "page": page, "limit": limit}
+    # Whole-queue aggregates for the ACID hero strip (independent of filters).
+    stats_row = (
+        await db.execute(
+            select(
+                func.coalesce(func.sum(Movie.runtime), 0),
+                func.count(),
+                func.count().filter(Movie.is_upcoming.is_(True)),
+            )
+            .select_from(Movie)
+            .join(UserRating, Movie.id == UserRating.movie_id)
+            .where(
+                UserRating.user_id == user_id,
+                UserRating.is_watchlist.is_(True),
+                UserRating.is_watched.is_(False),
+            )
+        )
+    ).first()
+    stats = {
+        "total_runtime_min": int(stats_row[0] or 0),
+        "total_films": int(stats_row[1] or 0),
+        "upcoming": int(stats_row[2] or 0),
+    }
+
+    return {"items": final_items, "total": total_items, "page": page, "limit": limit, "stats": stats}
 
 
 

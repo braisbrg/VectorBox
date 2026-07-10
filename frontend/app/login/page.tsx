@@ -1,26 +1,28 @@
 "use client";
 
+// Sign-in — handoff split-panel shell (auth-panel.tsx). AUTH LOGIC IS
+// BYTE-EQUIVALENT to the pre-reskin version: ?migrate=true flow,
+// claim-anonymous single-caller, flushGuestState, redirect targets and the
+// hash-routing workaround are untouched. Only the shell/JSX changed.
+
 import { Suspense, useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth, SignIn } from "@clerk/nextjs";
-import { m, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api";
 import { Loader2 } from "lucide-react";
+import { AuthSplit, clerkAcidAppearance } from "@/components/auth-panel";
+import { useLanguage } from "@/components/language-provider";
 
 function LoginContent() {
+    const { t } = useLanguage();
     const { isLoaded, isSignedIn } = useAuth();
     const { push } = useRouter();
     const searchParams = useSearchParams();
     const isMigrate = searchParams.get("migrate") === "true";
     const redirectUrl = isMigrate ? "/login?migrate=true" : "/";
-    const [mode, setMode] = useState<"choose" | "letterboxd">(
-        isMigrate ? "letterboxd" : "choose"
-    );
     const [migrating, setMigrating] = useState(false);
     const migrationAttempted = useRef(false);
     const newUserCheckAttempted = useRef(false);
-
-    // Fix 1 removed: no longer use local storage for guest rating checks.
 
     // After sign-in: migrate guest data or show onboarding chooser for new users
     useEffect(() => {
@@ -77,18 +79,18 @@ function LoginContent() {
 
     if (!isLoaded) {
         return (
-            <div className="min-h-screen flex items-center justify-center bg-background">
-                <span className="font-mono text-xs text-zinc-600">[ LOADING ]</span>
+            <div className="flex min-h-screen items-center justify-center bg-bg">
+                <span className="font-mono text-xs text-fg-3">[ LOADING ]</span>
             </div>
         );
     }
 
     if (migrating) {
         return (
-            <div className="min-h-screen flex flex-col items-center justify-center bg-background gap-4">
-                <Loader2 className="size-8 text-primary animate-spin" />
-                <p className="font-mono text-xs text-zinc-500 uppercase tracking-widest">
-                    Migrating your ratings…
+            <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-bg">
+                <Loader2 className="size-8 animate-spin text-primary" />
+                <p className="font-mono text-xs uppercase tracking-widest text-fg-3">
+                    {t("auth.migrating")}
                 </p>
             </div>
         );
@@ -100,107 +102,54 @@ function LoginContent() {
     // never a blank flash while navigation completes.
     if (isSignedIn && !isMigrate) {
         return (
-            <div className="min-h-screen flex items-center justify-center bg-background">
-                <Loader2 className="size-8 text-primary animate-spin" />
+            <div className="flex min-h-screen items-center justify-center bg-bg">
+                <Loader2 className="size-8 animate-spin text-primary" />
             </div>
         );
     }
 
+    // Straight to the sign-in form — the old "choose" step (letterboxd account /
+    // rate films) was redundant friction before the form. Guest/rate paths live on
+    // the landing + the "try guest mode" link below.
     return (
-        <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden">
-            <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10 pointer-events-none" />
+        <AuthSplit>
+            <div className="w-full max-w-md space-y-4">
+                <div>
+                    <p className="eyebrow mb-2 text-primary">{t("land.tier_account")}</p>
+                    <h1 className="font-display text-4xl uppercase leading-none tracking-[-0.02em] text-fg">
+                        {t("land.signin")}
+                    </h1>
+                    <p className="mt-2 font-mono text-[11px] text-fg-3">{t("auth.signin_sub")}</p>
+                </div>
 
-            <div className="z-10 w-full max-w-2xl px-4">
-                <AnimatePresence mode="wait">
-                    {mode === "choose" ? (
-                        <m.div
-                            key="choose"
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -20 }}
-                            transition={{ duration: 0.3 }}
-                            className="space-y-8 max-w-md mx-auto"
-                        >
-                            <div className="text-center space-y-2">
-                                <h1 className="text-4xl md:text-5xl font-black tracking-tighter font-mono">
-                                    VECTOR<span className="text-primary">BOX</span>
-                                </h1>
-                                <p className="text-zinc-500 font-mono text-[10px] uppercase tracking-[0.3em]">
-                                    AI Movie Recommendations
-                                </p>
-                            </div>
+                <SignIn
+                    // Hash routing keeps every sub-step (email-code verification,
+                    // OAuth/SSO callback, MFA) on THIS page via the URL hash. Path
+                    // routing — Clerk's default — navigates to /login/factor-one etc.,
+                    // which 404s here because this is NOT a catch-all route.
+                    routing="hash"
+                    // Keep the "Sign up" link on OUR /register page.
+                    signUpUrl="/register"
+                    appearance={clerkAcidAppearance}
+                    fallbackRedirectUrl={redirectUrl}
+                    forceRedirectUrl={redirectUrl}
+                    signUpFallbackRedirectUrl={redirectUrl}
+                    signUpForceRedirectUrl={redirectUrl}
+                />
 
-                            <div className="space-y-3">
-                                <button
-                                    onClick={() => setMode("letterboxd")}
-                                    className="w-full py-3.5 border border-border font-mono text-xs uppercase tracking-wider hover:border-primary hover:text-primary transition-all group"
-                                >
-                                    <span className="flex items-center justify-center gap-2">
-                                        <span className="text-[10px] text-zinc-600 group-hover:text-primary transition-colors">●</span>
-                                        I HAVE A LETTERBOXD ACCOUNT
-                                    </span>
-                                </button>
-
-                                <button
-                                    onClick={() => push("/onboarding/tags")}
-                                    className="w-full py-3.5 bg-primary text-black font-bold font-mono text-xs uppercase tracking-wider hover:bg-primary/90 transition-colors glow-primary-hover"
-                                >
-                                    RATE FILMS TO GET STARTED
-                                </button>
-                            </div>
-
-                            <p className="text-center text-[10px] font-mono text-zinc-700">
-                                No account needed to start rating
-                            </p>
-                        </m.div>
-                    ) : (
-                        <m.div
-                            key="letterboxd"
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -20 }}
-                            transition={{ duration: 0.3 }}
-                            className="space-y-4 max-w-md mx-auto"
-                        >
-                            <button
-                                onClick={() => setMode("choose")}
-                                className="text-[10px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors uppercase tracking-wider"
-                            >
-                                ← BACK
-                            </button>
-
-                            <SignIn
-                                // Hash routing keeps every sub-step (email-code
-                                // verification, OAuth/SSO callback, MFA) on THIS
-                                // page via the URL hash. Path routing — Clerk's
-                                // default — navigates to /login/factor-one etc.,
-                                // which 404s here because this is NOT a catch-all
-                                // route, producing a blank page stuck on /login.
-                                routing="hash"
-                                appearance={{
-                                    elements: {
-                                        rootBox: "font-mono",
-                                        card: "bg-background border border-border",
-                                        headerTitle: "text-primary font-mono",
-                                        formButtonPrimary:
-                                            "bg-primary text-background font-mono rounded-none",
-                                    },
-                                }}
-                                fallbackRedirectUrl={redirectUrl}
-                                forceRedirectUrl={redirectUrl}
-                                signUpFallbackRedirectUrl={redirectUrl}
-                                signUpForceRedirectUrl={redirectUrl}
-                            />
-                        </m.div>
-                    )}
-                </AnimatePresence>
+                <button
+                    onClick={() => push("/onboarding")}
+                    className="font-mono text-[11px] text-fg-3 transition-colors hover:text-primary"
+                >
+                    {t("auth.guest_unlock")}
+                </button>
             </div>
-        </div>
+        </AuthSplit>
     );
 }
 export default function LoginPage() {
     return (
-        <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
+        <Suspense fallback={<div className="min-h-screen bg-bg" />}>
             <LoginContent />
         </Suspense>
     );

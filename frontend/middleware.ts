@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { resolveLocale } from "@/lib/i18n";
 
 const isPublicRoute = createRouteMatcher([
+    "/",                  // landing split-screen (logged-out); logged-in → /feed (page.tsx)
+    "/try(.*)",           // guest features from the landing (magic box, mlt) — no auth
     "/login(.*)",
     "/register(.*)",
     "/privacy(.*)",
@@ -52,7 +54,7 @@ export default clerkMiddleware(async (auth, request) => {
         const isMigrate = request.nextUrl.pathname.startsWith('/login') &&
             request.nextUrl.searchParams.get('migrate') === 'true';
         if (!isMigrate) {
-            return finalize(NextResponse.redirect(new URL('/', request.url)));
+            return finalize(NextResponse.redirect(new URL('/feed', request.url)));
         }
     }
 

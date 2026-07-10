@@ -56,10 +56,7 @@ class DatabaseSeeder:
         self.trakt = TraktClient()
         self.factory = MovieFactory(self.tmdb, self.omdb, self.embedding_service)
         self.processed_count = 0
-        self.skipped_count = 0
         self.error_count = 0
-        self.omdb_requests = 0
-        self.OMDB_LIMIT = 950 # Daily limit buffer (1000 max)
         
     async def get_existing_tmdb_ids(self, db) -> set:
         """Fetch all TMDB IDs currently in the database"""
@@ -144,10 +141,15 @@ class DatabaseSeeder:
         return candidates
 
     async def fetch_top_rated_movies(self, existing_ids: set) -> List[Dict]:
-        """Critics' favorites: vote_average.desc with a high vote_count floor."""
+        """Critics' favorites: vote_average.desc with a high vote_count floor.
+
+        Floor lowered 1500 → 1000 (2026-07-03): the ≥1500 tier was fully
+        absorbed into the catalog (a 100-film run yielded 0 new), so 1000
+        opens the next tier while staying well above sparse-vote territory.
+        """
         return await self._discover_loop(
             existing_ids,
-            {"sort_by": "vote_average.desc", "vote_count_min": 1500},
+            {"sort_by": "vote_average.desc", "vote_count_min": 1000},
             "Finding NEW top-rated movies",
         )
 
@@ -440,7 +442,7 @@ class DatabaseSeeder:
                 await self.seed_batch(db, existing_ids)
             logger.info(
                 f"Seeding complete. Processed: {self.processed_count}, "
-                f"Skipped: {self.skipped_count}, Errors: {self.error_count}"
+                f"Errors: {self.error_count}"
             )
         finally:
             await self.aclose()
@@ -487,7 +489,7 @@ async def main():
         default="popular",
         help=(
             "popular: vote_count.desc | recent: last 90 days | upcoming: next 180 days | "
-            "top_rated: vote_average.desc with vote_count>=1500 | "
+            "top_rated: vote_average.desc with vote_count>=1000 | "
             "by_language: requires --language <iso-639-1> | "
             "classic: pre-1990 by vote_count | trending: /trending/movie/week | "
             "trakt_popular | trakt_trending | trakt_anticipated (require TRAKT_CLIENT_ID) | "

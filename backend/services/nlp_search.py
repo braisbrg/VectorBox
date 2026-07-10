@@ -1,12 +1,37 @@
 import os
 import re
 import instructor
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal
 from openai import AsyncOpenAI
 import logging
 
 logger = logging.getLogger(__name__)
+
+# LLM sometimes emits a language NAME ("Spanish") instead of the ISO 639-1 code
+# the catalogue stores ("es") — that mismatch silently zero-results the query
+# (observed live on "cine quinqui"). Map the common names; drop unknown names
+# rather than pass a value that can only over-filter to nothing.
+_LANG_NAME_TO_ISO = {
+    "spanish": "es", "castilian": "es", "english": "en", "french": "fr",
+    "german": "de", "italian": "it", "portuguese": "pt", "japanese": "ja",
+    "korean": "ko", "mandarin": "zh", "chinese": "zh", "cantonese": "zh",
+    "russian": "ru", "hindi": "hi", "arabic": "ar", "swedish": "sv",
+    "danish": "da", "norwegian": "no", "finnish": "fi", "dutch": "nl",
+    "polish": "pl", "turkish": "tr", "greek": "el", "hebrew": "he",
+    "thai": "th", "catalan": "ca", "basque": "eu", "galician": "gl",
+    "farsi": "fa", "persian": "fa", "vietnamese": "vi", "indonesian": "id",
+}
+
+
+def normalize_language(value: Optional[str]) -> Optional[str]:
+    """Coerce an LLM language value to an ISO 639-1 code (or None)."""
+    if not value:
+        return None
+    s = value.strip().lower()
+    if len(s) == 2:
+        return s
+    return _LANG_NAME_TO_ISO.get(s)  # unknown → None (drop the over-filter)
 
 # Curated typo / informal-spelling normalisation applied BEFORE the LLM.
 # Only includes terms where Llama 4 Scout 17B has been observed to drift
@@ -53,8 +78,16 @@ class MovieSearchIntent(BaseModel):
     min_runtime_minutes: Optional[int] = Field(None, description="Min duration in minutes.")
     max_runtime_minutes: Optional[int] = Field(None, description="Max duration in minutes.")
     min_rating: Optional[float] = Field(None, description="Minimum TMDB vote_average (0-10).")
+    min_vectorbox_score: Optional[float] = Field(None, description="Minimum VectorBox quality score Q (0-100). Used by the rail quality slider.")
     popularity_vibe: Literal["blockbuster", "hidden_gem", "any"] = Field("any", description="Select 'hidden_gem' for obscure/underrated, 'blockbuster' for famous/hits.")
-    original_language: Optional[str] = Field(None, description="ISO 639-1 language code.")
+    original_language: Optional[str] = Field(None, description="ISO 639-1 language code (e.g. 'es', 'en', 'ko'). Use the 2-letter code, never the language name.")
+
+    @field_validator("original_language")
+    @classmethod
+    def _coerce_lang_iso(cls, v):
+        # Defends against the LLM emitting "Spanish" instead of "es".
+        return normalize_language(v)
+
     reference_movie: Optional[str] = Field(None, description="If user asks for movies 'like' X, extract title.")
     quality_gate_bypass: bool = Field(False, description="Set True when user seeks campy, trashy, guilty-pleasure, so-bad-its-good, or B-movie content. Keeps low-scored films in results.")
 
@@ -169,12 +202,13 @@ def get_llm_client():
 
 async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     """
-    Tier-1 intent parser. Primary = Llama 3.3 70B (best structured-output
-    discipline on the realistic query panel — see experiment_magicbox_parser).
-    Fallback = Qwen3-32B, which fixed Scout's failure modes in the 2026-06
-    re-run (no quinqui→Almodóvar hallucination, real country lists instead of
-    the invalid "Europe", correct awards_contains) at the same 1K RPD and
-    sub-2s latency. Scout was retired from this path as the weakest parser.
+    Tier-1 intent parser. Primary = GPT-OSS-120B (chosen 2026-06-29 after a live
+    benchmark on the real prompt + response model: flat ~1.1s, 5/5 valid — the
+    fastest and most consistent; effort='low'). Fallback = Qwen3-32B
+    (vendor-diverse, proven on the multilingual panel — no quinqui→Almodóvar
+    hallucination, real country lists, correct awards_contains; effort='none').
+    Both qwen models spike to ~18s on some queries, so neither is the primary.
+    Llama 3.3 70B removed (Groq decommission 2026-08-16).
     """
     user_query = _normalize_typos(user_query)
     client = get_llm_client()
@@ -253,7 +287,13 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
         {"role": "user", "content": f"### USER QUERY ###\n{user_query}\n### END USER QUERY ###"},
     ]
 
-    primary_model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
+    # Parser model order — benchmarked live 2026-06-29 on the REAL prompt +
+    # response model: gpt-oss-120b parses in a flat ~1.1s, 5/5 valid (the fastest
+    # and most CONSISTENT). Both qwen3-32b and qwen3.6-27b spike to ~18s on some
+    # queries (reasoning), so qwen3-32b is the vendor-diverse FALLBACK only.
+    # (Llama 3.3 70B removed — Groq decommission 2026-08-16.)
+    _EFFORT = {"openai/gpt-oss-120b": "low", "qwen/qwen3-32b": "none"}
+    primary_model = "openai/gpt-oss-120b" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
     fallback_model = "qwen/qwen3-32b" if os.environ.get("GROQ_API_KEY") else None
 
     try:
@@ -261,7 +301,8 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
             model=primary_model,
             response_model=MovieSearchIntent,
             messages=messages,
-            temperature=0.1,
+            temperature=0,  # structured extraction — determinism over creativity (cuts search volatility)
+            extra_body={"reasoning_effort": _EFFORT[primary_model]} if primary_model in _EFFORT else None,
         )
     except Exception as e:
         if fallback_model:
@@ -271,11 +312,8 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
                     model=fallback_model,
                     response_model=MovieSearchIntent,
                     messages=messages,
-                    temperature=0.1,
-                    # Qwen3 is a reasoning model: disable chain-of-thought so it
-                    # doesn't burn the budget thinking before the tool call and
-                    # truncate the structured output.
-                    extra_body={"reasoning_effort": "none"},
+                    temperature=0,
+                    extra_body={"reasoning_effort": _EFFORT[fallback_model]} if fallback_model in _EFFORT else None,
                 )
             except Exception as e2:
                 logger.warning(f"Fallback model also failed: {e2}.")
@@ -291,7 +329,7 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
 
 async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List[ReasonedMovie]:
     """
-    Tier 2: Uses Llama 3.3 70B for Deep Analysis (RAG Re-ranking).
+    Tier 2: Uses GPT-OSS-120B for Deep Analysis (RAG Re-ranking).
     Analyzing Top 20 candidates to find the Top 5 that match the *nuance*.
     """
     client = get_llm_client()
@@ -316,7 +354,7 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
     For each selected movie, write a 1-sentence 'AI Reason' explaining why it fits this specific request perfectly.
     """
 
-    model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
+    model = "openai/gpt-oss-120b" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -326,6 +364,9 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
                 {"role": "user", "content": f"Candidates:\n{context_str}"},
             ],
             temperature=0.3, # Slight creativity for reasoning
+            # gpt-oss-120b is a reasoning model (replaced 70B 2026-06-29) — min
+            # effort keeps the structured rerank clean. None for gemini.
+            extra_body={"reasoning_effort": "low"} if model.startswith("openai/") else None,
         )
         return response.selected_items
     except Exception as e:

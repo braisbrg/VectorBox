@@ -1,9 +1,4 @@
 import Link from "next/link";
-
-/**
- * Custom 404 Page - Acid Design
- * "Glitch in the Matrix" theme
- */
 import { Metadata } from "next";
 
 export const metadata: Metadata = {
@@ -11,60 +6,21 @@ export const metadata: Metadata = {
     description: "The page you are looking for has been lost in the matrix.",
 };
 
+// 404 — states gallery 03 "route not found"
 export default function NotFound() {
     return (
-        <main className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center p-6">
-            {/* Glitch Effect Container */}
-            <div className="text-center space-y-8 max-w-md">
-                {/* 404 Display */}
-                <div className="relative">
-                    <h1 className="text-[120px] md:text-[180px] font-black font-space text-transparent leading-none"
-                        style={{
-                            WebkitTextStroke: "2px hsl(var(--primary))",
-                        }}
-                    >
-                        404
-                    </h1>
-                    <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="text-primary font-mono text-sm uppercase tracking-widest animate-pulse">
-                            Signal Lost
-                        </span>
-                    </div>
-                </div>
-
-                {/* Message */}
-                <div className="space-y-2">
-                    <p className="text-white/80 font-mono text-lg uppercase tracking-wide">
-                        Glitch in the Matrix
-                    </p>
-                    <p className="text-white/40 font-mono text-xs">
-                        The page you&apos;re looking for doesn&apos;t exist in this dimension.
-                    </p>
-                </div>
-
-                {/* Action Button */}
-                <div className="pt-4">
-                    <Link
-                        href="/"
-                        className="inline-block px-8 py-4 bg-primary text-black font-black font-mono uppercase tracking-wider hover:bg-white transition-colors border-2 border-primary"
-                        aria-label="Return to home page"
-                    >
-                        Return Home
-                    </Link>
-                </div>
-
-                {/* Decorative Grid Lines */}
-                <div className="pt-8 flex justify-center gap-2">
-                    {["a","b","c","d","e"].map((id, i) => (
-                        <div
-                            key={id}
-                            className="size-2 bg-primary/30"
-                            style={{
-                                animation: `pulse 1s ease-in-out ${i * 0.2}s infinite`,
-                            }}
-                        />
-                    ))}
-                </div>
+        <main className="flex min-h-screen flex-col items-center justify-center bg-bg p-6">
+            <div className="w-full max-w-md border border-border-2 bg-bg-2 p-10 text-center">
+                <p className="font-display text-7xl leading-none text-primary">404</p>
+                <p className="mt-3 font-mono text-[11px] uppercase tracking-widest text-fg-3">
+                    route_not_in_vector_space
+                </p>
+                <Link
+                    href="/feed"
+                    className="mt-6 inline-block border border-border-2 px-4 py-2 font-mono text-[10px] uppercase tracking-[0.1em] text-fg-2 transition-colors hover:border-primary hover:text-primary"
+                >
+                    ← back to feed
+                </Link>
             </div>
         </main>
     );

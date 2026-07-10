@@ -3,7 +3,7 @@ import random
 import asyncio
 import math
 import functools
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, or_
@@ -63,6 +63,17 @@ MOVIE_QUALITY_GATE = [
     Movie.vectorbox_score.isnot(None),
     Movie.is_excluded.is_(False),
 ]
+
+# Because You Watched quality floor. VBS — NOT a vote-count floor — is the right
+# lever here (measured 2026-07-06). A vote-count floor is a popularity proxy that
+# cuts the BEST obscure matches (Edward Yang's Taipei Story, Rohmer, Ghibli shorts
+# — cos 0.74-0.79, VBS 61-72) while VBS already sorts quality: the real junk in the
+# raw neighbours is VBS=None phantom entries (removed by MOVIE_QUALITY_GATE) and
+# low-VBS popular films (Twilight VBS 30 < 55). VBS's Bayesian shrinkage means a
+# low-vote film that still scores high has genuinely strong ratings. 55→60 trims
+# the weak tail (El verano 55.0, Mirrored Mind 57.7, Carrie Pilby 57.1) while
+# keeping the obscure-but-excellent matches a vote floor would have killed.
+BYW_MIN_VBS = 60
 
 # Global evocative themes rotating independently of user clusters
 GLOBAL_THEMES = [
@@ -158,6 +169,30 @@ EXCLUSION_PAIRS = [
     ({"Musical", "Music"}, {"Musical", "Music"}),
     ({"Western"}, {"Western"}),
 ]
+
+
+def _movie_filter_clauses(filters: Dict = None) -> list:
+    """F8: translate the rail filter dict (Qdrant key names) into SQLAlchemy WHERE
+    clauses for the DB-driven wide sections. Empty list when unfiltered → no-op in
+    `.where(*[])`, so the normal feed is untouched."""
+    if not filters:
+        return []
+    clauses = []
+    if filters.get("year_min"):
+        clauses.append(Movie.year >= filters["year_min"])
+    if filters.get("year_max"):
+        clauses.append(Movie.year <= filters["year_max"])
+    if filters.get("max_runtime"):
+        clauses.append(Movie.runtime.isnot(None))
+        clauses.append(Movie.runtime <= filters["max_runtime"])
+    if filters.get("min_vectorbox_score"):
+        clauses.append(Movie.vectorbox_score >= filters["min_vectorbox_score"])
+    if filters.get("include_genres"):
+        clauses.append(Movie.genres.overlap(filters["include_genres"]))
+    # F8: provider-resolved allowed id set (see qdrant_service include_tmdb_ids).
+    if filters.get("include_tmdb_ids"):
+        clauses.append(Movie.tmdb_id.in_(filters["include_tmdb_ids"]))
+    return clauses
 
 
 def _get_signal_c_thresholds(user_movie_count: int) -> dict:
@@ -331,6 +366,26 @@ class RecommendationEngine:
         
         final_score = normalize_similarity_score(score)
 
+        # Country-aware "coming soon" badge, feed-wide: films trending worldwide
+        # (popular row, BYW, …) can be unreleased in the user's country. Only
+        # asserts on a positive future TMDB date for that country — no date, no
+        # badge (the dedicated upcoming section keeps its richer ES/WW ladder
+        # and is skipped here via its pre-set upcoming contributor).
+        contributors = list(contributors) if contributors else []
+        if not any(c.get("type") == "upcoming" for c in contributors):
+            raw_local = (movie.release_dates or {}).get(country.upper()) if country else None
+            try:
+                local_date = date.fromisoformat(raw_local) if raw_local else None
+            except (ValueError, TypeError):
+                local_date = None
+            if local_date and local_date > date.today():
+                contributors.append({
+                    "type": "upcoming",
+                    "label": "Coming soon",
+                    "release_badge": f"{country.upper()} · {local_date.strftime('%d %b').upper()}",
+                    "release_note": None,
+                })
+
         return FeedItem(
             id=movie.tmdb_id,
             title=movie.title,
@@ -342,14 +397,15 @@ class RecommendationEngine:
             letterboxd_uri=movie.letterboxd_uri,
             rating=movie.vote_average,
             overview=movie.overview,
-            contributors=contributors or [],
+            contributors=contributors,
             vectorbox_score=movie.vectorbox_score,
             imdb_rating=movie.imdb_rating,
             metacritic_rating=movie.metacritic_rating,
 
             title_es=movie.title_es,
             overview_es=movie.overview_es,
-            release_dates=movie.release_dates
+            release_dates=movie.release_dates,
+            backdrop_url=movie.backdrop_path,
         )
 
     async def get_because_you_watched_section(
@@ -362,7 +418,9 @@ class RecommendationEngine:
         country: str,
         provider_service: ProviderService = None,
         background_tasks = None,
-        precomputed_anti_vector = None
+        precomputed_anti_vector = None,
+        filters: Dict = None,
+        pool_limit: int = None,
     ) -> FeedSection:
         """Signal A: Because you watched [Movie X] — Item-Item Collaborative Filtering"""
         with _tracer.start_as_current_span("trident.signal_a.because_you_watched") as span:
@@ -472,7 +530,8 @@ class RecommendationEngine:
                 similar_results = await qdrant.search_similar(
                     query_vector=anchor_vector,
                     limit=500,
-                    score_threshold=0.25
+                    score_threshold=0.25,
+                    filters=filters,  # F8: rail constraints applied inside the search (no starvation)
                 )
                 
                 found_tmdb_ids = [res["movie_id"] for res in similar_results]
@@ -509,7 +568,7 @@ class RecommendationEngine:
                         select(Movie)
                         .where(Movie.tmdb_id.in_(target_ids))
                         .where(*MOVIE_QUALITY_GATE)
-                        .where(Movie.vectorbox_score >= 55)
+                        .where(Movie.vectorbox_score >= BYW_MIN_VBS)
                     )
                     fetched_movies = movies_result.scalars().all()
                     movie_map = {m.tmdb_id: m for m in fetched_movies}
@@ -556,6 +615,9 @@ class RecommendationEngine:
                             "score": penalized_score,
                             "movie": movie,
                         })
+                        # NOTE: keep this cap FIXED at 50 — it feeds MMR, and a bigger
+                        # MMR input would reshuffle the displayed top-15 vs the live feed
+                        # (greedy diversity). The F8 deep tail draws from these same 50.
                         if len(mmr_candidates) >= 50:
                             break
 
@@ -617,6 +679,16 @@ class RecommendationEngine:
                 except Exception as e:
                     logger.error(f"MMR failed in Signal A, falling back to top-15: {e}")
                     mmr_results = mmr_candidates[:15]
+
+                # F8 deep pool (filtered feed only): append the remaining candidates in
+                # score order below the untouched MMR top-15 — output-filter fodder only.
+                if pool_limit and len(mmr_results) < pool_limit:
+                    picked_ids = {c["movie_id"] for c in mmr_results}
+                    tail = sorted(
+                        (c for c in mmr_candidates if c["movie_id"] not in picked_ids),
+                        key=lambda c: c["score"], reverse=True,
+                    )
+                    mmr_results = list(mmr_results) + tail[: pool_limit - len(mmr_results)]
 
                 items = []
                 for cand in mmr_results:
@@ -828,7 +900,9 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
-        background_tasks = None
+        background_tasks = None,
+        filters: Dict = None,
+        pool_limit: int = None,
     ) -> FeedSection:
         """Signal C: Hidden Gems — Score-to-Hype Filtering"""
         with _tracer.start_as_current_span("trident.signal_c.hidden_gems") as span:
@@ -852,6 +926,9 @@ class RecommendationEngine:
             )
             excluded_internal_ids = set(excluded_result.scalars().all())
 
+            # F8: rail constraints applied in-query (wide 200-pool, no starvation).
+            _flt = _movie_filter_clauses(filters)
+
             result = await db.execute(
                 select(Movie)
                 .where(*MOVIE_QUALITY_GATE)
@@ -859,6 +936,7 @@ class RecommendationEngine:
                 .where(Movie.popularity <= thresholds["max_popularity"])
                 .where(Movie.vote_count >= thresholds["min_votes"])
                 .where(Movie.id.notin_(excluded_internal_ids) if excluded_internal_ids else True)
+                .where(*_flt)
                 .order_by(desc(Movie.vectorbox_score))
                 .limit(200)
             )
@@ -936,6 +1014,14 @@ class RecommendationEngine:
             except Exception as e:
                 logger.error(f"MMR failed in Hidden Gems: {e}")
                 mmr_results = mmr_candidates[:10]
+
+            # F8 deep pool (filtered feed only): append remaining candidates in score
+            # order below the untouched MMR top-10 — output-filter fodder only.
+            if pool_limit and len(mmr_results) < pool_limit:
+                picked_ids = {c["movie_id"] for c in mmr_results}
+                mmr_results = list(mmr_results) + [
+                    c for c in mmr_candidates if c["movie_id"] not in picked_ids
+                ][: pool_limit - len(mmr_results)]
 
             if provider_service:
                 cand_ids = [c["movie_id"] for c in mmr_results]
@@ -1026,6 +1112,7 @@ class RecommendationEngine:
                         vectorbox_score=vb,
                         imdb_rating=movie.imdb_rating,
                         metacritic_rating=movie.metacritic_rating,
+                        backdrop_url=movie.backdrop_path,
 
                         title_es=movie.title_es,
                         overview_es=movie.overview_es,
@@ -1203,6 +1290,10 @@ class RecommendationEngine:
             if it.get("letterboxd_rating") is None or it["letterboxd_rating"] >= LB_RATING_FLOOR
         ]
         popular_ids = [it["tmdb_id"] for it in filtered_items]
+        # The scraped Popular-Chart rating lives on the cache item, NOT the
+        # Movie.letterboxd_rating column (nothing writes that column). Surface
+        # it from here; None (Trakt fallback) → card shows the year instead.
+        rating_by_tmdb = {it["tmdb_id"]: it.get("letterboxd_rating") for it in filtered_items}
 
         if not popular_ids:
             return None
@@ -1250,8 +1341,9 @@ class RecommendationEngine:
                     movie, 0.95, country, tmdb, include_rating=True,
                     streaming_providers=flat_providers
                 )
-                if movie.letterboxd_rating:
-                    item.letterboxd_rating = movie.letterboxd_rating
+                scraped_lb = rating_by_tmdb.get(tmdb_id)
+                if scraped_lb:
+                    item.letterboxd_rating = scraped_lb
                 items.append(item)
                 
         if not items:

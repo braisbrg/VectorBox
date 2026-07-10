@@ -5,8 +5,16 @@ imdb_id), this script reuses the imdb_rating, metacritic_rating, vote_average,
 imdb_vote_count and vote_count already stored in `movies`. Run this after
 changing the VBS formula to backfill the new scores in seconds.
 
+AUD-DATA-3 (fixed 2026-07-10): the run now ALSO syncs the recalculated scores
+into the Qdrant payload (`vectorbox_score`), which the rail Q-slider and the F8
+filtered feed filter on INSIDE the vector search. Before this, payloads were
+only stamped at (re-)embed time — a post-embed recalc left them stale (measured
+39% drift, worst 25.6 points → films wrongly excluded from Q-filtered searches).
+
 Usage:
     docker compose exec backend python scripts/recalc_vbs_from_db.py
+    docker compose exec backend python scripts/recalc_vbs_from_db.py --sync-payload-only
+        (no recalculation — just pushes the current PG scores into Qdrant)
 """
 import asyncio
 import logging
@@ -15,14 +23,48 @@ import sys
 
 sys.path.append(os.getcwd())
 
+from qdrant_client import models as qmodels
 from sqlalchemy import select
 from config import AsyncSessionLocal
 from models.database import Movie
 from models.external_schemas import OMDbResponse
 from services.omdb_client import OMDbClient
+from services.qdrant_service import QdrantService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("recalc_vbs_from_db")
+
+
+async def sync_payloads() -> None:
+    """Push every movie's current PG `vectorbox_score` into its Qdrant payload.
+
+    Batched (500 ops/request). Films with VBS=None get payload null so they
+    can't ride a stale value past a Q filter. Missing points are skipped by
+    Qdrant silently (vector may not exist yet — embed jobs stamp it on upsert).
+    """
+    qdrant = QdrantService()
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(select(Movie.tmdb_id, Movie.vectorbox_score))).all()
+        logger.info(f"Syncing vectorbox_score payload for {len(rows)} films into Qdrant…")
+        BATCH = 500
+        for i in range(0, len(rows), BATCH):
+            ops = [
+                qmodels.SetPayloadOperation(
+                    set_payload=qmodels.SetPayload(
+                        payload={"vectorbox_score": score},
+                        points=[tmdb_id],
+                    )
+                )
+                for tmdb_id, score in rows[i : i + BATCH]
+            ]
+            await qdrant.client.batch_update_points(
+                collection_name=qdrant.COLLECTION_NAME, update_operations=ops
+            )
+            logger.info(f"  payload sync {min(i + BATCH, len(rows))}/{len(rows)}")
+        logger.info("Qdrant payload sync complete.")
+    finally:
+        await qdrant.aclose()
 
 
 def _synthetic_omdb(movie: Movie) -> OMDbResponse:
@@ -89,6 +131,12 @@ async def recalc():
     if updated:
         logger.info(f"Average score delta on updated rows: {delta_sum / updated:+.2f}")
 
+    # AUD-DATA-3: keep the Qdrant copy in lockstep with PG on every recalc.
+    await sync_payloads()
+
 
 if __name__ == "__main__":
-    asyncio.run(recalc())
+    if "--sync-payload-only" in sys.argv:
+        asyncio.run(sync_payloads())
+    else:
+        asyncio.run(recalc())

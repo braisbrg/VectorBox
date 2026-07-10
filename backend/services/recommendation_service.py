@@ -38,6 +38,15 @@ SIGNAL_C_VEC_SIM_THRESHOLD = 0.40  # min cosine between seed and candidate
 SIGNAL_C_REQUIRE_GENRE_OVERLAP = True  # candidate must share ≥1 genre with the seed that recommended it
 SIGNAL_C_MAX_SEEDS = 8  # number of high-quality user films to query for related (was 5; broader pool)
 SIGNAL_C_PER_SEED_TAKE = 5  # candidates kept per seed
+# RRF fusion weight for Signal C (crowd/gems) relative to vibe/auteur (both 1.0).
+# The large Trakt related pool made crowd-ONLY films (no vibe/auteur corroboration)
+# flood Picked For You. Measured crowd-DOMINANT share of the top-10 across two real
+# users (917 + 2713 ratings) vs this weight:
+#   1.0 → 70% / 40%   (flooded)
+#   0.7 → 30% / 30%   ← chosen: "turned down" but keeps ~3/10 collab discovery
+#   0.5 →  0% /  0%   (eliminates crowd from the visible row)
+# Lower it toward 0.5 for a harder cut; raise toward 1.0 to restore the flood.
+SIGNAL_C_RRF_WEIGHT = 0.7
 
 # Generic genres co-occur across most films and don't tell us anything about user taste.
 # Removed before computing the user's "distinctive" genre set for Signal A coherence.
@@ -100,12 +109,14 @@ class RecommendationService:
 
     @safe_execution(fallback_return=FeedSection(id="picked_for_you", title="Picked For You (Signal Lost)", items=[]))
     async def get_hybrid_picks_section(
-        self, 
-        user_id: int, 
+        self,
+        user_id: int,
         country: str,
         seen_ids: Set[int],
         provider_service: ProviderService = None,
-        background_tasks = None
+        background_tasks = None,
+        filters: Dict = None,
+        pool_limit: int = None,
     ) -> FeedSection:
         """
         Main entry point for "The Trident" row.
@@ -129,7 +140,7 @@ class RecommendationService:
             logger.info(f"[TRIDENT] Signal {name} took {duration:.0f}ms")
             return res
 
-        signal_a_task = measure_signal("A (Vibe)", "get_signal_a_vibe", user_id, exclude_ids=seen_ids, background_tasks=background_tasks)
+        signal_a_task = measure_signal("A (Vibe)", "get_signal_a_vibe", user_id, exclude_ids=seen_ids, background_tasks=background_tasks, filters=filters)
         signal_b_task = measure_signal("Auteur", "get_signal_b_auteur", user_id, exclude_ids=seen_ids)
         signal_c_task = measure_signal("C (Crowd)", "get_signal_c_crowd", user_id, exclude_ids=seen_ids, background_tasks=background_tasks)
         
@@ -154,20 +165,26 @@ class RecommendationService:
         # Build per-signal score maps for contributor provenance (A3)
         signal_a_ids = {m.id: 1 / (60 + i) for i, m in enumerate(signal_a)}
         signal_b_ids = {m.id: 1 / (60 + i) for i, m in enumerate(signal_b)}
-        signal_c_ids = {m.id: 1 / (60 + i) for i, m in enumerate(signal_c)}
+        # Same down-weight as fusion so the /why trident composition matches ranking.
+        signal_c_ids = {m.id: SIGNAL_C_RRF_WEIGHT / (60 + i) for i, m in enumerate(signal_c)}
 
         # 2. Fusion (RRF)
         # We assume candidates are Movie objects (or dicts representing them)
         # We need uniform ID access. Let's make sure signals return Movie objects.
 
-        rrf_scores = self.reciprocal_rank_fusion([signal_a, signal_b, signal_c])
+        # Down-weight Signal C (crowd/gems) so crowd-only films don't flood the
+        # row — see SIGNAL_C_RRF_WEIGHT. Order must match [A (vibe), B (auteur), C].
+        rrf_scores = self.reciprocal_rank_fusion(
+            [signal_a, signal_b, signal_c], weights=[1.0, 1.0, SIGNAL_C_RRF_WEIGHT]
+        )
 
         # 3. Post-Processing (Quality & Diversity)
         final_items = await self.hybrid_reranking(
             rrf_scores, user_id, country, provider_service,
             signal_a_ids=signal_a_ids,
             signal_b_ids=signal_b_ids,
-            signal_c_ids=signal_c_ids
+            signal_c_ids=signal_c_ids,
+            pool_limit=pool_limit,
         )
         
         # Update seen_ids
@@ -274,7 +291,7 @@ class RecommendationService:
             logger.warning(f"Timeout waiting for lock {lock_key}. Computing fallback.")
             return await compute_method(user.id, **params)
 
-    async def get_signal_a_vibe(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
+    async def get_signal_a_vibe(self, user_id: int, exclude_ids: Set[int], background_tasks = None, filters: Dict = None) -> List[Movie]:
         """
         Signal A: The Vibe Expert (Vectors)
         Uses Qdrant via ClusteringService logic.
@@ -285,10 +302,16 @@ class RecommendationService:
             logger.warning(f"User {user_id} not found for Vibe signal.")
             return []
 
+        # F8: only add `filters` to the params (→ signal cache key + compute kwargs)
+        # when present, so the unfiltered feed's cache key is byte-identical to before.
+        params = {"exclude_ids": list(exclude_ids), "background_tasks": background_tasks}
+        if filters:
+            params["filters"] = filters
+
         return await self._get_signal_with_cache_and_lock(
             user=user_obj,
             signal_type="vibe",
-            params={"exclude_ids": list(exclude_ids), "background_tasks": background_tasks},
+            params=params,
             compute_method=self._compute_vibe_signal_raw
         )
 
@@ -352,14 +375,16 @@ class RecommendationService:
         from utils.genre_utils import get_distinctive_user_genres
         return await get_distinctive_user_genres(user_id, self.db)
 
-    async def _compute_vibe_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
+    async def _compute_vibe_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None, filters: Dict = None) -> List[Movie]:
         """
         Raw computation for Signal A: The Vibe Expert (Vectors)
         """
         raw_recs = await self.clustering.get_user_centric_recommendations(
             user_id=user_id,
             db=self.db,
-            filters={"min_vote_count": 500}, # Basic quality filter
+            # F8: fold the rail's hard constraints into the centroid search so the
+            # Trident's vibe pool is filtered AT SOURCE (whole catalogue, no starvation).
+            filters={"min_vote_count": 500, **(filters or {})},
             limit=50,
             background_tasks=background_tasks
         )
@@ -792,22 +817,25 @@ class RecommendationService:
         )
         return unique
 
-    def reciprocal_rank_fusion(self, candidate_lists: List[List[Movie]], k=60) -> Dict[int, float]:
+    def reciprocal_rank_fusion(
+        self, candidate_lists: List[List[Movie]], k=60, weights: List[float] = None
+    ) -> Dict[int, float]:
         """
         RRF Algorithm: Merges multiple ranked lists.
-        Score = sum(1 / (k + rank))
+        Score = sum(weight_list / (k + rank)); weights default to 1.0 per list.
         """
         scores = {}
         movies_map = {} # To keep track of objects
-        
-        for lst in candidate_lists:
+
+        for i, lst in enumerate(candidate_lists):
+            w = weights[i] if weights else 1.0
             for rank, movie in enumerate(lst):
                 if movie.id not in scores:
                     scores[movie.id] = 0.0
                     movies_map[movie.id] = movie
-                
-                scores[movie.id] += 1 / (k + rank)
-                
+
+                scores[movie.id] += w / (k + rank)
+
         return scores
 
     async def hybrid_reranking(
@@ -819,6 +847,7 @@ class RecommendationService:
         signal_a_ids: Dict[int, float] = None,
         signal_b_ids: Dict[int, float] = None,
         signal_c_ids: Dict[int, float] = None,
+        pool_limit: int = None,
     ) -> List[FeedItem]:
         def build_contributors(movie_id, score_a, score_b, score_c):
             score_a, score_b, score_c = score_a or {}, score_b or {}, score_c or {}
@@ -935,6 +964,16 @@ class RecommendationService:
                     if len(final_list) >= 10:
                         break
 
+        # F8 deep pool (filtered feed only): APPEND the next-best candidates (score
+        # order, already director-capped) below the MMR top-10. The displayed head
+        # stays byte-identical to the live feed — the tail exists solely as fodder
+        # for the output filter, which caps the row back to its live size after.
+        if pool_limit and len(final_list) < pool_limit:
+            picked_ids = {c["movie_id"] for c in final_list}
+            final_list = list(final_list) + [
+                c for c in candidates if c["movie_id"] not in picked_ids
+            ][: pool_limit - len(final_list)]
+
         # 5. Batch-fetch providers (single query, no N+1)
         feed_items = []
         if provider_service and final_list:
@@ -964,7 +1003,8 @@ class RecommendationService:
                 metacritic_rating=movie.metacritic_rating,
 
                 title_es=movie.title_es,
-                overview_es=movie.overview_es
+                overview_es=movie.overview_es,
+                backdrop_url=movie.backdrop_path,
             ))
 
         return feed_items
@@ -1107,6 +1147,7 @@ class RecommendationService:
                 runtime=m.runtime,
                 overview=m.overview,
                 vectorbox_score=m.vectorbox_score,
+                backdrop_url=m.backdrop_path,
                 contributors=[{
                     "type": "auteur",
                     "label": f"Director you follow: {director_name}",
@@ -1313,6 +1354,7 @@ class RecommendationService:
                 runtime=m.runtime,
                 overview=m.overview,
                 vectorbox_score=m.vectorbox_score,
+                backdrop_url=m.backdrop_path,
                 contributors=[{
                     "type": "cult_actor",
                     "label": f"Actor you follow: {matched_actor}",

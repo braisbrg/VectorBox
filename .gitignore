@@ -146,7 +146,11 @@ skills-lock.json
 AGENTS.md
 CLAUDE.md
 STACK_RULES.md
-PROJECT_MASTER_GUIDE.md
-QA_TESTING_MANUAL.md
-DEPLOYMENT.md
 BACKLOG.md
+docs/PROJECT_MASTER_GUIDE.md
+docs/QA_TESTING_MANUAL.md
+docs/DEPLOYMENT.md
+
+# Design handoff sources (local reference until archived post-release)
+design_handoff_vectorbox/
+handoff_items/

@@ -4,9 +4,10 @@ import { m, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import { getTMDBImageUrl, getLetterboxdUrl, getWildcardRecommendation, getRandomRecommendation, getHiddenGemsRecommendation, rejectMovie, markWatched, rerollCluster } from "@/lib/api";
 import type { Contributor } from "@/types/feed";
-import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
+import { RefreshCw, ChevronLeft, ChevronRight, ChevronDown } from "lucide-react";
 import { useRef, useState, useEffect, useCallback } from "react";
 import { MovieCard } from "@/components/ui/movie-card";
+import { cn } from "@/lib/utils";
 import { useLanguage } from "@/components/language-provider";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { scheduleFeedInvalidation } from "@/lib/feed-invalidation";
@@ -42,14 +43,17 @@ interface MovieCarouselProps {
     priority?: boolean;
     onInspect?: (movie: import("@/lib/api").FeedItem, sectionId?: string) => void;
     onReject?: (id: number) => void;
+    /** Film shown in the desktop hero — hidden from this row ≥lg only (mobile has no hero). */
+    heroId?: number;
 }
 
-export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore, priority = false, onInspect, onReject }: MovieCarouselProps) {
+export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore, priority = false, onInspect, onReject, heroId }: MovieCarouselProps) {
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const isMounted = useRef(true);
     const [localItems, setLocalItems] = useState<FeedItem[]>(items);
     const [localTitle, setLocalTitle] = useState<string>(title);
     const [isRerolling, setIsRerolling] = useState(false);
+    const [collapsed, setCollapsed] = useState(false);
     const { t } = useLanguage();
 
     const queryClient = useQueryClient();
@@ -194,25 +198,36 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
     return (
         <AnimatePresence>
         <m.div
-            className="space-y-4 mb-8"
+            className="mb-8 space-y-3"
             data-testid="feed-carousel"
             initial={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0, marginBottom: 0, overflow: "hidden" }}
             transition={{ duration: 0.3 }}
         >
-            <div className="flex items-center justify-between px-4 md:px-8">
-                <div className="flex items-center gap-3">
+            <div className="flex items-center justify-between px-1 md:px-2">
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => setCollapsed((c) => !c)}
+                        className="flex size-6 items-center justify-center text-fg-3 transition-colors hover:text-primary"
+                        aria-label={collapsed ? "Expand section" : "Collapse section"}
+                        aria-expanded={!collapsed}
+                    >
+                        <ChevronDown className={cn("size-4 transition-transform", collapsed && "-rotate-90")} />
+                    </button>
                     {titlePrefix}
-                    <h3 className="text-3xl font-semibold font-space uppercase tracking-wider text-acid-outline" data-text={localTitle}>{localTitle}</h3>
+                    <h3 className="font-display text-lg uppercase tracking-tight text-fg md:text-xl">{localTitle}</h3>
                     {showReroll && (
                         <button
                             onClick={handleReroll}
                             disabled={isRerolling}
-                            className={`p-2 rounded-full bg-primary/10 hover:bg-primary/20 text-primary transition-all ${isRerolling ? "opacity-50 cursor-not-allowed" : ""}`}
+                            className={cn(
+                                "flex size-7 items-center justify-center border border-border-2 text-fg-3 transition-colors hover:border-primary hover:text-primary",
+                                isRerolling && "cursor-not-allowed opacity-50"
+                            )}
                             title={isWildcard ? "Reroll wildcard" : "Get new random picks"}
                             aria-label={isWildcard ? t("aria.reroll_wildcard") : t("aria.reroll_random")}
                         >
-                            <RefreshCw className={`size-4 ${isRerolling ? "animate-spin" : ""}`} />
+                            <RefreshCw className={cn("size-3.5", isRerolling && "animate-spin")} />
                         </button>
                     )}
                     {sectionId === "niche_picks" && (
@@ -230,74 +245,81 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                                 }
                             }}
                             disabled={isRerolling}
-                            className={`text-[10px] font-mono text-zinc-600 hover:text-primary border border-zinc-800 hover:border-primary px-2 py-0.5 transition-colors ${isRerolling ? "opacity-50 cursor-not-allowed" : ""}`}
+                            className={cn(
+                                "border border-border-2 px-2 py-0.5 font-mono text-[10px] uppercase tracking-wider text-fg-3 transition-colors hover:border-primary hover:text-primary",
+                                isRerolling && "cursor-not-allowed opacity-50"
+                            )}
                             title="Show next cluster"
                         >
                             [ REROLL ]
                         </button>
                     )}
                 </div>
-                <div className="hidden md:flex gap-2">
-                    <button
-                        onClick={() => scroll("left")}
-                        className="p-2 rounded-none border border-zinc-800 hover:bg-zinc-900 hover:border-primary hover:text-primary transition-all"
-                        aria-label={t("aria.scroll_left")}
-                    >
-                        <ChevronLeft className="size-5" />
-                    </button>
-                    <button
-                        onClick={() => scroll("right")}
-                        className="p-2 rounded-none border border-zinc-800 hover:bg-zinc-900 hover:border-primary hover:text-primary transition-all"
-                        aria-label={t("aria.scroll_right")}
-                    >
-                        <ChevronRight className="size-5" />
-                    </button>
-                </div>
-            </div>
-
-            <div
-                ref={scrollContainerRef}
-                className="flex gap-4 overflow-x-auto px-4 md:px-8 pb-4 scrollbar-hide snap-x snap-mandatory"
-            >
-                {localItems.map((movie, index) => (
-                    <div key={movie.id} className="flex-none w-[160px] md:w-[200px] snap-start">
-                        <MovieCard
-                            id={movie.id}
-                            title={movie.title}
-                            posterPath={movie.poster_url}
-                            matchScore={movie.match_score}
-                            rating={movie.rating}
-                            year={movie.year}
-                            runtime={movie.runtime}
-                            overview={movie.overview}
-                            variant="overlay"
-                            badgeType={badgeType}
-                            contributors={movie.contributors}
-                            href={getLetterboxdUrl(movie.id)}
-                            vectorbox_score={movie.vectorbox_score}
-                            imdb_rating={movie.imdb_rating}
-                            metacritic_rating={movie.metacritic_rating}
-
-                            letterboxd_rating={movie.letterboxd_rating}
-                            providers={movie.streaming_providers}
-                            onInspect={() => onInspect?.(movie, sectionId)}
-                            onReject={handleReject}
-                            onMarkWatched={handleMarkWatched}
-                            isRejecting={rejectingIds.has(movie.id)}
-                            isMarkingWatched={watchedIds.has(movie.id)}
-                        />
-                    </div>
-                ))}
-
-                {/* FIX 3: Low item threshold message */}
-                {localItems.length > 0 && localItems.length < 3 && (
-                    <div className="flex-none flex items-center px-4">
-                        <span className="text-zinc-600 font-mono text-xs whitespace-nowrap">
-                            [ SECTION REFRESHES ON NEXT LOAD ]
-                        </span>
+                {!collapsed && (
+                    <div className="hidden gap-2 md:flex">
+                        <button
+                            onClick={() => scroll("left")}
+                            className="flex size-8 items-center justify-center border border-border-2 text-fg-3 transition-colors hover:border-primary hover:text-primary"
+                            aria-label={t("aria.scroll_left")}
+                        >
+                            <ChevronLeft className="size-4" />
+                        </button>
+                        <button
+                            onClick={() => scroll("right")}
+                            className="flex size-8 items-center justify-center border border-border-2 text-fg-3 transition-colors hover:border-primary hover:text-primary"
+                            aria-label={t("aria.scroll_right")}
+                        >
+                            <ChevronRight className="size-4" />
+                        </button>
                     </div>
                 )}
             </div>
+
+            {!collapsed && (
+                <div
+                    ref={scrollContainerRef}
+                    className="flex snap-x snap-mandatory gap-2.5 overflow-x-auto px-1 pb-4 scrollbar-hide md:gap-3 md:px-2"
+                >
+                    {localItems.map((movie) => (
+                        // 118px = handoff .pcard width (~3 cards visible at 390px)
+                        <div key={movie.id} className={cn("w-[118px] flex-none snap-start md:w-[180px]", movie.id === heroId && "lg:hidden")}>
+                            <MovieCard
+                                id={movie.id}
+                                title={movie.title}
+                                posterPath={movie.poster_url}
+                                matchScore={movie.match_score}
+                                rating={movie.rating}
+                                year={movie.year}
+                                runtime={movie.runtime}
+                                overview={movie.overview}
+                                variant="overlay"
+                                badgeType={badgeType}
+                                contributors={movie.contributors}
+                                href={getLetterboxdUrl(movie.id)}
+                                vectorbox_score={movie.vectorbox_score}
+                                imdb_rating={movie.imdb_rating}
+                                metacritic_rating={movie.metacritic_rating}
+                                letterboxd_rating={movie.letterboxd_rating}
+                                hudRight={sectionId === "popular_letterboxd" && movie.letterboxd_rating != null ? `★ ${movie.letterboxd_rating.toFixed(1)}` : undefined}
+                                providers={movie.streaming_providers}
+                                onInspect={() => onInspect?.(movie, sectionId)}
+                                onReject={handleReject}
+                                onMarkWatched={handleMarkWatched}
+                                isRejecting={rejectingIds.has(movie.id)}
+                                isMarkingWatched={watchedIds.has(movie.id)}
+                            />
+                        </div>
+                    ))}
+
+                    {localItems.length > 0 && localItems.length < 3 && (
+                        <div className="flex flex-none items-center px-4">
+                            <span className="whitespace-nowrap font-mono text-xs text-fg-3">
+                                [ SECTION REFRESHES ON NEXT LOAD ]
+                            </span>
+                        </div>
+                    )}
+                </div>
+            )}
         </m.div>
         </AnimatePresence>
     );

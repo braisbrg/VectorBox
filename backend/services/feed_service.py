@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_
 
 from config import AsyncSessionLocal, REDIS_URL, FEED_CACHE_VERSION
-from models.database import UserRating, Movie
+from models.database import UserRating, Movie, MovieAvailability
 from models.schemas import FeedSection, FeedItem, FeedResponse
 from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
@@ -65,15 +65,125 @@ async def _cache_section(
     except Exception:
         pass
 
+
+async def get_cached_rank(user_id: int, tmdb_id: int) -> Optional[tuple[int, int]]:
+    """Rank of a film inside the user's cached `picked_for_you` pool → (rank, pool).
+
+    TTL-bounded honesty: there is no persisted daily ranking — this reads the
+    live feed cache (any country/provider variant, first hit) and returns None
+    on a cache miss or if the film isn't in that pool. Powers /why's rank fill
+    and the feed hero's "#1 TODAY" badge. Never raises.
+    """
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    try:
+        pattern = f"section:{FEED_CACHE_VERSION}:{user_id}:picked_for_you:*"
+        async for key in r.scan_iter(match=pattern, count=50):
+            cached = await r.get(key)
+            if not cached:
+                continue
+            try:
+                section = FeedSection.model_validate_json(cached)
+            except Exception:
+                continue
+            for idx, item in enumerate(section.items):
+                if item.id == tmdb_id:
+                    return idx + 1, len(section.items)
+            return None  # pool found, film not ranked in it
+        return None
+    except Exception:
+        return None
+    finally:
+        try:
+            await r.close()
+        except Exception:
+            pass
+
+
+# F8: in a filtered feed, keep any row that still has at least this many matches (so a
+# WIDE filter shows many rows, a tight one shows few) — instead of pre-deciding which
+# rows to show. A 1-2 film carousel reads as broken, hence 3, not 1.
+MIN_FILTERED_SECTION_ITEMS = 3
+
+# F8: after output-filtering, cap the deepened wide rows back to their LIVE display
+# sizes so a filtered feed reads exactly like the normal feed. Other rows are never
+# deepened, so no cap needed.
+FILTERED_ROW_CAPS = {"picked_for_you": 10, "because_you_watched": 15, "hidden_gems": 10}
+
+
+async def _provider_allowed_tmdb_ids(provider_ids, country):
+    """F8: tmdb_ids of films available (flatrate/free) on ANY of `provider_ids` in
+    `country`, from Postgres MovieAvailability. Providers aren't a Qdrant payload field,
+    so we resolve them to an id set and push THAT into each wide row's vector search —
+    a taste-rank WITHIN the provider catalogue, not a post-filter of a small pool."""
+    wanted = set(provider_ids)
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(
+            select(MovieAvailability.providers, Movie.tmdb_id)
+            .join(Movie, Movie.id == MovieAvailability.movie_id)
+            .where(MovieAvailability.country_code == country)
+        )).all()
+    return [tmdb_id for provs, tmdb_id in rows
+            if provs and any(p.get("provider_id") in wanted for p in provs)]
+
+
+async def _post_filter_sections(sections, filters, provider_filter, country, tmdb):
+    """F8 backstop: enforce the rail constraints on every item of the built sections.
+    The 3 wide rows filter AT SOURCE (robustness); every other row builds normally and
+    is filtered here — provider availability too (not a Qdrant payload field). Rows left
+    with < MIN_FILTERED_SECTION_ITEMS matches are dropped, so the feed keeps exactly the
+    rows that still have enough films. No-op when unfiltered (normal feed untouched)."""
+    if not filters and not provider_filter:
+        return sections
+    all_tmdb = {it.id for s in sections for it in s.items}
+    if not all_tmdb:
+        return sections
+
+    f = filters or {}
+    ymin, ymax = f.get("year_min"), f.get("year_max")
+    maxrt, minvbs = f.get("max_runtime"), f.get("min_vectorbox_score")
+    genres = set(f.get("include_genres") or [])
+    wanted = set(provider_filter or [])
+
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(select(Movie).where(Movie.tmdb_id.in_(all_tmdb)))).scalars().all()
+        meta = {m.tmdb_id: m for m in rows}
+        prov_of: Dict[int, Set[int]] = {}
+        if wanted:
+            psvc = ProviderService(session, tmdb)
+            pmap = await psvc.get_providers_batch([m.id for m in rows], country or "ES")
+            prov_of = {m.tmdb_id: {p["provider_id"] for p in pmap.get(m.id, [])} for m in rows}
+
+    def ok(it) -> bool:
+        m = meta.get(it.id)
+        if m is None:
+            return False  # can't verify an unknown film under active filters → drop
+        if ymin and (m.year is None or m.year < ymin): return False
+        if ymax and (m.year is None or m.year > ymax): return False
+        if maxrt and (m.runtime is None or m.runtime > maxrt): return False
+        if minvbs and (m.vectorbox_score is None or m.vectorbox_score < minvbs): return False
+        if genres and not (set(m.genres or []) & genres): return False
+        if wanted and not (wanted & prov_of.get(it.id, set())): return False
+        return True
+
+    out = []
+    for s in sections:
+        kept = [it for it in s.items if ok(it)]
+        cap = FILTERED_ROW_CAPS.get(s.id)
+        s.items = kept[:cap] if cap else kept
+        if len(s.items) >= MIN_FILTERED_SECTION_ITEMS:
+            out.append(s)
+    return out
+
+
 class FeedService:
     def __init__(self, qdrant: QdrantService = None, embedding_service: EmbeddingService = None):
         self.engine = RecommendationEngine(qdrant=qdrant, embedding_service=embedding_service)
 
     @safe_execution(fallback_return=FeedSection(id="because_you_watched", title="Recommended for You", items=[]))
     async def get_because_you_watched_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, qdrant: QdrantService, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, precomputed_anti_vector = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, qdrant: QdrantService, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, precomputed_anti_vector = None, filters: Dict = None, pool_limit: int = None
     ) -> FeedSection:
-        return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
+        return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector, filters=filters, pool_limit=pool_limit)
 
     @safe_execution(fallback_return=FeedSection(id="niche_picks", title="Niche Picks", items=[]))
     async def get_niche_picks_section(
@@ -83,9 +193,9 @@ class FeedService:
 
     @safe_execution(fallback_return=FeedSection(id="hidden_gems", title="Hidden Gems", items=[]))
     async def get_hidden_gems_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, filters: Dict = None, pool_limit: int = None
     ) -> FeedSection:
-        return await self.engine.get_hidden_gems_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks)
+        return await self.engine.get_hidden_gems_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks, filters=filters, pool_limit=pool_limit)
 
     @safe_execution(fallback_return=FeedSection(id="available_now", title="Available on Your Services", items=[]))
     async def get_available_now_section(
@@ -198,10 +308,10 @@ class FeedService:
         
         return FeedResponse(feed=feed)
 
-    async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None, redis_client = None) -> Optional[FeedSection]:
+    async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None, redis_client = None, filters: Dict = None, pool_limit: int = None) -> Optional[FeedSection]:
         tmdb = provider_service.tmdb if provider_service else None
         recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
-        return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service, background_tasks=background_tasks)
+        return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service, background_tasks=background_tasks, filters=filters, pool_limit=pool_limit)
 
     async def get_main_feed(
         self,
@@ -212,10 +322,18 @@ class FeedService:
         qdrant: QdrantService,
         background_tasks = None,
         redis_client = None,
+        filters: Optional[Dict] = None,
+        provider_filter: Optional[List[int]] = None,
     ) -> FeedResponse:
         """
         Generate the main feed using FULLY PARALLEL EXECUTION.
         Includes high-level Redis caching for blazing fast loads.
+
+        F8: when `filters`/`provider_filter` are set (rail EXECUTE_QUERY), every row is
+        built and filtered — the 3 WIDE rows (Trident, Because You Watched, Hidden Gems)
+        apply the constraints at their own search; the rest are post-filtered — then any
+        row left with < MIN_FILTERED_SECTION_ITEMS matches is dropped. So a wide filter
+        keeps many rows, a tight one few. Filtered feeds use a separate cache namespace.
         """
         # --- CACHE INTERCEPT BLOCK ---
         # Prefer the injected lifespan singleton (shared connection pool).
@@ -225,6 +343,14 @@ class FeedService:
         r = redis_client
         r_is_local = False
         prov_str = ",".join(map(str, sorted(streaming_providers)))
+        # F8: filtered feeds get their own cache namespace so they never collide with
+        # the normal feed. Invalidation SCANs section:* so these are still cleared.
+        if filters or provider_filter:
+            import hashlib, json as _json
+            _sig = hashlib.md5(
+                _json.dumps({"f": filters or {}, "p": sorted(provider_filter or [])}, sort_keys=True).encode()
+            ).hexdigest()[:10]
+            prov_str = f"{prov_str}|flt:{_sig}"
         if r is None:
             try:
                 r = aioredis.from_url(REDIS_URL, decode_responses=True)
@@ -272,6 +398,27 @@ class FeedService:
             logger.error(f"Failed to pre-populate excluded tmdb_ids: {e}")
         # --- END PRE-POPULATE ---
 
+        # F8 (Option B — user 2026-07-07): apply the rail's year/runtime/genre/VBS as an
+        # OUTPUT filter (_post_filter_sections below) so every row keeps the LIVE feed's
+        # ranking with non-matching films simply removed — "same feed, filtered" — NOT
+        # re-ranked by baking the constraints into each search (which re-runs the Trident's
+        # RRF and reshuffles even films that pass; see the 212 Q≥70 case). The ONE exception
+        # is PROVIDERS: their catalogue is too sparse to post-filter (would starve the rows),
+        # so they ride into the search as an allowed film-id set (provider-first).
+        search_filters = None
+        if provider_filter:
+            try:
+                allowed = await _provider_allowed_tmdb_ids(provider_filter, country_code)
+                search_filters = {"include_tmdb_ids": allowed}
+                logger.info(f"F8: provider filter → {len(allowed)} allowed films (source-filtered)")
+            except Exception as e:
+                logger.warning(f"F8: provider id-set resolve failed ({e}); post-filter only")
+
+        # F8 deep pool: when output filters are active, the 3 wide rows return their
+        # normal head PLUS a score-ordered tail (~60 items) so a selective filter still
+        # finds enough matches; _post_filter_sections caps rows back to live size.
+        deep_pool = 60 if filters else None
+
         async def task_popular():
             cached = await _get_cached_section(r, user_id, "popular_letterboxd", country_code, prov_str)
             if cached:
@@ -291,7 +438,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector)
+                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector, filters=search_filters, pool_limit=deep_pool)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Watched]: {e}")
                 return None
@@ -342,7 +489,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_hidden_gems_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks)
+                    return await self.get_hidden_gems_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks, filters=search_filters, pool_limit=deep_pool)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hidden]: {e}")
                 return None
@@ -365,7 +512,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_hybrid_picks_section(user_id, session, country_code, watched_tmdb_ids.copy(), local_provider, qdrant=qdrant, background_tasks=background_tasks, redis_client=r)
+                    return await self.get_hybrid_picks_section(user_id, session, country_code, watched_tmdb_ids.copy(), local_provider, qdrant=qdrant, background_tasks=background_tasks, redis_client=r, filters=search_filters, pool_limit=deep_pool)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hybrid]: {e}")
                 return None
@@ -456,6 +603,13 @@ class FeedService:
             section_d,
         ]
 
+        # F8: filter + cap rows BEFORE the cross-row dedup — a deepened row's
+        # never-displayed tail must not eat films out of the later rows.
+        if filters or provider_filter:
+            ordered_results = await _post_filter_sections(
+                [s for s in ordered_results if s], filters, provider_filter, country_code, tmdb
+            )
+
         for section in ordered_results:
             if not section or not section.items:
                 continue
@@ -498,7 +652,6 @@ class FeedService:
             if unique_items:
                 section.items = unique_items
                 final_sections.append(section)
-
 
         final_resp = FeedResponse(feed=final_sections, status="ok")
 

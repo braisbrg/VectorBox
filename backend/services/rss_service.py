@@ -415,7 +415,7 @@ class RSSService:
                 
         return stats
 
-    async def get_group_recommendations_hybrid(self, usernames: List[str]) -> List[Dict]:
+    async def get_group_recommendations_hybrid(self, usernames: List[str], sources: Optional[Dict[str, str]] = None, focus: Optional[str] = None) -> List[Dict]:
         """
         Group Vibe 2.0: Hybrid Watchlist Priority + Discovery
         1. Collect Taste Vectors & Watchlists for all users (DB & Guest).
@@ -431,14 +431,18 @@ class RSSService:
         # 1. Collect Data
         user_data = [] # List of {'username': str, 'vector': np.array}
         watchlist_candidates = set()
+        watchlist_counts: Dict[int, int] = {}  # tmdb_id -> how many members saved it
         excluded_ids = set()
         
         for username in usernames:
-            # Find user in DB
-            stmt = select(User).where(User.username == username)
-            result = await self.db.execute(stmt)
-            user = result.scalar_one_or_none()
-            
+            # Find user in DB — unless B-34 forces the Letterboxd/RSS path for
+            # this handle (then the DB account with the same name is ignored).
+            user = None
+            if (sources or {}).get(username) != "letterboxd":
+                stmt = select(User).where(User.username == username)
+                result = await self.db.execute(stmt)
+                user = result.scalar_one_or_none()
+
             user_vector = None
             
             if user:
@@ -465,6 +469,8 @@ class RSSService:
                 result = await self.db.execute(stmt)
                 watchlist_ids = result.scalars().all()
                 watchlist_candidates.update(watchlist_ids)
+                for wid in watchlist_ids:
+                    watchlist_counts[wid] = watchlist_counts.get(wid, 0) + 1
                 
                 # C. Get Watched (Exclusions)
                 stmt = select(Movie.tmdb_id).join(UserRating).where(
@@ -485,6 +491,17 @@ class RSSService:
                     # A. Get Taste Vector (Avg of top 50 recent items)
                     # RSS items are already sorted by date usually
                     target_items = items[:50]
+                    # When the guest RATES on Letterboxd, mirror the DB-user
+                    # construction (>=4.0 films only) instead of rating-blind
+                    # "everything watched" — verified 2026-07-05 that rating-blind
+                    # centroids still work (likes blend carries preference), but
+                    # rating signal is strictly better when present.
+                    rated = [i for i in target_items if i.get('rating') is not None]
+                    if len(rated) >= 10:
+                        liked = [i for i in rated if i['rating'] >= 3.5]
+                        if len(liked) >= 5:
+                            target_items = liked
+                            logger.info(f"Guest {username}: rating-filtered centroid ({len(liked)} liked of {len(rated)} rated)")
                     tmdb_ids = [i['tmdb_id'] for i in target_items if i.get('tmdb_id')]
                     
                     if tmdb_ids:
@@ -536,25 +553,22 @@ class RSSService:
         # Remove watched movies from candidates
         final_candidates = list(watchlist_candidates - excluded_ids)
         
-        # Fallback / Discovery Mode
-        # If we have few candidates (e.g. < 50), fill with Discovery items
-        if len(final_candidates) < 50:
-            needed = 50 - len(final_candidates)
-            # Increase fetch limit to 500 to cast a wider net for "good" movies that might be slightly further away
-            fetch_limit = 500 + len(excluded_ids)
-            logger.info(f"Low candidate count ({len(final_candidates)}). Fetching {fetch_limit} discovery items (needed: {needed}).")
-            
+        # Discovery — ALWAYS runs (2026-07-05): it used to fire only when the
+        # watchlist pool was <50 candidates, which made group recs literally
+        # "the registered member's watchlist" for anyone with a full watchlist.
+        # The whole catalogue competes now; the watchlist keeps a small bonus.
+        if True:
             # Discovery Mode: Union of Individual Searches
             # Instead of searching for the "Average User" (which might be nobody),
             # we search for movies similar to EACH user and combine them.
             # This ensures every candidate is strongly liked by at least one person.
-            
+
             discovery_candidates = set()
-            
+
             # We need to fetch enough items to survive filtering
-            per_user_limit = max(50, int(400 / len(user_vectors))) 
-            
-            logger.info(f"Low candidate count ({len(final_candidates)}). Discovery Mode: Union of Individual Searches (Limit {per_user_limit}/user).")
+            per_user_limit = max(50, int(400 / len(user_vectors)))
+
+            logger.info(f"Discovery Mode: Union of Individual Searches (Limit {per_user_limit}/user) on top of {len(final_candidates)} watchlist candidates.")
 
             for i, u_vec in enumerate(user_vectors):
                 try:
@@ -632,24 +646,41 @@ class RSSService:
                 })
             
             # Scoring Logic
-            # CHANGED: Use MAX similarity instead of AVG similarity.
-            # Why? We want to surface movies that at least one person LOVES.
-            # The "Hate Penalty" below will still protect us from polarizing movies.
-            max_sim = np.max(similarities)
             avg_sim = np.mean(similarities)
             min_sim = np.min(similarities)
-            
-            # Base Score = Max Similarity (Reward passion)
-            final_score = max_sim
-            
+
+            # FOCUS ("tonight favours X", 2026-07-05): base the score on the
+            # focused member's similarity instead of the group max, and shrink
+            # the watchlist bonus — DB members' watchlists otherwise dominate
+            # the top (guests' watchlists aren't reachable, so the pool skews
+            # toward the registered user's saved films).
+            focus_sim = None
+            if focus:
+                focus_sim = next((c["score"] for c in contributors if c["username"] == focus), None)
+
+            # WL bonus is a NUDGE, not a lock: 0.15 spanned the whole observed
+            # score band (~0.65-0.85) and pinned watchlist films to the top.
+            # BALANCED = AVG similarity — MUTUAL fit (2026-07-05): max-based
+            # scoring let a film one member loves (84/68) outrank a film both
+            # like (81/81), which read as "the recs are all mine". The
+            # hate-penalty below still vetoes polarizing films.
+            if focus_sim is not None:
+                final_score = focus_sim
+                wl_bonus = 0.03
+            else:
+                final_score = avg_sim
+                wl_bonus = 0.06
+
             # Penalty: If ANY user hates it (similarity < 0.65), penalize heavily
             # This ensures "Group Cohesion" - no movie that one person hates
             if min_sim < 0.65:
                 final_score *= 0.5 # 50% penalty
-            
-            # Bonus: Watchlist
-            if tmdb_id in watchlist_candidates:
-                final_score += 0.15 # Significant boost
+
+            # Bonus: Watchlist — only when 2+ MEMBERS saved it (2026-07-05):
+            # a single-member bonus hard-favours whoever's watchlist is
+            # reachable (usually just the requester — guest watchlists aren't).
+            if watchlist_counts.get(tmdb_id, 0) >= 2:
+                final_score += wl_bonus
                 
             scored_results.append({
                 "tmdb_id": tmdb_id,

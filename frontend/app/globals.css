@@ -1,177 +1,116 @@
 @import "tailwindcss";
 
 /* ============================================================================
-   VectorBox Acid Design Theme - Tailwind CSS v4.0 (CSS-First)
+   VectorBox ACID Design System — Tailwind CSS v4 (CSS-First)
+   Tokens ported verbatim from design_handoff_vectorbox/kit/kit-acid.css.
    ============================================================================ */
 
+/* ----------------------------------------------------------------------------
+   Raw ACID tokens (the source of truth — referenced by @theme + kit classes).
+   Tiered: bg/bg-2/bg-3 surfaces · fg/fg-2/fg-3 text · border/border-2 lines.
+   ---------------------------------------------------------------------------- */
+:root {
+  --bg:            oklch(0.05 0 0);   /* #0a0a0a deep black */
+  --bg-2:          oklch(0.09 0 0);
+  --bg-3:          oklch(0.13 0 0);
+  --primary:       oklch(0.9 0.4 110); /* ACID toxic yellow #CCFF00 */
+  --primary-ink:   oklch(0.05 0 0);    /* black text on primary */
+  --primary-rgb:   204 255 0;
+  --accent-purple: oklch(0.5 0.3 290); /* electric purple */
+  --border:        oklch(0.18 0 0);
+  --border-2:      oklch(0.28 0 0);
+  --fg:            oklch(0.95 0 0);
+  --fg-2:          oklch(0.7 0 0);
+  --fg-3:          oklch(0.6 0 0);
+  --warn:          oklch(0.78 0.18 35);
+  --danger:        oklch(0.65 0.25 25);
+  --letterboxd:    oklch(0.7 0.25 145);
+  --radius:        0;
+}
+
+/* Theme palettes — set [data-theme] on <html>. Only --primary + --primary-ink
+   change; bg/fg/border stay constant so the brutalist black system holds. */
+:root[data-theme="acid"]    { --primary: oklch(0.9 0.4 110);  --primary-ink: oklch(0.05 0 0); }
+:root[data-theme="cyan"]    { --primary: oklch(0.85 0.18 200);--primary-ink: oklch(0.05 0 0); }
+:root[data-theme="magenta"] { --primary: oklch(0.7 0.3 0);    --primary-ink: oklch(1 0 0);    }
+:root[data-theme="orange"]  { --primary: oklch(0.83 0.16 82); --primary-ink: oklch(0.05 0 0); }
+:root[data-theme="bone"]    { --primary: oklch(0.92 0.02 80); --primary-ink: oklch(0.05 0 0); }
+:root[data-theme="blood"]   { --primary: oklch(0.55 0.25 25); --primary-ink: oklch(1 0 0);    }
+
 @theme {
-  /* ==========================================================================
-     Color Palette (Semantic Tokens)
-     ========================================================================== */
+  /* ----- Map Tailwind/shadcn color utilities onto the raw ACID tokens -----
+     Using var() references so runtime [data-theme] switching propagates to
+     every `bg-primary` / `text-foreground` / opacity-modifier utility. */
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-ink);
+  --color-primary-ink: var(--primary-ink);
+  --color-accent: var(--accent-purple);
+  --color-accent-foreground: var(--fg);
+  --color-accent-purple: var(--accent-purple);
+  --color-card: var(--bg-2);
+  --color-card-foreground: var(--fg);
+  --color-popover: var(--bg-2);
+  --color-popover-foreground: var(--fg);
+  --color-secondary: var(--bg-3);
+  --color-secondary-foreground: var(--fg);
+  --color-muted: var(--bg-2);
+  --color-muted-foreground: var(--fg-3);
+  --color-destructive: var(--danger);
+  --color-destructive-foreground: var(--fg);
+  --color-warning: var(--warn);
+  --color-warning-foreground: var(--bg);
+  --color-border: var(--border);
+  --color-border-2: var(--border-2);
+  --color-input: var(--bg-3);
+  --color-ring: var(--primary);
+  --color-letterboxd: var(--letterboxd);
+  /* ACID tiers exposed as utilities (bg-bg-2, text-fg-2, border-border-2…) */
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-bg-3: var(--bg-3);
+  --color-fg: var(--fg);
+  --color-fg-2: var(--fg-2);
+  --color-fg-3: var(--fg-3);
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
 
-  /* Core Brand Colors */
-  --color-primary: oklch(0.9 0.4 110);
-  /* Toxic Green #CCFF00 */
-  --color-primary-rgb: 204 255 0;
-  --color-primary-foreground: oklch(0 0 0);
-  /* Black text on primary */
+  /* ----- Typography (mono-only brutalist system) ----- */
+  --font-sans: var(--font-plex), ui-monospace, "IBM Plex Mono", monospace;
+  --font-mono: var(--font-plex), ui-monospace, "IBM Plex Mono", monospace;
+  /* Departure Mono is display-only and not yet self-hosted — falls back to
+     Plex via the inline var() fallback until the woff2 lands (P0b note). */
+  --font-display: var(--font-departure, var(--font-plex)), ui-monospace, monospace;
 
-  --color-background: oklch(0.05 0 0);
-  /* Deep Black #050505 */
-  --color-foreground: oklch(0.95 0 0);
-  /* Off-white text */
-
-  --color-accent: oklch(0.5 0.3 290);
-  /* Electric Purple #7000FF */
-  --color-accent-foreground: oklch(1 0 0);
-  /* White text */
-
-  --color-letterboxd: oklch(0.7 0.25 145);
-  /* Letterboxd Green #00e054 */
-
-  /* Shadcn Semantic Colors (HSL for compatibility) */
-  --color-card: oklch(0.08 0 0);
-  --color-card-foreground: oklch(0.95 0 0);
-  --color-popover: oklch(0.08 0 0);
-  --color-popover-foreground: oklch(0.95 0 0);
-
-  --color-secondary: oklch(0.12 0 0);
-  --color-secondary-foreground: oklch(0.95 0 0);
-
-  --color-muted: oklch(0.10 0 0);
-  --color-muted-foreground: oklch(0.60 0 0);
-
-  --color-destructive: oklch(0.6 0.3 30);
-  /* Red */
-  --color-destructive-foreground: oklch(1 0 0);
-
-  --color-border: oklch(0.18 0 0);
-  --color-input: oklch(0.12 0 0);
-  --color-ring: oklch(0.9 0.4 110);
-  /* Same as primary */
-
-  /* ==========================================================================
-     Typography
-     ========================================================================== */
-  --font-family-mono: var(--font-space), ui-monospace, monospace;
-  --font-family-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
-
-  /* ==========================================================================
-     Border Radius (Brutalist = Flat)
-     ========================================================================== */
+  /* ----- Border radius (brutalist = flat) ----- */
   --radius-lg: 0px;
   --radius-md: 0px;
   --radius-sm: 0px;
   --radius: 0px;
-  /* Acid: Hard edges */
 
-  /* ==========================================================================
-     Shadows (Acid Design: Hard offset shadows)
-     ========================================================================== */
-  --shadow-acid: 2px 2px 0px 0px oklch(0 0 0);
-  --shadow-acid-primary: 2px 2px 0px 0px oklch(0.9 0.4 110);
+  /* ----- Shadows (hard offset, no blur) ----- */
+  --shadow-acid: 2px 2px 0px 0px var(--border-2);
+  --shadow-acid-fg: 2px 2px 0px 0px var(--fg);
+  --shadow-acid-primary: 2px 2px 0px 0px var(--primary);
 
-  /* ==========================================================================
-     Animations
-     ========================================================================== */
+  /* ----- Animations ----- */
   --animate-accordion-down: accordion-down 0.2s ease-out;
   --animate-accordion-up: accordion-up 0.2s ease-out;
 }
 
-/* Keyframes (v4 uses standard CSS, no directive needed for keyframes) */
+/* Keyframes (v4 uses standard CSS) */
 @keyframes accordion-down {
-  from {
-    height: 0;
-  }
-
-  to {
-    height: var(--radix-accordion-content-height);
-  }
+  from { height: 0; }
+  to { height: var(--radix-accordion-content-height); }
 }
-
 @keyframes accordion-up {
-  from {
-    height: var(--radix-accordion-content-height);
-  }
-
-  to {
-    height: 0;
-  }
+  from { height: var(--radix-accordion-content-height); }
+  to { height: 0; }
 }
-
 @keyframes blink-caret {
-
-  from,
-  to {
-    border-color: transparent;
-  }
-
-  50% {
-    border-color: oklch(0.9 0.4 110);
-  }
-}
-
-@keyframes border-beam {
-  0% {
-    background-position: 0% 0%;
-  }
-
-  100% {
-    background-position: 200% 0%;
-  }
-}
-
-@keyframes shimmer {
-  0% {
-    transform: translateX(-100%);
-  }
-
-  100% {
-    transform: translateX(300%);
-  }
-}
-
-@keyframes spotlight-pulse {
-
-  0%,
-  100% {
-    opacity: 0.5;
-  }
-
-  50% {
-    opacity: 1;
-  }
-}
-
-@keyframes glitch {
-
-  0%,
-  100% {
-    transform: translate(0);
-    text-shadow: 0 0 8px oklch(0.9 0.4 110 / 0.6);
-  }
-
-  20% {
-    transform: translate(-2px, 1px);
-    text-shadow: -2px 0 oklch(0.5 0.3 290 / 0.8),
-      2px 0 oklch(0.9 0.4 110 / 0.8);
-  }
-
-  40% {
-    transform: translate(2px, -1px);
-    text-shadow: 2px 0 oklch(0.5 0.3 290 / 0.6),
-      -2px 0 oklch(0.9 0.4 110 / 0.6);
-  }
-
-  60% {
-    transform: translate(-1px, 2px);
-    text-shadow: none;
-  }
-
-  80% {
-    transform: translate(1px, -2px);
-    text-shadow: -1px 0 oklch(0.5 0.3 290 / 0.9);
-  }
+  from, to { border-color: transparent; }
+  50% { border-color: var(--primary); }
 }
 
 /* ============================================================================
@@ -179,144 +118,175 @@
    ============================================================================ */
 @layer base {
   @media (min-width: 1024px) {
-    html {
-      font-size: 80%;
-    }
+    html { font-size: 80%; }
   }
 
   :root {
     color-scheme: dark;
-    /* Legacy HSL fallbacks for Shadcn components */
+    /* Legacy HSL fallbacks for any shadcn component still using hsl(var(--x)) */
     --background: 0 0% 2%;
     --foreground: 0 0% 95%;
     --card: 0 0% 4%;
     --card-foreground: 0 0% 95%;
     --popover: 0 0% 4%;
     --popover-foreground: 0 0% 95%;
-    --primary: 74 100% 50%;
-    --primary-foreground: 0 0% 0%;
     --secondary: 0 0% 12%;
     --secondary-foreground: 0 0% 95%;
     --muted: 0 0% 10%;
     --muted-foreground: 0 0% 60%;
-    --accent: 266 100% 50%;
-    --accent-foreground: 0 0% 100%;
     --destructive: 0 100% 50%;
     --destructive-foreground: 0 0% 100%;
-    --border: 0 0% 18%;
     --input: 0 0% 12%;
-    --ring: 74 100% 50%;
-    --letterboxd: 142 100% 44%;
-    --radius: 0px;
   }
 
   * {
-    border-color: var(--color-border, hsl(var(--border)));
+    border-color: var(--border);
   }
 
   body {
-    background-color: var(--color-background, hsl(var(--background)));
-    color: var(--color-foreground, hsl(var(--foreground)));
+    background-color: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-plex), ui-monospace, "IBM Plex Mono", monospace;
     font-feature-settings: "rlig" 1, "calt" 1;
-    /* Safe area for notched devices (iPhone X+) */
+    /* Safe area for notched devices */
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
     padding-bottom: env(safe-area-inset-bottom);
   }
 
-  /* Custom Scrollbar */
-  ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-  }
-
-  ::-webkit-scrollbar-track {
-    background-color: oklch(0.12 0 0);
-  }
-
+  /* Custom scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background-color: var(--bg-3); }
   ::-webkit-scrollbar-thumb {
-    background-color: oklch(0.30 0 0);
-    border: 2px solid oklch(0.12 0 0);
+    background-color: var(--border-2);
+    border: 2px solid var(--bg-3);
+    &:hover { background-color: var(--primary); }
+  }
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 
-    &:hover {
-      background-color: oklch(0.9 0.4 110);
-    }
+  button, a, [role="button"] { touch-action: manipulation; }
+}
+
+/* ============================================================================
+   Kit component classes (ported from kit-acid.css — reused across every screen)
+   ============================================================================ */
+@layer components {
+  /* hard-shadow surface */
+  .sketch {
+    position: relative;
+    border: 1px solid var(--border-2);
+    background: var(--bg-2);
+    border-radius: 0;
+    box-shadow: 2px 2px 0 0 var(--border-2);
+    color: var(--fg);
   }
 
-  /* Hide scrollbar utility */
-  .scrollbar-hide::-webkit-scrollbar {
-    display: none;
+  /* type */
+  .hand-title {
+    font-family: var(--font-departure, var(--font-plex)), ui-monospace, monospace;
+    font-weight: 400;
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    text-transform: uppercase;
+  }
+  .hand-body, .mono { font-family: var(--font-plex), ui-monospace, monospace; }
+  .eyebrow {
+    font-family: var(--font-departure, var(--font-plex)), ui-monospace, monospace;
+    font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-3);
+  }
+  .tiny {
+    font-size: 10px; color: var(--fg-3); letter-spacing: 0.15em;
+    text-transform: uppercase; font-family: var(--font-plex), ui-monospace, monospace;
   }
 
-  .scrollbar-hide {
-    -ms-overflow-style: none;
-    scrollbar-width: none;
+  /* dashed placeholder */
+  .ph {
+    border: 1px dashed var(--border-2);
+    background: repeating-linear-gradient(135deg, transparent 0 10px, rgba(204,255,0,0.025) 10px 11px);
+    display: flex; align-items: center; justify-content: flex-start;
+    padding: 8px 10px;
+    font-family: var(--font-plex), ui-monospace, monospace;
+    font-size: 11px; color: var(--fg-3);
+    text-transform: uppercase; letter-spacing: 0.1em;
+  }
+  .ph.solid { background: var(--bg-2); }
+
+  /* buttons */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 14px;
+    border: 1px solid var(--fg);
+    background: transparent;
+    font-family: var(--font-plex), ui-monospace, monospace;
+    font-weight: 700; font-size: 13px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--fg); cursor: pointer; border-radius: 0;
+    box-shadow: 2px 2px 0 0 var(--fg);
+    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, color 0.15s ease;
+  }
+  .btn:hover { background: var(--fg); color: var(--bg); transform: translate(-1px,-1px); box-shadow: 3px 3px 0 0 var(--primary); }
+  .btn:active { transform: translate(2px,2px); box-shadow: 0 0 0 0 var(--fg); }
+  .btn.primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); box-shadow: 2px 2px 0 0 var(--fg); }
+  .btn.primary:hover { background: var(--bg); color: var(--primary); box-shadow: 3px 3px 0 0 var(--primary); }
+  .btn.ghost { border-color: var(--border-2); box-shadow: none; color: var(--fg-2); }
+  .btn.ghost:hover { border-color: var(--primary); background: transparent; color: var(--primary); box-shadow: 2px 2px 0 0 var(--primary); }
+  .btn.sm { padding: 4px 10px; font-size: 11px; box-shadow: 2px 2px 0 0 var(--fg); }
+
+  /* chips */
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    border: 1px solid var(--border-2); padding: 2px 8px;
+    font-family: var(--font-plex), ui-monospace, monospace;
+    font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.1em;
+    background: transparent; color: var(--fg-2);
+  }
+  .chip.accent { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
+  .chip.ink { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .chip.purple { background: var(--accent-purple); color: var(--fg); border-color: var(--accent-purple); }
+
+  /* poster placeholder visual (dark, scanline) */
+  .poster-art {
+    background: linear-gradient(135deg, var(--bg-3) 0%, var(--bg-2) 100%);
+    border: 1px solid var(--border-2);
+    position: relative; overflow: hidden;
+  }
+  .poster-art::after {
+    content: ''; position: absolute; inset: 0;
+    background: repeating-linear-gradient(45deg, transparent 0 6px, rgba(204,255,0,0.03) 6px 7px);
   }
 
-  /* Mobile tap optimization */
-  button,
-  a,
-  [role="button"] {
-    touch-action: manipulation;
+  /* hover lift */
+  .lift { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+  .lift:hover { transform: translate(-2px,-2px); box-shadow: 5px 5px 0 0 var(--primary); }
+
+  /* trident bar mark */
+  .trident-mark {
+    font-family: var(--font-plex), ui-monospace, monospace;
+    font-weight: 700; font-size: 10px; letter-spacing: 0.15em;
+    display: inline-flex; gap: 2px;
   }
+  .trident-mark b { display: inline-block; width: 3px; height: 12px; background: var(--fg); }
+  .trident-mark b:nth-child(2) { height: 16px; background: var(--primary); }
+  .trident-mark b:nth-child(3) { height: 12px; }
 }
 
 /* ============================================================================
    Utilities Layer
    ============================================================================ */
 @layer utilities {
-
-  /* Glow effects - Toxic Green */
-  .glow-primary {
-    box-shadow: 0 0 10px oklch(0.9 0.4 110 / 0.3), 0 0 20px oklch(0.9 0.4 110 / 0.15);
+  .scribble-underline {
+    background-image: linear-gradient(var(--primary), var(--primary));
+    background-size: 100% 1px;
+    background-position: 0 100%;
+    background-repeat: no-repeat;
+    padding-bottom: 2px;
   }
-
-  .glow-primary-hover:hover {
-    box-shadow: 0 0 15px oklch(0.9 0.4 110 / 0.5), 0 0 30px oklch(0.9 0.4 110 / 0.25);
-    transition: box-shadow 0.2s ease-out;
-  }
-
-  /* Glow effects - Electric Purple */
-  .glow-accent {
-    box-shadow: 0 0 10px oklch(0.5 0.3 290 / 0.3), 0 0 20px oklch(0.5 0.3 290 / 0.15);
-  }
-
-  .glow-accent-hover:hover {
-    box-shadow: 0 0 15px oklch(0.5 0.3 290 / 0.5), 0 0 30px oklch(0.5 0.3 290 / 0.25);
-    transition: box-shadow 0.2s ease-out;
-  }
-
-  /* Gradient backgrounds */
-  .bg-acid-gradient {
-    background: linear-gradient(135deg, oklch(0.9 0.4 110 / 0.1) 0%, oklch(0.5 0.3 290 / 0.1) 100%);
-  }
-
-  /* Text glow */
-  .text-glow-primary {
-    text-shadow: 0 0 10px oklch(0.9 0.4 110 / 0.5);
-  }
-
-  /* Typewriter cursor */
   .typewriter-cursor::after {
     content: "";
-    border-right: 2px solid oklch(0.9 0.4 110);
+    border-right: 2px solid var(--primary);
     animation: blink-caret 0.75s step-end infinite;
-  }
-
-  /* Border Beam Animation */
-  .animate-border-beam {
-    animation: border-beam calc(var(--duration) * 1s) linear infinite;
-    animation-delay: var(--delay);
-  }
-
-  /* Shimmer Animation */
-  .animate-shimmer {
-    animation: shimmer var(--shimmer-duration, 2.5s) ease-in-out infinite;
-  }
-
-  /* Glitch Animation */
-  .animate-glitch {
-    animation: glitch 3s ease-in-out infinite;
   }
 }
 
@@ -324,9 +294,7 @@
    Accessibility — Reduced Motion
    ============================================================================ */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
