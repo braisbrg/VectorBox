@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import AsyncSessionLocal, REDIS_URL, get_db, IS_PRODUCTION
 from models.database import User, UserRating
 from models.schemas import TokenResponse
+from limiter import limiter
 from dependencies import (
     get_current_user,
     get_anonymous_user,
@@ -36,6 +37,7 @@ async def read_users_me(current_user: TokenResponse = Depends(get_current_user))
 
 
 @router.post("/claim-anonymous")
+@limiter.limit("10/minute")
 async def claim_anonymous(
     request: Request,
     response: Response,

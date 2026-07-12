@@ -88,24 +88,6 @@ export interface MovieMetadata {
     release_dates?: Record<string, string>;
 }
 
-export interface ClusterInfo {
-    cluster_id: number;
-    label: string;
-    movie_count: number;
-    avg_rating: number;
-    dominant_genres: string[];
-    sample_movies: MovieMetadata[];
-}
-
-export interface RecommendationResponse {
-    movie: MovieMetadata;
-    similarity_score: number;
-    streaming_available: boolean;
-    streaming_providers: string[];
-    providers?: string[];
-    contributors?: Contributor[];
-}
-
 export interface FeedItem {
     id: number;
     title: string;
@@ -160,11 +142,6 @@ export const uploadExportZIP = async (file: File): Promise<{
 // v1.1: Task progress polling
 export const getTaskStatus = async (taskId: string): Promise<TaskStatus> => {
     const response = await api.get(`/api/tasks/${taskId}`);
-    return response.data;
-};
-
-export const getUserClusters = async (userId: number): Promise<ClusterInfo[]> => {
-    const response = await api.get(`/api/recommendations/clusters/${userId}`);
     return response.data;
 };
 
