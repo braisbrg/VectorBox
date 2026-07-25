@@ -62,6 +62,12 @@ MOVIE_QUALITY_GATE = [
     Movie.year.isnot(None),
     Movie.vectorbox_score.isnot(None),
     Movie.is_excluded.is_(False),
+    # TMDB `adult` titles. The catalogue is curated so these shouldn't exist
+    # (post_change_smoke asserts count 0), but ANY signed-in user can push a
+    # row into the shared catalogue via POST /movies/{id}/rate → ingest, and
+    # the random/wildcard rows serve the whole catalogue at func.random() to
+    # every other user. Curation is not an access control — filter here too.
+    Movie.is_adult.is_(False),
 ]
 
 # Because You Watched quality floor. VBS — NOT a vote-count floor — is the right

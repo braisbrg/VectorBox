@@ -138,15 +138,26 @@ class SyncResponse(BaseModel):
     stats: Dict[str, int]
     message: str
 
+# These are VectorBox usernames OR Letterboxd handles, so this is deliberately
+# looser than LETTERBOXD_USERNAME_RE in users.py — VB usernames are seeded from
+# an email prefix and legitimately contain '.', '+', '-'. What it DOES block is
+# every URL-structural character ('/', '?', '#', '%', ':', '\', whitespace,
+# control chars), because each value is interpolated into
+# f"https://letterboxd.com/{username}/rss/" in rss_service.fetch_user_rss.
+# The host is fixed before the injection point so this was never SSRF, but
+# an unconstrained field aimed at a URL builder is a loaded gun.
+_GROUP_HANDLE = constr(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._+\-]+$")
+
+
 class GroupVibeRequest(BaseModel):
-    usernames: conlist(constr(min_length=1, max_length=80), min_length=2, max_length=8)
+    usernames: conlist(_GROUP_HANDLE, min_length=2, max_length=8)
     # B-34: per-profile source override — {"username": "letterboxd"} forces the
     # RSS path even when a VectorBox account with that name exists. Anything
     # else (or absent) keeps the auto-detection (DB user preferred).
     sources: Optional[Dict[str, str]] = None
     # "tonight favours X": base scoring on this member's similarity instead of
     # the group max (None = balanced).
-    focus: Optional[constr(min_length=1, max_length=80)] = None
+    focus: Optional[_GROUP_HANDLE] = None
     # Session filters ("we only have 90 min and filmin+hbo"): runtime cap in
     # minutes and/or provider names (case-insensitive match on TMDB names).
     max_runtime: Optional[int] = None

@@ -407,10 +407,17 @@ async def enrich_movies_background(
 
         try:
             async with AsyncSessionLocal() as db:
-                # Clear existing ratings for clean re-import
-                from sqlalchemy import delete as sa_delete
-                await db.execute(sa_delete(UserRating).where(UserRating.user_id == user_id))
-                await db.commit()
+                # NO up-front delete. The rating write below is an idempotent
+                # UPSERT, so a re-import overwrites in place without one — and
+                # the old `DELETE … WHERE user_id` ran in a BACKGROUND task,
+                # committed immediately, before any film had been resolved.
+                # process_single_movie returns None on any TMDB failure, so a
+                # TMDB outage (or an open circuit breaker) wiped the user's
+                # entire library and re-inserted nothing, irreversibly, after
+                # the endpoint had already returned 200.
+                # Stale rows are pruned AFTER a successful import instead — see
+                # the prune block below the chunk loop.
+                imported_movie_ids: set[int] = set()
 
                 # Process in Chunks
                 for i in range(0, total_movies, CHUNK_SIZE):
@@ -469,6 +476,7 @@ async def enrich_movies_background(
                                 }
                             )
                             await db.execute(stmt)
+                            imported_movie_ids.add(movie_id)
 
                             if needs_vector:
                                 movies_to_vectorize_ids.append(movie_id)
@@ -546,6 +554,39 @@ async def enrich_movies_background(
                             logger.error(f"Batch vector upsert failed: {e}")
 
                     # End of Chunk Loop
+
+                # Prune rows this import did NOT touch (films the user removed
+                # from Letterboxd). Replaces the old destructive up-front delete.
+                #
+                # Two guards the old version lacked:
+                #  1. Resolution-health floor. If fewer than half the ZIP's films
+                #     resolved, TMDB is degraded — skip the prune entirely rather
+                #     than delete a library we failed to rebuild.
+                #  2. watch_count == 0 marks WEB-WATCHES (rated in our carousel,
+                #     not yet on Letterboxd). They are legitimately absent from
+                #     every ZIP, so pruning them destroyed the watched-on-web
+                #     list + CSV export on every single import.
+                resolved_ratio = len(imported_movie_ids) / max(total_movies, 1)
+                if resolved_ratio < 0.5:
+                    logger.error(
+                        f"[Upload] Only {len(imported_movie_ids)}/{total_movies} films resolved "
+                        f"({resolved_ratio:.0%}) — skipping stale-row prune to avoid data loss. "
+                        f"Existing ratings left untouched."
+                    )
+                else:
+                    from sqlalchemy import delete as sa_delete
+                    prune = await db.execute(
+                        sa_delete(UserRating)
+                        .where(UserRating.user_id == user_id)
+                        .where(UserRating.movie_id.notin_(imported_movie_ids))
+                        .where(UserRating.watch_count != 0)
+                    )
+                    await db.commit()
+                    if prune.rowcount:
+                        logger.info(
+                            f"[Upload] Pruned {prune.rowcount} rows absent from this export "
+                            f"(user_id={user_id})"
+                        )
 
                 # After all movies processed, create clusters
                 if task_id:

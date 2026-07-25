@@ -243,7 +243,10 @@ async def health_check(qdrant: QdrantService = Depends(get_qdrant_service)) -> H
             await session.execute(text("SELECT 1"))
         health_status["dependencies"]["postgres"] = "ok"
     except Exception as e:
-        health_status["dependencies"]["postgres"] = f"down: {str(e)}"
+        # Status only. /health is unauthenticated and unmetered, so str(e) here
+        # handed internal hostnames, ports and DB names to anyone during an
+        # outage. The full exception still goes to the server log below.
+        health_status["dependencies"]["postgres"] = "down"
         health_status["status"] = "unhealthy"
         logger.error(f"Health Check Failed (Postgres): {e}")
 
@@ -261,7 +264,7 @@ async def health_check(qdrant: QdrantService = Depends(get_qdrant_service)) -> H
             await (r.aclose() if hasattr(r, "aclose") else r.close())
         health_status["dependencies"]["redis"] = "ok"
     except Exception as e:
-        health_status["dependencies"]["redis"] = f"down: {str(e)}"
+        health_status["dependencies"]["redis"] = "down"
         health_status["status"] = "unhealthy"
         logger.error(f"Health Check Failed (Redis): {e}")
 
@@ -270,7 +273,7 @@ async def health_check(qdrant: QdrantService = Depends(get_qdrant_service)) -> H
         await qdrant.client.get_collections()
         health_status["dependencies"]["qdrant"] = "ok"
     except Exception as e:
-        health_status["dependencies"]["qdrant"] = f"down: {str(e)}"
+        health_status["dependencies"]["qdrant"] = "down"
         health_status["status"] = "unhealthy"
         logger.error(f"Health Check Failed (Qdrant): {e}")
 

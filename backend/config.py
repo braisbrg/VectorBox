@@ -37,12 +37,28 @@ ANON_SESSION_SECRET = os.getenv("ANON_SESSION_SECRET", os.getenv("SECRET_KEY", _
 ANON_SESSION_MAX_AGE = 30 * 24 * 3600  # 30 days in seconds (2_592_000)
 IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
 
-# Refuse to boot in production with the dev-default cookie secret — anyone could
-# forge anonymous sessions and hijack guest data.
-if IS_PRODUCTION and ANON_SESSION_SECRET == _ANON_SESSION_DEFAULT:
+# Refuse to boot in production with a guessable cookie secret. Checking only
+# _ANON_SESSION_DEFAULT was NOT enough: setup.sh/setup.ps1 copy .env.example →
+# .env, which ships `SECRET_KEY=your_secret_key_here` — a value published in the
+# repo that is not the dev default, so it sailed past the old check. With a
+# known key anyone can forge vb_anon_session cookies for sequential user ids,
+# read/write those guest sessions, and then POST /auth/claim-anonymous to
+# transfer the victim's whole rating history into their own account.
+_WEAK_SECRETS = {
+    _ANON_SESSION_DEFAULT,
+    "your_secret_key_here",     # .env.example placeholder
+    "change_me_in_prod",
+    "changeme",
+    "secret",
+    "",
+}
+if IS_PRODUCTION and (
+    ANON_SESSION_SECRET.strip().lower() in _WEAK_SECRETS or len(ANON_SESSION_SECRET) < 32
+):
     raise RuntimeError(
-        "ANON_SESSION_SECRET (or SECRET_KEY) must be set in production; "
-        "the dev default would let anyone forge guest cookies."
+        "ANON_SESSION_SECRET (or SECRET_KEY) is a placeholder or shorter than 32 "
+        "chars. Generate one with `openssl rand -base64 32`; a guessable value "
+        "lets anyone forge guest cookies and claim other users' rating history."
     )
 
 # Refuse to boot in production with rate limiting disabled. TESTING_MODE

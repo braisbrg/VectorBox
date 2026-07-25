@@ -33,6 +33,26 @@ def client_ip(request: Request) -> str:
 
     In production this is essential — otherwise slowapi keys every request
     under the tunnel's egress IP and all users share one bucket.
+
+    ⚠ DECIDE THIS AT DEPLOY TIME — the priority above is only correct when the
+    browser talks to the backend DIRECTLY (through Cloudflare). It is WRONG if
+    /api/* is proxied server-side by the frontend, which is what
+    next.config.js `rewrites` does when the app runs on Vercel: Cloudflare then
+    sets CF-Connecting-IP to VERCEL's egress, so every user in the world keys to
+    one bucket and a single abuser exhausts /rss/sync (2/hour), /search/natural
+    and /upload/export for everybody. The real client IP is in the first
+    X-Forwarded-For hop, which this function only reaches on a CF miss.
+
+    Do NOT "fix" this blind: if the browser does hit the backend directly,
+    trusting the first XFF hop turns a shared bucket into a trivially spoofable
+    bypass (any client can send the header), which is strictly worse.
+
+    Verify with ONE real request from a phone on mobile data, then choose:
+        logger.warning(f"CF={request.headers.get('CF-Connecting-IP')} "
+                       f"XFF={request.headers.get('X-Forwarded-For')}")
+      - CF == your phone's IP        -> leave this function exactly as is.
+      - CF == a Vercel/datacenter IP -> read the first XFF hop first, and treat
+                                        CF-Connecting-IP as the fallback.
     """
     cf = request.headers.get("CF-Connecting-IP")
     if cf:

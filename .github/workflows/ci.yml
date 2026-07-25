@@ -2,9 +2,12 @@ name: VectorBox CI
 
 on:
   push:
-    branches: [master]
+    # feature/* included: gating only on master meant this branch accumulated
+    # ~2 months of work (incl. the whole ACID migration) without the security
+    # audit or pnpm audit ever running on it.
+    branches: [master, develop, 'feature/**']
   pull_request:
-    branches: [master]
+    branches: [master, develop]
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

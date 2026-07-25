@@ -1,6 +1,6 @@
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, confloat
+from pydantic import BaseModel, confloat, constr
 from typing import Optional
 from limiter import limiter
 from sqlalchemy import select
@@ -26,9 +26,18 @@ class RateMovieRequest(BaseModel):
     is_liked: bool = False
 
 @router.get("/{tmdb_id}")
+@limiter.limit("60/minute")
 async def get_movie_details(
+    # slowapi needs the starlette Request named `request` (F0 lesson).
+    # This route is intentionally public (guest dossier), so the rate limit is
+    # the ONLY control: a DB miss costs a TMDB call and a DB hit costs a
+    # get_watch_providers call + a provider upsert, both driven by an
+    # enumerable tmdb_id.
+    request: Request,
     tmdb_id: int,
-    country: str = "ES",
+    # ISO 3166-1 alpha-2. Was a free-form str, which multiplied provider-cache
+    # cardinality per film for anyone who felt like it.
+    country: constr(min_length=2, max_length=2, pattern=r"^[A-Za-z]{2}$") = "ES",
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client)
 ):

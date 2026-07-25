@@ -14,22 +14,35 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 
-# Security: Audit dependencies (allow errors for now as we are force-installing specialized wheels)
-# RUN pip-audit -r requirements.txt --strict
-
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Copy both: requirements.txt is the source of truth a human edits,
+# requirements.lock is what actually gets installed.
+COPY requirements.txt requirements.lock ./
 
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip
 
-# Optimize: 
-# 1. Use BuildKit cache for pip
-# 2. Install CPU-only Torch explicitly first (to avoid downloading CUDA version)
-# 3. Install other requirements
+# Install from the HASH-PINNED lock, not requirements.txt.
+#
+# The image used to build from requirements.txt, which carries `>=` pins and no
+# transitive pins at all — so every rebuild re-resolved unverified, and CI's
+# security gate was auditing requirements.lock, a file production never
+# installed. (That drift was not hypothetical: the lock had sentence-transformers
+# 3.4.1 while requirements.txt requires >=5.0.0.)
+#
+# --require-hashes makes a compromised or swapped release fail the build instead
+# of shipping. It also removes the need for the separate CPU-torch line: the lock
+# is compiled against the PyTorch CPU index, so it pins torch==2.10.0+cpu and
+# resolves ZERO nvidia-* / triton packages (compiling it against PyPI instead
+# pulls in ~15 CUDA packages — regenerate with the same --extra-index-url).
+#
+# Regenerate after editing requirements.txt:
+#   docker compose exec backend python -m piptools compile --generate-hashes \
+#     --allow-unsafe --extra-index-url https://download.pytorch.org/whl/cpu \
+#     --output-file=requirements.lock requirements.txt
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu && \
-    pip install -r requirements.txt
+    pip install --require-hashes \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        -r requirements.lock
 
 # Copy application code
 COPY . .
