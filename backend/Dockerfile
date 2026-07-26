@@ -61,12 +61,14 @@ ENV SENTENCE_TRANSFORMERS_HOME=/models_cache
 #   1. `chown -R` in its own layer duplicated the ENTIRE 1.2GB model cache —
 #      a layer stores whole files, and a metadata-only change still rewrites
 #      every one of them. The image carried the model twice (~1.27GB wasted).
-#   2. huggingface_hub persists credentials under $HF_HOME
-#      (/root/.cache/huggingface/{token,stored_tokens}). Deleting them in a
-#      LATER layer would not help: the earlier layer still contains the file,
-#      and `docker save` / a registry pull reads it straight out. It has to die
-#      in the same layer that created it. (download_model.py no longer calls
-#      login(), so this is belt-and-braces against any transitive writer.)
+#   2. download_model.py calls huggingface_hub.login() — REQUIRED for the gated
+#      repo (env-only auth dies on the xet read-token refresh, GatedRepoError
+#      401) — and login() persists the token to
+#      /root/.cache/huggingface/{token,stored_tokens}. Deleting it in a LATER
+#      layer would not help: the earlier layer still contains the file, and
+#      `docker save` / a registry pull reads it straight out. The rm below is
+#      LOAD-BEARING, not a nicety — it is the only thing keeping the token out
+#      of the shipped image.
 #   3. `--mount=type=secret` keeps the token out of `docker history`, but that
 #      only covers the build ARG/ENV surface — anything the build WRITES TO DISK
 #      is still shipped. Both halves are needed.
