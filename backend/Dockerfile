@@ -56,13 +56,27 @@ COPY . .
 #   DOCKER_BUILDKIT=1 docker build --secret id=hf_token,env=HF_TOKEN ...
 # or via compose: build.secrets: [hf_token]
 ENV SENTENCE_TRANSFORMERS_HOME=/models_cache
+# Download + fix ownership + purge credentials in ONE layer. Three reasons it
+# must be a single RUN:
+#   1. `chown -R` in its own layer duplicated the ENTIRE 1.2GB model cache —
+#      a layer stores whole files, and a metadata-only change still rewrites
+#      every one of them. The image carried the model twice (~1.27GB wasted).
+#   2. huggingface_hub persists credentials under $HF_HOME
+#      (/root/.cache/huggingface/{token,stored_tokens}). Deleting them in a
+#      LATER layer would not help: the earlier layer still contains the file,
+#      and `docker save` / a registry pull reads it straight out. It has to die
+#      in the same layer that created it. (download_model.py no longer calls
+#      login(), so this is belt-and-braces against any transitive writer.)
+#   3. `--mount=type=secret` keeps the token out of `docker history`, but that
+#      only covers the build ARG/ENV surface — anything the build WRITES TO DISK
+#      is still shipped. Both halves are needed.
 RUN --mount=type=secret,id=hf_token,mode=0444 \
     HF_TOKEN="$(cat /run/secrets/hf_token 2>/dev/null || true)" \
-    python download_model.py
+    python download_model.py && \
+    rm -rf /root/.cache/huggingface /home/vectorbox/.cache/huggingface && \
+    chown -R vectorbox:vectorbox /models_cache
 
 # Switch to non-root user
-# Ensure the user owns the model cache
-RUN chown -R vectorbox:vectorbox /models_cache
 USER vectorbox
 
 # Expose port
