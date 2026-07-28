@@ -146,9 +146,49 @@ def ensure_semantic_query(intent: "MovieSearchIntent", query: str) -> "MovieSear
     return intent
 
 
+# Words that mean "give me good ones" without naming a number or a source.
+_QUALITY_CUES = tuple(w.translate(_ACCENTS) for w in (
+    "bien valorad", "mejor valorad", "aclamad", "obra maestra", "obras maestras",
+    "imprescindible", "lo mejor", "las mejores", "los mejores", "peliculazo",
+    "acclaimed", "well rated", "well-rated", "highly rated", "critically",
+    "masterpiece", "the best", "top rated", "top-rated", "must see", "must-see",
+))
+
+QUALITY_REQUEST_MIN_VBS = 75
+
+
+def ensure_quality_filter(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Give a vague quality request an actual quality filter.
+
+    Third field to need a deterministic guard rather than a prompt, and the
+    reason is the same each time: a description is a probability. Measured on
+    "peliculas muy bien valoradas" — first the parser set min_rating=8.0, the top
+    ~2% of TMDB, which ANDed with everything else and cut the answer to three
+    films; after the description was tightened it set NOTHING, and the query fell
+    through to the confidence gate and returned zero. Neither is an answer.
+
+    So the rule: if the user asked for quality in words and the parser produced no
+    quality filter of any kind, apply the catalogue's own score. VBS is the right
+    one because it is already blended and shrunk, so it widens towards good films
+    instead of collapsing to a handful.
+    """
+    asked = any(c in query.lower().translate(_ACCENTS) for c in _QUALITY_CUES)
+    already = any((
+        intent.min_vectorbox_score, intent.min_rating, intent.min_imdb_rating,
+        intent.min_metacritic, intent.min_oscar_wins,
+    ))
+    if asked and not already:
+        logger.info("Quality asked for but no filter set; applying min_vectorbox_score=%d: %r",
+                    QUALITY_REQUEST_MIN_VBS, query)
+        intent.min_vectorbox_score = QUALITY_REQUEST_MIN_VBS
+    return intent
+
+
 def finalize_intent(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
     """Every deterministic repair the parser's output needs, in one place."""
-    return ensure_semantic_query(guard_language_filter(intent, query), query)
+    intent = guard_language_filter(intent, query)
+    intent = ensure_semantic_query(intent, query)
+    return ensure_quality_filter(intent, query)
 
 # Curated typo / informal-spelling normalisation applied BEFORE the LLM.
 # Only includes terms where Llama 4 Scout 17B has been observed to drift
@@ -234,8 +274,38 @@ class MovieSearchIntent(BaseModel):
     include_genres: Optional[List[str]] = Field(None, description="Official TMDB genres to include.")
     min_runtime_minutes: Optional[int] = Field(None, description="Min duration in minutes.")
     max_runtime_minutes: Optional[int] = Field(None, description="Max duration in minutes.")
-    min_rating: Optional[float] = Field(None, description="Minimum TMDB vote_average (0-10).")
-    min_vectorbox_score: Optional[float] = Field(None, description="Minimum VectorBox quality score Q (0-100). Used by the rail quality slider.")
+    # Measured 2026-07-29: "peliculas muy bien valoradas" set min_rating=8.0,
+    # which is roughly the top 2% of TMDB and cut the answer to THREE films. A
+    # vague quality request should widen towards good films, not narrow to a
+    # handful — every filter here ANDs with the others, so a strict one silently
+    # empties the shelf.
+    min_rating: Optional[float] = Field(
+        None,
+        description=(
+            "Minimum TMDB vote_average (0-10). ONLY when the user names a numeric "
+            "rating ('above 8', 'de 7 para arriba'). For vague quality requests "
+            "('well rated', 'muy bien valoradas', 'good') use min_vectorbox_score "
+            "instead — it is the catalogue's own blended score and does not "
+            "collapse the result set."
+        ),
+    )
+    # Described the PLUMBING, not the trigger — "used by the rail quality slider"
+    # tells the model which UI control owns it, never when a user request calls
+    # for it. Measured 2026-07-29: "peliculas muy bien valoradas" extracted no
+    # filter at all and fell through to a meaningless vector search. Third field
+    # to be bitten by this exact omission, after original_language and
+    # semantic_query.
+    min_vectorbox_score: Optional[float] = Field(
+        None,
+        description=(
+            "Minimum VectorBox quality score (0-100). SET THIS whenever the user "
+            "asks for quality without naming a source — 'well rated', 'acclaimed', "
+            "'highly regarded', 'the best', 'muy bien valoradas', 'lo mejor'. Use "
+            "75 for 'good/well rated' and 85 for 'the best/masterpieces'. Prefer "
+            "min_imdb_rating or min_metacritic only when the user names IMDb, "
+            "Metacritic or critics explicitly."
+        ),
+    )
     popularity_vibe: Literal["blockbuster", "hidden_gem", "any"] = Field("any", description="Select 'hidden_gem' for obscure/underrated, 'blockbuster' for famous/hits.")
     # The description used to say only HOW to format the value, never WHEN it
     # applies — unlike its neighbours (popularity_vibe, quality_gate_bypass),
@@ -261,6 +331,22 @@ class MovieSearchIntent(BaseModel):
 
     reference_movie: Optional[str] = Field(None, description="If user asks for movies 'like' X, extract title.")
     quality_gate_bypass: bool = Field(False, description="Set True when user seeks campy, trashy, guilty-pleasure, so-bad-its-good, or B-movie content. Keeps low-scored films in results.")
+
+    # Added 2026-07-29. "no se que ver" scored 0.306 confidence and was refused —
+    # but a person who does not know what to watch cannot be asked to be more
+    # specific, and refusing leaves them with nothing. It is not nonsense like
+    # "receta de tortilla de patatas"; it is an explicit request for a good
+    # default, and confidence alone cannot tell the two apart (0.306 vs 0.29).
+    # Only the model can, so it says so here.
+    open_request: bool = Field(
+        False,
+        description=(
+            "Set True when the user is explicitly asking for a suggestion WITHOUT "
+            "giving criteria — 'no se que ver', 'sorprendeme', 'recomiendame algo', "
+            "'what should I watch', 'surprise me'. False whenever the request "
+            "names any subject, mood, era, genre or constraint, however vague."
+        ),
+    )
 
     # NEW (Sprint 1, migration o3p4q5r6s7t8): five filter dimensions sourced
     # from OMDb/TMDB extended metadata. ~88-91% catalog coverage.

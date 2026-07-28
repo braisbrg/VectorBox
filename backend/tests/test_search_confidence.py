@@ -69,3 +69,69 @@ def test_quality_is_not_used_as_a_confidence_signal():
         "confidence must be measured on similarity alone — quality does not "
         "discriminate answerable from unanswerable (measured margin -23.3)"
     )
+
+
+# ── the three shapes a low-confidence query can actually take ────────────────
+# Measured 2026-07-29. Confidence alone was refusing all of them, and only one
+# deserved it.
+def test_a_quality_only_request_counts_as_descriptive():
+    """'peliculas muy bien valoradas' has one criterion and it is answerable.
+
+    min_vectorbox_score was missing from has_descriptive_filters, so the gate
+    refused a query the catalogue answers perfectly.
+    """
+    from services.magic_search_ranking import has_descriptive_filters
+    from services.nlp_search import MovieSearchIntent
+
+    intent = MovieSearchIntent(semantic_query="x", reasoning="r", min_vectorbox_score=75)
+    assert has_descriptive_filters(intent)
+
+
+def test_quality_words_get_a_filter_even_when_the_parser_forgets():
+    """Third field to need a rule instead of a prompt.
+
+    First the parser set min_rating=8.0 (top ~2% of TMDB, three results); after
+    the description was tightened it set nothing at all and the query returned
+    zero. The guard makes it deterministic either way.
+    """
+    from services.nlp_search import QUALITY_REQUEST_MIN_VBS, ensure_quality_filter, MovieSearchIntent
+
+    for q in ["peliculas muy bien valoradas", "lo mejor del catalogo",
+              "critically acclaimed films", "must-see masterpieces"]:
+        out = ensure_quality_filter(MovieSearchIntent(semantic_query="x", reasoning="r"), q)
+        assert out.min_vectorbox_score == QUALITY_REQUEST_MIN_VBS, q
+
+
+def test_the_guard_never_overrides_a_filter_the_parser_did_set():
+    from services.nlp_search import ensure_quality_filter, MovieSearchIntent
+
+    out = ensure_quality_filter(
+        MovieSearchIntent(semantic_query="x", reasoning="r", min_metacritic=85),
+        "algo muy aclamado por la critica",
+    )
+    assert out.min_vectorbox_score is None
+    assert out.min_metacritic == 85
+
+
+def test_a_thematic_query_gets_no_quality_filter():
+    """The guard must not fire on queries that never mentioned quality."""
+    from services.nlp_search import ensure_quality_filter, MovieSearchIntent
+
+    out = ensure_quality_filter(
+        MovieSearchIntent(semantic_query="x", reasoning="r"),
+        "algo lento y triste sobre el duelo, sin sustos",
+    )
+    assert out.min_vectorbox_score is None
+
+
+def test_open_request_is_a_field_because_confidence_cannot_tell():
+    """'no se que ver' scored 0.306 and gibberish 0.23 — inside the noise.
+
+    A person who does not know what to watch cannot be asked to be more
+    specific, so refusing them is the one failure with no recovery. Only the
+    parser can distinguish it, so it says so explicitly.
+    """
+    from services.nlp_search import MovieSearchIntent
+
+    assert "open_request" in MovieSearchIntent.model_fields
+    assert MovieSearchIntent.model_fields["open_request"].default is False

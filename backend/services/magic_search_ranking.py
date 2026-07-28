@@ -58,6 +58,11 @@ QUALITY_FLOOR_BYPASS = 0.10
 # on purpose: refusing a real question is a worse failure than answering a silly
 # one, so the gate leans towards answering.
 LOW_CONFIDENCE_MEAN = 0.43
+
+# Floor for the "I don't know what to watch" answer. High on purpose: this is the
+# one case where the user has explicitly delegated the choice, so the selection
+# should be films the catalogue is confident about, not the merely acceptable.
+OPEN_REQUEST_MIN_VBS = 80
 CONFIDENCE_SAMPLE = 10
 
 
@@ -127,6 +132,10 @@ def has_descriptive_filters(intent: MovieSearchIntent) -> bool:
         or intent.min_imdb_rating or intent.min_metacritic
         or intent.countries or intent.spoken_languages
         or intent.awards_contains
+        # min_vectorbox_score was missing (added 2026-07-29): a query whose only
+        # criterion was quality did not count as "descriptive", so the confidence
+        # gate refused it even though the catalogue could answer it perfectly.
+        or intent.min_vectorbox_score
     )
 
 

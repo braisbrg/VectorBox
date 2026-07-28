@@ -11,7 +11,9 @@ from services.nlp_search import parse_user_intent, search_with_reasoning, MovieS
 from services.magic_search_ranking import (
     CONFIDENCE_SAMPLE,
     LOW_CONFIDENCE_MEAN,
+    OPEN_REQUEST_MIN_VBS,
     compute_blended_score,
+    has_descriptive_filters,
     intent_complexity,
     is_low_confidence,
     movie_passes_post_filter,
@@ -25,7 +27,7 @@ from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
 from services.provider_service import ProviderService
 from models.database import UserRating, Movie
-from sqlalchemy import select, or_
+from sqlalchemy import func, select, or_
 from utils.scoring import normalize_similarity_score
 from utils.input_validation import validate_user_query
 
@@ -320,8 +322,26 @@ async def _run_natural_search(
         #
         # Read BEFORE the quality gate and the post-filter: those drop films for
         # reasons unrelated to whether the question made sense.
-        confidence = search_confidence([r.get("score") or 0.0 for r in raw_results])
-        if is_low_confidence([r.get("score") or 0.0 for r in raw_results]):
+        cosines = [r.get("score") or 0.0 for r in raw_results]
+        confidence = search_confidence(cosines)
+
+        # A weak vector is not the same as an unanswerable question. Measured
+        # 2026-07-29, three different things were scoring below the threshold:
+        #
+        #   "algo muy aclamado por la critica"  0.355  min_metacritic=75
+        #   "algo corto, menos de 90 minutos"   0.371  max_runtime_minutes=90
+        #   "no se que ver"                     0.306  no filters
+        #   "receta de tortilla de patatas"     0.232  no filters
+        #
+        # The first two are perfectly answerable — just by FILTERS rather than by
+        # similarity — and refusing them was a bug. The third is a real request
+        # for a good default that nobody can make more specific: telling someone
+        # who does not know what to watch to be more precise leaves them with
+        # nothing. Only the fourth is genuinely unanswerable.
+        #
+        # Confidence cannot separate the third from the fourth (0.306 vs 0.232 is
+        # inside the noise), so the parser flags it as `open_request`.
+        if is_low_confidence(cosines) and not has_descriptive_filters(intent) and not intent.open_request:
             logger.info(
                 "Low-confidence query (mean top-%d cosine %.3f < %.2f): %r",
                 CONFIDENCE_SAMPLE, confidence, LOW_CONFIDENCE_MEAN, search_req.query,
@@ -330,6 +350,54 @@ async def _run_natural_search(
                 results=[],
                 intent={**intent.model_dump(), "confidence": round(confidence, 3)},
                 low_confidence=True,
+            )
+
+        # "I don't know what to watch". The vector is meaningless here — it was
+        # returning Glitter (VBS 14) for "sorprendeme con algo bueno" — so the
+        # answer comes from the catalogue's own quality, spread across genres so
+        # it reads as a selection rather than a leaderboard.
+        # When the vector says nothing but the request still has criteria, the
+        # answer must come from the CATALOGUE, not from twenty arbitrary
+        # neighbours. Two shapes end up here:
+        #
+        #   "no se que ver"                -> open_request, no criteria at all
+        #   "peliculas muy bien valoradas" -> a quality bar and nothing else
+        #
+        # Both used to return zero: the first was refused outright, the second
+        # passed the gate and then found almost nothing, because the twenty
+        # nearest neighbours of a meaningless vector rarely clear a quality bar.
+        # Querying the catalogue directly is the honest answer to both.
+        if is_low_confidence(cosines) and (intent.open_request or intent.min_vectorbox_score):
+            floor = intent.min_vectorbox_score or OPEN_REQUEST_MIN_VBS
+            logger.info("Catalogue selection for %r (floor=%s, open=%s)",
+                        search_req.query, floor, intent.open_request)
+            picks = (await db.execute(
+                select(Movie)
+                .where(Movie.vectorbox_score >= floor)
+                .where(Movie.poster_path.is_not(None))
+                .order_by(func.random())
+                .limit(40)
+            )).scalars().all()
+            seen_genres: set[str] = set()
+            varied: list[Movie] = []
+            for m in picks:
+                lead = (m.genres or ["?"])[0]
+                if lead in seen_genres and len(varied) < 12:
+                    continue
+                seen_genres.add(lead)
+                varied.append(m)
+                if len(varied) >= 12:
+                    break
+            return SearchResponse(
+                results=[{
+                    "movie_id": m.tmdb_id, "title": m.title, "overview": m.overview,
+                    "poster_path": m.poster_path, "score": round(m.vectorbox_score or 0),
+                    "year": m.year, "runtime": m.runtime, "genres": m.genres or [],
+                    "vote_average": m.vote_average, "vectorbox_score": m.vectorbox_score,
+                    "title_es": m.title_es, "overview_es": m.overview_es,
+                } for m in varied],
+                intent={**intent.model_dump(), "confidence": round(confidence, 3),
+                        "reasoning": "A varied selection of well-regarded films from the catalogue."},
             )
 
         # Minimum quality gate — drop movies with no TMDB signal (e.g. vote_count=0)
