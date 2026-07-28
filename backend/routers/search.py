@@ -9,9 +9,13 @@ from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_serv
 from models.schemas import TokenResponse
 from services.nlp_search import parse_user_intent, search_with_reasoning, MovieSearchIntent
 from services.magic_search_ranking import (
+    CONFIDENCE_SAMPLE,
+    LOW_CONFIDENCE_MEAN,
     compute_blended_score,
     intent_complexity,
+    is_low_confidence,
     movie_passes_post_filter,
+    search_confidence,
     should_run_deep_analysis,
     title_sim_score,
 )
@@ -37,6 +41,11 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     results: List[dict]
     intent: dict
+    # True when the catalogue had nothing close enough to be a recommendation.
+    # `results` is empty in that case — deliberately: showing the twenty nearest
+    # films under a "we are not sure" banner is worse than showing none, because
+    # the engine looks confident about films it picked for no reason.
+    low_confidence: bool = False
 
 def filter_es_providers(all_providers: List[str]) -> List[str]:
     """Pure function to filter provider names against the ES whitelist."""
@@ -300,6 +309,28 @@ async def _run_natural_search(
         )
         
         logger.info(f"Qdrant returned {len(raw_results)} results")
+
+        # Confidence gate. Measured over 54 runs of an 18-query panel
+        # (scripts/experiment_confidence.py): answerable questions never fell
+        # below a 0.443 mean over the top ten neighbours, unanswerable ones never
+        # rose above 0.425. Below the threshold the catalogue has nothing close
+        # enough to call a recommendation, and returning the nearest twenty
+        # anyway is how "receta de tortilla de patatas" used to answer with
+        # Ratatouille — confidently, and wrong.
+        #
+        # Read BEFORE the quality gate and the post-filter: those drop films for
+        # reasons unrelated to whether the question made sense.
+        confidence = search_confidence([r.get("score") or 0.0 for r in raw_results])
+        if is_low_confidence([r.get("score") or 0.0 for r in raw_results]):
+            logger.info(
+                "Low-confidence query (mean top-%d cosine %.3f < %.2f): %r",
+                CONFIDENCE_SAMPLE, confidence, LOW_CONFIDENCE_MEAN, search_req.query,
+            )
+            return SearchResponse(
+                results=[],
+                intent={**intent.model_dump(), "confidence": round(confidence, 3)},
+                low_confidence=True,
+            )
 
         # Minimum quality gate — drop movies with no TMDB signal (e.g. vote_count=0)
         raw_results = [

@@ -285,7 +285,9 @@
     "mode_title": "find a film",
     "title_placeholder": "type a film title…",
     "title_none": "no titles found",
-    "title_hint": "type at least 2 characters"
+    "title_hint": "type at least 2 characters",
+    "low_conf": "We could not read that as a film you are after.",
+    "low_conf_hint": "Describe what the film is about — its subject, mood or setting. Not who it is for."
   },
   "dossier": {
     "synopsis": "synopsis",

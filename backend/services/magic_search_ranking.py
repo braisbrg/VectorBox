@@ -33,6 +33,51 @@ QUALITY_STEEPNESS = 0.10
 QUALITY_FLOOR_DEFAULT = 0.20
 QUALITY_FLOOR_BYPASS = 0.10
 
+# --- confidence ---------------------------------------------------------------
+#
+# The engine used to fill the shelf whatever it found: 14 films whether the best
+# neighbour scored 0.65 or 0.19. That is how "receta de tortilla de patatas"
+# answered with Ratatouille and "342342 8888 ????" with Werckmeister Harmonies —
+# both perfectly confident, both nonsense as recommendations.
+#
+# Threshold measured, not guessed. scripts/experiment_confidence.py runs an
+# 18-query panel (thematic / audience-fit / too-vague / nonsense / off-domain)
+# three times through the real pipeline. Over 54 runs:
+#
+#   statistic      min answerable   max unanswerable   margin
+#   raw_max                 0.470              0.454   +0.016
+#   raw_mean@10             0.443              0.425   +0.018   <- widest, and a
+#   kept_mean               0.435              0.422   +0.013      mean is steadier
+#   vbs_mean                54.98              78.26   -23.28      than one max
+#
+# vbs_mean is worse than useless: nonsense returns ACCLAIMED films, so ranking by
+# quality when similarity is low would dress gibberish in prestige and look
+# deliberate. Similarity is the only honest signal here.
+#
+# Set at the top of the unanswerable range rather than the middle of the margin,
+# on purpose: refusing a real question is a worse failure than answering a silly
+# one, so the gate leans towards answering.
+LOW_CONFIDENCE_MEAN = 0.43
+CONFIDENCE_SAMPLE = 10
+
+
+def search_confidence(raw_cosines: list[float]) -> float:
+    """Mean cosine of the top neighbours — how well the catalogue matches at all.
+
+    Computed BEFORE post-filtering: filters remove films for reasons unrelated to
+    whether the question made sense (era, rating, already seen), and a query that
+    filters down to two good films is narrow, not unanswerable.
+    """
+    if not raw_cosines:
+        return 0.0
+    top = sorted(raw_cosines, reverse=True)[:CONFIDENCE_SAMPLE]
+    return sum(top) / len(top)
+
+
+def is_low_confidence(raw_cosines: list[float]) -> bool:
+    """True when the catalogue has nothing close enough to be a recommendation."""
+    return search_confidence(raw_cosines) < LOW_CONFIDENCE_MEAN
+
 # --- Title-boost parameters --------------------------------------------------
 
 TITLE_BOOST_QUERY_MAX_LEN = 40

@@ -285,7 +285,9 @@
     "mode_title": "buscar título",
     "title_placeholder": "escribe el título de una película…",
     "title_none": "ningún título encontrado",
-    "title_hint": "escribe al menos 2 caracteres"
+    "title_hint": "escribe al menos 2 caracteres",
+    "low_conf": "No hemos sabido leer eso como una película que buscas.",
+    "low_conf_hint": "Describe de qué va la película — su tema, su tono o dónde pasa. No para quién es."
   },
   "dossier": {
     "synopsis": "sinopsis",

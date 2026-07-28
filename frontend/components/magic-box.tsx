@@ -121,6 +121,10 @@ const GUEST_MAX_QUERY = 140;
 
 export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
     const { isSignedIn } = useUser();
+    // The engine reports when the catalogue had nothing close enough to be a
+    // recommendation (measured threshold, see magic_search_ranking). An empty
+    // shelf plus a reason beats twenty films picked for no reason.
+    const [lowConfidence, setLowConfidence] = useState(false);
     const { language, t } = useLanguage();
     const router = useRouter();
     const [query, setQuery] = useState("");
@@ -191,6 +195,7 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
             return { data: res.data, ms: Math.round(performance.now() - t0) };
         },
         onSuccess: ({ data, ms }) => {
+            setLowConfidence(Boolean(data.low_confidence));
             const unique = Array.from(
                 new Map((data.results as SearchResult[]) .map((r) => [r.movie_id, r])).values()
             );
@@ -408,7 +413,14 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
 
                     <div className="max-h-[380px] overflow-y-auto">
                         {results.length === 0 && !searchMutation.isPending && (
-                            <div className="p-8 text-center font-mono text-xs uppercase tracking-widest text-fg-3">{t("mb.no_results")}</div>
+                            lowConfidence ? (
+                                <div className="p-8 text-center">
+                                    <p className="font-mono text-xs uppercase tracking-widest text-fg-2">{t("mb.low_conf")}</p>
+                                    <p className="mx-auto mt-2 max-w-[42ch] font-mono text-[11px] leading-relaxed text-fg-3">{t("mb.low_conf_hint")}</p>
+                                </div>
+                            ) : (
+                                <div className="p-8 text-center font-mono text-xs uppercase tracking-widest text-fg-3">{t("mb.no_results")}</div>
+                            )
                         )}
                         {results.map((r, i) => (
                             <button
