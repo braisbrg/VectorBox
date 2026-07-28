@@ -47,14 +47,21 @@ SHOWCASE_QUERIES: list[dict[str, str]] = [
         "en": "stylish heists, European cinema of the 70s",
     },
     {
-        # Reworded 2026-07-28. The first Spanish phrasing ("algo que terminemos
-        # mis padres y yo sin discutir") had no thematic content for the embedder
-        # to work with — "terminemos", "sin discutir" are not film themes — and
-        # the parser answered it with an EMPTY semantic_query, which used to 500
-        # the whole search. It yielded 2 films; this one yields 14.
-        "slug": "with-parents",
-        "es": "una peli que guste a padres e hijos, sin violencia ni sustos",
-        "en": "something parents and kids will both enjoy, no violence or scares",
+        # Replaced twice, and the second time taught us the rule. Both earlier
+        # phrasings asked about AUDIENCE ("that my parents and I would finish",
+        # "that parents and kids will both enjoy"), and the catalogue is embedded
+        # on what a film is ABOUT. The parser expanded them correctly —
+        # "family-friendly, gentle, wholesome, safe for all ages" — but no film's
+        # description says it is safe for all ages, so the nearest neighbours were
+        # whatever was vaguely animated: Boss Baby, a direct-to-video Charlotte's
+        # Web sequel, YES DAY at VBS 44. Mean similarity 44.7.
+        #
+        # A theme the catalogue can actually answer scores 67.5 and returns Wings
+        # of Desire and L'Eclisse. Showcase queries must name a SUBJECT, not an
+        # audience — that is what the vector space holds.
+        "slug": "loneliness",
+        "es": "la soledad de vivir en una ciudad enorme",
+        "en": "the loneliness of living in a huge city",
     },
 ]
 
@@ -66,6 +73,13 @@ SHOWCASE_QUERIES: list[dict[str, str]] = [
 # So the floor sits between those two observed numbers. A row of 6 does not
 # scroll, which is fine; a row of 2 looks broken, which is not.
 MIN_RESULTS = 6
+
+# Mean similarity below this means the catalogue cannot answer the question, not
+# that the answer is merely narrow. Calibrated on two measured queries: "grief"
+# answers at a 67.5 mean (Ordinary People, Petite Maman) and "parents and kids
+# will both enjoy" at 44.7 (Boss Baby, a Charlotte's Web sequel, YES DAY at VBS
+# 44). The gap is the whole signal, and nothing in the pipeline was reading it.
+MIN_MEAN_SCORE = 55
 
 _BY_SLUG = {q["slug"]: q for q in SHOWCASE_QUERIES}
 _LANGS = ("es", "en")

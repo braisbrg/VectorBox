@@ -36,7 +36,7 @@ import { cn } from "@/lib/utils";
 const CHIPS: { slug: ShowcaseSlug; key: string }[] = [
     { slug: "grief", key: "land.ph_phrase" },
     { slug: "heist70", key: "land.chip_heist" },
-    { slug: "with-parents", key: "land.chip_parents" },
+    { slug: "loneliness", key: "land.chip_loneliness" },
 ];
 
 export function Landing() {

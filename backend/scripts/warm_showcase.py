@@ -4,9 +4,10 @@
 of computing, which is what keeps the landing's input set closed. Something has
 to put the answers there, and this is it.
 
-It drives the ordinary `/api/search/natural` pipeline over HTTP against the
-running backend, so the showcase can never drift from what Magic Box itself
-would answer — one code path, not two.
+It drives `/api/search/try` — the SAME public door a visitor typing their own
+sentence would hit — so what gets cached is exactly what that visitor would have
+received. Warming through the authenticated `/natural` instead would quietly
+cache answers from a wider budget than the landing actually offers.
 
 Run it on deploy, and after any change to SHOWCASE_QUERIES, the embeddings, or
 the ranking:
@@ -41,7 +42,7 @@ async def warm_one(client: httpx.AsyncClient, redis, slug: str, lang: str, dry: 
         return False
 
     resp = await client.post(
-        "/api/search/natural",
+        "/api/search/try",
         json={"query": query},
         timeout=60.0,  # a cold parse plus Qdrant; generous on purpose
     )
@@ -64,6 +65,20 @@ async def warm_one(client: httpx.AsyncClient, redis, slug: str, lang: str, dry: 
     #      runs on every deploy; without this, one deploy during a Groq outage
     #      would quietly downgrade a page that was working.
     degraded = "All models failed" in str(intent.get("reasoning", ""))
+
+    # Confidence. The similarity scores are the engine telling you whether the
+    # catalogue can answer at all, and nothing was reading them: measured
+    # 2026-07-29, "parents and kids will both enjoy" peaked at 64 with a mean of
+    # 44.7, while "loneliness in a big city" peaked at 88 with a mean of 67.5.
+    # The first filled the shelf with Boss Baby and a direct-to-video Charlotte's
+    # Web sequel. A shop window must not show an answer the engine is unsure of.
+    scores = [m.get("score") or 0 for m in results]
+    mean_score = sum(scores) / len(scores) if scores else 0
+    if mean_score < showcase_service.MIN_MEAN_SCORE:
+        print(f"  ! {slug}/{lang}: confianza baja (score medio {mean_score:.1f} < "
+              f"{showcase_service.MIN_MEAN_SCORE}), no se cachea — la consulta pide algo "
+              f"que el catálogo no sabe responder")
+        return False
 
     if len(results) < showcase_service.MIN_RESULTS:
         print(f"  ! {slug}/{lang}: solo {len(results)} resultados "
@@ -123,9 +138,9 @@ async def main() -> int:
                 for lang in langs:
                     if await warm_one(client, redis, s, lang, args.dry_run):
                         ok += 1
-                    # /search/natural is rate limited to 10/minute per IP; the
-                    # warm loop is the one caller that would trip it on itself.
-                    await asyncio.sleep(7)
+                    # /try is rate limited to 5/minute per IP and the warm loop
+                    # is the one caller guaranteed to trip it on itself.
+                    await asyncio.sleep(13)
     finally:
         await redis.close()
 

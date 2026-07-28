@@ -185,9 +185,49 @@ def _normalize_typos(text: str) -> str:
 class MovieSearchIntent(BaseModel):
     """Advanced search intent with semantic expansion and nuanced interpretation"""
     
+    # The boundary below is the whole point, and it was missing (2026-07-29).
+    # The description said HOW to expand but never WHAT belongs here, so the model
+    # dumped the entire request in — including things the vector space does not
+    # hold. Catalogue vectors are built from `cinematic_description`: tone, theme,
+    # subject, style. Nothing else is in there.
+    #
+    # Measured: "a film parents and kids will both enjoy, no violence or scares"
+    # expanded to "family-friendly, suitable for parents and children, gentle,
+    # wholesome, non-violent, safe for all ages" — none of which any film's
+    # description says about itself. Mean similarity fell to 44.7 and the shelf
+    # filled with Boss Baby and a direct-to-video Charlotte's Web sequel. The same
+    # request's AUDIENCE half was already captured correctly in mpaa_ratings; it
+    # simply should not have been in here as well.
+    #
+    # HONEST STATUS: this wording is architecturally right and NOT a fix. Measured
+    # after adding it — Spanish improved (mean 44.7 -> 50.9, E.T. to the top,
+    # Boss Baby gone) and English got worse (44.7 -> 37.7). One up, one down is
+    # noise from a non-deterministic parser, not a win. The model still emits
+    # "family-friendly, safe for all ages" here despite being told not to.
+    #
+    # The real problem is architectural and no prompt wording reaches it: a
+    # request with no thematic content HAS no good vector, because the catalogue
+    # only encodes what films are about. The fix is confidence-aware ranking —
+    # when mean similarity is low the structured filters (here mpaa G/PG) and
+    # vectorbox_score should carry the ordering instead of a meaningless cosine.
+    # That is a change to compute_blended_score, not to this string.
     semantic_query: str = Field(
-        ..., 
-        description="A rich, descriptive version of the user's request for vector search. You MUST expand keywords with synonyms and related themes. Example: Input 'gangsters' -> Output 'organized crime, mafia, mob, crime drama, violence, noir'."
+        ...,
+        description=(
+            "What the film is ABOUT, for vector search against plot/tone/theme "
+            "descriptions. Expand with synonyms and related themes: "
+            "'gangsters' -> 'organized crime, mafia, mob, crime drama, noir'.\n"
+            "ONLY include subject, theme, tone, mood, style and setting — the "
+            "things a description of the film would actually say.\n"
+            "NEVER include audience or suitability ('family-friendly', 'safe for "
+            "all ages', 'for kids'), age ratings, era, country, language, "
+            "popularity or quality. Every one of those has its own field, and "
+            "putting them here poisons the search with words no film description "
+            "contains.\n"
+            "If the request is entirely non-thematic (e.g. 'something my parents "
+            "and I would both finish'), put the user's own words here rather than "
+            "inventing themes — never leave this empty."
+        ),
     )
     year_min: Optional[int] = Field(None, description="Start year. Interpret '80s' as 1980, 'Modern' as 2010, 'Recent' as 2020.")
     year_max: Optional[int] = Field(None, description="End year. Interpret 'Old/Classic' as 1985, '90s' as 1999.")

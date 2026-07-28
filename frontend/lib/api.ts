@@ -569,7 +569,7 @@ export const getFilteredFeed = async (params: FilterSearchParams): Promise<FeedR
 // endpoint never computes: an unknown slug is a 404 and a cold cache is a 503,
 // which is what keeps the landing's set of possible inputs closed. Filling it is
 // scripts/warm_showcase.py, run on deploy.
-export const SHOWCASE_SLUGS = ["grief", "heist70", "with-parents"] as const;
+export const SHOWCASE_SLUGS = ["grief", "heist70", "loneliness"] as const;
 export type ShowcaseSlug = (typeof SHOWCASE_SLUGS)[number];
 
 // NOT FeedItem: /search/natural returns its own shape (movie_id, poster_path,
