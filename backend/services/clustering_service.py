@@ -211,14 +211,14 @@ class ClusteringService:
             _strip_think, _get_model_chain, _REASONING_EFFORT,
             _parse_retry_after, _is_daily_limit,
         )
-        # Cascade across the model chain (qwen3-32b → qwen3.6-27b → gpt-oss-*) — each model
-        # has a SEPARATE TPM bucket, so a 429 on one tries the next instead of
-        # degrading. Labels are tiny (~500 tok) but qwen3-32b's TPM is only 6000,
-        # so re-clustering many users back-to-back used to 429 and drop straight to
-        # a genre label. If the WHOLE chain is per-minute rate-limited, wait the
-        # suggested time ONCE and retry rather than degrade — genres is the true
-        # last resort (chain fully exhausted / daily limit). Llama 4 Scout removed
-        # here (Groq decommission 2026-07-17); _strip_think guards <think> leaks.
+        # Cascade across ENRICH_CHAIN (qwen3.6-27b → gpt-oss-120b → gpt-oss-20b) —
+        # each model has a SEPARATE TPM bucket, so a 429 on one tries the next
+        # instead of degrading. Labels are tiny (~500 tok) but the buckets are
+        # small (qwen3.6-27b ~8K TPM), so re-clustering many users back-to-back
+        # used to 429 and drop straight to a genre label. If the WHOLE chain is
+        # per-minute rate-limited, wait the suggested time ONCE and retry rather
+        # than degrade — genres is the true last resort (chain fully exhausted /
+        # daily limit). _strip_think guards <think> leaks.
         messages = [
             {
                 "role": "system",

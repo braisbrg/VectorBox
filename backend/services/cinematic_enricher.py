@@ -9,20 +9,15 @@ import os
 import re
 from typing import List
 
+from services.llm_models import ENRICH_CHAIN, REASONING_EFFORT
+
 logger = logging.getLogger(__name__)
 
 
-# Per-model reasoning-effort overrides. Reasoning models otherwise spend the
-# token budget on chain-of-thought: Qwen3 leaks it as inline <think>…</think>
-# in the content unless effort='none'; gpt-oss empties out entirely at the
-# default/high effort on long prompts (the 2026-06 reasoning experiment showed
-# 'low' is the only reliable setting). Models not listed get no override.
-_REASONING_EFFORT = {
-    "qwen/qwen3-32b": "none",
-    "qwen/qwen3.6-27b": "none",
-    "openai/gpt-oss-120b": "low",
-    "openai/gpt-oss-20b": "low",
-}
+# Re-exported for clustering_service (cluster-naming shares this chain). Model
+# IDs + reasoning-effort live in services/llm_models.py — the single source of
+# truth. See _get_model_chain below.
+_REASONING_EFFORT = REASONING_EFFORT
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
@@ -38,28 +33,14 @@ def _strip_think(text: str) -> str:
 
 
 def _get_model_chain() -> list[str]:
-    """Return the LLM model chain based on available API keys.
+    """Return the enrichment model chain based on available API keys.
 
-    Order from the 2026-06 model sweep (V2-nameban prompt, all on Groq free
-    tier @ 1K RPD each — re-verified live against /v1/models, limits 2026-06-29).
-    Llama 4 Scout (decommission 2026-07-17), Llama 3.1 8B + Llama 3.3 70B
-    (decommission 2026-08-16) all removed — Qwen3-32B is the head:
-      1. Qwen3-32B — the most CONSISTENT full-structure output in the sweep
-         (tone/themes/style/pacing/affinity/mood every time, ~72 words). 6K TPM.
-         Reasoning model → effort='none' (see _REASONING_EFFORT).
-      2. Qwen3.6-27B — top-tier prose, own 8K-TPM bucket (drained 2,872 films in
-         the V2 re-enrich at ~0.5s/film); replaced Llama 3.3 70B 2026-06-29 when
-         Groq deprecated it. Reasoning model → effort='none'.
-      3. GPT-OSS-120B — richest prose (~81 words), reasoning (effort='low'). 8K TPM.
-      4. GPT-OSS-20B — fast vendor-diverse floor (effort='low'). 8K TPM.
+    Chain (IDs + rationale) lives in services/llm_models.ENRICH_CHAIN — the
+    single source of truth, verified live against /v1/models. Falls back to
+    Gemini when there's no Groq key.
     """
     if os.getenv("GROQ_API_KEY"):
-        return [
-            "qwen/qwen3-32b",
-            "qwen/qwen3.6-27b",
-            "openai/gpt-oss-120b",
-            "openai/gpt-oss-20b",
-        ]
+        return list(ENRICH_CHAIN)
     if os.getenv("GEMINI_API_KEY"):
         return ["gemini-2.5-flash"]
     return []
@@ -137,6 +118,17 @@ async def generate_cinematic_description(
     fallback = _build_legacy_text(title, overview, genres, keywords)
 
     if groq_client is None:
+        return fallback, None
+
+    # No real source text → the model hallucinates a plausible description from
+    # the title/genre alone. Observed live: an overview-less TMDB stub ("Wolf
+    # Totem", tmdb 417613) got a fabricated "nature-infused animation"
+    # description that scored 0.81 to Nausicaä. Refuse: return the legacy
+    # fallback with model_id=None so the caller never stamps
+    # has_enriched_embedding — the film stays out of gated recommendations.
+    # ponytail: <20 chars = effectively empty; raise the floor if real
+    # terse-overview films start getting skipped.
+    if len((overview or "").strip()) < 20:
         return fallback, None
 
     genres_str = ", ".join(genres) if genres else "Unknown"
@@ -288,7 +280,7 @@ async def generate_profile_summary(
     Respond with ONLY a comma-separated list of 12-15 keywords. No sentences, no explanations, no punctuation other than commas.
     Focus on: tone (e.g. melancholic, darkly comedic), themes (e.g. moral ambiguity, identity), visual style (e.g. handheld gritty, long takes), pacing (e.g. slow burn, frenetic), and cinematic movements or affinities (e.g. French New Wave, A24, Korean revenge).
     Example format: slow burn, melancholic, morally complex, atmospheric, character-driven, contemplative, humanist, European art house, naturalistic lighting, existential themes, quiet intensity, bittersweet
-    Uses the chain's primary model (currently `qwen/qwen3-32b`) for
+    Uses the chain's primary model (see ENRICH_CHAIN in llm_models) for
     high-fidelity profiling.
     """
     if not groq_client or not top_rated_films:

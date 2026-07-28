@@ -152,7 +152,18 @@ async def get_similar_movies(
         # Fetch from DB
         db_movies_map = {}
         if similar_tmdb_ids:
-            stmt = select(Movie).where(Movie.tmdb_id.in_(similar_tmdb_ids))
+            # Quality gate — mirror /similar/multi. Without it, metadata-less
+            # phantom entries (empty overview → hallucinated embedding, VBS=None,
+            # 0 votes, no poster) surface as top neighbours (a duplicate "Wolf
+            # Totem" stub scored 0.81 to Nausicaä). Gated-out films fall out of
+            # this map and are skipped in the build loop below.
+            stmt = (
+                select(Movie)
+                .where(Movie.tmdb_id.in_(similar_tmdb_ids))
+                .where(Movie.vectorbox_score >= 55)
+                .where(Movie.vote_count >= 100)
+                .where(Movie.poster_path.isnot(None))
+            )
             result = await db.execute(stmt)
             for m in result.scalars().all():
                 db_movies_map[m.tmdb_id] = m
@@ -180,53 +191,31 @@ async def get_similar_movies(
             seen_ids_final.add(r_tmdb_id)
             
             movie = db_movies_map.get(r_tmdb_id)
-            
-            if movie:
-                # Use DB data
-                recommendations.append({
-                    "movie_id": movie.tmdb_id,
-                    "title": movie.title,
-                    "poster_path": movie.poster_path,
-                    "year": movie.year,
-                    "similarity_score": min(round(r["score"] * 100), 100),
-                    "streaming_providers": [], # Enriched later
-                    "overview": movie.overview,
-                    "vote_average": movie.vote_average,
-                    # Phase 12 Fields
-                    "vectorbox_score": movie.vectorbox_score,
-                    "imdb_rating": movie.imdb_rating,
-                    "metacritic_rating": movie.metacritic_rating,
 
-                    "title_es": movie.title_es,
-                    "overview_es": movie.overview_es
-                })
-            else:
-                # Fallback to Metadata (if movie not in DB for some reason)
-                poster_path = metadata.get("poster_path")
-                if not poster_path:
-                    try:
-                        details = await tmdb.get_movie_details(r_tmdb_id)
-                        if details: poster_path = details.get("poster_path")
-                    except Exception as e:
-                        logger.warning(f"Poster fetch failed for movie {r_tmdb_id}: {e}")
-                    
-                recommendations.append({
-                    "movie_id": r_tmdb_id,
-                    "title": metadata.get("title", "Unknown"),
-                    "poster_path": poster_path,
-                    "year": metadata.get("year"),
-                    "similarity_score": min(round(r["score"] * 100), 100),
-                    "streaming_providers": [],
-                    "overview": metadata.get("overview", ""),
-                    "vote_average": metadata.get("vote_average"),
-                    "vectorbox_score": metadata.get("vectorbox_score"),
-                    "imdb_rating": metadata.get("imdb_rating"),
-                    "metacritic_rating": metadata.get("metacritic_rating"),
+            # Not in the gated map = failed the quality gate (phantom/low-quality)
+            # or not a catalogue film → skip. The enriched-vector gate means real
+            # neighbours are always in the DB, so no legitimate result is lost.
+            if not movie:
+                continue
 
-                    "title_es": metadata.get("title_es"),
-                    "overview_es": metadata.get("overview_es")
-                })
-            
+            recommendations.append({
+                "movie_id": movie.tmdb_id,
+                "title": movie.title,
+                "poster_path": movie.poster_path,
+                "year": movie.year,
+                "similarity_score": min(round(r["score"] * 100), 100),
+                "streaming_providers": [], # Enriched later
+                "overview": movie.overview,
+                "vote_average": movie.vote_average,
+                # Phase 12 Fields
+                "vectorbox_score": movie.vectorbox_score,
+                "imdb_rating": movie.imdb_rating,
+                "metacritic_rating": movie.metacritic_rating,
+
+                "title_es": movie.title_es,
+                "overview_es": movie.overview_es
+            })
+
         # 4. Fallback/Augment with TMDB Recommendations if few results
         # 4. Fallback/Augment with TMDB Recommendations if few results
         if len(recommendations) < 12:
