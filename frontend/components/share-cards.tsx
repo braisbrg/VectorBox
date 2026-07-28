@@ -9,6 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { X, Download, Loader2 } from "lucide-react";
 import { GroupVibeResponse, GroupRecommendation, getGroupVibe, getTMDBImageUrl } from "@/lib/api";
+import { resolveAccent, accentRgba } from "@/lib/accent";
 import { cn } from "@/lib/utils";
 
 const FORMATS = {
@@ -333,8 +334,8 @@ function drawConstellation(ctx: CanvasRenderingContext2D, cx: number, cy: number
     for (const n of nodes) { ctx.beginPath(); ctx.moveTo(n.x, n.y); ctx.lineTo(cx, cy); ctx.stroke(); }
     ctx.globalAlpha = 1;
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 100);
-    g.addColorStop(0, "rgba(205,254,4,0.3)");
-    g.addColorStop(1, "rgba(205,254,4,0)");
+    g.addColorStop(0, accentRgba(P, 0.3));
+    g.addColorStop(1, accentRgba(P, 0));
     ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(cx, cy, 100, 0, 7); ctx.fill();
     ctx.fillStyle = P;
@@ -368,8 +369,8 @@ function drawPairLink(ctx: CanvasRenderingContext2D, cx: number, cy: number, hal
     ctx.beginPath(); ctx.moveTo(lx, cy); ctx.lineTo(rx, cy); ctx.stroke();
     ctx.globalAlpha = 1;
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, 90);
-    g.addColorStop(0, "rgba(205,254,4,0.28)");
-    g.addColorStop(1, "rgba(205,254,4,0)");
+    g.addColorStop(0, accentRgba(P, 0.28));
+    g.addColorStop(1, accentRgba(P, 0));
     ctx.fillStyle = g;
     ctx.beginPath(); ctx.arc(cx, cy, 90, 0, 7); ctx.fill();
     ctx.fillStyle = P;
@@ -539,29 +540,6 @@ function drawPairCard(cv: HTMLCanvasElement, d: PairCardData, fmt: Fmt, P: strin
 
 // ---------- shared modal shell ----------
 
-/**
- * Resolve the theme's --primary to exact sRGB hex for canvas drawing.
- * getComputedStyle serializes oklch() colors AS oklch() — a regex for
- * "rgb(r, g, b)" silently mis-parsed it and produced a wrong colour (acid
- * rendered dark blue instead of #f7e800). Painting 1px and reading the pixel
- * back handles every colour syntax the browser knows.
- */
-export function resolveAccent(): string {
-    const probe = document.createElement("div");
-    probe.style.color = "var(--primary)";
-    probe.style.position = "absolute";
-    probe.style.visibility = "hidden";
-    document.body.appendChild(probe);
-    const col = getComputedStyle(probe).color;
-    probe.remove();
-    const cv = document.createElement("canvas");
-    cv.width = cv.height = 1;
-    const ctx = cv.getContext("2d")!;
-    ctx.fillStyle = col;
-    ctx.fillRect(0, 0, 1, 1);
-    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data;
-    return `#${[r, g, b].map((c) => c.toString(16).padStart(2, "0")).join("")}`;
-}
 
 function ShareCardModal({
     title,

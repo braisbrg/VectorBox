@@ -9,9 +9,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { X, Download } from "lucide-react";
 import { ProfileAggregates, getTMDBImageUrl } from "@/lib/api";
 import {
-    resolveAccent, drawChrome, drawFooter, drawPoster,
+    drawChrome, drawFooter, drawPoster,
     loadImages, filmTone, type ImageMap,
 } from "@/components/share-cards";
+import { resolveAccent } from "@/lib/accent";
 import { cn } from "@/lib/utils";
 
 // Defining films for the card — prefer the loved-films list (≥4★/liked), fall back

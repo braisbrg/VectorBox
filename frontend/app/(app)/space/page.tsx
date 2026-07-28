@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getSpace, SpacePoint } from "@/lib/api";
 import { QuickLook, QuickLookFilm } from "@/components/quick-look";
 import { SubScreenHeader } from "@/components/shell/sub-screen-header";
+import { resolveAccent, accentRgba } from "@/lib/accent";
 import { useLanguage } from "@/components/language-provider";
 import { cn } from "@/lib/utils";
 
@@ -222,11 +223,13 @@ export default function SpacePage() {
         modelRef.current = M;
         viewRef.current = { x: 0, y: 0, k: 1 };
 
-        const css = getComputedStyle(document.documentElement);
-        const P = css.getPropertyValue("--primary").trim() || "#CCFF00";
-        const FG2 = "#bbbbbb";
-        const FG3 = "#777777";
-        const BORDER = "#222222";
+        // resolveAccent paints 1px and reads it back: getComputedStyle returns
+        // oklch() verbatim, so the old getPropertyValue + "#CCFF00" fallback both
+        // mis-described the real colour and froze it on the non-acid themes.
+        const P = resolveAccent();
+        const FG2 = "#9e9e9e"; // --fg-2
+        const FG3 = "#808080"; // --fg-3
+        const BORDER = "#292929"; // --border-2
 
         // The two prototypes diverge: desktop space (Prototype.html wireSpace) has
         // hulls, hover-NN edges, pulse rings, spinning ◆, vignette, brackets and a
@@ -264,8 +267,8 @@ export default function SpacePage() {
             for (const c of M.clusters) {
                 const foc = focusRef.current === c.id;
                 const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, 64);
-                g.addColorStop(0, `rgba(204,255,0,${(foc ? 0.12 : 0.05) * t})`);
-                g.addColorStop(1, "rgba(204,255,0,0)");
+                g.addColorStop(0, accentRgba(P, (foc ? 0.12 : 0.05) * t));
+                g.addColorStop(1, accentRgba(P, 0));
                 ctx.fillStyle = g;
                 ctx.beginPath(); ctx.arc(c.x, c.y, 64, 0, Math.PI * 2); ctx.fill();
             }

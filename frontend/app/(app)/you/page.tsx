@@ -15,6 +15,7 @@ import { TasteCardModal } from "@/components/taste-card";
 import { useShell } from "@/components/shell/shell-context";
 import { useLanguage } from "@/components/language-provider";
 import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
+import { resolveAccent } from "@/lib/accent";
 import { cn } from "@/lib/utils";
 
 /** Static one-shot vector band drawn from the real /space projection. */
@@ -30,13 +31,15 @@ function VectorBand({ space, h = 150 }: { space: SpaceResponse; h?: number }) {
         cv.height = h * dpr;
         const ctx = cv.getContext("2d")!;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const P = getComputedStyle(document.documentElement).getPropertyValue("--primary").trim() || "#CCFF00";
-        const FG2 = "#bbbbbb";
-        const FG3 = "#777777";
+        // Same reason as space/page.tsx: getComputedStyle hands back oklch()
+        // verbatim, so resolve by painting a pixel instead of trusting a string.
+        const P = resolveAccent();
+        const FG2 = "#9e9e9e"; // --fg-2
+        const FG3 = "#808080"; // --fg-3
         ctx.clearRect(0, 0, cw, h);
 
         // grid
-        ctx.strokeStyle = "#202020";
+        ctx.strokeStyle = "#292929"; // --border-2
         ctx.lineWidth = 0.5;
         ctx.globalAlpha = 0.6;
         for (let x = 0; x < cw; x += 40) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }

@@ -51,8 +51,19 @@ export default async function RootLayout({
     const localeCookie = cookieStore.get("NEXT_LOCALE")?.value;
     const initialLanguage: Language = isLanguage(localeCookie) ? localeCookie : "en";
 
+    // The next/font variables MUST live on <html>, not <body>: @theme declares
+    // --font-mono/--font-sans/--font-display on :root as var(--font-plex)…, and
+    // a custom property whose var() target is undefined at its own declaring
+    // element is invalid at computed-value time — and that invalid value is what
+    // every descendant inherits. With them on <body>, the whole mono system
+    // silently resolved to Tailwind's default sans across the entire app.
     return (
-        <html lang={initialLanguage} data-theme="acid" suppressHydrationWarning>
+        <html
+            lang={initialLanguage}
+            data-theme="acid"
+            suppressHydrationWarning
+            className={`${plex.variable} ${departure.variable}`}
+        >
             <head>
                 {/* Apply the persisted accent palette before first paint (no flash). */}
                 <script
@@ -61,7 +72,7 @@ export default async function RootLayout({
                     }}
                 />
             </head>
-            <body suppressHydrationWarning className={`${plex.variable} ${departure.variable} font-mono antialiased min-h-screen bg-background text-foreground overflow-x-hidden selection:bg-primary selection:text-[color:var(--primary-ink)]`}>
+            <body suppressHydrationWarning className={`font-mono antialiased min-h-screen bg-background text-foreground overflow-x-clip selection:bg-primary selection:text-[color:var(--primary-ink)]`}>
                 <ClerkProvider>
                     <AuthBridge />
                     <LazyMotion features={domAnimation}>

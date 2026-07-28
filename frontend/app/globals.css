@@ -2,146 +2,173 @@
 
 /* ============================================================================
    VectorBox ACID Design System — Tailwind CSS v4 (CSS-First)
-   Tokens ported verbatim from design_handoff_vectorbox/kit/kit-acid.css.
+
+   Rewritten 2026-07-27 after an audit: the previous version still described the
+   PRE-REMODEL system. Six kit classes had zero call sites, the hex values in the
+   comments named colours these tokens never produce, and a mock-up built by
+   reading this file came out with the wrong hue, the wrong typeface and a
+   shadow style the app had abandoned. Everything below was verified against the
+   components, not assumed.
+
+   RULE FOR EDITORS: this file is the reference other people (and models) read to
+   learn what the app looks like. A class with no call site, or a comment naming
+   a colour that does not render, is worse than nothing — it teaches the wrong
+   thing silently. If you delete a component, delete its CSS in the same commit.
    ============================================================================ */
 
 /* ----------------------------------------------------------------------------
-   Raw ACID tokens (the source of truth — referenced by @theme + kit classes).
+   HOW THE APP ACTUALLY LOOKS — the four rules of the post-remodel language.
+   These are NOT expressed anywhere else; they live implicitly in
+   components/ui/movie-card.tsx, the atom of the feed. Read that file first.
+
+   1. HARD OFFSET SHADOW = THINGS THAT FLOAT.
+      `shadow-acid*` belongs to modals, tooltips, dropdowns, quick-look, the FAB
+      and the mobile tab bar. Inline content NEVER carries it. A card, a rail, an
+      input, a panel in the flow: border only.
+
+   2. PANELS ARE WELDED, NOT STACKED.
+      A strip attached to the element above uses `border border-t-0` so the two
+      share one line instead of drawing two. See the HUD strip under each poster.
+
+   3. HOVER IS COLOUR, NOT MOVEMENT.
+      Content reacts with `group-hover:brightness-110` on the image and
+      `group-hover:text-primary` on the label. Content does not translate.
+
+   4. THE 1px NUDGE IS A BUTTON-ONLY AFFORDANCE.
+      `hover:-translate-x-px hover:-translate-y-px` paired with `shadow-acid-fg`
+      is still live on primary buttons (import-wizard.tsx, upload-zone.tsx).
+      Nowhere else.
+   ---------------------------------------------------------------------------- */
+
+/* ----------------------------------------------------------------------------
+   Raw ACID tokens — the source of truth, referenced by @theme and the kit.
    Tiered: bg/bg-2/bg-3 surfaces · fg/fg-2/fg-3 text · border/border-2 lines.
+
+   Rendered sRGB is noted where it is NOT what you would guess. Measured in
+   Chromium by rasterising each token to a canvas and reading the pixel back —
+   getComputedStyle serialises oklch() AS oklch(), so parsing it as "rgb(r,g,b)"
+   silently yields nonsense. That mistake is already documented in lib/accent.ts.
    ---------------------------------------------------------------------------- */
 :root {
-  --bg:            oklch(0.05 0 0);   /* #0a0a0a deep black */
-  --bg-2:          oklch(0.09 0 0);
-  --bg-3:          oklch(0.13 0 0);
-  --primary:       oklch(0.9 0.4 110); /* ACID toxic yellow #CCFF00 */
-  --primary-ink:   oklch(0.05 0 0);    /* black text on primary */
-  --primary-rgb:   204 255 0;
-  --accent-purple: oklch(0.5 0.3 290); /* electric purple */
-  --border:        oklch(0.18 0 0);
-  --border-2:      oklch(0.28 0 0);
-  --fg:            oklch(0.95 0 0);
-  --fg-2:          oklch(0.7 0 0);
-  --fg-3:          oklch(0.6 0 0);
-  --warn:          oklch(0.78 0.18 35);
-  --danger:        oklch(0.65 0.25 25);
-  --letterboxd:    oklch(0.7 0.25 145);
+  --bg:            oklch(0.05 0 0);   /* #000000 — not the #0a0a0a an old comment claimed */
+  --bg-2:          oklch(0.09 0 0);   /* #020202 */
+  --bg-3:          oklch(0.13 0 0);   /* #070707 */
+
+  /* ACID yellow — the brand. Chroma 0.4 is far outside sRGB, so what lands on
+     screen is display-dependent: #f7e800 (lemon) on a normal panel, punchier on
+     P3, which is why it is deliberately over-specified. It is NOT the #CCFF00
+     lime an old comment named: that lime is hue 123, this is hue 110.
+     NEVER hardcode it. Six themes switch this token; a literal hex freezes five
+     of them. For canvas, resolve it via lib/accent.ts. */
+  --primary:       oklch(0.9 0.4 110);
+  --primary-ink:   oklch(0.05 0 0);   /* black text on primary */
+  --accent-purple: oklch(0.5 0.3 290); /* #7000fc */
+
+  --border:        oklch(0.18 0 0);   /* #121212 */
+  --border-2:      oklch(0.28 0 0);   /* #292929 */
+  --fg:            oklch(0.95 0 0);   /* #eeeeee */
+  --fg-2:          oklch(0.7 0 0);    /* #9e9e9e */
+  --fg-3:          oklch(0.6 0 0);    /* #808080 */
+
+  --warn:          oklch(0.78 0.18 35);  /* #ff8663 */
+  --danger:        oklch(0.65 0.25 25);  /* #ff2335 */
+  --letterboxd:    oklch(0.7 0.25 145);  /* #00c30b */
   --radius:        0;
+
+  /* Deeper gradient sink + per-zone landing/hero tones — tokenised so no
+     component improvises an inline hex. Consumed by components/landing.tsx. */
+  --bg-deep:       #050505;
+  --zone-onboard:  #22241a;
+  --zone-magic:    #1c1f22;
+  --zone-mlt:      #1a1c1a;
+  --zone-group:    #241c20;
+  --zone-auth:     #2a2520;
+  --hero-from:     #1c1a1a;
+
+  /* Named easings — brutalist means crisp, never overshoot. No bounce, ever. */
+  --ease-out:      cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out:   cubic-bezier(0.65, 0, 0.35, 1);
 }
 
-/* Theme palettes — set [data-theme] on <html>. Only --primary + --primary-ink
-   change; bg/fg/border stay constant so the brutalist black system holds. */
-:root[data-theme="acid"]    { --primary: oklch(0.9 0.4 110);  --primary-ink: oklch(0.05 0 0); }
-:root[data-theme="cyan"]    { --primary: oklch(0.85 0.18 200);--primary-ink: oklch(0.05 0 0); }
-:root[data-theme="magenta"] { --primary: oklch(0.7 0.3 0);    --primary-ink: oklch(1 0 0);    }
-:root[data-theme="orange"]  { --primary: oklch(0.83 0.16 82); --primary-ink: oklch(0.05 0 0); }
-:root[data-theme="bone"]    { --primary: oklch(0.92 0.02 80); --primary-ink: oklch(0.05 0 0); }
-:root[data-theme="blood"]   { --primary: oklch(0.55 0.25 25); --primary-ink: oklch(1 0 0);    }
+/* Theme palettes — set [data-theme] on <html> (layout.tsx restores the persisted
+   choice before first paint). Only --primary and --primary-ink change; the
+   black/grey system holds, which is what keeps six palettes from looking like
+   six different products. Measured values in comments. */
+:root[data-theme="acid"]    { --primary: oklch(0.9 0.4 110);   --primary-ink: oklch(0.05 0 0); } /* #f7e800 */
+:root[data-theme="cyan"]    { --primary: oklch(0.85 0.18 200); --primary-ink: oklch(0.05 0 0); } /* #00effc */
+:root[data-theme="magenta"] { --primary: oklch(0.7 0.3 0);     --primary-ink: oklch(1 0 0);    } /* #ff0097 */
+:root[data-theme="orange"]  { --primary: oklch(0.83 0.16 82);  --primary-ink: oklch(0.05 0 0); } /* #fbbb2d */
+:root[data-theme="bone"]    { --primary: oklch(0.92 0.02 80);  --primary-ink: oklch(0.05 0 0); } /* #ece3d6 */
+:root[data-theme="blood"]   { --primary: oklch(0.55 0.25 25);  --primary-ink: oklch(1 0 0);    } /* #df000d */
 
 @theme {
-  /* ----- Map Tailwind/shadcn color utilities onto the raw ACID tokens -----
-     Using var() references so runtime [data-theme] switching propagates to
-     every `bg-primary` / `text-foreground` / opacity-modifier utility. */
+  /* ----- Tailwind utilities mapped onto the raw tokens -----
+     var() references, so runtime [data-theme] switching propagates to every
+     bg-primary / text-fg-2 / border-border-2 utility.
+     Only mappings with real call sites are declared. The shadcn set that came
+     with the scaffold (card/popover/secondary/muted/destructive/input/ring, and
+     the hsl() fallback block) had zero uses after the remodel and was removed —
+     re-add a line the day a component needs it, not before. */
   --color-background: var(--bg);
   --color-foreground: var(--fg);
   --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-ink);
   --color-primary-ink: var(--primary-ink);
   --color-accent: var(--accent-purple);
-  --color-accent-foreground: var(--fg);
   --color-accent-purple: var(--accent-purple);
-  --color-card: var(--bg-2);
-  --color-card-foreground: var(--fg);
-  --color-popover: var(--bg-2);
-  --color-popover-foreground: var(--fg);
-  --color-secondary: var(--bg-3);
-  --color-secondary-foreground: var(--fg);
-  --color-muted: var(--bg-2);
-  --color-muted-foreground: var(--fg-3);
-  --color-destructive: var(--danger);
-  --color-destructive-foreground: var(--fg);
-  --color-warning: var(--warn);
-  --color-warning-foreground: var(--bg);
   --color-border: var(--border);
   --color-border-2: var(--border-2);
-  --color-input: var(--bg-3);
-  --color-ring: var(--primary);
   --color-letterboxd: var(--letterboxd);
-  /* ACID tiers exposed as utilities (bg-bg-2, text-fg-2, border-border-2…) */
+  --color-warn: var(--warn);
+  --color-danger: var(--danger);
+  /* ACID tiers as utilities: bg-bg-2, text-fg-2, border-border-2 … */
   --color-bg: var(--bg);
   --color-bg-2: var(--bg-2);
   --color-bg-3: var(--bg-3);
   --color-fg: var(--fg);
   --color-fg-2: var(--fg-2);
   --color-fg-3: var(--fg-3);
-  --color-warn: var(--warn);
-  --color-danger: var(--danger);
 
-  /* ----- Typography (mono-only brutalist system) ----- */
+  /* ----- Typography (mono-only brutalist system) -----
+     IBM Plex Mono is the workhorse (body/UI); Departure Mono is display-only.
+     BOTH next/font variables MUST be set on <html> in layout.tsx, never on
+     <body>: these three properties are declared on :root, and a custom property
+     whose var() target is undefined at its own declaring element is invalid at
+     computed-value time — and that invalid value is what every descendant
+     inherits. With them on <body> the entire mono system silently resolved to
+     Tailwind's default sans across the whole app (fixed 2026-07-27). */
   --font-sans: var(--font-plex), ui-monospace, "IBM Plex Mono", monospace;
   --font-mono: var(--font-plex), ui-monospace, "IBM Plex Mono", monospace;
-  /* Departure Mono is display-only and not yet self-hosted — falls back to
-     Plex via the inline var() fallback until the woff2 lands (P0b note). */
   --font-display: var(--font-departure, var(--font-plex)), ui-monospace, monospace;
 
-  /* ----- Border radius (brutalist = flat) ----- */
+  /* ----- Border radius -----
+     Kept as a guardrail, not because anything reads them: the only radius
+     utility in the codebase is `rounded-none`. These pin every rounded-* to 0,
+     so a stray `rounded-lg` cannot soften the brutalist edge by accident. */
   --radius-lg: 0px;
   --radius-md: 0px;
   --radius-sm: 0px;
   --radius: 0px;
 
-  /* ----- Shadows (hard offset, no blur) ----- */
+  /* ----- Shadows — hard offset, never blurred. See rule 1 above: these are for
+     surfaces that float, and for primary buttons. Not for content. ----- */
   --shadow-acid: 2px 2px 0px 0px var(--border-2);
   --shadow-acid-fg: 2px 2px 0px 0px var(--fg);
   --shadow-acid-primary: 2px 2px 0px 0px var(--primary);
-
-  /* ----- Animations ----- */
-  --animate-accordion-down: accordion-down 0.2s ease-out;
-  --animate-accordion-up: accordion-up 0.2s ease-out;
-}
-
-/* Keyframes (v4 uses standard CSS) */
-@keyframes accordion-down {
-  from { height: 0; }
-  to { height: var(--radix-accordion-content-height); }
-}
-@keyframes accordion-up {
-  from { height: var(--radix-accordion-content-height); }
-  to { height: 0; }
-}
-@keyframes blink-caret {
-  from, to { border-color: transparent; }
-  50% { border-color: var(--primary); }
 }
 
 /* ============================================================================
    Base Layer
    ============================================================================ */
 @layer base {
+  /* Desktop runs at 80% root size — the handoff was designed at that density.
+     Every rem-based size in the app assumes it. */
   @media (min-width: 1024px) {
     html { font-size: 80%; }
   }
 
-  :root {
-    color-scheme: dark;
-    /* Legacy HSL fallbacks for any shadcn component still using hsl(var(--x)) */
-    --background: 0 0% 2%;
-    --foreground: 0 0% 95%;
-    --card: 0 0% 4%;
-    --card-foreground: 0 0% 95%;
-    --popover: 0 0% 4%;
-    --popover-foreground: 0 0% 95%;
-    --secondary: 0 0% 12%;
-    --secondary-foreground: 0 0% 95%;
-    --muted: 0 0% 10%;
-    --muted-foreground: 0 0% 60%;
-    --destructive: 0 100% 50%;
-    --destructive-foreground: 0 0% 100%;
-    --input: 0 0% 12%;
-  }
+  :root { color-scheme: dark; }
 
-  * {
-    border-color: var(--border);
-  }
+  * { border-color: var(--border); }
 
   body {
     background-color: var(--bg);
@@ -154,7 +181,6 @@
     padding-bottom: env(safe-area-inset-bottom);
   }
 
-  /* Custom scrollbar */
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background-color: var(--bg-3); }
   ::-webkit-scrollbar-thumb {
@@ -162,78 +188,44 @@
     border: 2px solid var(--bg-3);
     &:hover { background-color: var(--primary); }
   }
-  .scrollbar-hide::-webkit-scrollbar { display: none; }
-  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 
   button, a, [role="button"] { touch-action: manipulation; }
+
+  /* Keyboard focus ring. Reads var(--primary) directly, so it follows the theme.
+     The browser default was near-invisible on the near-black paper. Never
+     animated, so it is reduced-motion-safe by construction. */
+  :focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+  /* Mouse users keep no outline; only keyboard focus shows the ring. */
+  :focus:not(:focus-visible) { outline: none; }
 }
 
 /* ============================================================================
-   Kit component classes (ported from kit-acid.css — reused across every screen)
+   Kit classes — ONLY those with live call sites (counts verified 2026-07-27).
+   Removed in the same pass, all at zero uses after the remodel: .sketch, .lift,
+   .btn (+.primary/.ghost/.sm), .hand-title, .hand-body, .ph (+.solid),
+   .chip.ink, .chip.purple, .scribble-underline, .typewriter-cursor, and the
+   blink-caret / accordion keyframes with their --animate-accordion-* tokens.
+   Buttons are hand-rolled Tailwind at each call site now, not a kit class.
    ============================================================================ */
 @layer components {
-  /* hard-shadow surface */
-  .sketch {
-    position: relative;
-    border: 1px solid var(--border-2);
-    background: var(--bg-2);
-    border-radius: 0;
-    box-shadow: 2px 2px 0 0 var(--border-2);
-    color: var(--fg);
-  }
-
-  /* type */
-  .hand-title {
-    font-family: var(--font-departure, var(--font-plex)), ui-monospace, monospace;
-    font-weight: 400;
-    letter-spacing: -0.02em;
-    line-height: 1.05;
-    text-transform: uppercase;
-  }
-  .hand-body, .mono { font-family: var(--font-plex), ui-monospace, monospace; }
+  /* eyebrow — the small uppercase label above a section. 42 uses, the most
+     reused piece of the kit. */
   .eyebrow {
     font-family: var(--font-departure, var(--font-plex)), ui-monospace, monospace;
     font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-3);
   }
+
+  /* tiny — metadata line, wider tracking than .eyebrow and Plex rather than
+     display. 8 uses. */
   .tiny {
     font-size: 10px; color: var(--fg-3); letter-spacing: 0.15em;
     text-transform: uppercase; font-family: var(--font-plex), ui-monospace, monospace;
   }
 
-  /* dashed placeholder */
-  .ph {
-    border: 1px dashed var(--border-2);
-    background: repeating-linear-gradient(135deg, transparent 0 10px, rgba(204,255,0,0.025) 10px 11px);
-    display: flex; align-items: center; justify-content: flex-start;
-    padding: 8px 10px;
-    font-family: var(--font-plex), ui-monospace, monospace;
-    font-size: 11px; color: var(--fg-3);
-    text-transform: uppercase; letter-spacing: 0.1em;
-  }
-  .ph.solid { background: var(--bg-2); }
-
-  /* buttons */
-  .btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 8px 14px;
-    border: 1px solid var(--fg);
-    background: transparent;
-    font-family: var(--font-plex), ui-monospace, monospace;
-    font-weight: 700; font-size: 13px;
-    text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--fg); cursor: pointer; border-radius: 0;
-    box-shadow: 2px 2px 0 0 var(--fg);
-    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease, color 0.15s ease;
-  }
-  .btn:hover { background: var(--fg); color: var(--bg); transform: translate(-1px,-1px); box-shadow: 3px 3px 0 0 var(--primary); }
-  .btn:active { transform: translate(2px,2px); box-shadow: 0 0 0 0 var(--fg); }
-  .btn.primary { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); box-shadow: 2px 2px 0 0 var(--fg); }
-  .btn.primary:hover { background: var(--bg); color: var(--primary); box-shadow: 3px 3px 0 0 var(--primary); }
-  .btn.ghost { border-color: var(--border-2); box-shadow: none; color: var(--fg-2); }
-  .btn.ghost:hover { border-color: var(--primary); background: transparent; color: var(--primary); box-shadow: 2px 2px 0 0 var(--primary); }
-  .btn.sm { padding: 4px 10px; font-size: 11px; box-shadow: 2px 2px 0 0 var(--fg); }
-
-  /* chips */
+  /* chip — inline tag. 14 uses; the .accent variant 2. */
   .chip {
     display: inline-flex; align-items: center; gap: 4px;
     border: 1px solid var(--border-2); padding: 2px 8px;
@@ -243,10 +235,10 @@
     background: transparent; color: var(--fg-2);
   }
   .chip.accent { background: var(--primary); color: var(--primary-ink); border-color: var(--primary); }
-  .chip.ink { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-  .chip.purple { background: var(--accent-purple); color: var(--fg); border-color: var(--accent-purple); }
 
-  /* poster placeholder visual (dark, scanline) */
+  /* poster-art — the fallback surface behind every poster slot, plus its
+     scanline. 20 uses. The hatch derives from --primary so it follows the
+     theme; it used to be a hardcoded lime that stayed lime on the other five. */
   .poster-art {
     background: linear-gradient(135deg, var(--bg-3) 0%, var(--bg-2) 100%);
     border: 1px solid var(--border-2);
@@ -254,14 +246,12 @@
   }
   .poster-art::after {
     content: ''; position: absolute; inset: 0;
-    background: repeating-linear-gradient(45deg, transparent 0 6px, rgba(204,255,0,0.03) 6px 7px);
+    background: repeating-linear-gradient(45deg, transparent 0 6px,
+      color-mix(in oklch, var(--primary) 3%, transparent) 6px 7px);
   }
 
-  /* hover lift */
-  .lift { transition: transform 0.15s ease, box-shadow 0.15s ease; }
-  .lift:hover { transform: translate(-2px,-2px); box-shadow: 5px 5px 0 0 var(--primary); }
-
-  /* trident bar mark */
+  /* trident-mark — the three-bar engine glyph, middle bar in the accent.
+     2 uses; also the shape the landing logo is built from. */
   .trident-mark {
     font-family: var(--font-plex), ui-monospace, monospace;
     font-weight: 700; font-size: 10px; letter-spacing: 0.15em;
@@ -273,21 +263,12 @@
 }
 
 /* ============================================================================
-   Utilities Layer
+   Utilities
    ============================================================================ */
 @layer utilities {
-  .scribble-underline {
-    background-image: linear-gradient(var(--primary), var(--primary));
-    background-size: 100% 1px;
-    background-position: 0 100%;
-    background-repeat: no-repeat;
-    padding-bottom: 2px;
-  }
-  .typewriter-cursor::after {
-    content: "";
-    border-right: 2px solid var(--primary);
-    animation: blink-caret 0.75s step-end infinite;
-  }
+  /* 11 uses — horizontal rails that scroll without showing a bar. */
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+  .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
 }
 
 /* ============================================================================
