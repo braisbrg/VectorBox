@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Wordmark } from "@/components/ui/wordmark";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FeedContainer } from "@/components/feed-container";
@@ -70,8 +71,7 @@ export default function ExplorePage() {
             <header className="shrink-0 border-b border-border-2 px-4 py-3">
                 <div className="mx-auto flex max-w-[1600px] items-center justify-between">
                     <Link href="/explore" className="font-display text-lg uppercase tracking-tight">
-                        <span className="text-fg">VECTOR</span>
-                        <span className="ml-0.5 bg-primary px-1 text-primary-ink">BOX</span>
+                        <Wordmark />
                     </Link>
                     <div className="flex items-center gap-2">
                         <span className="mr-1 hidden font-mono text-[9px] uppercase tracking-[0.18em] text-fg-3 sm:inline">

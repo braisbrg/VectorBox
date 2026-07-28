@@ -7,6 +7,7 @@
 // → /try/group). Hovered zone expands, the rest dim. Logged-in → /feed.
 
 import { useEffect, useState } from "react";
+import { Wordmark } from "@/components/ui/wordmark";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
@@ -28,17 +29,17 @@ const LEFT_ONBOARDING: Zone = {
     id: "onboarding",
     label: "land.onboarding",
     sub: "land.onboarding_sub",
-    tone: "#22241a",
+    tone: "var(--zone-onboard)",
     // → the start-selection (explore feed / rate films), not straight to explore.
     href: "/onboarding",
     tier: "auth",
 };
 
 const RIGHT_ZONES: Zone[] = [
-    { id: "magic", label: "land.magic", sub: "land.magic_sub", tone: "#1c1f22", href: "/try/magic", tier: "guest" },
-    { id: "mlt", label: "land.mlt", sub: "land.mlt_sub", tone: "#1a1c1a", href: "/try/mlt", tier: "guest" },
+    { id: "magic", label: "land.magic", sub: "land.magic_sub", tone: "var(--zone-magic)", href: "/try/magic", tier: "guest" },
+    { id: "mlt", label: "land.mlt", sub: "land.mlt_sub", tone: "var(--zone-mlt)", href: "/try/mlt", tier: "guest" },
     // Group rec needs an account (signed-in requester) — marked account, not guest.
-    { id: "group", label: "land.group", sub: "land.group_sub", tone: "#241c20", href: "/register", tier: "auth" },
+    { id: "group", label: "land.group", sub: "land.group_sub", tone: "var(--zone-group)", href: "/register", tier: "auth" },
 ];
 
 function ZoneTile({ zone, hovered, setHovered }: { zone: Zone; hovered: string | null; setHovered: (v: string | null) => void }) {
@@ -50,9 +51,9 @@ function ZoneTile({ zone, hovered, setHovered }: { zone: Zone; hovered: string |
             href={zone.href}
             onMouseEnter={() => setHovered(zone.id)}
             onMouseLeave={() => setHovered(null)}
-            className="relative flex min-h-0 items-end overflow-hidden border-b border-r border-bg transition-all duration-200"
+            className="relative flex min-h-0 items-end overflow-hidden border-b border-r border-bg transition-[flex-grow,opacity] duration-200 ease-out"
             style={{
-                background: `linear-gradient(135deg, ${zone.tone} 0%, #050505 120%)`,
+                background: `linear-gradient(135deg, ${zone.tone} 0%, var(--bg-deep) 120%)`,
                 opacity: dim ? 0.35 : 1,
                 flex: isHover ? 1.4 : 1,
             }}
@@ -70,7 +71,7 @@ function ZoneTile({ zone, hovered, setHovered }: { zone: Zone; hovered: string |
             <div className="w-full px-5 py-3.5 lg:px-7 lg:py-6">
                 <div
                     className={cn(
-                        "mb-1.5 font-display leading-none tracking-[-0.02em] transition-all duration-200",
+                        "mb-1.5 font-display leading-none tracking-[-0.02em] transition-[font-size,color] duration-200 ease-out",
                         isHover ? "text-[clamp(26px,3.4vw,36px)] text-primary" : "text-[clamp(20px,2.6vw,28px)] text-fg"
                     )}
                 >
@@ -108,8 +109,7 @@ export function Landing() {
             {/* TOPBAR */}
             <header className="z-10 flex h-[54px] shrink-0 items-center justify-between border-b border-border-2 bg-bg px-5">
                 <Link href="/" className="font-display text-base uppercase tracking-tight">
-                    <span className="text-fg">VECTOR</span>
-                    <span className="ml-0.5 bg-primary px-1.5 py-0.5 text-primary-ink">BOX</span>
+                    <Wordmark />
                 </Link>
                 <nav className="flex gap-4 font-mono text-[11px] text-fg-3">
                     <Link href="/privacy" className="transition-colors hover:text-primary">{t("land.privacy")}</Link>
@@ -126,9 +126,9 @@ export function Landing() {
                     <div
                         onMouseEnter={() => setHovered("auth")}
                         onMouseLeave={() => setHovered(null)}
-                        className="relative flex min-h-0 flex-col justify-end overflow-hidden border-b border-r border-bg transition-all duration-200"
+                        className="relative flex min-h-0 flex-col justify-end overflow-hidden border-b border-r border-bg transition-[flex-grow,opacity] duration-200 ease-out"
                         style={{
-                            background: "linear-gradient(135deg, #2a2520 0%, #050505 120%)",
+                            background: "linear-gradient(135deg, var(--zone-auth) 0%, var(--bg-deep) 120%)",
                             opacity: authDim ? 0.35 : 1,
                             flex: authHover ? 1.4 : 1,
                         }}
@@ -140,7 +140,7 @@ export function Landing() {
                         <div className="w-full px-5 py-3.5 lg:px-7 lg:py-6">
                             <div
                                 className={cn(
-                                    "mb-3.5 font-display leading-none tracking-[-0.02em] text-fg transition-all duration-200",
+                                    "mb-3.5 font-display leading-none tracking-[-0.02em] text-fg transition-[font-size] duration-200 ease-out",
                                     authHover ? "text-[clamp(28px,3.6vw,38px)]" : "text-[clamp(24px,3vw,32px)]"
                                 )}
                             >
@@ -149,7 +149,7 @@ export function Landing() {
                             <div className="flex flex-wrap gap-2">
                                 <Link
                                     href="/register"
-                                    className="bg-primary px-4 py-2.5 font-display text-[11px] font-bold tracking-[0.1em] text-primary-ink"
+                                    className="border border-primary bg-primary px-4 py-2.5 font-display text-[11px] font-bold tracking-[0.1em] text-primary-ink transition-colors hover:bg-transparent hover:text-primary active:translate-x-px active:translate-y-px"
                                 >
                                     {t("land.create")}
                                 </Link>
@@ -180,6 +180,9 @@ export function Landing() {
             <footer className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border-2 bg-bg-2 px-5 py-2.5 font-mono text-[10px] text-fg-3">
                 <span>{t("land.foot_engine")}</span>
                 <span>{t("land.foot_guest")}</span>
+                <Link href="/terms" className="hidden transition-colors hover:text-primary md:inline">
+                    {t("land.foot_data")}
+                </Link>
                 <span className="hidden sm:inline">{t("land.foot_vector")}</span>
             </footer>
         </main>

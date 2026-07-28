@@ -6,6 +6,7 @@
 // keyboard 1/2/3/space/←//, 15-unlock destinations.
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { Wordmark } from "@/components/ui/wordmark";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@clerk/nextjs";
 import { m, AnimatePresence } from "framer-motion";
@@ -386,8 +387,7 @@ export default function OnboardingCarouselPage() {
                         {/* wordmark → landing (escape hatch without browser-back) */}
                         <h1 className="font-display text-lg uppercase tracking-tight">
                             <Link href="/">
-                                <span className="text-fg">VECTOR</span>
-                                <span className="ml-0.5 bg-primary px-1 text-primary-ink">BOX</span>
+                                <Wordmark />
                             </Link>
                         </h1>
                         {/* Signed-in users ("rate more films") get NO cold-start chrome —

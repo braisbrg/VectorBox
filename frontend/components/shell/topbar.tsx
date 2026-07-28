@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Wordmark } from "@/components/ui/wordmark";
 import { useUser } from "@clerk/nextjs";
 import { openMagicBox } from "@/components/magic-box";
 import { useLanguage } from "@/components/language-provider";
@@ -18,8 +19,7 @@ export function ShellTopbar() {
     return (
         <header className="sticky top-0 z-30 flex h-[60px] items-center justify-between border-b border-border-2 bg-bg px-4 lg:px-6">
             <Link href="/feed" className="font-display text-xl uppercase tracking-tight">
-                <span className="text-fg">VECTOR</span>
-                <span className="bg-primary px-1.5 text-primary-ink">BOX</span>
+                <Wordmark />
             </Link>
 
             <div className="flex items-center gap-3">

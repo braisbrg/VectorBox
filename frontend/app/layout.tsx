@@ -42,7 +42,12 @@ export const metadata: Metadata = {
     title: "VectorBox",
     description: "Advanced AI Movie Recommendations",
     icons: {
-        icon: "/icon.png",
+        // SVG first (sharp at every size, 300 bytes vs the 300KB PNG); the PNG
+        // stays as the fallback for anything that cannot render an SVG favicon.
+        icon: [
+            { url: "/icon.svg", type: "image/svg+xml" },
+            { url: "/icon.png", type: "image/png" },
+        ],
     },
 };
 

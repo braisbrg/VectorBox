@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { Wordmark } from "@/components/ui/wordmark";
 
 // Public /try/* shell (handoff pre-login route map): guest features share a
 // topbar with a persistent "create account →" CTA. No auth, no app shell.
@@ -7,8 +8,7 @@ export default function TryLayout({ children }: { children: React.ReactNode }) {
         <div className="min-h-screen bg-bg text-fg">
             <header className="flex h-[54px] items-center justify-between border-b border-border-2 bg-bg px-5">
                 <Link href="/" className="font-display text-base uppercase tracking-tight">
-                    <span className="text-fg">VECTOR</span>
-                    <span className="ml-0.5 bg-primary px-1.5 py-0.5 text-primary-ink">BOX</span>
+                    <Wordmark />
                 </Link>
                 <div className="flex items-center gap-3">
                     <span className="hidden font-mono text-[10px] uppercase tracking-[0.1em] text-fg-3 sm:inline">

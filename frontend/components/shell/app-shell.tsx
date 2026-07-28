@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { Wordmark } from "@/components/ui/wordmark";
 import { useRouter, usePathname } from "next/navigation";
 import { Loader2, LogOut } from "lucide-react";
 import { useUser } from "@clerk/nextjs";
@@ -254,7 +255,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <div className="z-10 flex w-full max-w-2xl flex-col items-center space-y-6">
                     <div className="w-full">
                         <h1 className="font-display text-3xl uppercase tracking-tight md:text-4xl">
-                            VECTOR<span className="ml-0.5 bg-primary px-1.5 text-primary-ink">BOX</span>
+                            <Wordmark />
                         </h1>
                         <p className="mt-2 font-mono text-xs uppercase tracking-widest text-fg-3">
                             {t("onboarding.welcome_agent")}{" "}

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- VectorBox mark: the three trident signals. Middle bar in the ACID accent.
+       Hardcoded #f7e800 rather than var(--primary): a favicon renders outside the
+       document, so it cannot read the theme. It always shows the acid default. -->
+  <rect width="32" height="32" fill="#000000"/>
+  <rect x="7"  y="9" width="4" height="14" fill="#eeeeee"/>
+  <rect x="14" y="5" width="4" height="18" fill="#f7e800"/>
+  <rect x="21" y="9" width="4" height="14" fill="#eeeeee"/>
+</svg>
