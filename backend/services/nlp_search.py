@@ -6,6 +6,8 @@ from typing import List, Optional, Literal
 from openai import AsyncOpenAI
 import logging
 
+from services.llm_models import PARSER_CHAIN, REASONING_EFFORT
+
 logger = logging.getLogger(__name__)
 
 # LLM sometimes emits a language NAME ("Spanish") instead of the ISO 639-1 code
@@ -32,6 +34,121 @@ def normalize_language(value: Optional[str]) -> Optional[str]:
     if len(s) == 2:
         return s
     return _LANG_NAME_TO_ISO.get(s)  # unknown → None (drop the over-filter)
+
+
+# Words that make an `original_language` filter legitimate: the user named a
+# language, a nationality or a region. Anything else and the field is the model
+# improvising — measured 2026-07-26, "algo lento y triste sobre el duelo, sin
+# sustos" (which names no language at all) came back with original_language="es"
+# in 6 of 10 identical calls, collapsing the answer to Spanish-language cinema.
+# The model's own `reasoning` never justified it, and the same query in English
+# never triggered it, so it is noise rather than a rule about query language.
+# Strip accents so "japonés" and "japones" are the same cue.
+_ACCENTS = str.maketrans("áàäâéèëêíìïîóòöôúùüûñç", "aaaaeeeeiiiioooouuuunc")
+
+# Review 2026-07-28 found two holes in the first version of this list:
+#   · It had nationality adjectives ("coreano") and language names ("korean")
+#     but NO country names — "cine de Corea del Sur" lost its legitimate filter.
+#   · It matched by substring, so "Chinatown" contained "china" and wrongly
+#     kept a hallucinated filter. Exact words fix that ("indiana" ≠ "india");
+#     the few deliberate prefixes live in _LANG_CUE_STEMS below.
+_LANG_CUE_WORDS = frozenset(
+    w.translate(_ACCENTS) for w in (
+        list(_LANG_NAME_TO_ISO)
+        + [
+            # ES language / nationality forms
+            "español", "española", "castellano", "inglés", "inglesa", "francés",
+            "francesa", "alemán", "alemana", "italiano", "italiana", "portugués",
+            "portuguesa", "japonés", "japonesa", "coreano", "coreana", "chino",
+            "china", "ruso", "rusa", "sueco", "sueca", "danés", "danesa",
+            "noruego", "noruega", "holandés", "holandesa", "polaco", "polaca",
+            "turco", "turca", "griego", "griega", "hindú", "árabe", "iraní",
+            "tailandés", "catalán", "catalana", "vasco", "vasca", "euskera",
+            "gallego", "gallega", "latino", "latina", "mexicano", "mexicana",
+            "argentino", "argentina", "brasileño", "brasileña",
+            # country names, ES + EN — the gap the review caught
+            "españa", "francia", "japón", "corea", "italia", "alemania", "rusia",
+            "india", "méxico", "brasil", "suecia", "dinamarca", "polonia",
+            "turquía", "grecia", "irán", "tailandia", "portugal", "holanda",
+            "france", "japan", "korea", "italy", "germany", "spain", "russia",
+            "mexico", "brazil", "sweden", "denmark", "norway", "poland",
+            "turkey", "greece", "iran", "thailand", "netherlands", "britain",
+            # regions / broad markers, ES + EN
+            "europeo", "europea", "european", "europe", "asiático", "asian",
+            "asia", "nórdico", "nórdica", "nordic", "scandinavian", "escandinavo",
+            "escandinava", "hollywood", "bollywood", "idioma", "language",
+            "foreign", "spoken",
+        ]
+    )
+)
+
+# Prefixes that legitimately need substring semantics ("subtituladas",
+# "doblada", "extranjeras", "latinoamericano"…). Kept short on purpose.
+_LANG_CUE_STEMS = ("subtitul", "doblad", "extranjer", "latinoamerican", "iberoamerican", "habla hispana")
+
+_WORD_RE = re.compile(r"[a-zñç]+")
+
+
+def _query_names_a_language(query: str) -> bool:
+    """True when the query itself mentions a language, nationality or region.
+
+    Whole words, not substrings ("Chinatown" must not count as "china"), but
+    with plural stripping — "japoneses"/"koreans" must still match "japonés"/
+    "korean". The length guards keep the stripping from firing on short words.
+    """
+    q = query.lower().translate(_ACCENTS)
+    if any(s in q for s in _LANG_CUE_STEMS):
+        return True
+    for w in _WORD_RE.findall(q):
+        # Strip a plural only when the word actually carries the suffix —
+        # blind w[:-2] turned "indiana" into "india" and matched a country.
+        if (w in _LANG_CUE_WORDS
+                or (w.endswith("s") and w[:-1] in _LANG_CUE_WORDS)     # coreanos → coreano
+                or (w.endswith("es") and w[:-2] in _LANG_CUE_WORDS)):  # japoneses → japonés
+            return True
+    return False
+
+
+def guard_language_filter(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Drop `original_language` unless the query actually asked for one.
+
+    A rule beats a probability here: the LLM decides *when* the field applies,
+    and its Field(...) description only ever told it *how* to format the value.
+    Rather than hope a prompt tweak sticks across model swaps, the caller — which
+    is the only place that still has the raw query — makes the call deterministic.
+    """
+    if intent.original_language and not _query_names_a_language(query):
+        logger.info(
+            "Dropping unrequested original_language=%r (query names no language): %r",
+            intent.original_language, query,
+        )
+        intent.original_language = None
+    return intent
+
+
+def ensure_semantic_query(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Never let an empty `semantic_query` reach the embedder.
+
+    Found 2026-07-28 with "algo que terminemos mis padres y yo sin discutir":
+    the model returned a well-formed intent whose `semantic_query` was an empty
+    string. It satisfies the schema (the field is `str`, not `str | None`), so
+    nothing complained until `generate_embedding` raised
+    "No text available for embedding generation" and the whole request 500'd.
+
+    The repair is obvious once seen: `semantic_query` is meant to be an
+    *expansion* of what the user typed, so the user's own words are always a
+    valid floor. A weaker query beats a crash, and the crash was reachable from
+    plain user input.
+    """
+    if not (intent.semantic_query or "").strip():
+        logger.warning("Empty semantic_query from the parser; falling back to the raw query: %r", query)
+        intent.semantic_query = query
+    return intent
+
+
+def finalize_intent(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Every deterministic repair the parser's output needs, in one place."""
+    return ensure_semantic_query(guard_language_filter(intent, query), query)
 
 # Curated typo / informal-spelling normalisation applied BEFORE the LLM.
 # Only includes terms where Llama 4 Scout 17B has been observed to drift
@@ -80,7 +197,21 @@ class MovieSearchIntent(BaseModel):
     min_rating: Optional[float] = Field(None, description="Minimum TMDB vote_average (0-10).")
     min_vectorbox_score: Optional[float] = Field(None, description="Minimum VectorBox quality score Q (0-100). Used by the rail quality slider.")
     popularity_vibe: Literal["blockbuster", "hidden_gem", "any"] = Field("any", description="Select 'hidden_gem' for obscure/underrated, 'blockbuster' for famous/hits.")
-    original_language: Optional[str] = Field(None, description="ISO 639-1 language code (e.g. 'es', 'en', 'ko'). Use the 2-letter code, never the language name.")
+    # The description used to say only HOW to format the value, never WHEN it
+    # applies — unlike its neighbours (popularity_vibe, quality_gate_bypass),
+    # which carry a trigger condition and behave. That omission is why the model
+    # filled it unprompted. Stating the condition is layer one; guard_language_filter()
+    # is layer two, because a prompt is a probability and the guard is a rule.
+    original_language: Optional[str] = Field(
+        None,
+        description=(
+            "ISO 639-1 language code (e.g. 'es', 'en', 'ko'). Use the 2-letter code, "
+            "never the language name. ONLY set this when the user explicitly names a "
+            "language, nationality or region of the FILM ('Korean cinema', 'in French', "
+            "'cine español'). NEVER infer it from the language the query is written in — "
+            "a Spanish speaker asking about grief wants films about grief, not Spanish films."
+        ),
+    )
 
     @field_validator("original_language")
     @classmethod
@@ -185,13 +316,28 @@ def get_llm_client():
     """LLM client: Groq preferred, Gemini fallback."""
     groq_key = os.environ.get("GROQ_API_KEY")
     gemini_key = os.environ.get("GEMINI_API_KEY")
+    # max_retries=0 is load-bearing, not tuning. The SDK default is 2, and on a
+    # 429 it sleeps 14-16s and retries the SAME model before the exception ever
+    # reaches the PARSER_CHAIN fallback below — which exists precisely because
+    # "each model has a SEPARATE TPM bucket, so a per-minute 429 on one cascades
+    # to the next" (llm_models.py). With the SDK retrying first, that cascade
+    # never ran: measured 2026-07-26, a burst of 10 identical parses went from
+    # ~1.4s cold to a 16.4s median, with `Retrying request ... in 15 seconds`
+    # in the logs. scripts/backfill_descriptions.py already set this; the
+    # interactive path never inherited it.
     if groq_key:
-        client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key, timeout=30.0)
+        client = AsyncOpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=groq_key,
+            timeout=30.0,
+            max_retries=0,
+        )
     elif gemini_key:
         client = AsyncOpenAI(
             api_key=gemini_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
             timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
+            max_retries=0,
         )
     else:
         logger.warning("Neither GROQ_API_KEY nor GEMINI_API_KEY found.")
@@ -287,34 +433,37 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
         {"role": "user", "content": f"### USER QUERY ###\n{user_query}\n### END USER QUERY ###"},
     ]
 
-    # Parser model order — benchmarked live 2026-06-29 on the REAL prompt +
-    # response model: gpt-oss-120b parses in a flat ~1.1s, 5/5 valid (the fastest
-    # and most CONSISTENT). Both qwen3-32b and qwen3.6-27b spike to ~18s on some
-    # queries (reasoning), so qwen3-32b is the vendor-diverse FALLBACK only.
-    # (Llama 3.3 70B removed — Groq decommission 2026-08-16.)
-    _EFFORT = {"openai/gpt-oss-120b": "low", "qwen/qwen3-32b": "none"}
-    primary_model = "openai/gpt-oss-120b" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
-    fallback_model = "qwen/qwen3-32b" if os.environ.get("GROQ_API_KEY") else None
+    # Parser model order lives in services/llm_models.PARSER_CHAIN (single source
+    # of truth): gpt-oss-120b primary (~1.1s, 5/5 valid), qwen3.6-27b the
+    # vendor-diverse fallback. Reasoning-effort from the shared REASONING_EFFORT.
+    _EFFORT = REASONING_EFFORT
+    if os.environ.get("GROQ_API_KEY"):
+        primary_model, fallback_model = PARSER_CHAIN[0], PARSER_CHAIN[1]
+    else:
+        primary_model, fallback_model = "gemini-2.5-flash", None
 
+    # Every LLM-produced intent goes through guard_language_filter: temperature=0
+    # is near-deterministic, not deterministic (measured 6/10 vs 4/10 on identical
+    # input), so the rule runs on the way out rather than trusting the prompt.
     try:
-        return await client.chat.completions.create(
+        return finalize_intent(await client.chat.completions.create(
             model=primary_model,
             response_model=MovieSearchIntent,
             messages=messages,
             temperature=0,  # structured extraction — determinism over creativity (cuts search volatility)
             extra_body={"reasoning_effort": _EFFORT[primary_model]} if primary_model in _EFFORT else None,
-        )
+        ), user_query)
     except Exception as e:
         if fallback_model:
             logger.warning(f"Primary model failed: {e}. Trying fallback.")
             try:
-                return await client.chat.completions.create(
+                return finalize_intent(await client.chat.completions.create(
                     model=fallback_model,
                     response_model=MovieSearchIntent,
                     messages=messages,
                     temperature=0,
                     extra_body={"reasoning_effort": _EFFORT[fallback_model]} if fallback_model in _EFFORT else None,
-                )
+                ), user_query)
             except Exception as e2:
                 logger.warning(f"Fallback model also failed: {e2}.")
                 return MovieSearchIntent(

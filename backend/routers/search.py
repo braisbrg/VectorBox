@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import asyncio
 from config import get_db
-from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user
+from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user, get_redis
 from models.schemas import TokenResponse
 from services.nlp_search import parse_user_intent, search_with_reasoning, MovieSearchIntent
 from services.magic_search_ranking import (
@@ -15,6 +15,7 @@ from services.magic_search_ranking import (
     should_run_deep_analysis,
     title_sim_score,
 )
+from services import showcase_service
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
@@ -484,6 +485,42 @@ async def natural_language_search(
         import traceback
         logger.error(f"Search failed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Search service unavailable")
+
+
+@router.get("/showcase")
+@limiter.limit("60/minute")
+async def showcase_search(
+    request: Request,
+    slug: str,
+    lang: str = "es",
+    redis=Depends(get_redis),
+):
+    """The landing's canned queries. Reads Redis and nothing else.
+
+    This is the counterweight to `/natural` being open: the landing's default
+    traffic lands here, where the set of possible inputs is closed (the slugs in
+    `showcase_service.SHOWCASE_QUERIES`) and no free text ever reaches Groq.
+
+    A miss returns 503 rather than computing on demand — on purpose. The moment
+    this endpoint can trigger a search, the closed-input guarantee is gone and
+    it becomes `/natural` with extra steps. Filling the cache is the job of
+    `scripts/warm_showcase.py`, run on deploy.
+    """
+    if not showcase_service.is_valid_slug(slug):
+        # 404 before any I/O: an unknown slug costs a dict lookup.
+        raise HTTPException(status_code=404, detail="Unknown showcase slug")
+
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Showcase cache unavailable")
+
+    payload = await showcase_service.read(redis, slug, lang)
+    if payload is None:
+        # Cold cache. The landing has a state for this; do not paper over it by
+        # running a query, which is exactly what this endpoint exists to avoid.
+        logger.warning("Showcase cache miss for slug=%s lang=%s — run warm_showcase.py", slug, lang)
+        raise HTTPException(status_code=503, detail="Showcase not warmed yet")
+
+    return payload
 
 
 @router.get("/autocomplete")
