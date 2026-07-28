@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
+import { useUser } from "@clerk/nextjs";
 import { Loader2 } from "lucide-react";
 import { api, getTMDBImageUrl } from "@/lib/api";
 import { QuickLook, QuickLookFilm } from "@/components/quick-look";
@@ -114,7 +115,12 @@ function Kbd({ k }: { k: string }) {
     );
 }
 
+// Mirrors TRY_MAX_QUERY_LENGTH in routers/search.py. Truncating here turns a
+// 422 into a slightly shorter search, which is the kinder failure.
+const GUEST_MAX_QUERY = 140;
+
 export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
+    const { isSignedIn } = useUser();
     const { language, t } = useLanguage();
     const router = useRouter();
     const [query, setQuery] = useState("");
@@ -168,11 +174,20 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
     const searchMutation = useMutation({
         mutationFn: async ({ text, forced }: { text: string; forced?: SearchIntent }) => {
             const t0 = performance.now();
-            const res = await api.post("/api/search/natural", {
-                query: text,
-                ...(forced ? { forced_intent: forced } : {}),
-                country_code: "ES",
-            });
+            // Two doors, by session (Fase 3). /natural requires auth and carries
+            // the full budget; /try is the bounded public one — 140 chars,
+            // 5/minute, no Tier-2 and no forced_intent, which is why the refine
+            // path below is only offered to signed-in users.
+            const res = isSignedIn
+                ? await api.post("/api/search/natural", {
+                      query: text,
+                      ...(forced ? { forced_intent: forced } : {}),
+                      country_code: "ES",
+                  })
+                : await api.post("/api/search/try", {
+                      query: text.slice(0, GUEST_MAX_QUERY),
+                      country_code: "ES",
+                  });
             return { data: res.data, ms: Math.round(performance.now() - t0) };
         },
         onSuccess: ({ data, ms }) => {
@@ -373,7 +388,11 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                                         {c.key}
                                     </span>
                                     <span className="px-[7px] py-[3px] text-fg">{c.value}</span>
-                                    {c.clears.length > 0 && (
+                                    {/* Refining a chip re-runs with forced_intent, which the
+                                        public /try door rejects by design. Offering the ×
+                                        to a guest would silently re-run the whole search and
+                                        ignore the edit — worse than not offering it. */}
+                                    {c.clears.length > 0 && isSignedIn && (
                                         <button
                                             onClick={() => removeChip(c)}
                                             aria-label={`Remove ${c.key} filter`}

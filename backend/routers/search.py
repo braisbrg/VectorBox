@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, constr
+from pydantic import BaseModel, ConfigDict, constr
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
@@ -87,29 +87,40 @@ async def _item_to_item_search(
 # Re-implementing with proper decorator injection
 from limiter import limiter
 
-@router.post("/natural", response_model=SearchResponse)
-@limiter.limit("10/minute")
-async def natural_language_search(
-    request: Request, # Request object is required for slowapi
+# ── Fase 3 of the landing plan (2026-07-28) ─────────────────────────────────
+#
+# This handler used to BE the public endpoint, while its own docstring said the
+# opposite: "Auth required: this endpoint fans out to Groq… Leaving it open to
+# guests turns it into a paid-LLM proxy." Someone reasoned that through and the
+# code drifted from it. Free text plus no session plus a 200k-token daily budget
+# is a free LLM proxy for anyone who finds the URL, and on 2026-07-25 the budget
+# was in fact exhausted (197,753 of 200,000 used).
+#
+# The body is now shared by two doors with different trust:
+#   POST /natural  — signed in. Full budget: 500-char queries, Tier-2 deep
+#                    analysis, 10/minute.
+#   POST /try      — anonymous. Deliberately bounded: 140 chars, no Tier-2, and
+#                    5/minute. Enough to try the product, too little to farm.
+#
+# The landing does not use either by default: its chips read /search/showcase,
+# which is a cache with a closed input set. This path only runs when a visitor
+# types something of their own.
+async def _run_natural_search(
+    request: Request,
     search_req: SearchRequest,
-    # Optional auth: magic box is a pre-login guest feature (handoff pre-login
-    # splash). current_user is only used to exclude watched films — guests
-    # simply skip that filter. Rate limit above applies either way.
-    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
-    db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client),
-    qdrant: QdrantService = Depends(get_qdrant_service),
-    embedding_service: EmbeddingService = Depends(get_embedding_service)
+    current_user: Optional[TokenResponse],
+    db: AsyncSession,
+    tmdb: TMDBClient,
+    qdrant: QdrantService,
+    embedding_service: EmbeddingService,
 ):
-    """
-    Advanced natural language search with semantic expansion and vibe filtering.
-    Handles complex queries like "old gangster movie", "90s hidden gem", "short anime".
-    Also handles "Movies like X" by detecting title matches.
+    """Shared body. Advanced natural-language search with semantic expansion.
 
-    Auth required: this endpoint fans out to Groq (GPT-OSS-120B parser +
-    optional Deep Analysis). Leaving it open to guests turns it into a
-    paid-LLM proxy. The /onboarding/search endpoint covers the public-DB
-    title search use case for guests.
+    Also handles "Movies like X" by detecting title matches and switching to
+    item-to-item, which short-circuits before the LLM — that path costs nothing.
+
+    Not a route: the two routes below decide who may reach it and with what
+    budget. Anything trusted must be enforced by the CALLER, not here.
     """
     try:
         # Validate input for LLM injection
@@ -485,6 +496,75 @@ async def natural_language_search(
         import traceback
         logger.error(f"Search failed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Search service unavailable")
+
+
+@router.post("/natural", response_model=SearchResponse)
+@limiter.limit("10/minute")
+async def natural_language_search(
+    request: Request,  # required by slowapi
+    search_req: SearchRequest,
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+):
+    """Magic Box for signed-in users. Full budget.
+
+    Auth is required again as of Fase 3 — the docstring said so all along while
+    the signature said `get_optional_current_user`. Guests get `/try` below.
+    """
+    return await _run_natural_search(
+        request, search_req, current_user, db, tmdb, qdrant, embedding_service
+    )
+
+
+# A guest sentence is a sentence, not an essay: 140 characters fits every example
+# query the landing ships and every phrasing we tested, while making the endpoint
+# useless as a general-purpose LLM proxy.
+TRY_MAX_QUERY_LENGTH = 140
+
+
+class TrySearchRequest(BaseModel):
+    # extra="forbid" so a caller who tries to smuggle `forced_intent` or
+    # `use_deep_analysis` gets a 422 instead of a silent 200. Pydantic would drop
+    # them either way, but a contract that answers "no" is worth more than one
+    # that quietly ignores you — and it makes the attempt visible in the logs.
+    model_config = ConfigDict(extra="forbid")
+
+    query: constr(min_length=1, max_length=TRY_MAX_QUERY_LENGTH)
+    country_code: Optional[str] = "ES"
+    # Deliberately absent: `use_deep_analysis` (Tier-2 is the expensive LLM call)
+    # and `forced_intent` (an internal bypass — accepting it from the public
+    # would let a caller hand-craft filters and skip every guard we have).
+
+
+@router.post("/try", response_model=SearchResponse)
+@limiter.limit("5/minute")
+async def try_search(
+    request: Request,  # required by slowapi
+    try_req: TrySearchRequest,
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+):
+    """The public door: type your own sentence without an account.
+
+    Bounded on every axis that costs money — 140 characters, 5/minute, no Tier-2
+    deep analysis, no forced_intent. A visitor can try the product; nobody can
+    farm the daily Groq budget through it.
+
+    `current_user=None` is passed explicitly rather than resolved: this route
+    must behave identically for everyone, and reading a session here would make
+    a signed-in user's results differ from a guest's on the same URL.
+    """
+    return await _run_natural_search(
+        request,
+        SearchRequest(query=try_req.query, country_code=try_req.country_code,
+                      use_deep_analysis=False, forced_intent=None),
+        None, db, tmdb, qdrant, embedding_service,
+    )
 
 
 @router.get("/showcase")
