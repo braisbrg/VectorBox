@@ -9,7 +9,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { X, Download, Loader2 } from "lucide-react";
 import { GroupVibeResponse, GroupRecommendation, getGroupVibe, getTMDBImageUrl } from "@/lib/api";
-import { resolveAccent, accentRgba } from "@/lib/accent";
+import { resolveAccent, accentRgba, resolveDisplayFont } from "@/lib/accent";
 import { cn } from "@/lib/utils";
 
 const FORMATS = {
@@ -240,7 +240,7 @@ export function drawChrome(ctx: CanvasRenderingContext2D, W: number, H: number, 
 
     const pad = 100;
     const y = H === 1920 ? 200 : 140;
-    ctx.font = `56px 'Departure Mono', 'IBM Plex Mono', monospace`;
+    ctx.font = `56px ${resolveDisplayFont()}`;
     ctx.fillStyle = "#f2f2f2";
     ctx.fillText("VECTOR", pad, y);
     const vw = ctx.measureText("VECTOR").width;
@@ -249,7 +249,7 @@ export function drawChrome(ctx: CanvasRenderingContext2D, W: number, H: number, 
     ctx.fillStyle = "#0a0a0a";
     ctx.fillText("BOX", pad + vw + 20, y);
     // sub label right-aligned
-    ctx.font = `26px 'Departure Mono', 'IBM Plex Mono', monospace`;
+    ctx.font = `26px ${resolveDisplayFont()}`;
     ctx.fillStyle = P;
     ctx.textAlign = "right";
     ctx.fillText(sub, W - pad, y - 10);
@@ -266,11 +266,11 @@ export function drawFooter(ctx: CanvasRenderingContext2D, W: number, H: number, 
 
 function drawBigPct(ctx: CanvasRenderingContext2D, x: number, y: number, P: string, v: number, label: string, size = 170) {
     ctx.textAlign = "center";
-    ctx.font = `${size}px 'Departure Mono', 'IBM Plex Mono', monospace`;
+    ctx.font = `${size}px ${resolveDisplayFont()}`;
     ctx.fillStyle = P;
     const nw = ctx.measureText(`${v}`).width;
     ctx.fillText(`${v}`, x, y);
-    ctx.font = `${Math.round(size * 0.4)}px 'Departure Mono', 'IBM Plex Mono', monospace`;
+    ctx.font = `${Math.round(size * 0.4)}px ${resolveDisplayFont()}`;
     ctx.fillText("%", x + nw / 2 + size * 0.22, y);
     ctx.font = `26px 'IBM Plex Mono', monospace`;
     ctx.fillStyle = "#999";
@@ -301,14 +301,14 @@ function drawFilmStrip(ctx: CanvasRenderingContext2D, x: number, y: number, film
             ctx.fillStyle = P;
             ctx.fillRect(fx + pw - 58, y, 58, 30);
             ctx.fillStyle = "#0a0a0a";
-            ctx.font = `bold 20px 'Departure Mono', 'IBM Plex Mono', monospace`;
+            ctx.font = `bold 20px ${resolveDisplayFont()}`;
             ctx.textAlign = "center";
             ctx.fillText(`Q${f.q}`, fx + pw - 29, y + 22);
         }
         ctx.fillStyle = "rgba(0,0,0,0.8)";
         ctx.fillRect(fx, y + ph - 32, pw, 32);
         ctx.fillStyle = P;
-        ctx.font = `bold 20px 'Departure Mono', 'IBM Plex Mono', monospace`;
+        ctx.font = `bold 20px ${resolveDisplayFont()}`;
         ctx.textAlign = "center";
         ctx.fillText(`${f.m}%`, fx + pw / 2, y + ph - 9);
         // title under the poster
@@ -344,14 +344,14 @@ function drawConstellation(ctx: CanvasRenderingContext2D, cx: number, cy: number
     ctx.beginPath(); ctx.arc(cx, cy, 18, 0, 7); ctx.fill();
     ctx.shadowBlur = 0;
     ctx.fillStyle = "#0a0a0a";
-    ctx.font = `bold 24px 'Departure Mono', monospace`;
+    ctx.font = `bold 24px ${resolveDisplayFont()}`;
     ctx.textAlign = "center";
     ctx.fillText("★", cx, cy + 8);
     for (const n of nodes) {
         ctx.fillStyle = n.col;
         ctx.fillRect(n.x - 32, n.y - 32, 64, 64);
         ctx.fillStyle = "#0a0a0a";
-        ctx.font = `bold 32px 'Departure Mono', monospace`;
+        ctx.font = `bold 32px ${resolveDisplayFont()}`;
         ctx.fillText(n.tok, n.x, n.y + 11);
         ctx.fillStyle = "#aaa";
         ctx.font = `20px 'IBM Plex Mono', monospace`;
@@ -387,7 +387,7 @@ function drawPairLink(ctx: CanvasRenderingContext2D, cx: number, cy: number, hal
         ctx.fillStyle = col;
         ctx.fillRect(x - 40, cy - 40, 80, 80);
         ctx.fillStyle = "#0a0a0a";
-        ctx.font = `bold 40px 'Departure Mono', monospace`;
+        ctx.font = `bold 40px ${resolveDisplayFont()}`;
         ctx.fillText(tok, x, cy + 14);
         ctx.fillStyle = "#aaa";
         ctx.font = `22px 'IBM Plex Mono', monospace`;
@@ -426,12 +426,12 @@ function drawGroupCard(cv: HTMLCanvasElement, d: GroupCardData, fmt: Fmt, P: str
             px += chipW + 14;
         });
         if (d.overlap.length) {
-            ctx.font = `24px 'Departure Mono', 'IBM Plex Mono', monospace`;
+            ctx.font = `24px ${resolveDisplayFont()}`;
             ctx.fillStyle = "#777";
             ctx.fillText("YOU ALL GRAVITATE TO", pad, 1260);
             drawBadges(ctx, pad, 1320, W - pad * 2, d.overlap, P);
         }
-        ctx.font = `24px 'Departure Mono', 'IBM Plex Mono', monospace`;
+        ctx.font = `24px ${resolveDisplayFont()}`;
         ctx.fillStyle = "#777";
         ctx.fillText("FILMS YOU'LL ALL LOVE", pad, 1420);
         drawFilmStrip(ctx, pad, 1450, d.films, (W - pad * 2 - 4 * 20) / 5, P, images);
@@ -452,7 +452,7 @@ function drawGroupCard(cv: HTMLCanvasElement, d: GroupCardData, fmt: Fmt, P: str
             py += 58;
         });
         // capped poster size + centered so the strip clears the footer (was overlapping)
-        ctx.font = `24px 'Departure Mono', 'IBM Plex Mono', monospace`;
+        ctx.font = `24px ${resolveDisplayFont()}`;
         ctx.fillStyle = "#777";
         ctx.fillText("FILMS YOU'LL ALL LOVE", pad, 716);
         const pw = 110;
@@ -474,12 +474,12 @@ function drawPairCard(cv: HTMLCanvasElement, d: PairCardData, fmt: Fmt, P: strin
         drawPairLink(ctx, W / 2, 480, 300, d.a, d.b, P);
         drawBigPct(ctx, W / 2, 850, P, d.match, "taste match");
         if (d.overlap.length) {
-            ctx.font = `24px 'Departure Mono', 'IBM Plex Mono', monospace`;
+            ctx.font = `24px ${resolveDisplayFont()}`;
             ctx.fillStyle = "#777";
             ctx.fillText("WHERE YOU OVERLAP", pad, 990);
             drawBadges(ctx, pad, 1050, W - pad * 2, d.overlap, P);
         }
-        ctx.font = `24px 'Departure Mono', 'IBM Plex Mono', monospace`;
+        ctx.font = `24px ${resolveDisplayFont()}`;
         ctx.fillStyle = "#777";
         ctx.fillText("YOU BOTH LOVE", pad, 1160);
         drawFilmStrip(ctx, pad, 1190, d.shared, (W - pad * 2 - 3 * 20) / 4, P, images);
@@ -488,7 +488,7 @@ function drawPairCard(cv: HTMLCanvasElement, d: PairCardData, fmt: Fmt, P: strin
             drawPoster(ctx, d.bridge, images, pad, by, 70, 105);
             const other = d.bridge.from === d.a.tok ? d.b.tok : d.a.tok;
             ctx.fillStyle = P;
-            ctx.font = `bold 26px 'Departure Mono', 'IBM Plex Mono', monospace`;
+            ctx.font = `bold 26px ${resolveDisplayFont()}`;
             ctx.fillText(`${d.bridge.from} will convert ${other}`, pad + 96, by + 40);
             ctx.fillStyle = "#ccc";
             ctx.font = `26px 'IBM Plex Mono', monospace`;
@@ -510,7 +510,7 @@ function drawPairCard(cv: HTMLCanvasElement, d: PairCardData, fmt: Fmt, P: strin
         if (d.bridge) {
             const other = d.bridge.from === d.a.tok ? d.b.tok : d.a.tok;
             ctx.fillStyle = P;
-            ctx.font = `bold 24px 'Departure Mono', 'IBM Plex Mono', monospace`;
+            ctx.font = `bold 24px ${resolveDisplayFont()}`;
             ctx.textAlign = "center";
             ctx.fillText(`${d.bridge.from} → ${other} · bridge film`, 770, 490);
             ctx.fillStyle = "#ccc";
@@ -528,7 +528,7 @@ function drawPairCard(cv: HTMLCanvasElement, d: PairCardData, fmt: Fmt, P: strin
             ctx.textAlign = "left";
         }
         // capped poster size + centered so the strip clears the footer (was overlapping)
-        ctx.font = `24px 'Departure Mono', 'IBM Plex Mono', monospace`;
+        ctx.font = `24px ${resolveDisplayFont()}`;
         ctx.fillStyle = "#777";
         ctx.fillText("YOU BOTH LOVE", pad, 636);
         const pw = 120;

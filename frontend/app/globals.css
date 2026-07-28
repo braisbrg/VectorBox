@@ -129,7 +129,12 @@
   --color-fg-3: var(--fg-3);
 
   /* ----- Typography (mono-only brutalist system) -----
-     IBM Plex Mono is the workhorse (body/UI); Departure Mono is display-only.
+     IBM Plex Mono is the workhorse (body/UI); Martian Mono is display-only.
+     Martian replaced Departure Mono 2026-07-28 — a pixel face reads as retro
+     gaming, not film archive, and it has no italics or real intermediate
+     weights. The `--font-departure` variable NAME was kept deliberately so every
+     `font-display` call site picks the new face up without a 45-file sweep; the
+     face changed, the variable did not. See the note in layout.tsx.
      BOTH next/font variables MUST be set on <html> in layout.tsx, never on
      <body>: these three properties are declared on :root, and a custom property
      whose var() target is undefined at its own declaring element is invalid at
@@ -214,7 +219,7 @@
   /* eyebrow — the small uppercase label above a section. 42 uses, the most
      reused piece of the kit. */
   .eyebrow {
-    font-family: var(--font-departure, var(--font-plex)), ui-monospace, monospace;
+    font-family: var(--font-departure, var(--font-plex)), ui-monospace, monospace; /* Martian */
     font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--fg-3);
   }
 

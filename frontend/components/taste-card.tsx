@@ -12,7 +12,7 @@ import {
     drawChrome, drawFooter, drawPoster,
     loadImages, filmTone, type ImageMap,
 } from "@/components/share-cards";
-import { resolveAccent } from "@/lib/accent";
+import { resolveAccent, resolveDisplayFont } from "@/lib/accent";
 import { cn } from "@/lib/utils";
 
 // Defining films for the card — prefer the loved-films list (≥4★/liked), fall back
@@ -50,7 +50,7 @@ type DefFilm = { title: string; poster: string | null };
 
 // Trident radar (triskelion) centered at (cx,cy) with radius R.
 function drawRadar(ctx: CanvasRenderingContext2D, cx: number, cy: number, R: number, trident: { vibe: number; auteur: number; gems: number }, P: string, labelSize: number) {
-    const display = (sz: number) => `${sz}px 'Departure Mono', 'IBM Plex Mono', monospace`;
+    const display = (sz: number) => `${sz}px ${resolveDisplayFont()}`;
     const axes = [
         { k: "vibe" as const, a: -Math.PI / 2 },
         { k: "auteur" as const, a: -Math.PI / 2 + 2.094 },
@@ -167,7 +167,7 @@ function drawTasteCard(
     const ctx = cv.getContext("2d")!;
     const P = accent;
     const mono = (sz: number) => `${sz}px 'IBM Plex Mono', monospace`;
-    const display = (sz: number) => `${sz}px 'Departure Mono', 'IBM Plex Mono', monospace`;
+    const display = (sz: number) => `${sz}px ${resolveDisplayFont()}`;
     const pad = 100;
     const cx = W / 2;
 

@@ -10,16 +10,29 @@ import { LanguageProvider } from "@/components/language-provider";
 import { AuthBridge } from "@/components/auth-bridge";
 import { isLanguage, type Language } from "@/lib/i18n";
 
-// ACID system is mono-only: IBM Plex Mono is the workhorse (body/UI), Departure
-// Mono (self-hosted, OFL) is display-only for headings (--font-display).
+// ACID system is mono-only: IBM Plex Mono is the workhorse (body/UI), Martian
+// Mono (self-hosted, OFL, variable 400-700) is display-only for headings.
+//
+// Martian replaced Departure Mono on 2026-07-28. Departure is a pixel/bitmap
+// face: it reads as retro gaming rather than film archive, and it has neither
+// italics nor real intermediate weights, so it works as a sign and falls apart
+// in a paragraph. Martian keeps the mono-only rule the system is built on —
+// which matters because this UI is a grid of numbers (VBS, years, runtimes) and
+// a monospace aligns them without `tabular-nums` — while carrying far more
+// presence than Plex at display size.
 const plex = IBM_Plex_Mono({
     subsets: ["latin"],
     weight: ["400", "500", "600", "700"],
     variable: "--font-plex",
     display: "swap",
 });
-const departure = localFont({
-    src: "../public/fonts/DepartureMono-Regular.woff2",
+const martian = localFont({
+    src: "../public/fonts/MartianMono-Variable.woff2",
+    // Kept as --font-departure so every `font-display` call site and the
+    // .eyebrow/.trident-mark kit classes pick it up without a sweep. Renaming
+    // the variable is cosmetic churn across ~45 files; renaming the FACE is the
+    // change that matters. TODO if it ever bothers anyone: rename to
+    // --font-display-face in one pass.
     variable: "--font-departure",
     display: "swap",
     weight: "400 700",
@@ -62,7 +75,7 @@ export default async function RootLayout({
             lang={initialLanguage}
             data-theme="acid"
             suppressHydrationWarning
-            className={`${plex.variable} ${departure.variable}`}
+            className={`${plex.variable} ${martian.variable}`}
         >
             <head>
                 {/* Apply the persisted accent palette before first paint (no flash). */}

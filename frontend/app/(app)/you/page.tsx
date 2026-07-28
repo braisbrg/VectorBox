@@ -15,7 +15,7 @@ import { TasteCardModal } from "@/components/taste-card";
 import { useShell } from "@/components/shell/shell-context";
 import { useLanguage } from "@/components/language-provider";
 import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
-import { resolveAccent } from "@/lib/accent";
+import { resolveAccent, resolveDisplayFont } from "@/lib/accent";
 import { cn } from "@/lib/utils";
 
 /** Static one-shot vector band drawn from the real /space projection. */
@@ -86,7 +86,7 @@ function VectorBand({ space, h = 150 }: { space: SpaceResponse; h?: number }) {
             ctx.restore();
             ctx.shadowBlur = 0;
             ctx.fillStyle = P;
-            ctx.font = "11px 'Departure Mono', 'IBM Plex Mono', monospace";
+            ctx.font = "11px ${resolveDisplayFont()}";
             ctx.fillText("YOU", mx + 10, my + 3);
         }
     }, [space, h]);

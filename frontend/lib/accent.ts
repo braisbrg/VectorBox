@@ -1,9 +1,9 @@
 /**
- * Resolving the active theme accent for <canvas>.
+ * Resolving CSS custom properties that <canvas> cannot read.
  *
- * Canvas takes colour strings, not CSS variables, so anything drawn to a canvas
- * has to resolve --primary itself. Two traps, both of which have already bitten
- * this codebase:
+ * Canvas takes literal strings, not CSS variables, so anything drawn to a canvas
+ * has to resolve the design tokens itself. Two traps, both of which have already
+ * bitten this codebase:
  *
  *  1. getComputedStyle serialises oklch() AS oklch() — a regex for "rgb(r,g,b)"
  *     mis-parsed it and painted acid dark blue instead of #f7e800.
@@ -39,4 +39,19 @@ export function resolveAccent(): string {
 export function accentRgba(accent: string, alpha: number): string {
     const n = parseInt(accent.slice(1), 16);
     return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
+/**
+ * The display font family, as canvas needs it.
+ *
+ * next/font generates its OWN family name — the display face resolves to
+ * "martian", never "Martian Mono". Canvas code that hardcoded 'Departure Mono'
+ * therefore never matched anything and silently fell through to IBM Plex Mono,
+ * so every share card has been rendering in the body face rather than the
+ * display one. Reading the token means the canvas follows whatever face
+ * layout.tsx loads, including the next one.
+ */
+export function resolveDisplayFont(): string {
+    const v = getComputedStyle(document.documentElement).getPropertyValue("--font-display").trim();
+    return v || "ui-monospace, monospace";
 }
