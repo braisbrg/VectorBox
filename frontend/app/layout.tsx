@@ -22,7 +22,11 @@ import { isLanguage, type Language } from "@/lib/i18n";
 // presence than Plex at display size.
 const plex = IBM_Plex_Mono({
     subsets: ["latin"],
-    weight: ["400", "500", "600", "700"],
+    // 500 was declared and never used — nothing in the app sets font-medium — so
+    // next/font preloaded a weight no glyph ever needed, which is the
+    // "preloaded with link preload was not used" warning in the console.
+    // Counted 2026-07-28: font-normal 5, font-semibold 5, font-bold 95, medium 0.
+    weight: ["400", "600", "700"],
     variable: "--font-plex",
     display: "swap",
 });

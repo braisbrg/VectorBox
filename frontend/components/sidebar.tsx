@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Wordmark, TridentMark } from "@/components/ui/wordmark";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ChevronLeft, ChevronRight, LogOut, UserCircle, RotateCw } from "lucide-react";
@@ -34,12 +35,17 @@ export function Sidebar({ collapsed, onToggleCollapse, letterboxdUsername }: Sid
         >
             {/* Header — wordmark + collapse toggle */}
             <div className="flex h-[60px] items-center justify-between border-b border-border-2 px-3">
-                {!collapsed && (
-                    <Link href="/feed" className="font-display text-sm uppercase tracking-tight">
-                        <span className="text-fg">VEC</span>
-                        <span className="bg-primary px-1 text-primary-ink">TBX</span>
-                    </Link>
-                )}
+                {/* The mark stays put in both states: the trident alone when there
+                    is no room for the name. The old collapsed state invented a
+                    "VEC|TBX" abbreviation that appeared nowhere else in the
+                    product and read as a different brand. */}
+                <Link
+                    href="/feed"
+                    className="font-display text-sm uppercase tracking-tight"
+                    aria-label="VectorBox"
+                >
+                    {collapsed ? <TridentMark className="text-[18px]" /> : <Wordmark />}
+                </Link>
                 <button
                     onClick={onToggleCollapse}
                     aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -104,7 +110,7 @@ export function Sidebar({ collapsed, onToggleCollapse, letterboxdUsername }: Sid
                         </DropdownMenu.Trigger>
                         <DropdownMenu.Portal>
                             <DropdownMenu.Content
-                                className="z-[100] min-w-[160px] border border-border-2 bg-bg p-1 shadow-acid"
+                                className="z-40 min-w-[160px] border border-border-2 bg-bg p-1 shadow-acid"
                                 side="right"
                                 align="end"
                                 sideOffset={10}

@@ -12,14 +12,21 @@
 // The trident scales in `em`, so the mark works at any font-size the call site
 // sets without a second variant.
 
+/** The trident on its own — the collapsed sidebar and anywhere the name will not fit. */
+export function TridentMark({ className = "" }: { className?: string }) {
+    return (
+        <span className={`inline-flex items-end gap-[0.14em] ${className}`} aria-hidden="true">
+            <i className="block h-[0.78em] w-[0.2em] bg-fg" />
+            <i className="block h-[1.1em] w-[0.2em] bg-primary" />
+            <i className="block h-[0.78em] w-[0.2em] bg-fg" />
+        </span>
+    );
+}
+
 export function Wordmark({ className = "" }: { className?: string }) {
     return (
         <span className={`inline-flex items-center gap-[0.45em] ${className}`}>
-            <span className="inline-flex items-end gap-[0.14em]" aria-hidden="true">
-                <i className="block w-[0.2em] h-[0.78em] bg-fg" />
-                <i className="block w-[0.2em] h-[1.1em] bg-primary" />
-                <i className="block w-[0.2em] h-[0.78em] bg-fg" />
-            </span>
+            <TridentMark />
             <span>
                 <span className="text-fg">VECTOR</span>
                 <span className="text-primary">BOX</span>
