@@ -246,14 +246,21 @@ export function Landing() {
                         <div
                             ref={railRef}
                             onScroll={syncEdges}
-                            // `safe center`: plain `center` overflows on BOTH sides,
-                            // putting the first poster out of reach. The top padding
-                            // gives the hover lift somewhere to go, since overflow-x
-                            // forces overflow-y to auto as well.
-                            className="-mt-2 flex snap-x snap-mandatory gap-2.5 overflow-x-auto pt-2 scrollbar-hide [justify-content:safe_center]"
+                            // Phones get a grid, desktops a rail. A horizontal rail on
+                            // a phone hides most of the proof behind a gesture with no
+                            // affordance (the arrows are pointer-only), and the results
+                            // ARE the argument this page makes — so on small screens
+                            // they all stay visible and the page scrolls vertically,
+                            // which is the gesture the device already has.
+                            //
+                            // On the rail, `safe center` matters: plain `center`
+                            // overflows on BOTH sides and puts the first poster out of
+                            // reach. The top padding gives the hover lift somewhere to
+                            // go, since overflow-x forces overflow-y to auto as well.
+                            className="-mt-2 grid grid-cols-3 gap-2.5 pt-2 sm:grid-cols-4 md:flex md:snap-x md:snap-mandatory md:overflow-x-auto md:[justify-content:safe_center] scrollbar-hide"
                         >
                             {films.map((f) => (
-                                <div key={f.movie_id} className="w-[122px] shrink-0 snap-start">
+                                <div key={f.movie_id} className="w-full md:w-[122px] md:shrink-0 md:snap-start">
                                     <MovieCard
                                         id={f.movie_id}
                                         title={f.title}
