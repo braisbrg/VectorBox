@@ -461,7 +461,8 @@ async def _run_natural_search(
         # Confidence cannot separate the third from the fourth (0.306 vs 0.232 is
         # inside the noise), so the parser flags it as `open_request`.
         if (is_low_confidence(cosines) and not has_descriptive_filters(intent)
-                and not intent.open_request and not degraded):
+                and not intent.open_request and not intent.audience_request
+                and not degraded):
             logger.info(
                 "Low-confidence query (mean top-%d cosine %.3f < %.2f): %r",
                 CONFIDENCE_SAMPLE, confidence, LOW_CONFIDENCE_MEAN, search_req.query,
@@ -489,7 +490,15 @@ async def _run_natural_search(
         # second passed the gate and then found almost nothing, because the
         # twenty nearest neighbours of a meaningless vector rarely clear a
         # quality bar. Querying the catalogue directly is the honest answer.
-        if is_low_confidence(cosines) and (intent.open_request or is_quality_only_request(intent) or degraded):
+        # audience_request lands here only when it named no genre — with one it
+        # was answered before the embedding. Someone describing the room is still
+        # asking for a suggestion, so refusing them is the failure with no
+        # recovery. Verified: "algo que terminemos mis padres y yo sin discutir"
+        # was returning an empty page.
+        if is_low_confidence(cosines) and (
+            intent.open_request or intent.audience_request
+            or is_quality_only_request(intent) or degraded
+        ):
             floor = intent.min_vectorbox_score or OPEN_REQUEST_MIN_VBS
             logger.info("Catalogue selection for %r (floor=%s, open=%s, degraded=%s)",
                         search_req.query, floor, intent.open_request, degraded)
