@@ -141,30 +141,35 @@ def has_descriptive_filters(intent: MovieSearchIntent) -> bool:
 
 # --- how many candidates to ask Qdrant for ----------------------------------
 #
-# countries / spoken_languages / awards_contains / min_vectorbox_score are not
-# in the Qdrant payload, so movie_passes_post_filter applies them in Postgres
-# AFTER the search returns. At a 20-candidate fetch that means they can only
-# ever keep a subset of the twenty nearest neighbours of the query vector, and
-# for a filter that is orthogonal to the theme the subset is usually empty:
-# measured 2026-07-29, "thrillers coreanos" parsed correctly to
-# countries=['South Korea'] and kept ONE film out of twenty generic "thriller,
-# suspense, mystery" neighbours, while the catalogue holds 219 Korean films.
+# A dimension enforced in Postgres AFTER the search can only ever keep a subset
+# of the twenty nearest neighbours of the query vector, and for a filter
+# orthogonal to the theme that subset is usually empty: measured 2026-07-29,
+# "thrillers coreanos" parsed correctly to countries=['South Korea'] and kept
+# ONE film out of twenty generic "thriller, suspense, mystery" neighbours, out
+# of the 219 Korean films the catalogue holds.
 #
-# Over-fetching is the cheap half of the fix — it costs one wider Qdrant read
-# and a wider IN(...) on a primary key, only on queries that need it. Indexing
-# these dimensions in the payload so Qdrant can filter during the search is the
-# real one, and stays a follow-up.
+# Over-fetching was the cheap half of the fix and bought 1 -> 3. The real half
+# landed the same day: countries, spoken_languages and min_vectorbox_score moved
+# INTO the Qdrant payload, so they narrow during the search — 20 of 20 at the
+# default fetch. Only awards_contains is left needing the wide read.
 SEARCH_FETCH_DEFAULT = 20
 SEARCH_FETCH_POST_FILTERED = 150
 SEARCH_RESULT_LIMIT = 20
 
 
 def has_post_filters(intent: MovieSearchIntent) -> bool:
-    """True when a filter dimension is enforced in Postgres rather than Qdrant."""
-    return bool(
-        intent.countries or intent.spoken_languages
-        or intent.awards_contains or intent.min_vectorbox_score
-    )
+    """True when a filter dimension is enforced in Postgres rather than Qdrant.
+
+    Down to one as of 2026-07-29. countries, spoken_languages and
+    min_vectorbox_score moved into the Qdrant payload, so they now narrow DURING
+    the search and need no headroom at all: "thrillers coreanos" went from 1
+    Korean film among twenty candidates to 20 of 20.
+
+    awards_contains stays because it is a SUBSTRING match over free text
+    ("Won 3 Oscars"), which needs a full-text payload index rather than a keyword
+    one — a different piece of work, and the rarest of the five.
+    """
+    return bool(intent.awards_contains)
 
 
 def search_fetch_limit(intent: MovieSearchIntent) -> int:

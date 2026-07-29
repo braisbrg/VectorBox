@@ -225,24 +225,35 @@ def test_no_bar_is_not_a_quality_only_request():
     assert not is_quality_only_request(MovieSearchIntent(semantic_query="x", reasoning="r"))
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"countries": ["South Korea"]},
-    {"spoken_languages": ["Japanese"]},
-    {"awards_contains": ["Palme"]},
-    {"min_vectorbox_score": 80},
-])
-def test_postgres_side_filters_widen_the_fetch(kwargs):
-    """These are applied AFTER the search, so they can only keep what the fetch
-    returned. At 20 candidates 'thrillers coreanos' kept one film of 219 Korean
-    ones in the catalogue; at 150 it returns Memories of Murder."""
+def test_the_last_postgres_side_filter_widens_the_fetch():
+    """awards_contains is the only dimension still enforced after the search: it
+    is a SUBSTRING match over free text ("Won 3 Oscars"), which needs a full-text
+    payload index rather than a keyword one. So it still needs the headroom."""
     from services.magic_search_ranking import (
         SEARCH_FETCH_DEFAULT, SEARCH_FETCH_POST_FILTERED, search_fetch_limit,
     )
     from services.nlp_search import MovieSearchIntent
 
     assert SEARCH_FETCH_POST_FILTERED > SEARCH_FETCH_DEFAULT
-    intent = MovieSearchIntent(semantic_query="x", reasoning="r", **kwargs)
+    intent = MovieSearchIntent(semantic_query="x", reasoning="r", awards_contains=["Palme"])
     assert search_fetch_limit(intent) == SEARCH_FETCH_POST_FILTERED
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"countries": ["South Korea"]},
+    {"spoken_languages": ["Japanese"]},
+    {"min_vectorbox_score": 80},
+])
+def test_dimensions_that_moved_into_qdrant_no_longer_need_headroom(kwargs):
+    """They narrow DURING the search now, so twenty candidates are twenty real
+    answers. Measured on the query that motivated all of this: with the country
+    filter in the payload, "thrillers coreanos" returns 20 Korean films out of
+    20 candidates, where the post-filter kept 1."""
+    from services.magic_search_ranking import SEARCH_FETCH_DEFAULT, search_fetch_limit
+    from services.nlp_search import MovieSearchIntent
+
+    intent = MovieSearchIntent(semantic_query="x", reasoning="r", **kwargs)
+    assert search_fetch_limit(intent) == SEARCH_FETCH_DEFAULT
 
 
 def test_a_qdrant_only_query_does_not_pay_for_the_wide_fetch():

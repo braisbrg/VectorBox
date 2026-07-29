@@ -395,6 +395,16 @@ async def _run_natural_search(
             qdrant_filters["min_imdb_rating"] = intent.min_imdb_rating
         if intent.min_metacritic is not None:
             qdrant_filters["min_metacritic"] = intent.min_metacritic
+        # Payload-backed since 2026-07-29. Before that these were enforced only
+        # in Postgres, AFTER the search — so they subtracted from twenty
+        # neighbours instead of narrowing the search. min_vectorbox_score was
+        # never passed here at all, though Qdrant has supported it all along.
+        if intent.countries:
+            qdrant_filters["countries"] = intent.countries
+        if intent.spoken_languages:
+            qdrant_filters["spoken_languages"] = intent.spoken_languages
+        if intent.min_vectorbox_score is not None:
+            qdrant_filters["min_vectorbox_score"] = intent.min_vectorbox_score
         if intent.safe_mode:
             # Default. Exclude TMDB 'adult' titles unless the user explicitly
             # asks for them via the LLM-parsed safe_mode=False.

@@ -36,7 +36,10 @@ logger = logging.getLogger("reembed")
 BATCH = 256
 
 
-def _qdrant_payload(m: Movie) -> dict:
+def _qdrant_payload(m: Movie, *, enriched: bool | None = None) -> dict:
+    """Canonical Qdrant payload. `enriched` overrides the row flag for callers
+    that build the payload BEFORE flipping has_enriched_embedding on the row
+    (enrich_vectors/check_embeddings ordering)."""
     return {
         "tmdb_id": m.tmdb_id,
         "title": m.title,
@@ -56,6 +59,19 @@ def _qdrant_payload(m: Movie) -> dict:
         "metacritic_rating": m.metacritic_rating,
         "title_es": m.title_es,
         "overview_es": m.overview_es,
+        "has_enriched_embedding": bool(m.has_enriched_embedding) if enriched is None else enriched,
+        # Added 2026-07-29. These five were post-filtered in Postgres because
+        # they were not here, which meant they could only ever subtract from the
+        # twenty nearest neighbours of the query vector — "thrillers coreanos"
+        # kept ONE film of the 219 Korean ones in the catalogue. In the payload
+        # Qdrant applies them DURING the search instead.
+        #
+        # Backfill for points written before today: scripts/sync_qdrant_payload.py
+        "countries": m.omdb_countries or [],
+        "spoken_languages": m.omdb_languages or [],
+        "mpaa_rating": m.mpaa_rating,
+        "oscar_wins": m.oscar_wins or 0,
+        "is_adult": bool(m.is_adult),
     }
 
 

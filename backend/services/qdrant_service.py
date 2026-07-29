@@ -95,6 +95,14 @@ class QdrantService:
             ("vote_count", PayloadSchemaType.INTEGER),
             ("year", PayloadSchemaType.INTEGER),
             ("popularity", PayloadSchemaType.FLOAT),
+            ("has_enriched_embedding", PayloadSchemaType.BOOL),
+            # Payload-backed filters added 2026-07-29 so they narrow DURING the
+            # search instead of being post-filtered out of twenty candidates.
+            ("countries", PayloadSchemaType.KEYWORD),
+            ("spoken_languages", PayloadSchemaType.KEYWORD),
+            ("mpaa_rating", PayloadSchemaType.KEYWORD),
+            ("oscar_wins", PayloadSchemaType.INTEGER),
+            ("is_adult", PayloadSchemaType.BOOL),
         ]
         for field_name, field_schema in indexes:
             try:
@@ -199,6 +207,19 @@ class QdrantService:
             logger.error(f"Failed to upsert batch to Qdrant: {e}")
             raise
     
+    # Every key `search_similar` acts on. Anything else is a no-op that looks
+    # like a constraint — see the check inside the method.
+    FILTER_KEYS = frozenset({
+        "include_unenriched", "year_min", "year_max", "genres", "include_genres",
+        "min_runtime", "max_runtime", "min_rating", "min_vote_count",
+        "max_vote_count", "max_popularity", "popularity_vibe", "original_language",
+        "include_keywords", "include_tmdb_ids", "exclude_tmdb_ids",
+        "min_vectorbox_score", "min_imdb_rating", "min_metacritic",
+        # Payload-backed since 2026-07-29 (see scripts/sync_qdrant_payload.py).
+        "countries", "spoken_languages", "mpaa_ratings", "min_oscar_wins",
+        "exclude_adult",
+    })
+
     async def search_similar(
         self,
         query_vector: List[float],
@@ -213,17 +234,50 @@ class QdrantService:
         """
         if len(query_vector) != self.VECTOR_SIZE:
             raise ValueError(f"Query vector size mismatch")
-        
+
         # Security: Limit results
         limit = min(limit, 1000)
-        
+
+        # A filter key this method does not know is the most dangerous kind of
+        # bug in here, because the search still succeeds and the results still
+        # look plausible — the constraint simply never happened. Three of them
+        # were live until 2026-07-29 (mpaa_ratings, min_oscar_wins,
+        # exclude_adult), passed by routers/search.py and dropped on the floor,
+        # and a fourth was found the same day one layer up (the feed handing the
+        # rail's constraints to the wrong dict).
+        #
+        # tests/test_qdrant_filter_contract.py is the real guard — it diffs
+        # every key written anywhere in the codebase against FILTER_KEYS. This
+        # is the runtime half, for a key that arrives from somewhere static
+        # analysis cannot see.
+        unknown = set(filters or {}) - self.FILTER_KEYS
+        if unknown:
+            logger.error(
+                "search_similar ignoring unknown filter key(s) %s — the search will "
+                "run WITHOUT that constraint. Add it to FILTER_KEYS and handle it.",
+                sorted(unknown),
+            )
+
         try:
             # Build advanced filter
             qdrant_filter = None
+            filters = filters or {}
+            must_conditions = []
+            must_not_conditions = []
+
+            # Enriched-vector gate (default ON): legacy-recipe vectors live in an
+            # asymmetric text-space and pollute recommendation rankings. Opt out
+            # with filters={"include_unenriched": True} (scripts/experiments only).
+            if not filters.get("include_unenriched"):
+                must_conditions.append(
+                    FieldCondition(
+                        key="has_enriched_embedding",
+                        match=MatchValue(value=True)
+                    )
+                )
+
             if filters:
-                must_conditions = []
-                must_not_conditions = []
-                
+
                 # 1. Year range filters
                 if "year_min" in filters and filters["year_min"]:
                     must_conditions.append(
@@ -394,11 +448,45 @@ class QdrantService:
                         )
                     )
 
-                # 13. IMDb / Metacritic — payload-backed (set by reembed_catalog).
-                # mpaa_ratings, min_oscar_wins, exclude_adult are NOT in payload
-                # yet and are post-filtered in the caller against the DB. When
-                # those columns get added to _qdrant_payload (one-time
-                # set_payload pass on all points), they can move here too.
+                # 13. Country / language / certification / awards / adult —
+                # payload-backed since 2026-07-29. They used to be post-filtered
+                # in Postgres AFTER the search returned, which meant they could
+                # only subtract from the twenty nearest neighbours of the query
+                # vector: "thrillers coreanos" kept ONE film out of the 219
+                # Korean ones the catalogue holds. Applied here, Qdrant narrows
+                # DURING the search and the neighbours are all candidates.
+                #
+                # A point missing the key is excluded by a `must` — correct: we
+                # do not know its country, so it cannot be claimed to match.
+                # Coverage measured 2026-07-29: countries 97.2%, languages 95.9%,
+                # mpaa 74.9%.
+                if "countries" in filters and filters["countries"]:
+                    from qdrant_client.models import MatchAny
+                    must_conditions.append(
+                        FieldCondition(key="countries", match=MatchAny(any=filters["countries"]))
+                    )
+                if "spoken_languages" in filters and filters["spoken_languages"]:
+                    from qdrant_client.models import MatchAny
+                    must_conditions.append(
+                        FieldCondition(key="spoken_languages", match=MatchAny(any=filters["spoken_languages"]))
+                    )
+                if "mpaa_ratings" in filters and filters["mpaa_ratings"]:
+                    from qdrant_client.models import MatchAny
+                    must_conditions.append(
+                        FieldCondition(key="mpaa_rating", match=MatchAny(any=filters["mpaa_ratings"]))
+                    )
+                if "min_oscar_wins" in filters and filters["min_oscar_wins"]:
+                    must_conditions.append(
+                        FieldCondition(key="oscar_wins", range={"gte": filters["min_oscar_wins"]})
+                    )
+                if filters.get("exclude_adult"):
+                    # must_not, so a point with no is_adult key still passes —
+                    # absence means "not flagged", which is the safe reading.
+                    must_not_conditions.append(
+                        FieldCondition(key="is_adult", match=MatchValue(value=True))
+                    )
+
+                # IMDb / Metacritic — payload-backed (set by reembed_catalog).
                 if "min_imdb_rating" in filters and filters["min_imdb_rating"] is not None:
                     must_conditions.append(
                         FieldCondition(
@@ -413,15 +501,16 @@ class QdrantService:
                             range={"gte": filters["min_metacritic"]}
                         )
                     )
-                # Build final filter
-                if must_conditions or must_not_conditions:
-                    filter_params = {}
-                    if must_conditions:
-                        filter_params["must"] = must_conditions
-                    if must_not_conditions:
-                        filter_params["must_not"] = must_not_conditions
-                    qdrant_filter = Filter(**filter_params)
-            
+            # Build final filter (outside the `if filters:` block — the enriched
+            # gate must apply even when the caller passes no filters at all)
+            if must_conditions or must_not_conditions:
+                filter_params = {}
+                if must_conditions:
+                    filter_params["must"] = must_conditions
+                if must_not_conditions:
+                    filter_params["must_not"] = must_not_conditions
+                qdrant_filter = Filter(**filter_params)
+
             # Score threshold is independent of filters — do not reset when filters are present
             effective_threshold = score_threshold
             

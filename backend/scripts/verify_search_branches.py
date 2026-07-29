@@ -56,26 +56,21 @@ CASES = [
           year_min=1980, year_max=1989),
      "vector", 5, 60),
 
-    # KNOWN CEILING, not a pass mark. `countries` is enforced in Postgres and
-    # nothing here can be pushed into Qdrant, so the wide fetch is all we have —
-    # and measured in isolation it buys 1 -> 3 survivors, no more. 150 nearest
-    # neighbours of a generic "thriller, suspense, mystery" vector simply contain
-    # about three Korean films, out of 219 in the catalogue.
+    # The query that started the whole investigation. `countries` moved into the
+    # Qdrant payload on 2026-07-29, so it now narrows DURING the search instead
+    # of subtracting from twenty neighbours afterwards:
     #
-    # The live 1 -> 20 improvement recorded in commit 5a43f3c came from the
-    # parser ALSO setting original_language="ko" on that run — a field Qdrant CAN
-    # filter during the search — not from the wide fetch. Parser variance, and
-    # the commit message overstated it.
+    #   post-filtro, fetch  20    1 Korean film   VBS 47
+    #   post-filtro, fetch 150    3 Korean films  VBS 57   (the wide-fetch ceiling)
+    #   payload,     fetch  20   20 Korean films  VBS 63
     #
-    # Contrast the heist row below, where year_min/max DO reach Qdrant: the same
-    # wide fetch takes it from 7 survivors to 47.
-    #
-    # The real fix is indexing country in the Qdrant payload, which the code
-    # comment in routers/search.py has called a follow-up since Sprint 1.
-    ("post-filtro pais", "thrillers coreanos",
+    # The 1 -> 20 figure in commit 5a43f3c was credited to the wide fetch and was
+    # really the parser also setting original_language on that run. This is the
+    # fix that actually earns it.
+    ("filtro pais (en Qdrant)", "thrillers coreanos",
      dict(semantic_query="thriller, suspense, mystery, crime, tension",
           countries=["South Korea"]),
-     "vector", 3, 50),
+     "vector", 10, 60),
 
     ("post-filtro pais+anyo", "atracos con mucho estilo, cine europeo de los 70",
      dict(semantic_query="heist, stylish, caper, crime, slick robbery",
