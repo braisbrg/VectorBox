@@ -287,7 +287,8 @@
     "title_none": "no titles found",
     "title_hint": "type at least 2 characters",
     "low_conf": "We could not read that as a film you are after.",
-    "low_conf_hint": "Describe what the film is about — its subject, mood or setting. Not who it is for."
+    "low_conf_hint": "Describe what the film is about — its subject, mood or setting. Not who it is for.",
+    "degraded": "Our reader is busy — these are matched on your words alone, not on what they mean. Try again in a minute for a sharper answer."
   },
   "dossier": {
     "synopsis": "synopsis",

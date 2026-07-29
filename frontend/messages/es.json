@@ -287,7 +287,8 @@
     "title_none": "ningún título encontrado",
     "title_hint": "escribe al menos 2 caracteres",
     "low_conf": "No hemos sabido leer eso como una película que buscas.",
-    "low_conf_hint": "Describe de qué va la película — su tema, su tono o dónde pasa. No para quién es."
+    "low_conf_hint": "Describe de qué va la película — su tema, su tono o dónde pasa. No para quién es.",
+    "degraded": "Nuestro lector está saturado — esto va por tus palabras, no por lo que significan. Prueba otra vez en un minuto para afinar."
   },
   "dossier": {
     "synopsis": "sinopsis",

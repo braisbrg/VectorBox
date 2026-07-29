@@ -135,3 +135,123 @@ def test_open_request_is_a_field_because_confidence_cannot_tell():
 
     assert "open_request" in MovieSearchIntent.model_fields
     assert MovieSearchIntent.model_fields["open_request"].default is False
+
+
+# --- a degraded run is not an unanswerable question -------------------------
+#
+# Measured 2026-07-29 with scripts/audit_search.py: Groq's free tier caps at 8000
+# tokens per MINUTE and one parse costs ~2000, so four searches in a row leave
+# the sentence unread. An unparsed intent has no `open_request` and no
+# `min_vectorbox_score`, so every gentle query fell through to the refusal and
+# the user got an empty page — our outage, reported as their bad question.
+
+
+def test_every_give_up_path_is_recognised_as_a_failed_parse():
+    """The three ways nlp_search gives up, plus the router's own fallback.
+
+    These are literal strings in four places; a reworded one would silently turn
+    `degraded` off forever, and the only symptom would be users being told their
+    question was unanswerable during a rate-limit spike.
+    """
+    from services.nlp_search import MovieSearchIntent, parse_failed
+
+    for reasoning in (
+        "No LLM available",
+        "All models failed: RateLimitError(429)",
+        "LLM unavailable: connection reset",
+    ):
+        assert parse_failed(MovieSearchIntent(semantic_query="q", reasoning=reasoning)), reasoning
+
+
+def test_a_real_intent_is_not_a_failed_parse():
+    from services.nlp_search import MovieSearchIntent, parse_failed
+
+    assert not parse_failed(MovieSearchIntent(
+        semantic_query="slow sad films about grief",
+        reasoning="The user wants a contemplative drama about loss.",
+    ))
+
+
+@pytest.mark.asyncio
+async def test_no_api_key_produces_an_intent_that_reports_itself_as_failed(monkeypatch):
+    """End-to-end for the one give-up path reachable without a network call."""
+    from services import nlp_search
+
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    intent = await nlp_search.parse_user_intent("algo lento y triste sobre el duelo")
+
+    assert nlp_search.parse_failed(intent)
+    # The raw query survives as the semantic query — the search still runs, it
+    # just runs on the words instead of on their meaning.
+    assert intent.semantic_query == "algo lento y triste sobre el duelo"
+
+
+# --- a bar with no subject, and a filter with nothing to filter --------------
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"min_vectorbox_score": 75},   # "peliculas muy bien valoradas"
+    {"min_metacritic": 75},        # "algo muy aclamado por la critica"
+    {"min_imdb_rating": 8.0},
+    {"min_oscar_wins": 1},
+])
+def test_any_bar_alone_is_a_quality_only_request(kwargs):
+    """Which quality field the parser reaches for on the same sentence is a coin
+    flip, and it used to decide whether the user got twelve films or three."""
+    from services.magic_search_ranking import is_quality_only_request
+    from services.nlp_search import MovieSearchIntent
+
+    assert is_quality_only_request(MovieSearchIntent(semantic_query="x", reasoning="r", **kwargs))
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"min_metacritic": 75, "include_genres": ["Horror"]},
+    {"min_vectorbox_score": 80, "year_min": 1970},
+    {"min_imdb_rating": 8.0, "countries": ["Japan"]},
+])
+def test_a_bar_plus_a_subject_is_a_normal_search(kwargs):
+    """The vector is meaningful once there is a subject, so it keeps the ranking."""
+    from services.magic_search_ranking import is_quality_only_request
+    from services.nlp_search import MovieSearchIntent
+
+    assert not is_quality_only_request(MovieSearchIntent(semantic_query="x", reasoning="r", **kwargs))
+
+
+def test_no_bar_is_not_a_quality_only_request():
+    from services.magic_search_ranking import is_quality_only_request
+    from services.nlp_search import MovieSearchIntent
+
+    assert not is_quality_only_request(MovieSearchIntent(semantic_query="x", reasoning="r"))
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"countries": ["South Korea"]},
+    {"spoken_languages": ["Japanese"]},
+    {"awards_contains": ["Palme"]},
+    {"min_vectorbox_score": 80},
+])
+def test_postgres_side_filters_widen_the_fetch(kwargs):
+    """These are applied AFTER the search, so they can only keep what the fetch
+    returned. At 20 candidates 'thrillers coreanos' kept one film of 219 Korean
+    ones in the catalogue; at 150 it returns Memories of Murder."""
+    from services.magic_search_ranking import (
+        SEARCH_FETCH_DEFAULT, SEARCH_FETCH_POST_FILTERED, search_fetch_limit,
+    )
+    from services.nlp_search import MovieSearchIntent
+
+    assert SEARCH_FETCH_POST_FILTERED > SEARCH_FETCH_DEFAULT
+    intent = MovieSearchIntent(semantic_query="x", reasoning="r", **kwargs)
+    assert search_fetch_limit(intent) == SEARCH_FETCH_POST_FILTERED
+
+
+def test_a_qdrant_only_query_does_not_pay_for_the_wide_fetch():
+    """Genres, years and language ARE in the payload — Qdrant filters during the
+    search, so twenty candidates are twenty real answers."""
+    from services.magic_search_ranking import SEARCH_FETCH_DEFAULT, search_fetch_limit
+    from services.nlp_search import MovieSearchIntent
+
+    intent = MovieSearchIntent(semantic_query="x", reasoning="r",
+                               include_genres=["Horror"], year_min=1970,
+                               original_language="ja")
+    assert search_fetch_limit(intent) == SEARCH_FETCH_DEFAULT

@@ -23,6 +23,22 @@ from models.schemas import TokenResponse
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Both endpoints below quality-gate the Qdrant hits in Postgres, on columns that
+# are not in the vector payload (VBS ≥ 55, ≥ 100 votes, a poster). Only 38.9% of
+# the catalogue clears that gate, and a film's neighbours are correlated with it
+# — an obscure film has obscure neighbours — so the survivors of a narrow fetch
+# are far fewer than the average would suggest.
+#
+# Measured 2026-07-29 over 40 random catalogue films asking for 12 similars:
+#
+#   fetch  limit×2 (24)   8.6 of 12 on average · 12 of 40 shelves full · 1 empty
+#   fetch  limit×8 (96)  11.9 of 12 on average · 39 of 40 shelves full · 0 empty
+#
+# So the rail was quietly a third short most of the time. Over-fetching is the
+# whole fix here: score_threshold still decides what is genuinely similar, and a
+# film with few real neighbours correctly returns few.
+QUALITY_GATE_OVERFETCH = 8
+
 
 async def _ingest_similar_background(tmdb_ids: List[int], tmdb: TMDBClient) -> None:
     """Background ingest of TMDB recommendations missing from local DB.
@@ -131,7 +147,7 @@ async def get_similar_movies(
         # 3. Search Qdrant
         similar_results = await qdrant.search_similar(
             query_vector=query_vector,
-            limit=limit * 2,
+            limit=limit * QUALITY_GATE_OVERFETCH,
             score_threshold=0.45  # Lowered threshold, but stricter content matching
         )
         
@@ -359,10 +375,11 @@ async def get_similar_multi(
 
     centroid = np.mean(vectors, axis=0).tolist()
 
-    # Over-fetch to absorb seed exclusions and quality-gate filtering.
+    # Over-fetch to absorb seed exclusions and quality-gate filtering. The +20
+    # covered the seeds but not the gate, which drops ~61% of what it sees.
     raw = await qdrant.search_similar(
         query_vector=centroid,
-        limit=body.limit + len(seed_ids) + 20,
+        limit=body.limit * QUALITY_GATE_OVERFETCH + len(seed_ids),
         score_threshold=0.45,
     )
 

@@ -7,7 +7,7 @@ import asyncio
 from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user, get_redis
 from models.schemas import TokenResponse
-from services.nlp_search import parse_user_intent, search_with_reasoning, MovieSearchIntent
+from services.nlp_search import parse_user_intent, parse_failed, search_with_reasoning, MovieSearchIntent
 from services.magic_search_ranking import (
     CONFIDENCE_SAMPLE,
     LOW_CONFIDENCE_MEAN,
@@ -16,6 +16,9 @@ from services.magic_search_ranking import (
     has_descriptive_filters,
     intent_complexity,
     is_low_confidence,
+    is_quality_only_request,
+    SEARCH_RESULT_LIMIT,
+    search_fetch_limit,
     movie_passes_post_filter,
     search_confidence,
     should_run_deep_analysis,
@@ -48,6 +51,11 @@ class SearchResponse(BaseModel):
     # films under a "we are not sure" banner is worse than showing none, because
     # the engine looks confident about films it picked for no reason.
     low_confidence: bool = False
+    # True when no model parsed the sentence, so the answer came from the raw
+    # text and not from an understanding of it. The results are still real films;
+    # what is missing is every constraint the user expressed. The UI owes them
+    # that fact — silently serving a worse answer is the one option we ruled out.
+    degraded: bool = False
 
 def filter_es_providers(all_providers: List[str]) -> List[str]:
     """Pure function to filter provider names against the ES whitelist."""
@@ -116,8 +124,14 @@ from limiter import limiter
 # The landing does not use either by default: its chips read /search/showcase,
 # which is a cache with a closed input set. This path only runs when a visitor
 # types something of their own.
+#
+# Set on the response when the answer came from the catalogue rather than from
+# the vector. A constant because scripts/audit_search.py asserts which branch
+# answered, and matching on a prose sentence is a test that breaks on a typo.
+CATALOGUE_SELECTION_REASONING = "A varied selection of well-regarded films from the catalogue."
+
+
 async def _run_natural_search(
-    request: Request,
     search_req: SearchRequest,
     current_user: Optional[TokenResponse],
     db: AsyncSession,
@@ -179,9 +193,11 @@ async def _run_natural_search(
                 intent = await parse_user_intent(search_req.query)
             except Exception as e:
                 logger.warning(f"Groq intent parsing failed, falling back to pure vector search: {e}")
+                # Same wording parse_user_intent uses for its own give-ups, so
+                # one predicate (parse_failed) covers every route into this state.
                 intent = MovieSearchIntent(
                     semantic_query=search_req.query,
-                    reasoning="Groq unavailable — direct vector search",
+                    reasoning=f"LLM unavailable: {e}",
                 )
         logger.info(f"Parsed intent: {intent}")
         logger.info(f"Reasoning: {intent.reasoning}")
@@ -303,9 +319,11 @@ async def _run_natural_search(
             qdrant_filters["exclude_tmdb_ids"] = watched_tmdb_ids
             
         # 4. Search Qdrant with Advanced Filters
+        # Wider when a Postgres-side post-filter has to survive the fetch — see
+        # services.magic_search_ranking.search_fetch_limit for the measurement.
         raw_results = await qdrant.search_similar(
             query_vector=query_vector,
-            limit=20,
+            limit=search_fetch_limit(intent),
             score_threshold=0.3, # Semantic search standard
             filters=qdrant_filters
         )
@@ -325,6 +343,16 @@ async def _run_natural_search(
         cosines = [r.get("score") or 0.0 for r in raw_results]
         confidence = search_confidence(cosines)
 
+        # A degraded run must not be reported as an unanswerable question.
+        # Measured 2026-07-29 with scripts/audit_search.py: Groq's free tier caps
+        # at 8000 tokens per MINUTE, a parse costs ~2000, and four searches in a
+        # row exhaust it. With no parse there is no `open_request` and no
+        # `min_vectorbox_score`, so every gentle query — "no se que ver", "para
+        # llorar esta noche" — fell straight through to the refusal and the user
+        # got an empty page. The catalogue branch below needs no LLM at all, so
+        # a degraded run answers from it instead of apologising.
+        degraded = parse_failed(intent)
+
         # A weak vector is not the same as an unanswerable question. Measured
         # 2026-07-29, three different things were scoring below the threshold:
         #
@@ -341,7 +369,8 @@ async def _run_natural_search(
         #
         # Confidence cannot separate the third from the fourth (0.306 vs 0.232 is
         # inside the noise), so the parser flags it as `open_request`.
-        if is_low_confidence(cosines) and not has_descriptive_filters(intent) and not intent.open_request:
+        if (is_low_confidence(cosines) and not has_descriptive_filters(intent)
+                and not intent.open_request and not degraded):
             logger.info(
                 "Low-confidence query (mean top-%d cosine %.3f < %.2f): %r",
                 CONFIDENCE_SAMPLE, confidence, LOW_CONFIDENCE_MEAN, search_req.query,
@@ -350,6 +379,7 @@ async def _run_natural_search(
                 results=[],
                 intent={**intent.model_dump(), "confidence": round(confidence, 3)},
                 low_confidence=True,
+                degraded=degraded,
             )
 
         # "I don't know what to watch". The vector is meaningless here — it was
@@ -358,19 +388,20 @@ async def _run_natural_search(
         # it reads as a selection rather than a leaderboard.
         # When the vector says nothing but the request still has criteria, the
         # answer must come from the CATALOGUE, not from twenty arbitrary
-        # neighbours. Two shapes end up here:
+        # neighbours. Three shapes end up here:
         #
-        #   "no se que ver"                -> open_request, no criteria at all
-        #   "peliculas muy bien valoradas" -> a quality bar and nothing else
+        #   "no se que ver"                    -> open_request, no criteria
+        #   "peliculas muy bien valoradas"     -> a quality bar and nothing else
+        #   parser down (rate limit)           -> no criteria we can read
         #
-        # Both used to return zero: the first was refused outright, the second
-        # passed the gate and then found almost nothing, because the twenty
-        # nearest neighbours of a meaningless vector rarely clear a quality bar.
-        # Querying the catalogue directly is the honest answer to both.
-        if is_low_confidence(cosines) and (intent.open_request or intent.min_vectorbox_score):
+        # All three used to return zero. The first was refused outright; the
+        # second passed the gate and then found almost nothing, because the
+        # twenty nearest neighbours of a meaningless vector rarely clear a
+        # quality bar. Querying the catalogue directly is the honest answer.
+        if is_low_confidence(cosines) and (intent.open_request or is_quality_only_request(intent) or degraded):
             floor = intent.min_vectorbox_score or OPEN_REQUEST_MIN_VBS
-            logger.info("Catalogue selection for %r (floor=%s, open=%s)",
-                        search_req.query, floor, intent.open_request)
+            logger.info("Catalogue selection for %r (floor=%s, open=%s, degraded=%s)",
+                        search_req.query, floor, intent.open_request, degraded)
             picks = (await db.execute(
                 select(Movie)
                 .where(Movie.vectorbox_score >= floor)
@@ -397,7 +428,8 @@ async def _run_natural_search(
                     "title_es": m.title_es, "overview_es": m.overview_es,
                 } for m in varied],
                 intent={**intent.model_dump(), "confidence": round(confidence, 3),
-                        "reasoning": "A varied selection of well-regarded films from the catalogue."},
+                        "reasoning": CATALOGUE_SELECTION_REASONING},
+                degraded=degraded,
             )
 
         # Minimum quality gate — drop movies with no TMDB signal (e.g. vote_count=0)
@@ -523,6 +555,10 @@ async def _run_natural_search(
         # initial filter / coarse rank, and our compound score is the final
         # order. Strip the internal `_final_score` key before returning.
         results.sort(key=lambda r: r.get("_final_score", 0.0), reverse=True)
+        # Truncate BEFORE the provider fan-out below: a post-filtered query now
+        # fetches up to 150 candidates, and every survivor would otherwise cost a
+        # provider lookup and a row in the response.
+        del results[SEARCH_RESULT_LIMIT:]
         for r in results:
             r.pop("_final_score", None)
 
@@ -588,9 +624,16 @@ async def _run_natural_search(
 
         return SearchResponse(
             results=results,
-            intent=intent.model_dump()
+            intent=intent.model_dump(),
+            degraded=degraded,
         )
         
+    except HTTPException:
+        # validate_user_query raises 400 on a prompt-injection attempt, and the
+        # blanket handler below was turning that into "Search service
+        # unavailable" — the guard worked and then reported itself as our
+        # outage. Any deliberate status set upstream travels unchanged.
+        raise
     except Exception as e:
         import traceback
         logger.error(f"Search failed: {e}\n{traceback.format_exc()}")
@@ -614,7 +657,7 @@ async def natural_language_search(
     the signature said `get_optional_current_user`. Guests get `/try` below.
     """
     return await _run_natural_search(
-        request, search_req, current_user, db, tmdb, qdrant, embedding_service
+        search_req, current_user, db, tmdb, qdrant, embedding_service
     )
 
 
@@ -659,7 +702,6 @@ async def try_search(
     a signed-in user's results differ from a guest's on the same URL.
     """
     return await _run_natural_search(
-        request,
         SearchRequest(query=try_req.query, country_code=try_req.country_code,
                       use_deep_analysis=False, forced_intent=None),
         None, db, tmdb, qdrant, embedding_service,

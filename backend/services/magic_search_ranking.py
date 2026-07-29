@@ -139,6 +139,73 @@ def has_descriptive_filters(intent: MovieSearchIntent) -> bool:
     )
 
 
+# --- how many candidates to ask Qdrant for ----------------------------------
+#
+# countries / spoken_languages / awards_contains / min_vectorbox_score are not
+# in the Qdrant payload, so movie_passes_post_filter applies them in Postgres
+# AFTER the search returns. At a 20-candidate fetch that means they can only
+# ever keep a subset of the twenty nearest neighbours of the query vector, and
+# for a filter that is orthogonal to the theme the subset is usually empty:
+# measured 2026-07-29, "thrillers coreanos" parsed correctly to
+# countries=['South Korea'] and kept ONE film out of twenty generic "thriller,
+# suspense, mystery" neighbours, while the catalogue holds 219 Korean films.
+#
+# Over-fetching is the cheap half of the fix — it costs one wider Qdrant read
+# and a wider IN(...) on a primary key, only on queries that need it. Indexing
+# these dimensions in the payload so Qdrant can filter during the search is the
+# real one, and stays a follow-up.
+SEARCH_FETCH_DEFAULT = 20
+SEARCH_FETCH_POST_FILTERED = 150
+SEARCH_RESULT_LIMIT = 20
+
+
+def has_post_filters(intent: MovieSearchIntent) -> bool:
+    """True when a filter dimension is enforced in Postgres rather than Qdrant."""
+    return bool(
+        intent.countries or intent.spoken_languages
+        or intent.awards_contains or intent.min_vectorbox_score
+    )
+
+
+def search_fetch_limit(intent: MovieSearchIntent) -> int:
+    return SEARCH_FETCH_POST_FILTERED if has_post_filters(intent) else SEARCH_FETCH_DEFAULT
+
+
+def is_quality_only_request(intent: MovieSearchIntent) -> bool:
+    """A quality bar and no subject — "peliculas muy bien valoradas", "algo muy
+    aclamado por la critica".
+
+    These have no usable vector (measured 0.355 and 0.308) but are perfectly
+    answerable: the bar IS the query. Answering them from the twenty nearest
+    neighbours of a meaningless vector is how "algo muy aclamado por la critica"
+    returned three films — the filter is a hard AND over whatever survived a 0.3
+    cosine threshold, and almost nothing survives it.
+
+    Whether the parser reaches for min_vectorbox_score or min_metacritic on the
+    same sentence is a coin flip, and it decided whether the user got twelve
+    films or three. This asks the question the branch actually cares about —
+    is there a bar and nothing else — instead of naming one field.
+
+    Metacritic is the worst of the bars to hold a query up on: it covers 54.5% of
+    the catalogue (measured 2026-07-29), so a film with no score fails the filter
+    however good it is. VBS is computed for everything and already folds
+    Metacritic in where it exists, which is why the catalogue branch ranks on it.
+    """
+    if intent.open_request or intent.reference_movie:
+        return False
+    has_bar = any((
+        intent.min_vectorbox_score, intent.min_rating,
+        intent.min_imdb_rating, intent.min_metacritic, intent.min_oscar_wins,
+    ))
+    has_subject = any((
+        intent.include_genres, intent.year_min, intent.year_max,
+        intent.min_runtime_minutes, intent.max_runtime_minutes,
+        intent.original_language, intent.mpaa_ratings, intent.countries,
+        intent.spoken_languages, intent.awards_contains,
+    ))
+    return has_bar and not has_subject
+
+
 def title_boost_eligible(intent: MovieSearchIntent, query: str) -> bool:
     """Is the user doing a literal-title lookup? Gates the title-match boost.
 

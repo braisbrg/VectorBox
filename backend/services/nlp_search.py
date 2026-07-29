@@ -190,6 +190,22 @@ def finalize_intent(intent: "MovieSearchIntent", query: str) -> "MovieSearchInte
     intent = ensure_semantic_query(intent, query)
     return ensure_quality_filter(intent, query)
 
+
+# The three ways this module gives up, as one predicate. An intent carrying any
+# of these is NOT an analysis of the query: every field is a default and
+# `semantic_query` is the raw text. Callers must not read meaning into what it
+# does not say — in particular, a low similarity score on an unparsed query says
+# nothing about whether the question was answerable.
+#
+# Groq's free tier caps at 8000 tokens per MINUTE and a parse costs ~2000, so
+# this is not a rare outage path: four searches in quick succession reach it.
+PARSE_FAILURE_PREFIXES = ("No LLM available", "All models failed", "LLM unavailable")
+
+
+def parse_failed(intent: "MovieSearchIntent") -> bool:
+    """True when no model produced this intent."""
+    return (intent.reasoning or "").startswith(PARSE_FAILURE_PREFIXES)
+
 # Curated typo / informal-spelling normalisation applied BEFORE the LLM.
 # Only includes terms where Llama 4 Scout 17B has been observed to drift
 # (e.g. expanding "quinki" to "Tarantino stylized violence" instead of
@@ -642,6 +658,18 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
             # gpt-oss-120b is a reasoning model (replaced 70B 2026-06-29) — min
             # effort keeps the structured rerank clean. None for gemini.
             extra_body={"reasoning_effort": "low"} if model.startswith("openai/") else None,
+            # One attempt. instructor defaults to 3, and this call carries the
+            # whole 20-candidate context (~2000 tokens), so a failure costs ~7500
+            # of Groq's 8000-token MINUTE budget and starves the next user's
+            # parse. Observed 2026-07-29: when the model answers with prose
+            # instead of calling the tool it does so identically all three times,
+            # so the retries buy nothing and the fallback below — keep the
+            # ranking we already have — is a perfectly good answer.
+            #
+            # Same defect as the parser's client-level max_retries, different
+            # layer: that one is the OpenAI SDK retrying transport, this one is
+            # instructor retrying validation.
+            max_retries=1,
         )
         return response.selected_items
     except Exception as e:

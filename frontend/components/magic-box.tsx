@@ -125,6 +125,11 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
     // recommendation (measured threshold, see magic_search_ranking). An empty
     // shelf plus a reason beats twenty films picked for no reason.
     const [lowConfidence, setLowConfidence] = useState(false);
+    // Groq's free tier caps at 8000 tokens per minute and one parse costs ~2000,
+    // so a handful of searches in a row leaves the sentence unread. The results
+    // are still real films matched on the raw words; what is gone is every
+    // constraint the user expressed. Saying so beats quietly serving less.
+    const [degraded, setDegraded] = useState(false);
     const { language, t } = useLanguage();
     const router = useRouter();
     const [query, setQuery] = useState("");
@@ -196,6 +201,7 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
         },
         onSuccess: ({ data, ms }) => {
             setLowConfidence(Boolean(data.low_confidence));
+            setDegraded(Boolean(data.degraded));
             const unique = Array.from(
                 new Map((data.results as SearchResult[]) .map((r) => [r.movie_id, r])).values()
             );
@@ -412,6 +418,11 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                     </div>
 
                     <div className="max-h-[380px] overflow-y-auto">
+                        {degraded && !searchMutation.isPending && (
+                            <p className="border-b border-warn/40 bg-warn/10 px-3 py-2 font-mono text-[11px] leading-relaxed text-fg-2">
+                                {t("mb.degraded")}
+                            </p>
+                        )}
                         {results.length === 0 && !searchMutation.isPending && (
                             lowConfidence ? (
                                 <div className="p-8 text-center">
