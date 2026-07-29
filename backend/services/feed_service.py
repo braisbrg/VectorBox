@@ -99,6 +99,35 @@ async def get_cached_rank(user_id: int, tmdb_id: int) -> Optional[tuple[int, int
             pass
 
 
+async def get_cached_feed_tmdb_ids(user_id: int) -> set:
+    """All tmdb_ids currently present in the user's CACHED feed sections (any
+    section/country/provider variant). Used by reroll endpoints so a reroll
+    never repeats a film the feed is already showing. Best-effort: an expired
+    cache yields an empty set (no exclusion). Never raises.
+    """
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    ids: set = set()
+    try:
+        pattern = f"section:{FEED_CACHE_VERSION}:{user_id}:*"
+        async for key in r.scan_iter(match=pattern, count=50):
+            cached = await r.get(key)
+            if not cached:
+                continue
+            try:
+                section = FeedSection.model_validate_json(cached)
+            except Exception:
+                continue
+            ids.update(item.id for item in section.items if item.id)
+        return ids
+    except Exception:
+        return ids
+    finally:
+        try:
+            await r.close()
+        except Exception:
+            pass
+
+
 # F8: in a filtered feed, keep any row that still has at least this many matches (so a
 # WIDE filter shows many rows, a tight one shows few) — instead of pre-deciding which
 # rows to show. A 1-2 film carousel reads as broken, hence 3, not 1.
@@ -649,7 +678,19 @@ class FeedService:
                     if len(trimmed) >= 9:
                         break
                 unique_items = trimmed
-            if unique_items:
+            # The MIN_FILTERED_SECTION_ITEMS gate lives in _post_filter_sections,
+            # which runs BEFORE this cross-row dedup — deliberately, so a deepened
+            # row's never-displayed tail cannot eat films out of later rows. The
+            # consequence was not: dedup then takes items OUT of rows that already
+            # cleared the gate, and nothing re-checked. Reproduced 3/3 passes at
+            # min_vectorbox_score=80, where "Because You Watched" cleared with 4
+            # and shipped with 2. Re-check here, under filters only — an
+            # unfiltered row is built to size and a short one is legitimate.
+            if filters or provider_filter:
+                keep = len(unique_items) >= MIN_FILTERED_SECTION_ITEMS
+            else:
+                keep = bool(unique_items)
+            if keep:
                 section.items = unique_items
                 final_sections.append(section)
 
