@@ -242,9 +242,9 @@ class FeedService:
 
     @safe_execution(fallback_return=None)
     async def get_random_recommendations_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, filters: Dict = None
     ) -> Optional[FeedSection]:
-        return await self.engine.get_random_recommendations_section(user_id, db, tmdb, seen_ids, country, provider_service)
+        return await self.engine.get_random_recommendations_section(user_id, db, tmdb, seen_ids, country, provider_service, filters=filters)
 
     async def get_popular_on_letterboxd_section(
         self, user_id: int, db: AsyncSession, tmdb: TMDBClient, country: str, provider_service: ProviderService = None
@@ -506,7 +506,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_random_recommendations_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider)
+                    return await self.get_random_recommendations_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, filters=filters)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Random]: {e}")
                 return None
@@ -554,7 +554,7 @@ class FeedService:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
                     recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
-                    return await recommender.get_auteur_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider)
+                    return await recommender.get_auteur_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=filters)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Auteur]: {e}")
                 return None
@@ -567,7 +567,7 @@ class FeedService:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
                     recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
-                    return await recommender.get_cult_actor_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider)
+                    return await recommender.get_cult_actor_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=filters)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Cult Actor]: {e}")
                 return None

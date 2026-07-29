@@ -595,6 +595,10 @@ class RecommendationService:
         from services.recommendation_engine import MOVIE_QUALITY_GATE
         stmt = select(Movie).where(
             *MOVIE_QUALITY_GATE,
+            # Enriched-vector gate: Signal B feeds picked_for_you (the flagship
+            # personalization row) — keep it as clean as the vector signals.
+            # The explicit "From Your Favorite Directors" ROW stays ungated.
+            Movie.has_enriched_embedding.is_(True),
             Movie.vectorbox_score > 70,
             Movie.directors.overlap(top_directors)
         ).limit(100)
@@ -713,6 +717,12 @@ class RecommendationService:
         )
         existing_movies = existing_result.scalars().all()
         existing_tmdb_ids = {m.tmdb_id for m in existing_movies}
+
+        # Enriched-vector gate. AFTER computing existing_tmdb_ids (which must stay
+        # complete or non-enriched catalogue rows would get re-queued for ingest
+        # below) — this also closes the "no vector -> let through" leniency in the
+        # cross-validation gate for legacy-vector rows.
+        existing_movies = [m for m in existing_movies if m.has_enriched_embedding]
 
         # 4. Ingest only the missing ones (max 5 to avoid long waits)
         missing_ids = [tid for tid in all_tmdb_ids if tid not in existing_tmdb_ids][:5]
@@ -1010,10 +1020,14 @@ class RecommendationService:
         return feed_items
 
     @safe_execution(fallback_return=FeedSection(id="auteur", title="From Your Favorite Directors", items=[]))
-    async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
+    async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None, filters: Dict = None) -> FeedSection:
         """
         Signal Auteur row — top 3 directors by score × up to 3 unwatched films each (max 9).
         """
+        from services.recommendation_engine import (
+            FILTERED_PERSON_FALLBACK_DEPTH, PERSON_FALLBACK_DEPTH, apply_rail_filters,
+        )  # local: recommendation_engine imports this module
+
         director_scores = await self._compute_director_scores(user_id)
         top_directors = [
             name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True)
@@ -1038,7 +1052,7 @@ class RecommendationService:
         # already shown in earlier sections (Picked For You, Because You Watched, etc.).
         # Post-trim happens in feed_service to keep <=3 per director × <=9 total.
         for director_name in top_directors:
-            stmt = (
+            stmt = apply_rail_filters(
                 select(Movie)
                 .where(Movie.directors.any(director_name))
                 .where(Movie.id.notin_(excluded_internal_ids))
@@ -1047,7 +1061,8 @@ class RecommendationService:
                 .where(Movie.vote_count >= 50)
                 .where(Movie.year.isnot(None))
                 .order_by(desc(Movie.vectorbox_score))
-                .limit(12)
+                .limit(12),
+                filters,
             )
             result = await self.db.execute(stmt)
             director_films = result.scalars().all()
@@ -1065,18 +1080,24 @@ class RecommendationService:
             if per_director > 0:
                 directors_used.append(director_name)
 
-        # Progressive fallback: if fewer than 3 distinct directors had films, expand to directors 4-10
-        if len(directors_used) < 3:
+        # Progressive fallback: if fewer than 3 distinct directors had films, expand
+        # to directors 4-10. Under a filter the trigger is the FILM count, not the
+        # director count: three directors with two qualifying films each is still a
+        # broken row, and that is exactly the shape post-filtering used to produce
+        # (measured 2/9 for user 210 at Drama 1990-2010). Walking further down the
+        # ranking is what fills it — to 9/9, with directors the user demonstrably
+        # likes; the deepest one observed was #16.
+        if len(directors_used) < 3 or (filters and len(all_items) < 9):
             extended_directors = [
                 name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True)
                 if score >= 1.5 and name not in top_directors
-            ][:7]
+            ][:FILTERED_PERSON_FALLBACK_DEPTH if filters else PERSON_FALLBACK_DEPTH]
 
             for director_name in extended_directors:
                 if len(all_items) >= 21:
                     break
 
-                stmt = (
+                stmt = apply_rail_filters(
                     select(Movie)
                     .where(Movie.id.notin_(excluded_internal_ids))
                     .where(Movie.tmdb_id.notin_(seen_ids))
@@ -1086,7 +1107,8 @@ class RecommendationService:
                     .where(Movie.vote_count >= 50)
                     .where(Movie.year.isnot(None))
                     .order_by(desc(Movie.vectorbox_score))
-                    .limit(7)
+                    .limit(7),
+                    filters,
                 )
                 result = await self.db.execute(stmt)
                 fallback_films = result.scalars().all()
@@ -1159,11 +1181,14 @@ class RecommendationService:
         return FeedSection(id="auteur", title=title, items=items)
 
     @safe_execution(fallback_return=FeedSection(id="cult_actor", title="Cast Picks", items=[]))
-    async def get_cult_actor_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
+    async def get_cult_actor_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None, filters: Dict = None) -> FeedSection:
         """
         Imp 2: Cast-based auteur signal — "Because you follow {actor_name}"
         """
         from services.recommendation_engine import _director_weight
+        from services.recommendation_engine import (
+            FILTERED_PERSON_FALLBACK_DEPTH, PERSON_FALLBACK_DEPTH, apply_rail_filters,
+        )  # local: recommendation_engine imports this module
 
         # 1. Get rated/liked movies with cast data
         stmt = select(UserRating, Movie).join(Movie, UserRating.movie_id == Movie.id)\
@@ -1260,7 +1285,7 @@ class RecommendationService:
         actor_names = [name for name, _ in top_actors]
         if actor_names:
             actor_priority = {name: idx for idx, name in enumerate(actor_names)}
-            stmt = (
+            stmt = apply_rail_filters(
                 select(Movie)
                 .where(Movie.cast.overlap(actor_names))
                 .where(Movie.id.notin_(excluded_internal_ids))
@@ -1268,7 +1293,8 @@ class RecommendationService:
                 .where(Movie.vote_count >= 50)
                 .where(Movie.year.isnot(None))
                 .order_by(desc(Movie.vectorbox_score))
-                .limit(8 * len(actor_names))
+                .limit(8 * len(actor_names)),
+                filters,
             )
             result = await self.db.execute(stmt)
             actor_films = result.scalars().all()
@@ -1282,11 +1308,11 @@ class RecommendationService:
             extended_actors = [
                 name for name, score in sorted(actor_scores.items(), key=lambda x: x[1], reverse=True)
                 if score >= 1.5 and name not in top_actor_names
-            ][:7]
+            ][:FILTERED_PERSON_FALLBACK_DEPTH if filters else PERSON_FALLBACK_DEPTH]
 
             if extended_actors:
                 ext_priority = {name: idx for idx, name in enumerate(extended_actors)}
-                stmt = (
+                stmt = apply_rail_filters(
                     select(Movie)
                     .where(Movie.cast.overlap(extended_actors))
                     .where(Movie.id.notin_(excluded_internal_ids))
@@ -1294,7 +1320,8 @@ class RecommendationService:
                     .where(Movie.vote_count >= 50)
                     .where(Movie.year.isnot(None))
                     .order_by(desc(Movie.vectorbox_score))
-                    .limit(5 * len(extended_actors))
+                    .limit(5 * len(extended_actors)),
+                    filters,
                 )
                 result = await self.db.execute(stmt)
                 fallback_films = result.scalars().all()
