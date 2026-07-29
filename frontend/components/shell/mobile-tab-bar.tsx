@@ -44,7 +44,7 @@ function MagicCenter({ t }: { t: (k: string) => string }) {
     if (MAGIC_CENTER === "fab") {
         return (
             <button onClick={openMagicBox} aria-label={label} className="flex flex-col items-center justify-center">
-                <span className="-mt-6 flex size-12 items-center justify-center rounded-full border border-primary bg-primary text-primary-ink shadow-acid-fg">
+                <span className="-mt-6 flex size-12 items-center justify-center border border-primary bg-primary text-primary-ink shadow-acid-fg">
                     <Sparkles className="size-6" />
                 </span>
             </button>

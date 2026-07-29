@@ -47,7 +47,7 @@ export default function OnboardingTagsPage() {
     if (!hydrated) {
         return (
             <div className="min-h-screen flex items-center justify-center bg-background">
-                <span className="font-mono text-xs text-zinc-600">[ LOADING ]</span>
+                <span className="font-mono text-xs text-fg-3">[ LOADING ]</span>
             </div>
         );
     }

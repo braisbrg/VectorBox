@@ -178,8 +178,8 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
             <button
                 onClick={toggleOpen}
                 className={`
-                    w-full flex items-center gap-4 px-3 py-2 transition-all group
-                    text-zinc-500 hover:text-white hover:bg-zinc-900/50
+                    w-full flex items-center gap-4 px-3 py-2 transition-colors group
+                    text-fg-3 hover:text-fg hover:bg-bg-2
                     ${isCollapsed ? "justify-center" : ""}
                 `}
                 title={t("app.guide")}

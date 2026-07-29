@@ -68,7 +68,7 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
                     <button
                         onClick={handleSync}
                         disabled={isLoading}
-                        className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 disabled:opacity-50 flex items-center gap-2 transition-colors"
+                        className="flex items-center gap-2 border border-border-2 bg-bg-2 px-4 py-2 font-mono text-xs uppercase tracking-wide text-fg-2 transition-colors hover:border-primary hover:text-primary disabled:opacity-50"
                     >
                         {isLoading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                         {t("rss.sync_btn")} {username}
@@ -76,21 +76,21 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
                 </div>
 
                 {/* Info Box */}
-                <div className="text-xs text-muted-foreground bg-muted/50 p-3 rounded border w-full text-center">
+                <div className="w-full border border-border-2 bg-bg-2 p-3 text-center font-mono text-xs text-fg-3">
                     <p>
                         {t("rss.info")}
                     </p>
                 </div>
 
                 {status === "success" && (
-                    <div className="text-xs text-green-500 flex items-center gap-1.5 bg-green-500/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
+                    <div className="flex items-center gap-1.5 border border-letterboxd/40 bg-letterboxd/10 p-2 font-mono text-xs text-letterboxd">
                         <Check className="size-3" />
                         <span>{t("rss.synced")}</span>
                     </div>
                 )}
 
                 {status === "error" && (
-                    <div className="text-xs text-destructive flex items-center gap-1.5 bg-destructive/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
+                    <div className="flex items-center gap-1.5 border border-danger/40 bg-danger/10 p-2 font-mono text-xs text-danger">
                         <AlertCircle className="size-3" />
                         <span>{t("rss.error")}</span>
                     </div>
@@ -356,7 +356,7 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                     >
                         {/* Header for Step 2 */}
                         <div className="text-center space-y-2">
-                            <h2 className="text-lg font-medium text-zinc-300">
+                            <h2 className="font-display text-lg uppercase tracking-tight text-fg">
                                 Import History for <span className="text-primary font-bold">{activeUserProfile?.letterboxd_username || localLinkedUser}</span>
                             </h2>
                         </div>
