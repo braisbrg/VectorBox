@@ -1,6 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useCallback } from "react";
+
+import { useLanguage } from "@/components/language-provider";
 
 /**
  * 15-tag grid for content preferences.
@@ -8,6 +10,9 @@ import { useState, useEffect, useCallback } from "react";
  * Used by both /onboarding/tags (localStorage) and Settings (API).
  */
 
+// The tag STRING is the API contract — it's stored in `tag_preferences.avoided`
+// and matched verbatim by the backend, so it must NEVER change. TAG_LABELS is
+// display-only: the user sees a localized label, the canonical value stays put.
 export const ONBOARDING_TAGS = [
     "Jumpscares",
     "Gore",
@@ -25,6 +30,31 @@ export const ONBOARDING_TAGS = [
     "Basadas en hechos reales",
     "Cine de superhéroes",
 ] as const;
+
+// Display labels per locale (colocated with the enum so adding a tag forces
+// adding its labels — no separate parity-checked message keys for data values).
+const TAG_LABELS: Record<string, { en: string; es: string }> = {
+    "Jumpscares": { en: "Jump scares", es: "Sustos" },
+    "Gore": { en: "Gore", es: "Gore" },
+    "Terror psicológico": { en: "Psychological horror", es: "Terror psicológico" },
+    "Contenido adulto": { en: "Adult content", es: "Contenido adulto" },
+    "Temáticas oscuras": { en: "Dark themes", es: "Temáticas oscuras" },
+    "Ritmo muy lento": { en: "Very slow pace", es: "Ritmo muy lento" },
+    "Películas +3h": { en: "Films over 3h", es: "Películas +3h" },
+    "Animación": { en: "Animation", es: "Animación" },
+    "Documentales": { en: "Documentaries", es: "Documentales" },
+    "Mudas / B&N": { en: "Silent / B&W", es: "Mudas / B&N" },
+    "Musicales": { en: "Musicals", es: "Musicales" },
+    "Contenido familiar": { en: "Family content", es: "Contenido familiar" },
+    "Ciencia ficción dura": { en: "Hard sci-fi", es: "Ciencia ficción dura" },
+    "Basadas en hechos reales": { en: "Based on true events", es: "Basadas en hechos reales" },
+    "Cine de superhéroes": { en: "Superhero films", es: "Cine de superhéroes" },
+};
+
+/** Localized display label for a tag; falls back to the raw value if unmapped. */
+export function tagLabel(tag: string, language: string): string {
+    return TAG_LABELS[tag]?.[language === "es" ? "es" : "en"] ?? tag;
+}
 
 export type TagState = "neutral" | "avoided";
 
@@ -49,9 +79,9 @@ const STATE_CYCLE: Record<TagState, TagState> = {
 
 const STATE_STYLES: Record<TagState, string> = {
     neutral:
-        "border-zinc-700 text-zinc-400 hover:border-zinc-500 hover:text-zinc-300",
+        "border-border-2 text-fg-2 hover:border-fg-3 hover:text-fg-2",
     avoided:
-        "border-red-500/60 text-red-400 bg-red-500/10 line-through decoration-red-500/40",
+        "border-danger/60 text-danger bg-danger/10 line-through decoration-danger/40",
 };
 
 const STATE_LABELS: Record<TagState, string> = {
@@ -60,6 +90,7 @@ const STATE_LABELS: Record<TagState, string> = {
 };
 
 export function TagSelector({ value, onChange, compact = false }: TagSelectorProps) {
+    const { language, t } = useLanguage();
     const cycle = useCallback(
         (tag: string) => {
             const current = value[tag] || "neutral";
@@ -72,14 +103,14 @@ export function TagSelector({ value, onChange, compact = false }: TagSelectorPro
     return (
         <div className="space-y-3">
             {!compact && (
-                <div className="flex items-center gap-4 text-[10px] font-mono text-zinc-600 uppercase tracking-widest">
+                <div className="flex items-center gap-4 text-[10px] font-mono text-fg-3 uppercase tracking-widest">
                     <span className="flex items-center gap-1">
-                        <span className="size-2 border border-red-500/60 bg-red-500/20" />
-                        Avoid
+                        <span className="size-2 border border-danger/60 bg-danger/20" />
+                        {t("gonb.tag_avoid")}
                     </span>
                     <span className="flex items-center gap-1">
-                        <span className="size-2 border border-zinc-700" />
-                        Neutral
+                        <span className="size-2 border border-border-2" />
+                        {t("gonb.tag_neutral")}
                     </span>
                 </div>
             )}
@@ -96,16 +127,16 @@ export function TagSelector({ value, onChange, compact = false }: TagSelectorPro
                         <button
                             key={tag}
                             type="button"
-                            title={tag}
+                            title={tagLabel(tag, language)}
                             onClick={() => cycle(tag)}
                             className={`
                                 group relative px-3 py-2 border font-mono text-xs uppercase tracking-wide
-                                transition-all duration-150 cursor-pointer select-none min-w-[110px]
+                                transition-colors duration-150 cursor-pointer select-none min-w-[110px]
                                 ${STATE_STYLES[state]}
                             `}
                         >
                             <span className="flex items-center justify-between gap-1">
-                                <span className="truncate">{tag}</span>
+                                <span className="truncate">{tagLabel(tag, language)}</span>
                                 {state !== "neutral" && (
                                     <span className="text-[10px] opacity-80 shrink-0">
                                         {STATE_LABELS[state]}

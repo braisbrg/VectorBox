@@ -137,7 +137,7 @@ function FeedHero({ item, onSkip }: { item: FeedItem; onSkip: () => void }) {
     return (
         <div
             className="relative grid grid-cols-[220px_1fr_auto] gap-6 overflow-hidden border border-border-2 p-5"
-            style={{ background: "linear-gradient(135deg, #1c1a1a 0%, #050505 110%)" }}
+            style={{ background: "linear-gradient(135deg, var(--hero-from) 0%, var(--bg-deep) 110%)" }}
         >
             {/* 3px lime left edge (prototype .feed-hero::before) */}
             <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-primary" />
@@ -483,12 +483,10 @@ export function FeedContainer({
             <div className="flex min-h-[50vh] flex-col items-center justify-center gap-8 pt-6">
                 <div className="space-y-2 text-center">
                     <h2 className={cn("font-display text-2xl uppercase", isIncomplete ? "text-warn" : "text-primary")}>
-                        {isIncomplete ? "DATA_INCOMPLETE" : "DATA_MISSING"}
+                        {isIncomplete ? t("feed_meta.data_incomplete") : t("feed_meta.data_missing")}
                     </h2>
                     <p className="mx-auto max-w-md text-sm text-fg-2">
-                        {isIncomplete
-                            ? "Your data import seems to have been interrupted. Please upload your Letterboxd export again to fix your profile."
-                            : "VectorBox needs your Letterboxd data to generate recommendations."}
+                        {isIncomplete ? t("feed_meta.data_incomplete_body") : t("feed_meta.data_missing_body")}
                     </p>
                 </div>
                 <div className="w-full max-w-xl border border-border-2 bg-bg-2 p-6 shadow-acid">

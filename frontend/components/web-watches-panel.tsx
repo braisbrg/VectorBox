@@ -42,8 +42,8 @@ export function WebWatchesPanel() {
     if (isLoading) {
         return (
             <div className="border border-border p-4 font-mono">
-                <h3 className="text-xs text-zinc-400 mb-2">WEB WATCHES</h3>
-                <div className="flex items-center gap-2 text-zinc-500 text-sm">
+                <h3 className="text-xs text-fg-2 mb-2">WEB WATCHES</h3>
+                <div className="flex items-center gap-2 text-fg-3 text-sm">
                     <Loader2 className="size-4 animate-spin" /> Loading…
                 </div>
             </div>
@@ -53,8 +53,8 @@ export function WebWatchesPanel() {
     if (error || !data) {
         return (
             <div className="border border-border p-4 font-mono">
-                <h3 className="text-xs text-zinc-400 mb-2">WEB WATCHES</h3>
-                <p className="text-xs text-red-400">Could not load watched-on-web list.</p>
+                <h3 className="text-xs text-fg-2 mb-2">WEB WATCHES</h3>
+                <p className="text-xs text-danger">Could not load watched-on-web list.</p>
             </div>
         );
     }
@@ -62,8 +62,8 @@ export function WebWatchesPanel() {
     if (data.length === 0) {
         return (
             <div className="border border-border p-4 font-mono">
-                <h3 className="text-xs text-zinc-400 mb-2">WEB WATCHES</h3>
-                <p className="text-xs text-zinc-500">
+                <h3 className="text-xs text-fg-2 mb-2">WEB WATCHES</h3>
+                <p className="text-xs text-fg-3">
                     Films you mark as watched in VectorBox will appear here so you can mirror
                     them back to your Letterboxd account. Nothing to show yet.
                 </p>
@@ -75,8 +75,8 @@ export function WebWatchesPanel() {
         <div className="border border-border p-4 font-mono space-y-3">
             <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
-                    <h3 className="text-xs text-zinc-400">WEB WATCHES</h3>
-                    <p className="text-[11px] text-zinc-500 mt-1">
+                    <h3 className="text-xs text-fg-2">WEB WATCHES</h3>
+                    <p className="text-[11px] text-fg-3 mt-1">
                         {data.length} film{data.length === 1 ? "" : "s"} you marked here. Not yet on
                         your Letterboxd account — pick a flow below.
                     </p>
@@ -109,7 +109,7 @@ export function WebWatchesPanel() {
                 </button>
             </div>
 
-            <p className="text-[10px] text-zinc-500 leading-relaxed">
+            <p className="text-[10px] text-fg-3 leading-relaxed">
                 Drop the CSV into{" "}
                 <a
                     href="https://letterboxd.com/import/"
@@ -138,10 +138,10 @@ export function WebWatchesPanel() {
                             <div className="w-9 h-[54px] bg-zinc-900 flex-shrink-0 border border-border" />
                         )}
                         <div className="flex-1 min-w-0">
-                            <p className="text-xs text-zinc-200 truncate">
+                            <p className="text-xs text-fg truncate">
                                 {film.title} {film.year ? `(${film.year})` : ""}
                             </p>
-                            <p className="text-[10px] text-zinc-500">
+                            <p className="text-[10px] text-fg-3">
                                 marked {film.watched_date ?? "—"}
                             </p>
                         </div>
@@ -150,7 +150,7 @@ export function WebWatchesPanel() {
                                 href={film.letterboxd_uri}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="text-zinc-400 hover:text-primary"
+                                className="text-fg-2 hover:text-primary"
                                 title="Open on Letterboxd"
                             >
                                 <ExternalLink className="size-3.5" />
