@@ -576,7 +576,6 @@ class ClusteringService:
         filters: Dict = None,
         limit: int = 20,
         page: int = 1,
-        background_tasks = None,
         query_vector_override: list[float] = None
     ) -> List[Dict]:
         """

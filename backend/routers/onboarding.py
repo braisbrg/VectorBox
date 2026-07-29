@@ -219,7 +219,6 @@ def _apply_tag_exclude_filters(query, avoided_tags: List[str]):
 
 @router.get("/movies")
 async def get_onboarding_movies(
-    country_code: str = "ES",
     avoided_tags: str = "",
     page: int = 1,
     exclude_ids: str = "",

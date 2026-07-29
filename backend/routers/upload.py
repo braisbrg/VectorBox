@@ -262,7 +262,6 @@ async def _enrich_user_movies_background(user_id: int) -> None:
 
 async def process_single_movie(
     movie_data: dict,
-    user_id: int,
     tmdb_client: "TMDBClient",
     groq_client=None
 ):
@@ -439,7 +438,7 @@ async def enrich_movies_background(
                     # The nightly enrich_vectors.py --enrich-embeddings script handles enrichment.
                     tasks = []
                     for m_data in chunk:
-                        tasks.append(process_single_movie(m_data, user_id, tmdb_client, groq_client=None))
+                        tasks.append(process_single_movie(m_data, tmdb_client, groq_client=None))
 
                     # Results: list of (movie_id | None, needs_vector)
                     results = await asyncio.gather(*tasks)

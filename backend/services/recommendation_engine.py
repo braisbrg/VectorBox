@@ -391,7 +391,7 @@ class RecommendationEngine:
             s_providers = [p["provider_name"] for p in p_data]
             item = await self.create_feed_item(
                 movie, 0.85, country, tmdb,
-                include_rating=True, provider_service=provider_service,
+                provider_service=provider_service,
                 streaming_providers=s_providers
             )
             items.append(item)
@@ -399,7 +399,7 @@ class RecommendationEngine:
 
         return FeedSection(id="genre_fallback", title="Recommended for You", items=items)
 
-    async def create_feed_item(self, movie: Movie, score: float, country: str, tmdb: TMDBClient, include_rating: bool = False, contributors: List[dict] = None, provider_service: ProviderService = None, streaming_providers: List[str] = None) -> FeedItem:
+    async def create_feed_item(self, movie: Movie, score: float, country: str, tmdb: TMDBClient, contributors: List[dict] = None, provider_service: ProviderService = None, streaming_providers: List[str] = None) -> FeedItem:
         """Helper to create a FeedItem from a Movie (DB Object)"""
         if streaming_providers is None:
             streaming_providers = []
@@ -781,7 +781,6 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
-        background_tasks=None
     ) -> FeedSection:
         """
         Global evocative theme recommendations. Rotates through GLOBAL_THEMES.
@@ -949,7 +948,6 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
-        background_tasks = None,
         filters: Dict = None,
         pool_limit: int = None,
     ) -> FeedSection:
@@ -1089,7 +1087,7 @@ class RecommendationEngine:
                 
                 item = await self.create_feed_item(
                     movie, cand["score"], country, tmdb,
-                    include_rating=True, provider_service=provider_service,
+                    provider_service=provider_service,
                     streaming_providers=s_providers,
                     contributors=[{"type": "crowd", "label": "Critically acclaimed, under the radar"}]
                 )
@@ -1246,7 +1244,7 @@ class RecommendationEngine:
         for m in sample:
             movie_providers = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.create_feed_item(m, 0.85, country, tmdb, include_rating=True, streaming_providers=flat_providers,
+            item = await self.create_feed_item(m, 0.85, country, tmdb, streaming_providers=flat_providers,
                 contributors=[{"type": "vibe", "label": "Outside your comfort zone"}])
             items.append(item)
             seen_ids.add(m.tmdb_id)
@@ -1307,7 +1305,7 @@ class RecommendationEngine:
         for m in sample:
             movie_providers = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.create_feed_item(m, 0.9, country, tmdb, include_rating=True, streaming_providers=flat_providers,
+            item = await self.create_feed_item(m, 0.9, country, tmdb, streaming_providers=flat_providers,
                 contributors=[{"type": "crowd", "label": "High quality discovery"}])
             items.append(item)
             seen_ids.add(m.tmdb_id)
@@ -1394,7 +1392,7 @@ class RecommendationEngine:
                 p_data = providers_map.get(movie.id, [])
                 flat_providers = [p["provider_name"] for p in p_data]
                 item = await self.create_feed_item(
-                    movie, 0.95, country, tmdb, include_rating=True,
+                    movie, 0.95, country, tmdb,
                     streaming_providers=flat_providers
                 )
                 scraped_lb = rating_by_tmdb.get(tmdb_id)
@@ -1448,7 +1446,7 @@ class RecommendationEngine:
             p_data = providers_map.get(movie.id, [])
             flat_providers = [p["provider_name"] for p in p_data]
             item = await self.create_feed_item(
-                movie, 1.0, country, tmdb, include_rating=True,
+                movie, 1.0, country, tmdb,
                 streaming_providers=flat_providers
             )
             items.append(item)

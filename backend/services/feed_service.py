@@ -216,15 +216,15 @@ class FeedService:
 
     @safe_execution(fallback_return=FeedSection(id="niche_picks", title="Niche Picks", items=[]))
     async def get_niche_picks_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None
     ) -> FeedSection:
-        return await self.engine.get_niche_picks_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks)
+        return await self.engine.get_niche_picks_section(user_id, db, tmdb, seen_ids, country, provider_service)
 
     @safe_execution(fallback_return=FeedSection(id="hidden_gems", title="Hidden Gems", items=[]))
     async def get_hidden_gems_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, filters: Dict = None, pool_limit: int = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, filters: Dict = None, pool_limit: int = None
     ) -> FeedSection:
-        return await self.engine.get_hidden_gems_section(user_id, db, tmdb, seen_ids, country, provider_service, background_tasks=background_tasks, filters=filters, pool_limit=pool_limit)
+        return await self.engine.get_hidden_gems_section(user_id, db, tmdb, seen_ids, country, provider_service, filters=filters, pool_limit=pool_limit)
 
     @safe_execution(fallback_return=FeedSection(id="available_now", title="Available on Your Services", items=[]))
     async def get_available_now_section(
@@ -261,7 +261,6 @@ class FeedService:
         tmdb: TMDBClient,
         country: str,
         streaming_providers: List[int],
-        background_tasks = None
     ) -> FeedResponse:
         """
         Generate a feed based ONLY on the user's watchlist.
@@ -289,7 +288,7 @@ class FeedService:
         for movie in top_rated_movies:
             movie_providers = tr_providers_map.get(movie.id,[])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, include_rating=True, streaming_providers=flat_providers)
+            item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, streaming_providers=flat_providers)
             top_rated_items.append(item)
             
         top_rated_section = FeedSection(
@@ -320,7 +319,7 @@ class FeedService:
         for movie in short_movies:
             p_data = short_providers_map.get(movie.id, [])
             flat_providers = [p["provider_name"] for p in p_data]
-            item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, include_rating=True, streaming_providers=flat_providers)
+            item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, streaming_providers=flat_providers)
             short_items.append(item)
 
         short_section = FeedSection(
@@ -481,7 +480,7 @@ class FeedService:
                     local_provider = ProviderService(session, tmdb)
                     return await self.get_niche_picks_section(
                         user_id, session, tmdb, watched_tmdb_ids.copy(),
-                        country_code, local_provider, background_tasks=background_tasks,
+                        country_code, local_provider,
                     )
             except Exception as e:
                 logger.error(f"Feed Task Failed [Niche]: {e}")
@@ -518,7 +517,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_hidden_gems_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks, filters=search_filters, pool_limit=deep_pool)
+                    return await self.get_hidden_gems_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, filters=search_filters, pool_limit=deep_pool)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hidden]: {e}")
                 return None

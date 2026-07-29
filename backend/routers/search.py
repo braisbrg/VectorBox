@@ -67,7 +67,6 @@ async def _item_to_item_search(
     movie_id: int,
     movie_title: str,
     qdrant: QdrantService,
-    tmdb: TMDBClient,
 ) -> Optional[SearchResponse]:
     """Shared helper for Item-to-Item recommendation (deduplicated)."""
     vector = await qdrant.get_vector(movie_id)
@@ -230,7 +229,7 @@ async def _run_natural_search(
         if potential_movie_id:
             logger.info(f"Switching to Item-to-Item search based on movie: {potential_movie_title}")
             result = await _item_to_item_search(
-                potential_movie_id, potential_movie_title, qdrant, tmdb
+                potential_movie_id, potential_movie_title, qdrant
             )
             if result:
                 return result
@@ -282,7 +281,7 @@ async def _run_natural_search(
             if potential_movie_id:
                 logger.info(f"Performing Item-to-Item search for reference: {potential_movie_title}")
                 result = await _item_to_item_search(
-                    potential_movie_id, potential_movie_title, qdrant, tmdb
+                    potential_movie_id, potential_movie_title, qdrant
                 )
                 if result:
                     return result
