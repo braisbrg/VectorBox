@@ -438,8 +438,15 @@ class QdrantService:
                 # ef=128 is the recommended production baseline for 768-dim embeddinggemma.
                 search_params=SearchParams(hnsw_ef=128, exact=False),
                 # [OPTIMIZATION] Payload Selector
-                # Only fetch essential fields for sorting/filtering.
-                # Exclude heavy text fields (overview, keywords, cast, directors)
+                # Excludes the genuinely heavy fields: keywords, cast, directors.
+                #
+                # runtime/genres/overview were excluded too until 2026-07-29, and
+                # every caller reads them off this metadata. The visible symptom was
+                # a landing full of "TBA" durations; the expensive one was that
+                # `not metadata.get("overview")` is then true for EVERY row, so
+                # routers/search.py fanned out 20 TMDB detail calls per search to
+                # re-fetch what Qdrant already held. The item-to-item path has no
+                # such fallback and simply returned empty overviews.
                 with_payload=[
                     "tmdb_id",
                     "title",
@@ -448,7 +455,10 @@ class QdrantService:
                     "vote_count",
                     "popularity",
                     "poster_path",  # Useful for debugging or quick UI
-                    "vote_average"
+                    "vote_average",
+                    "runtime",
+                    "genres",
+                    "overview",
                 ]
             )
             

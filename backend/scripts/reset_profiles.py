@@ -14,6 +14,7 @@ sys.path.append(backend_dir)
 
 from config import AsyncSessionLocal
 from models.database import UserCluster, User, UserRating
+from services.cache_service import scan_and_delete
 from services.clustering_service import ClusteringService
 from services.qdrant_service import QdrantService
 from sqlalchemy import select
@@ -68,12 +69,12 @@ async def reset_profiles(force: bool = False, recluster: bool = True):
     redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
     try:
         r = redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
-        keys = await r.keys("*")
-        # Broad invalidation of recommendation-related keys
-        deleted = [k for k in keys if any(x in k for x in ["feed", "section", "signal", "profile", "fastapi-cache"])]
+        # Broad invalidation of recommendation-related keys (SCAN, never KEYS)
+        deleted = 0
+        for token in ("feed", "section", "signal", "profile", "fastapi-cache"):
+            deleted += await scan_and_delete(r, f"*{token}*")
         if deleted:
-            await r.delete(*deleted)
-            logger.info(f"✅ Invalidated {len(deleted)} Redis cache keys (feed/section/signal/profile/fastapi-cache).")
+            logger.info(f"✅ Invalidated {deleted} Redis cache keys (feed/section/signal/profile/fastapi-cache).")
         else:
             logger.info("ℹ️ No relevant Redis cache keys found to clear.")
         await r.close()

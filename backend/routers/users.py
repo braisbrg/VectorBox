@@ -11,6 +11,7 @@ import logging
 
 from config import get_db, REDIS_URL
 from dependencies import get_current_user, get_http_client, verify_user_ownership
+from limiter import limiter
 from models.database import User, UserRating, Movie, UserCluster
 from models.schemas import UserResponse, TokenResponse, LinkLetterboxdRequest
 
@@ -239,7 +240,10 @@ async def get_my_profile(
 
 
 @router.delete("/me/ratings/{tmdb_id}")
+@limiter.limit("30/minute")
 async def delete_my_rating(
+    # slowapi needs the starlette Request named `request` (F0 lesson).
+    request: Request,
     tmdb_id: int,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -299,6 +303,7 @@ async def list_users(
 
 
 @router.patch("/{user_id}/link-letterboxd")
+@limiter.limit("10/minute")
 async def link_letterboxd(
     user_id: int,
     body: LinkLetterboxdRequest,

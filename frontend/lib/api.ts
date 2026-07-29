@@ -88,24 +88,6 @@ export interface MovieMetadata {
     release_dates?: Record<string, string>;
 }
 
-export interface ClusterInfo {
-    cluster_id: number;
-    label: string;
-    movie_count: number;
-    avg_rating: number;
-    dominant_genres: string[];
-    sample_movies: MovieMetadata[];
-}
-
-export interface RecommendationResponse {
-    movie: MovieMetadata;
-    similarity_score: number;
-    streaming_available: boolean;
-    streaming_providers: string[];
-    providers?: string[];
-    contributors?: Contributor[];
-}
-
 export interface FeedItem {
     id: number;
     title: string;
@@ -160,11 +142,6 @@ export const uploadExportZIP = async (file: File): Promise<{
 // v1.1: Task progress polling
 export const getTaskStatus = async (taskId: string): Promise<TaskStatus> => {
     const response = await api.get(`/api/tasks/${taskId}`);
-    return response.data;
-};
-
-export const getUserClusters = async (userId: number): Promise<ClusterInfo[]> => {
-    const response = await api.get(`/api/recommendations/clusters/${userId}`);
     return response.data;
 };
 
@@ -586,3 +563,45 @@ export const getFilteredFeed = async (params: FilterSearchParams): Promise<FeedR
     return response.data as FeedResponse;
 };
 
+
+// ---- Landing showcase (Fase 1) ----
+// Canned queries served straight from Redis by GET /api/search/showcase. The
+// endpoint never computes: an unknown slug is a 404 and a cold cache is a 503,
+// which is what keeps the landing's set of possible inputs closed. Filling it is
+// scripts/warm_showcase.py, run on deploy.
+export const SHOWCASE_SLUGS = ["grief", "heist70", "loneliness"] as const;
+export type ShowcaseSlug = (typeof SHOWCASE_SLUGS)[number];
+
+// NOT FeedItem: /search/natural returns its own shape (movie_id, poster_path,
+// score) and the showcase caches that response verbatim, so the landing maps it
+// explicitly rather than pretending the two are interchangeable.
+export interface ShowcaseFilm {
+    movie_id: number;
+    title: string;
+    title_es?: string;
+    overview?: string;
+    overview_es?: string;
+    poster_path?: string | null;
+    year?: number;
+    runtime?: number;
+    genres?: string[];
+    score?: number;
+    vectorbox_score?: number;
+    imdb_rating?: number;
+    metacritic_rating?: number;
+    streaming_providers?: string[];
+}
+
+export interface ShowcaseResponse {
+    slug: string;
+    lang: string;
+    query: string;
+    results: ShowcaseFilm[];
+    /** true when the warm run fell back to pure semantic search (parser down). */
+    degraded: boolean;
+}
+
+export const getShowcase = async (slug: ShowcaseSlug, lang: string): Promise<ShowcaseResponse> => {
+    const response = await api.get("/api/search/showcase", { params: { slug, lang } });
+    return response.data;
+};

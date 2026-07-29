@@ -1,26 +1,36 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, constr
+from pydantic import BaseModel, ConfigDict, constr
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import asyncio
 from config import get_db
-from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user
+from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user, get_redis
 from models.schemas import TokenResponse
-from services.nlp_search import parse_user_intent, search_with_reasoning, MovieSearchIntent
+from services.nlp_search import parse_user_intent, parse_failed, search_with_reasoning, MovieSearchIntent
 from services.magic_search_ranking import (
+    CONFIDENCE_SAMPLE,
+    LOW_CONFIDENCE_MEAN,
+    OPEN_REQUEST_MIN_VBS,
     compute_blended_score,
+    has_descriptive_filters,
     intent_complexity,
+    is_low_confidence,
+    is_quality_only_request,
+    SEARCH_RESULT_LIMIT,
+    search_fetch_limit,
     movie_passes_post_filter,
+    search_confidence,
     should_run_deep_analysis,
     title_sim_score,
 )
+from services import showcase_service
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
 from services.provider_service import ProviderService
 from models.database import UserRating, Movie
-from sqlalchemy import select, or_
+from sqlalchemy import func, select, or_
 from utils.scoring import normalize_similarity_score
 from utils.input_validation import validate_user_query
 
@@ -36,6 +46,16 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     results: List[dict]
     intent: dict
+    # True when the catalogue had nothing close enough to be a recommendation.
+    # `results` is empty in that case — deliberately: showing the twenty nearest
+    # films under a "we are not sure" banner is worse than showing none, because
+    # the engine looks confident about films it picked for no reason.
+    low_confidence: bool = False
+    # True when no model parsed the sentence, so the answer came from the raw
+    # text and not from an understanding of it. The results are still real films;
+    # what is missing is every constraint the user expressed. The UI owes them
+    # that fact — silently serving a worse answer is the one option we ruled out.
+    degraded: bool = False
 
 def filter_es_providers(all_providers: List[str]) -> List[str]:
     """Pure function to filter provider names against the ES whitelist."""
@@ -86,29 +106,46 @@ async def _item_to_item_search(
 # Re-implementing with proper decorator injection
 from limiter import limiter
 
-@router.post("/natural", response_model=SearchResponse)
-@limiter.limit("10/minute")
-async def natural_language_search(
-    request: Request, # Request object is required for slowapi
-    search_req: SearchRequest,
-    # Optional auth: magic box is a pre-login guest feature (handoff pre-login
-    # splash). current_user is only used to exclude watched films — guests
-    # simply skip that filter. Rate limit above applies either way.
-    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
-    db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client),
-    qdrant: QdrantService = Depends(get_qdrant_service),
-    embedding_service: EmbeddingService = Depends(get_embedding_service)
-):
-    """
-    Advanced natural language search with semantic expansion and vibe filtering.
-    Handles complex queries like "old gangster movie", "90s hidden gem", "short anime".
-    Also handles "Movies like X" by detecting title matches.
+# ── Fase 3 of the landing plan (2026-07-28) ─────────────────────────────────
+#
+# This handler used to BE the public endpoint, while its own docstring said the
+# opposite: "Auth required: this endpoint fans out to Groq… Leaving it open to
+# guests turns it into a paid-LLM proxy." Someone reasoned that through and the
+# code drifted from it. Free text plus no session plus a 200k-token daily budget
+# is a free LLM proxy for anyone who finds the URL, and on 2026-07-25 the budget
+# was in fact exhausted (197,753 of 200,000 used).
+#
+# The body is now shared by two doors with different trust:
+#   POST /natural  — signed in. Full budget: 500-char queries, Tier-2 deep
+#                    analysis, 10/minute.
+#   POST /try      — anonymous. Deliberately bounded: 140 chars, no Tier-2, and
+#                    5/minute. Enough to try the product, too little to farm.
+#
+# The landing does not use either by default: its chips read /search/showcase,
+# which is a cache with a closed input set. This path only runs when a visitor
+# types something of their own.
+#
+# Set on the response when the answer came from the catalogue rather than from
+# the vector. A constant because scripts/audit_search.py asserts which branch
+# answered, and matching on a prose sentence is a test that breaks on a typo.
+CATALOGUE_SELECTION_REASONING = "A varied selection of well-regarded films from the catalogue."
 
-    Auth required: this endpoint fans out to Groq (GPT-OSS-120B parser +
-    optional Deep Analysis). Leaving it open to guests turns it into a
-    paid-LLM proxy. The /onboarding/search endpoint covers the public-DB
-    title search use case for guests.
+
+async def _run_natural_search(
+    search_req: SearchRequest,
+    current_user: Optional[TokenResponse],
+    db: AsyncSession,
+    tmdb: TMDBClient,
+    qdrant: QdrantService,
+    embedding_service: EmbeddingService,
+):
+    """Shared body. Advanced natural-language search with semantic expansion.
+
+    Also handles "Movies like X" by detecting title matches and switching to
+    item-to-item, which short-circuits before the LLM — that path costs nothing.
+
+    Not a route: the two routes below decide who may reach it and with what
+    budget. Anything trusted must be enforced by the CALLER, not here.
     """
     try:
         # Validate input for LLM injection
@@ -156,9 +193,11 @@ async def natural_language_search(
                 intent = await parse_user_intent(search_req.query)
             except Exception as e:
                 logger.warning(f"Groq intent parsing failed, falling back to pure vector search: {e}")
+                # Same wording parse_user_intent uses for its own give-ups, so
+                # one predicate (parse_failed) covers every route into this state.
                 intent = MovieSearchIntent(
                     semantic_query=search_req.query,
-                    reasoning="Groq unavailable — direct vector search",
+                    reasoning=f"LLM unavailable: {e}",
                 )
         logger.info(f"Parsed intent: {intent}")
         logger.info(f"Reasoning: {intent.reasoning}")
@@ -280,14 +319,118 @@ async def natural_language_search(
             qdrant_filters["exclude_tmdb_ids"] = watched_tmdb_ids
             
         # 4. Search Qdrant with Advanced Filters
+        # Wider when a Postgres-side post-filter has to survive the fetch — see
+        # services.magic_search_ranking.search_fetch_limit for the measurement.
         raw_results = await qdrant.search_similar(
             query_vector=query_vector,
-            limit=20,
+            limit=search_fetch_limit(intent),
             score_threshold=0.3, # Semantic search standard
             filters=qdrant_filters
         )
         
         logger.info(f"Qdrant returned {len(raw_results)} results")
+
+        # Confidence gate. Measured over 54 runs of an 18-query panel
+        # (scripts/experiment_confidence.py): answerable questions never fell
+        # below a 0.443 mean over the top ten neighbours, unanswerable ones never
+        # rose above 0.425. Below the threshold the catalogue has nothing close
+        # enough to call a recommendation, and returning the nearest twenty
+        # anyway is how "receta de tortilla de patatas" used to answer with
+        # Ratatouille — confidently, and wrong.
+        #
+        # Read BEFORE the quality gate and the post-filter: those drop films for
+        # reasons unrelated to whether the question made sense.
+        cosines = [r.get("score") or 0.0 for r in raw_results]
+        confidence = search_confidence(cosines)
+
+        # A degraded run must not be reported as an unanswerable question.
+        # Measured 2026-07-29 with scripts/audit_search.py: Groq's free tier caps
+        # at 8000 tokens per MINUTE, a parse costs ~2000, and four searches in a
+        # row exhaust it. With no parse there is no `open_request` and no
+        # `min_vectorbox_score`, so every gentle query — "no se que ver", "para
+        # llorar esta noche" — fell straight through to the refusal and the user
+        # got an empty page. The catalogue branch below needs no LLM at all, so
+        # a degraded run answers from it instead of apologising.
+        degraded = parse_failed(intent)
+
+        # A weak vector is not the same as an unanswerable question. Measured
+        # 2026-07-29, three different things were scoring below the threshold:
+        #
+        #   "algo muy aclamado por la critica"  0.355  min_metacritic=75
+        #   "algo corto, menos de 90 minutos"   0.371  max_runtime_minutes=90
+        #   "no se que ver"                     0.306  no filters
+        #   "receta de tortilla de patatas"     0.232  no filters
+        #
+        # The first two are perfectly answerable — just by FILTERS rather than by
+        # similarity — and refusing them was a bug. The third is a real request
+        # for a good default that nobody can make more specific: telling someone
+        # who does not know what to watch to be more precise leaves them with
+        # nothing. Only the fourth is genuinely unanswerable.
+        #
+        # Confidence cannot separate the third from the fourth (0.306 vs 0.232 is
+        # inside the noise), so the parser flags it as `open_request`.
+        if (is_low_confidence(cosines) and not has_descriptive_filters(intent)
+                and not intent.open_request and not degraded):
+            logger.info(
+                "Low-confidence query (mean top-%d cosine %.3f < %.2f): %r",
+                CONFIDENCE_SAMPLE, confidence, LOW_CONFIDENCE_MEAN, search_req.query,
+            )
+            return SearchResponse(
+                results=[],
+                intent={**intent.model_dump(), "confidence": round(confidence, 3)},
+                low_confidence=True,
+                degraded=degraded,
+            )
+
+        # "I don't know what to watch". The vector is meaningless here — it was
+        # returning Glitter (VBS 14) for "sorprendeme con algo bueno" — so the
+        # answer comes from the catalogue's own quality, spread across genres so
+        # it reads as a selection rather than a leaderboard.
+        # When the vector says nothing but the request still has criteria, the
+        # answer must come from the CATALOGUE, not from twenty arbitrary
+        # neighbours. Three shapes end up here:
+        #
+        #   "no se que ver"                    -> open_request, no criteria
+        #   "peliculas muy bien valoradas"     -> a quality bar and nothing else
+        #   parser down (rate limit)           -> no criteria we can read
+        #
+        # All three used to return zero. The first was refused outright; the
+        # second passed the gate and then found almost nothing, because the
+        # twenty nearest neighbours of a meaningless vector rarely clear a
+        # quality bar. Querying the catalogue directly is the honest answer.
+        if is_low_confidence(cosines) and (intent.open_request or is_quality_only_request(intent) or degraded):
+            floor = intent.min_vectorbox_score or OPEN_REQUEST_MIN_VBS
+            logger.info("Catalogue selection for %r (floor=%s, open=%s, degraded=%s)",
+                        search_req.query, floor, intent.open_request, degraded)
+            picks = (await db.execute(
+                select(Movie)
+                .where(Movie.vectorbox_score >= floor)
+                .where(Movie.poster_path.is_not(None))
+                .order_by(func.random())
+                .limit(40)
+            )).scalars().all()
+            seen_genres: set[str] = set()
+            varied: list[Movie] = []
+            for m in picks:
+                lead = (m.genres or ["?"])[0]
+                if lead in seen_genres and len(varied) < 12:
+                    continue
+                seen_genres.add(lead)
+                varied.append(m)
+                if len(varied) >= 12:
+                    break
+            return SearchResponse(
+                results=[{
+                    "movie_id": m.tmdb_id, "title": m.title, "overview": m.overview,
+                    "poster_path": m.poster_path, "score": round(m.vectorbox_score or 0),
+                    "year": m.year, "runtime": m.runtime, "genres": m.genres or [],
+                    "vote_average": m.vote_average, "vectorbox_score": m.vectorbox_score,
+                    "title_es": m.title_es, "overview_es": m.overview_es,
+                } for m in varied],
+                intent={**intent.model_dump(), "confidence": round(confidence, 3),
+                        "reasoning": CATALOGUE_SELECTION_REASONING},
+                degraded=degraded,
+            )
 
         # Minimum quality gate — drop movies with no TMDB signal (e.g. vote_count=0)
         raw_results = [
@@ -412,6 +555,10 @@ async def natural_language_search(
         # initial filter / coarse rank, and our compound score is the final
         # order. Strip the internal `_final_score` key before returning.
         results.sort(key=lambda r: r.get("_final_score", 0.0), reverse=True)
+        # Truncate BEFORE the provider fan-out below: a post-filtered query now
+        # fetches up to 150 candidates, and every survivor would otherwise cost a
+        # provider lookup and a row in the response.
+        del results[SEARCH_RESULT_LIMIT:]
         for r in results:
             r.pop("_final_score", None)
 
@@ -477,13 +624,124 @@ async def natural_language_search(
 
         return SearchResponse(
             results=results,
-            intent=intent.model_dump()
+            intent=intent.model_dump(),
+            degraded=degraded,
         )
         
+    except HTTPException:
+        # validate_user_query raises 400 on a prompt-injection attempt, and the
+        # blanket handler below was turning that into "Search service
+        # unavailable" — the guard worked and then reported itself as our
+        # outage. Any deliberate status set upstream travels unchanged.
+        raise
     except Exception as e:
         import traceback
         logger.error(f"Search failed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Search service unavailable")
+
+
+@router.post("/natural", response_model=SearchResponse)
+@limiter.limit("10/minute")
+async def natural_language_search(
+    request: Request,  # required by slowapi
+    search_req: SearchRequest,
+    current_user: TokenResponse = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+):
+    """Magic Box for signed-in users. Full budget.
+
+    Auth is required again as of Fase 3 — the docstring said so all along while
+    the signature said `get_optional_current_user`. Guests get `/try` below.
+    """
+    return await _run_natural_search(
+        search_req, current_user, db, tmdb, qdrant, embedding_service
+    )
+
+
+# A guest sentence is a sentence, not an essay: 140 characters fits every example
+# query the landing ships and every phrasing we tested, while making the endpoint
+# useless as a general-purpose LLM proxy.
+TRY_MAX_QUERY_LENGTH = 140
+
+
+class TrySearchRequest(BaseModel):
+    # extra="forbid" so a caller who tries to smuggle `forced_intent` or
+    # `use_deep_analysis` gets a 422 instead of a silent 200. Pydantic would drop
+    # them either way, but a contract that answers "no" is worth more than one
+    # that quietly ignores you — and it makes the attempt visible in the logs.
+    model_config = ConfigDict(extra="forbid")
+
+    query: constr(min_length=1, max_length=TRY_MAX_QUERY_LENGTH)
+    country_code: Optional[str] = "ES"
+    # Deliberately absent: `use_deep_analysis` (Tier-2 is the expensive LLM call)
+    # and `forced_intent` (an internal bypass — accepting it from the public
+    # would let a caller hand-craft filters and skip every guard we have).
+
+
+@router.post("/try", response_model=SearchResponse)
+@limiter.limit("5/minute")
+async def try_search(
+    request: Request,  # required by slowapi
+    try_req: TrySearchRequest,
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+):
+    """The public door: type your own sentence without an account.
+
+    Bounded on every axis that costs money — 140 characters, 5/minute, no Tier-2
+    deep analysis, no forced_intent. A visitor can try the product; nobody can
+    farm the daily Groq budget through it.
+
+    `current_user=None` is passed explicitly rather than resolved: this route
+    must behave identically for everyone, and reading a session here would make
+    a signed-in user's results differ from a guest's on the same URL.
+    """
+    return await _run_natural_search(
+        SearchRequest(query=try_req.query, country_code=try_req.country_code,
+                      use_deep_analysis=False, forced_intent=None),
+        None, db, tmdb, qdrant, embedding_service,
+    )
+
+
+@router.get("/showcase")
+@limiter.limit("60/minute")
+async def showcase_search(
+    request: Request,
+    slug: str,
+    lang: str = "es",
+    redis=Depends(get_redis),
+):
+    """The landing's canned queries. Reads Redis and nothing else.
+
+    This is the counterweight to `/natural` being open: the landing's default
+    traffic lands here, where the set of possible inputs is closed (the slugs in
+    `showcase_service.SHOWCASE_QUERIES`) and no free text ever reaches Groq.
+
+    A miss returns 503 rather than computing on demand — on purpose. The moment
+    this endpoint can trigger a search, the closed-input guarantee is gone and
+    it becomes `/natural` with extra steps. Filling the cache is the job of
+    `scripts/warm_showcase.py`, run on deploy.
+    """
+    if not showcase_service.is_valid_slug(slug):
+        # 404 before any I/O: an unknown slug costs a dict lookup.
+        raise HTTPException(status_code=404, detail="Unknown showcase slug")
+
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Showcase cache unavailable")
+
+    payload = await showcase_service.read(redis, slug, lang)
+    if payload is None:
+        # Cold cache. The landing has a state for this; do not paper over it by
+        # running a query, which is exactly what this endpoint exists to avoid.
+        logger.warning("Showcase cache miss for slug=%s lang=%s — run warm_showcase.py", slug, lang)
+        raise HTTPException(status_code=503, detail="Showcase not warmed yet")
+
+    return payload
 
 
 @router.get("/autocomplete")

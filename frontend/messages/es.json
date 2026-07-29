@@ -67,7 +67,11 @@
     "about": {
       "title": "Sobre VectorBox",
       "desc": "Sistema de recomendación vectorial basado en tus datos de Letterboxd.",
-      "version": "v1.1.0"
+      "version": "v1.1.0",
+      "credits_tmdb": "Este producto usa la API de TMDB pero no está avalado ni certificado por TMDB.",
+      "credits_justwatch": "Datos de disponibilidad en streaming proporcionados por JustWatch vía la API de TMDB.",
+      "credits_omdb": "Datos de puntuaciones de la API de OMDb, bajo licencia",
+      "credits_letterboxd": "Gracias a Letterboxd por las importaciones de valoraciones iniciadas por el usuario. VectorBox no está afiliado a Letterboxd Ltd."
     }
   },
   "users": {
@@ -167,7 +171,11 @@
     "executing": "EJECUTANDO_QUERY…",
     "manage": "gestionar",
     "refresh": "Actualizar feed",
-    "more_rows_hint": "aparecerán más filas a medida que puntúes más películas"
+    "more_rows_hint": "aparecerán más filas a medida que puntúes más películas",
+    "data_missing": "FALTAN_DATOS",
+    "data_missing_body": "VectorBox necesita tus datos de Letterboxd para generar recomendaciones.",
+    "data_incomplete": "DATOS_INCOMPLETOS",
+    "data_incomplete_body": "Tu importación parece haberse interrumpido. Vuelve a subir tu export de Letterboxd para arreglar tu perfil."
   },
   "wl": {
     "films_saved": "guardadas",
@@ -253,6 +261,7 @@
   },
   "insp": {
     "available_on": "DISPONIBLE_EN",
+    "justwatch": "disponibilidad de streaming vía JustWatch",
     "mark_watched": "VISTA",
     "not_interested": "NO ME INTERESA"
   },
@@ -276,7 +285,10 @@
     "mode_title": "buscar título",
     "title_placeholder": "escribe el título de una película…",
     "title_none": "ningún título encontrado",
-    "title_hint": "escribe al menos 2 caracteres"
+    "title_hint": "escribe al menos 2 caracteres",
+    "low_conf": "No hemos sabido leer eso como una película que buscas.",
+    "low_conf_hint": "Describe de qué va la película — su tema, su tono o dónde pasa. No para quién es.",
+    "degraded": "Nuestro lector está saturado — esto va por tus palabras, no por lo que significan. Prueba otra vez en un minuto para afinar."
   },
   "dossier": {
     "synopsis": "sinopsis",
@@ -412,25 +424,41 @@
     "step_ready": "listo"
   },
   "land": {
-    "onboarding": "ONBOARDING",
-    "onboarding_sub": "puntúa 15 películas · descubre tu trident",
-    "magic": "MAGIC BOX",
-    "magic_sub": "⌘K · busca por vibe, mood, director",
-    "mlt": "MÁS COMO ESTA",
-    "mlt_sub": "elige 5 películas · mezcla de centroides",
-    "group": "QUÉ VER EN GRUPO",
-    "group_sub": "pega 2-6 usuarios de letterboxd · encuentra vuestro overlap",
+    "group": "Una película en la que cuatro estéis de acuerdo",
     "tier_account": "● cuenta",
     "tier_guest": "◌ invitado",
-    "get_started": "EMPIEZA AQUÍ",
-    "create": "CREAR CUENTA →",
     "signin": "INICIAR SESIÓN",
     "auth_note": "google · email · ZIP de letterboxd tras registrarte",
     "privacy": "privacidad",
     "terms": "términos",
-    "foot_engine": "trident engine",
-    "foot_guest": "modo invitado con límites · regístrate para guardar",
-    "foot_vector": "tu gusto, mapeado como un vector"
+    "foot_data": "datos · tmdb + justwatch + omdb",
+    "h1a": "Dinos qué te apetece ver.",
+    "h1b": "Con tus palabras.",
+    "eyebrow": "leemos las películas por lo que tratan, no por su género",
+    "mode_phrase": "una frase",
+    "mode_title": "un título",
+    "hint_phrase": "en lenguaje normal — el motor la convierte en un punto del mapa",
+    "hint_title": "autocompleta sobre el catálogo y te da sus vecinas más cercanas",
+    "ph_phrase": "algo lento y triste sobre el duelo, sin sustos",
+    "ph_title": "Seven Samurai",
+    "results": "Resultado real del motor",
+    "results_n": "{n} películas",
+    "no_account": "sin cuenta",
+    "prev": "Anteriores",
+    "next": "Siguientes",
+    "st_load": "buscando en el catálogo…",
+    "st_err": "Demasiadas consultas ahora mismo. Vuelve a intentarlo en un minuto.",
+    "st_empty": "No hay nada en el catálogo que encaje con eso. Prueba a decirlo de otra forma.",
+    "conv_lead": "El motor aprende de cada película que puntúas — las respuestas se van pareciendo a ti.",
+    "conv_sub": "Cada película que puntúas mueve las siguientes, y lo que ya viste deja de salir.",
+    "conv_lbxd": "Con tu Letterboxd dentro, empieza sabiendo lo que te gusta.",
+    "conv_lbxd_sub": "Entra tu historial completo de golpe, en vez de construirlo película a película.",
+    "cta_profile": "Crear mi perfil",
+    "cta_import": "Importar Letterboxd",
+    "cta_or": "o",
+    "how": "Cómo funciona",
+    "chip_heist": "atracos con estilo, Europa años 70",
+    "chip_loneliness": "la soledad de vivir en una ciudad enorme"
   },
   "explore": {
     "guest_session": "◌ sesión de invitado",
@@ -495,6 +523,8 @@
     "prefs_1": "PREFERENCIAS",
     "prefs_2": "DE CONTENIDO",
     "tap_note": "toca para alternar · neutral ↔ evitar",
+    "tag_avoid": "Evitar",
+    "tag_neutral": "Neutral",
     "continue": "CONTINUAR →",
     "back_login": "← volver al login",
     "primer": "¿conoces una peli que te encante? búscala por título → puntúa rápido",

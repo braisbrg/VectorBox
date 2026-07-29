@@ -23,6 +23,22 @@ from models.schemas import TokenResponse
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# Both endpoints below quality-gate the Qdrant hits in Postgres, on columns that
+# are not in the vector payload (VBS ≥ 55, ≥ 100 votes, a poster). Only 38.9% of
+# the catalogue clears that gate, and a film's neighbours are correlated with it
+# — an obscure film has obscure neighbours — so the survivors of a narrow fetch
+# are far fewer than the average would suggest.
+#
+# Measured 2026-07-29 over 40 random catalogue films asking for 12 similars:
+#
+#   fetch  limit×2 (24)   8.6 of 12 on average · 12 of 40 shelves full · 1 empty
+#   fetch  limit×8 (96)  11.9 of 12 on average · 39 of 40 shelves full · 0 empty
+#
+# So the rail was quietly a third short most of the time. Over-fetching is the
+# whole fix here: score_threshold still decides what is genuinely similar, and a
+# film with few real neighbours correctly returns few.
+QUALITY_GATE_OVERFETCH = 8
+
 
 async def _ingest_similar_background(tmdb_ids: List[int], tmdb: TMDBClient) -> None:
     """Background ingest of TMDB recommendations missing from local DB.
@@ -131,7 +147,7 @@ async def get_similar_movies(
         # 3. Search Qdrant
         similar_results = await qdrant.search_similar(
             query_vector=query_vector,
-            limit=limit * 2,
+            limit=limit * QUALITY_GATE_OVERFETCH,
             score_threshold=0.45  # Lowered threshold, but stricter content matching
         )
         
@@ -152,7 +168,18 @@ async def get_similar_movies(
         # Fetch from DB
         db_movies_map = {}
         if similar_tmdb_ids:
-            stmt = select(Movie).where(Movie.tmdb_id.in_(similar_tmdb_ids))
+            # Quality gate — mirror /similar/multi. Without it, metadata-less
+            # phantom entries (empty overview → hallucinated embedding, VBS=None,
+            # 0 votes, no poster) surface as top neighbours (a duplicate "Wolf
+            # Totem" stub scored 0.81 to Nausicaä). Gated-out films fall out of
+            # this map and are skipped in the build loop below.
+            stmt = (
+                select(Movie)
+                .where(Movie.tmdb_id.in_(similar_tmdb_ids))
+                .where(Movie.vectorbox_score >= 55)
+                .where(Movie.vote_count >= 100)
+                .where(Movie.poster_path.isnot(None))
+            )
             result = await db.execute(stmt)
             for m in result.scalars().all():
                 db_movies_map[m.tmdb_id] = m
@@ -180,53 +207,31 @@ async def get_similar_movies(
             seen_ids_final.add(r_tmdb_id)
             
             movie = db_movies_map.get(r_tmdb_id)
-            
-            if movie:
-                # Use DB data
-                recommendations.append({
-                    "movie_id": movie.tmdb_id,
-                    "title": movie.title,
-                    "poster_path": movie.poster_path,
-                    "year": movie.year,
-                    "similarity_score": min(round(r["score"] * 100), 100),
-                    "streaming_providers": [], # Enriched later
-                    "overview": movie.overview,
-                    "vote_average": movie.vote_average,
-                    # Phase 12 Fields
-                    "vectorbox_score": movie.vectorbox_score,
-                    "imdb_rating": movie.imdb_rating,
-                    "metacritic_rating": movie.metacritic_rating,
 
-                    "title_es": movie.title_es,
-                    "overview_es": movie.overview_es
-                })
-            else:
-                # Fallback to Metadata (if movie not in DB for some reason)
-                poster_path = metadata.get("poster_path")
-                if not poster_path:
-                    try:
-                        details = await tmdb.get_movie_details(r_tmdb_id)
-                        if details: poster_path = details.get("poster_path")
-                    except Exception as e:
-                        logger.warning(f"Poster fetch failed for movie {r_tmdb_id}: {e}")
-                    
-                recommendations.append({
-                    "movie_id": r_tmdb_id,
-                    "title": metadata.get("title", "Unknown"),
-                    "poster_path": poster_path,
-                    "year": metadata.get("year"),
-                    "similarity_score": min(round(r["score"] * 100), 100),
-                    "streaming_providers": [],
-                    "overview": metadata.get("overview", ""),
-                    "vote_average": metadata.get("vote_average"),
-                    "vectorbox_score": metadata.get("vectorbox_score"),
-                    "imdb_rating": metadata.get("imdb_rating"),
-                    "metacritic_rating": metadata.get("metacritic_rating"),
+            # Not in the gated map = failed the quality gate (phantom/low-quality)
+            # or not a catalogue film → skip. The enriched-vector gate means real
+            # neighbours are always in the DB, so no legitimate result is lost.
+            if not movie:
+                continue
 
-                    "title_es": metadata.get("title_es"),
-                    "overview_es": metadata.get("overview_es")
-                })
-            
+            recommendations.append({
+                "movie_id": movie.tmdb_id,
+                "title": movie.title,
+                "poster_path": movie.poster_path,
+                "year": movie.year,
+                "similarity_score": min(round(r["score"] * 100), 100),
+                "streaming_providers": [], # Enriched later
+                "overview": movie.overview,
+                "vote_average": movie.vote_average,
+                # Phase 12 Fields
+                "vectorbox_score": movie.vectorbox_score,
+                "imdb_rating": movie.imdb_rating,
+                "metacritic_rating": movie.metacritic_rating,
+
+                "title_es": movie.title_es,
+                "overview_es": movie.overview_es
+            })
+
         # 4. Fallback/Augment with TMDB Recommendations if few results
         # 4. Fallback/Augment with TMDB Recommendations if few results
         if len(recommendations) < 12:
@@ -370,10 +375,11 @@ async def get_similar_multi(
 
     centroid = np.mean(vectors, axis=0).tolist()
 
-    # Over-fetch to absorb seed exclusions and quality-gate filtering.
+    # Over-fetch to absorb seed exclusions and quality-gate filtering. The +20
+    # covered the seeds but not the gate, which drops ~61% of what it sees.
     raw = await qdrant.search_similar(
         query_vector=centroid,
-        limit=body.limit + len(seed_ids) + 20,
+        limit=body.limit * QUALITY_GATE_OVERFETCH + len(seed_ids),
         score_threshold=0.45,
     )
 

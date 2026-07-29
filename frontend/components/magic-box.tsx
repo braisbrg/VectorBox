@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useMutation } from "@tanstack/react-query";
+import { useUser } from "@clerk/nextjs";
 import { Loader2 } from "lucide-react";
 import { api, getTMDBImageUrl } from "@/lib/api";
 import { QuickLook, QuickLookFilm } from "@/components/quick-look";
@@ -114,7 +115,21 @@ function Kbd({ k }: { k: string }) {
     );
 }
 
+// Mirrors TRY_MAX_QUERY_LENGTH in routers/search.py. Truncating here turns a
+// 422 into a slightly shorter search, which is the kinder failure.
+const GUEST_MAX_QUERY = 140;
+
 export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
+    const { isSignedIn } = useUser();
+    // The engine reports when the catalogue had nothing close enough to be a
+    // recommendation (measured threshold, see magic_search_ranking). An empty
+    // shelf plus a reason beats twenty films picked for no reason.
+    const [lowConfidence, setLowConfidence] = useState(false);
+    // Groq's free tier caps at 8000 tokens per minute and one parse costs ~2000,
+    // so a handful of searches in a row leaves the sentence unread. The results
+    // are still real films matched on the raw words; what is gone is every
+    // constraint the user expressed. Saying so beats quietly serving less.
+    const [degraded, setDegraded] = useState(false);
     const { language, t } = useLanguage();
     const router = useRouter();
     const [query, setQuery] = useState("");
@@ -168,14 +183,25 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
     const searchMutation = useMutation({
         mutationFn: async ({ text, forced }: { text: string; forced?: SearchIntent }) => {
             const t0 = performance.now();
-            const res = await api.post("/api/search/natural", {
-                query: text,
-                ...(forced ? { forced_intent: forced } : {}),
-                country_code: "ES",
-            });
+            // Two doors, by session (Fase 3). /natural requires auth and carries
+            // the full budget; /try is the bounded public one — 140 chars,
+            // 5/minute, no Tier-2 and no forced_intent, which is why the refine
+            // path below is only offered to signed-in users.
+            const res = isSignedIn
+                ? await api.post("/api/search/natural", {
+                      query: text,
+                      ...(forced ? { forced_intent: forced } : {}),
+                      country_code: "ES",
+                  })
+                : await api.post("/api/search/try", {
+                      query: text.slice(0, GUEST_MAX_QUERY),
+                      country_code: "ES",
+                  });
             return { data: res.data, ms: Math.round(performance.now() - t0) };
         },
         onSuccess: ({ data, ms }) => {
+            setLowConfidence(Boolean(data.low_confidence));
+            setDegraded(Boolean(data.degraded));
             const unique = Array.from(
                 new Map((data.results as SearchResult[]) .map((r) => [r.movie_id, r])).values()
             );
@@ -373,7 +399,11 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                                         {c.key}
                                     </span>
                                     <span className="px-[7px] py-[3px] text-fg">{c.value}</span>
-                                    {c.clears.length > 0 && (
+                                    {/* Refining a chip re-runs with forced_intent, which the
+                                        public /try door rejects by design. Offering the ×
+                                        to a guest would silently re-run the whole search and
+                                        ignore the edit — worse than not offering it. */}
+                                    {c.clears.length > 0 && isSignedIn && (
                                         <button
                                             onClick={() => removeChip(c)}
                                             aria-label={`Remove ${c.key} filter`}
@@ -388,8 +418,20 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                     </div>
 
                     <div className="max-h-[380px] overflow-y-auto">
+                        {degraded && !searchMutation.isPending && (
+                            <p className="border-b border-warn/40 bg-warn/10 px-3 py-2 font-mono text-[11px] leading-relaxed text-fg-2">
+                                {t("mb.degraded")}
+                            </p>
+                        )}
                         {results.length === 0 && !searchMutation.isPending && (
-                            <div className="p-8 text-center font-mono text-xs uppercase tracking-widest text-fg-3">{t("mb.no_results")}</div>
+                            lowConfidence ? (
+                                <div className="p-8 text-center">
+                                    <p className="font-mono text-xs uppercase tracking-widest text-fg-2">{t("mb.low_conf")}</p>
+                                    <p className="mx-auto mt-2 max-w-[42ch] font-mono text-[11px] leading-relaxed text-fg-3">{t("mb.low_conf_hint")}</p>
+                                </div>
+                            ) : (
+                                <div className="p-8 text-center font-mono text-xs uppercase tracking-widest text-fg-3">{t("mb.no_results")}</div>
+                            )
                         )}
                         {results.map((r, i) => (
                             <button

@@ -97,6 +97,15 @@ class MovieService:
             if not movie:
                 return None
 
+            # A2. Refuse TMDB `adult` titles on every user-triggered ingest path
+            # (rate, similar, group-vibe, rss, ZIP). Seed scripts call
+            # MovieFactory.build_movie directly and are deliberately unaffected.
+            # Without this, one authenticated user can inject arbitrary porn
+            # into the catalogue every other user's feed reads from.
+            if movie.is_adult:
+                logger.warning(f"Rejected adult TMDB title at ingest: tmdb_id={tmdb_id}")
+                return None
+
             # B. Upsert to Qdrant FIRST (REL-2). The point is keyed by tmdb_id
             # (movie_factory), so it needs nothing from the not-yet-committed PG
             # row. Doing the vector write before the DB commit means a Qdrant

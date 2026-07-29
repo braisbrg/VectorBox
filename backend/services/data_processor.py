@@ -83,6 +83,41 @@ class DataProcessor:
 
         return list(movies_map.values()), errors
 
+    # The ZIP path never went through CSVParser, so none of its validation ran
+    # here: titles/reviews were unbounded and ratings were unchecked floats.
+    # A hand-edited export with Rating=inf is accepted by Postgres `double
+    # precision`, then reaches func.avg() in /users/me/profile and Starlette
+    # renders JSON with allow_nan=False → permanent 500 on your own profile.
+    # Same caps CSVParser has always used.
+    MAX_TITLE = 500
+    MAX_REVIEW = 5000
+
+    @staticmethod
+    def _title(row) -> str:
+        return str(row.get('Name', '')).strip()[:DataProcessor.MAX_TITLE]
+
+    @staticmethod
+    def _year(row):
+        try:
+            year = int(float(row['Year'])) if pd.notna(row.get('Year')) else None
+        except (ValueError, TypeError, KeyError):
+            return None
+        return year if year is not None and 1800 <= year <= 2100 else None
+
+    @staticmethod
+    def _rating(row, col: str = 'Rating'):
+        """0-5 or None. The range test also rejects inf/-inf/nan (every
+        comparison against nan is False), so no separate isfinite check."""
+        try:
+            value = float(row[col]) if pd.notna(row.get(col)) else None
+        except (ValueError, TypeError, KeyError):
+            return None
+        return value if value is not None and 0 <= value <= 5 else None
+
+    @staticmethod
+    def _review(value):
+        return str(value)[:DataProcessor.MAX_REVIEW] if pd.notna(value) else None
+
     @staticmethod
     def _get_key(row) -> str:
         title = str(row.get('Name', '')).strip()
@@ -117,10 +152,10 @@ class DataProcessor:
             if not key: continue
 
             movies_map[key] = {
-                "title": row['Name'],
-                "year": int(row['Year']) if pd.notna(row['Year']) else None,
+                "title": DataProcessor._title(row),
+                "year": DataProcessor._year(row),
                 "letterboxd_uri": DataProcessor._normalize_uri(row.get('Letterboxd URI')),
-                "rating": float(row['Rating']) if pd.notna(row['Rating']) else None,
+                "rating": DataProcessor._rating(row),
                 "watched_date": DataProcessor._parse_date(row.get('Date')),
                 "review": None,
                 "is_watchlist": False,
@@ -137,8 +172,8 @@ class DataProcessor:
 
             if key not in movies_map:
                 movies_map[key] = {
-                    "title": row['Name'],
-                    "year": int(row['Year']) if pd.notna(row['Year']) else None,
+                    "title": DataProcessor._title(row),
+                    "year": DataProcessor._year(row),
                     "letterboxd_uri": DataProcessor._normalize_uri(row.get('Letterboxd URI')),
                     "rating": None,
                     "watched_date": None,
@@ -169,8 +204,8 @@ class DataProcessor:
             else:
                 # New entry — normalize URI (boxd.it short URLs → None, matched by title+year in upload.py)
                 movies_map[key] = {
-                    "title": row['Name'],
-                    "year": int(row['Year']) if pd.notna(row['Year']) else None,
+                    "title": DataProcessor._title(row),
+                    "year": DataProcessor._year(row),
                     "letterboxd_uri": DataProcessor._normalize_uri(row.get('Letterboxd URI')),
                     "rating": None,
                     "implicit_rating": 4.0,
@@ -194,8 +229,8 @@ class DataProcessor:
                     movies_map[key]["watched_date"] = DataProcessor._parse_date(row.get('Date'))
             else:
                 movies_map[key] = {
-                    "title": row['Name'],
-                    "year": int(row['Year']) if pd.notna(row['Year']) else None,
+                    "title": DataProcessor._title(row),
+                    "year": DataProcessor._year(row),
                     "letterboxd_uri": DataProcessor._normalize_uri(row.get('Letterboxd URI')),
                     "rating": None,
                     "watched_date": DataProcessor._parse_date(row.get('Date')),
@@ -231,14 +266,15 @@ class DataProcessor:
                 if watched_date and (not movies_map[key].get("watched_date") or watched_date > movies_map[key]["watched_date"]):
                     movies_map[key]["watched_date"] = watched_date
                 # Fill rating if diary has it and it's missing
-                if pd.notna(row.get('Rating')) and movies_map[key].get("rating") is None:
-                    movies_map[key]["rating"] = float(row['Rating'])
+                diary_rating = DataProcessor._rating(row)
+                if diary_rating is not None and movies_map[key].get("rating") is None:
+                    movies_map[key]["rating"] = diary_rating
             else:
                 movies_map[key] = {
-                    "title": row['Name'],
-                    "year": int(row['Year']) if pd.notna(row['Year']) else None,
+                    "title": DataProcessor._title(row),
+                    "year": DataProcessor._year(row),
                     "letterboxd_uri": DataProcessor._normalize_uri(row.get('Letterboxd URI')),
-                    "rating": float(row['Rating']) if pd.notna(row['Rating']) else None,
+                    "rating": DataProcessor._rating(row),
                     "watched_date": watched_date,
                     "review": None,
                     "is_watchlist": False,
@@ -258,16 +294,16 @@ class DataProcessor:
             if pd.isna(review_text): continue
 
             if key in movies_map:
-                movies_map[key]["review"] = str(review_text)
+                movies_map[key]["review"] = DataProcessor._review(review_text)
             else:
                 # Review implies watched
                 movies_map[key] = {
-                    "title": row['Name'],
-                    "year": int(row['Year']) if pd.notna(row['Year']) else None,
+                    "title": DataProcessor._title(row),
+                    "year": DataProcessor._year(row),
                     "letterboxd_uri": DataProcessor._normalize_uri(row.get('Letterboxd URI')),
-                    "rating": float(row['Rating']) if pd.notna(row['Rating']) else None,
+                    "rating": DataProcessor._rating(row),
                     "watched_date": DataProcessor._parse_date(row.get('Watched Date')) or DataProcessor._parse_date(row.get('Date')),
-                    "review": str(review_text),
+                    "review": DataProcessor._review(review_text),
                     "is_watchlist": False,
                     "is_liked": False,
                     "is_watched": True,

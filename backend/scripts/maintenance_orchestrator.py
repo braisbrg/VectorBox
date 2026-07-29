@@ -146,6 +146,12 @@ async def increment_omdb_used(db, n: int) -> None:
 
 REFRESH_STALE_DAYS = 7   # OMDb Patron tier (100k/day) makes weekly sweeps cheap.
 NO_OMDB_RETRY_DAYS = 30  # Aligns with OMDb negative-cache TTL.
+# TMDB transport errors deliberately do NOT trip the circuit breaker (they were
+# causing false trips on HTTP/2 hiccups), so a total outage — container DNS
+# dying, for instance — looks like an endless stream of "transient" warnings and
+# the phase would grind through the whole queue failing every item. Same guard
+# enrich_vectors.py uses for an exhausted Groq chain.
+STOP_AFTER_CONSECUTIVE_FAILURES = 25
 
 
 async def phase_refresh_metadata(omdb_budget: int, dry_run: bool) -> dict:
@@ -216,14 +222,28 @@ async def phase_refresh_metadata(omdb_budget: int, dry_run: bool) -> dict:
         tmdb = TMDBClient()
         omdb = OMDbClient()
         prog = _Progress("[Phase 1]", len(movies))
+        consecutive_failures = 0
         try:
             for i, movie in enumerate(movies, 1):
                 ok = await refresh_movie(movie, tmdb, omdb)
                 if ok:
                     stats["refreshed"] += 1
+                    # Only a success reached OMDb: refresh_movie returns early
+                    # when TMDB fails, before the OMDb call. Still an upper
+                    # bound — a hit with no imdb_id skips OMDb too — but erring
+                    # high protects the budget, unlike counting every failure.
+                    stats["omdb_used"] += 1
+                    consecutive_failures = 0
                 else:
                     stats["failed"] += 1
-                stats["omdb_used"] += 1  # refresh_movie always calls OMDb (when imdb_id set)
+                    consecutive_failures += 1
+                    if consecutive_failures >= STOP_AFTER_CONSECUTIVE_FAILURES:
+                        logger.error(
+                            f"[Phase 1] {consecutive_failures} consecutive failures — "
+                            f"upstream looks down (check container DNS). Stopping after "
+                            f"{i}/{len(movies)} instead of churning the rest."
+                        )
+                        break
 
                 # Persist progress every 25 movies (resilient to interruption)
                 if stats["refreshed"] % 25 == 0 and stats["refreshed"] > 0:
@@ -362,11 +382,11 @@ def _build_groq_client():
     return None
 
 
-# The standardised enrichment chain (2026-06 model sweep): qwen3-32b is the most
-# consistent free model for V2 descriptions, gpt-oss-120b the richest. Phase 3
-# uses ONLY these two so a full 8-phase run stays consistent with the bulk
-# re-enrich (scripts/enrich_vectors.py --chain qwen3-32b,oss-120).
-REENRICH_CHAIN = ["qwen/qwen3-32b", "openai/gpt-oss-120b"]
+# The standardised enrichment chain — single source of truth in
+# services/llm_models.ENRICH_CHAIN (qwen3.6-27b prose head → gpt-oss-120b →
+# gpt-oss-20b). Phase 3 uses it so a full 8-phase run stays consistent with the
+# bulk re-enrich (scripts/enrich_vectors.py --smart).
+from services.llm_models import ENRICH_CHAIN as REENRICH_CHAIN
 
 
 async def phase_embedding_repair(limit: int, dry_run: bool) -> dict:

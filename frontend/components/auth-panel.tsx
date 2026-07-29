@@ -5,6 +5,7 @@
 // RIGHT column renders the page's auth content.
 
 import Link from "next/link";
+import { Wordmark } from "@/components/ui/wordmark";
 import { cn } from "@/lib/utils";
 import { useLanguage } from "@/components/language-provider";
 
@@ -110,8 +111,7 @@ export function AuthSplit({ children }: { children: React.ReactNode }) {
                 <div>
                     {/* wordmark → landing (user 2026-07-10: escape hatch without browser-back) */}
                     <Link href="/" className="inline-block font-display text-2xl uppercase tracking-tight">
-                        <span className="text-fg">VECTOR</span>
-                        <span className="ml-0.5 bg-primary px-1.5 py-0.5 text-primary-ink">BOX</span>
+                        <Wordmark />
                     </Link>
                     <p className="mt-5 max-w-[300px] font-mono text-[12px] leading-relaxed text-fg-2">
                         {t("auth.tagline")}
@@ -128,8 +128,7 @@ export function AuthSplit({ children }: { children: React.ReactNode }) {
             {/* mobile mini-brand header */}
             <header className="flex h-[54px] items-center border-b border-border-2 bg-bg px-5 lg:hidden">
                 <Link href="/" className="font-display text-base uppercase tracking-tight">
-                    <span className="text-fg">VECTOR</span>
-                    <span className="ml-0.5 bg-primary px-1.5 py-0.5 text-primary-ink">BOX</span>
+                    <Wordmark />
                 </Link>
             </header>
 

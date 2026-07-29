@@ -96,7 +96,9 @@ export function MovieCard({
     const triad = [
         { key: "×", title: "Not interested", tone: "text-danger", onClick: () => onReject?.(id), loading: isRejecting, show: !!onReject },
         { key: "✓", title: "Watched", tone: "text-primary", onClick: () => onMarkWatched?.(id), loading: isMarkingWatched, show: !!onMarkWatched },
-        { key: "i", title: "Inspect", tone: "text-fg", onClick: () => onInspect?.(id, contributors), loading: false, show: true },
+        // show only with a handler: the landing renders this card for logged-out
+        // visitors, where an "i" that opens nothing is worse than no button.
+        { key: "i", title: "Inspect", tone: "text-fg", onClick: () => onInspect?.(id, contributors), loading: false, show: !!onInspect },
     ].filter((b) => b.show);
 
     return (
@@ -121,7 +123,7 @@ export function MovieCard({
                             src={getTMDBImageUrl(posterPath)}
                             alt={title}
                             fill
-                            className="object-cover transition-transform duration-300 group-hover:scale-105"
+                            className="object-cover transition-[filter] duration-150 group-hover:brightness-110"
                             sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 20vw"
                             priority={priority}
                             onError={() => setImageError(true)}

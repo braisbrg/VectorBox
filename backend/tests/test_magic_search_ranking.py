@@ -304,3 +304,32 @@ def test_deep_analysis_just_below_threshold():
     )
     assert intent_complexity(intent) == DEEP_ANALYSIS_COMPLEXITY_THRESHOLD - 1
     assert should_run_deep_analysis(intent) is False
+
+
+# --- fetch width: a filter needs something to filter -------------------------
+#
+# The dimensions applied AFTER the vector search — in Postgres, because they are
+# not in the Qdrant payload — can only ever keep a subset of what the fetch
+# returned. Both places that do this were fetching too narrowly, and the symptom
+# was silence: a short list looks like a narrow query, not like a bug.
+
+
+def test_post_filtered_searches_fetch_wider_than_they_return():
+    """Measured 2026-07-29: at a 20-candidate fetch, "thrillers coreanos" parsed
+    correctly to countries=['South Korea'] and kept ONE film, while the catalogue
+    holds 219 Korean ones. At 150 it returns Memories of Murder."""
+    from services.magic_search_ranking import (
+        SEARCH_FETCH_POST_FILTERED, SEARCH_RESULT_LIMIT,
+    )
+
+    assert SEARCH_FETCH_POST_FILTERED >= SEARCH_RESULT_LIMIT * 5
+
+
+def test_similar_overfetches_past_its_quality_gate():
+    """/similar drops everything below VBS 55 / 100 votes / no poster, and only
+    38.9% of the catalogue clears that. Measured over 40 random films asking for
+    12 similars: fetching 2x returned 8.6 on average with 12 of 40 shelves full;
+    fetching 8x returned 11.9 with 39 of 40 full."""
+    from routers.similar import QUALITY_GATE_OVERFETCH
+
+    assert QUALITY_GATE_OVERFETCH >= 8

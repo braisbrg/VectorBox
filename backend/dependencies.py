@@ -203,6 +203,30 @@ def _extract_clerk_email(payload: dict) -> str:
     return ""
 
 
+def _email_is_proven_verified(payload: dict) -> bool:
+    """Strict counterpart to _extract_clerk_email: True only with POSITIVE
+    evidence of verification in the token.
+
+    _extract_clerk_email is deliberately permissive because its result also
+    drives cosmetic things (username seed, display). That permissiveness is
+    unsafe for exactly one decision — adopting a pre-existing DB row by email —
+    because that binds a new Clerk identity to someone else's data. The old
+    code treated "no verification field" as verified, so a JWT template
+    emitting a bare `email` claim (or an `email_addresses[]` entry without a
+    `verification` block) was enough to take over a legacy account.
+
+    Absence of evidence is not evidence of verification: default False.
+    """
+    if payload.get("email_verified") is True:
+        return True
+    emails = payload.get("email_addresses")
+    if isinstance(emails, list):
+        for entry in emails:
+            if isinstance(entry, dict) and (entry.get("verification") or {}).get("status") == "verified":
+                return True
+    return False
+
+
 async def _username_is_free(db: AsyncSession, username: str) -> bool:
     existing = await db.execute(select(User.id).where(User.username == username))
     return existing.scalar_one_or_none() is None
@@ -374,7 +398,11 @@ async def get_current_user(
         #   - target row's clerk_user_id MUST already be NULL — otherwise a new
         #     Clerk user signing up with another Clerk user's email could
         #     overwrite the existing binding and steal that account's data.
-        if user is None and email and not is_anonymous:
+        #   - the email must be PROVABLY verified in the token (fail closed);
+        #     "no verification field present" used to count as verified, which
+        #     made this an account-takeover path for any JWT template that
+        #     emits a bare `email` claim.
+        if user is None and email and not is_anonymous and _email_is_proven_verified(payload):
             result = await db.execute(
                 select(User).where(
                     User.email == email,

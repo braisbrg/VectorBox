@@ -272,6 +272,28 @@ async def test_refresh_backfills_missing_imdb_id_from_tmdb():
 
 
 @pytest.mark.asyncio
+async def test_refresh_returns_false_without_touching_omdb_when_tmdb_fails():
+    """A TMDB miss must short-circuit before the OMDb call.
+
+    maintenance_orchestrator Phase 1 bills one OMDb unit per SUCCESS on the
+    strength of this ordering. It used to bill every iteration, so the DNS
+    outage on 2026-07-26 was on course to charge ~19k units to the daily
+    budget without a single OMDb request. If OMDb ever moves ahead of the
+    TMDB fetch, that accounting silently goes wrong again — hence this test.
+    """
+    class _ExplodingOMDb:
+        async def fetch_movie_data(self, imdb_id):
+            raise AssertionError("OMDb must not be called when TMDB returns nothing")
+
+        def calculate_vectorbox_score(self, *a, **kw):
+            raise AssertionError("OMDb must not be called when TMDB returns nothing")
+
+    movie = _make_movie()
+    ok = await refresh_movie(movie, _StubTMDB(None), _ExplodingOMDb())
+    assert ok is False
+
+
+@pytest.mark.asyncio
 async def test_refresh_is_idempotent():
     """Running refresh_movie twice on the same payload produces the same final
     Movie state — no incremental side effects (no double-counting of arrays,

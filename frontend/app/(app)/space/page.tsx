@@ -12,6 +12,7 @@ import { useQuery } from "@tanstack/react-query";
 import { getSpace, SpacePoint } from "@/lib/api";
 import { QuickLook, QuickLookFilm } from "@/components/quick-look";
 import { SubScreenHeader } from "@/components/shell/sub-screen-header";
+import { resolveAccent, accentRgba, resolveDisplayFont } from "@/lib/accent";
 import { useLanguage } from "@/components/language-provider";
 import { cn } from "@/lib/utils";
 
@@ -222,11 +223,15 @@ export default function SpacePage() {
         modelRef.current = M;
         viewRef.current = { x: 0, y: 0, k: 1 };
 
-        const css = getComputedStyle(document.documentElement);
-        const P = css.getPropertyValue("--primary").trim() || "#CCFF00";
-        const FG2 = "#bbbbbb";
-        const FG3 = "#777777";
-        const BORDER = "#222222";
+        // resolveAccent paints 1px and reads it back: getComputedStyle returns
+        // oklch() verbatim, so the old getPropertyValue + "#CCFF00" fallback both
+        // mis-described the real colour and froze it on the non-acid themes.
+        const P = resolveAccent();
+        // Hoisted: this canvas redraws every frame, so resolve the face once.
+        const DISPLAY_FONT = resolveDisplayFont();
+        const FG2 = "#9e9e9e"; // --fg-2
+        const FG3 = "#808080"; // --fg-3
+        const BORDER = "#292929"; // --border-2
 
         // The two prototypes diverge: desktop space (Prototype.html wireSpace) has
         // hulls, hover-NN edges, pulse rings, spinning ◆, vignette, brackets and a
@@ -264,8 +269,8 @@ export default function SpacePage() {
             for (const c of M.clusters) {
                 const foc = focusRef.current === c.id;
                 const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, 64);
-                g.addColorStop(0, `rgba(204,255,0,${(foc ? 0.12 : 0.05) * t})`);
-                g.addColorStop(1, "rgba(204,255,0,0)");
+                g.addColorStop(0, accentRgba(P, (foc ? 0.12 : 0.05) * t));
+                g.addColorStop(1, accentRgba(P, 0));
                 ctx.fillStyle = g;
                 ctx.beginPath(); ctx.arc(c.x, c.y, 64, 0, Math.PI * 2); ctx.fill();
             }
@@ -340,7 +345,7 @@ export default function SpacePage() {
                     ctx.setLineDash([]);
                     ctx.globalAlpha = 1;
                     ctx.fillStyle = P;
-                    ctx.font = `${8.5 / k}px 'Departure Mono', 'IBM Plex Mono', monospace`;
+                    ctx.font = `${8.5 / k}px ${DISPLAY_FONT}`;
                     ctx.textAlign = "center";
                     ctx.fillText(`d ${(o.d / Math.min(w, h)).toFixed(2)}`, (hovPt.wx + o.q.wx) / 2, (hovPt.wy + o.q.wy) / 2 - 4 / k);
                 }
@@ -398,7 +403,7 @@ export default function SpacePage() {
             // hover tooltip label
             const hov = hoverRef.current;
             if (hov) {
-                ctx.font = `${10 / k}px 'Departure Mono', 'IBM Plex Mono', monospace`;
+                ctx.font = `${10 / k}px ${DISPLAY_FONT}`;
                 ctx.fillStyle = P;
                 ctx.fillText(`${hov.title}${hov.year ? ` · ${hov.year}` : ""}`, hov.wx + 8 / k, hov.wy - 8 / k);
             }
@@ -407,7 +412,7 @@ export default function SpacePage() {
             // (prototype wireSpace); mobile: `#id`, zoom-gated (prototype drawSpaceM).
             ctx.textAlign = "center";
             if (desktopFX) {
-                ctx.font = `${10.5 / k}px 'Departure Mono', 'IBM Plex Mono', monospace`;
+                ctx.font = `${10.5 / k}px ${DISPLAY_FONT}`;
                 for (const c of M.clusters) {
                     const hot = focusRef.current === c.id || hoverRef.current?.cluster_id === c.id;
                     ctx.fillStyle = hot ? P : FG3;
@@ -419,7 +424,7 @@ export default function SpacePage() {
                     ctx.beginPath(); ctx.moveTo(c.x, c.y - 72 / k); ctx.lineTo(c.x, c.y - 56 / k); ctx.stroke();
                 }
             } else {
-                ctx.font = `${9 / k}px 'Departure Mono', 'IBM Plex Mono', monospace`;
+                ctx.font = `${9 / k}px ${DISPLAY_FONT}`;
                 for (const c of M.clusters) {
                     const foc = focusRef.current === c.id;
                     if (!foc && k < 1.3) continue;
@@ -484,7 +489,7 @@ export default function SpacePage() {
                 if (la > 0) {
                     ctx.globalAlpha = la;
                     ctx.fillStyle = P;
-                    ctx.font = `${11 / k}px 'Departure Mono', 'IBM Plex Mono', monospace`;
+                    ctx.font = `${11 / k}px ${DISPLAY_FONT}`;
                     ctx.fillText("YOU", M.cx + 12 / k, M.cy + 4 / k);
                     ctx.globalAlpha = 1;
                 }
@@ -519,7 +524,7 @@ export default function SpacePage() {
                     const wy = -((mouse.my - V2.y) / V2.k - h / 2) / (h / 2);
                     ctx.globalAlpha = 0.75;
                     ctx.fillStyle = FG3;
-                    ctx.font = "9px 'Departure Mono', 'IBM Plex Mono', monospace";
+                    ctx.font = "9px ${DISPLAY_FONT}";
                     ctx.fillText(`${wx.toFixed(3)} , ${wy.toFixed(3)}`, Math.min(mouse.mx + 12, w - 92), Math.min(mouse.my + 20, h - 12));
                     ctx.globalAlpha = 1;
                 }
