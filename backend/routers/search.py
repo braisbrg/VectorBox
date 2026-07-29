@@ -129,6 +129,56 @@ from limiter import limiter
 # the vector. A constant because scripts/audit_search.py asserts which branch
 # answered, and matching on a prose sentence is a test that breaks on a typo.
 CATALOGUE_SELECTION_REASONING = "A varied selection of well-regarded films from the catalogue."
+AUDIENCE_SELECTION_REASONING = "Films chosen for who is watching, ranked by the catalogue's own score."
+
+CATALOGUE_SELECTION_SIZE = 12
+CATALOGUE_SELECTION_POOL = 40
+
+
+async def _catalogue_selection(db: AsyncSession, floor: float, genres: Optional[List[str]] = None):
+    """Films straight from the catalogue: a quality bar, and nothing else.
+
+    Shuffled rather than ordered by score, so the same question twice does not
+    return the same twelve films. The bar is what makes it a good answer; the
+    order within it is not information.
+    """
+    q = (
+        select(Movie)
+        .where(Movie.vectorbox_score >= floor)
+        .where(Movie.poster_path.is_not(None))
+    )
+    if genres:
+        q = q.where(Movie.genres.overlap(genres))
+    picks = (await db.execute(
+        q.order_by(func.random()).limit(CATALOGUE_SELECTION_POOL)
+    )).scalars().all()
+
+    if genres:
+        # The genre IS the coherence the user asked for. Spreading across lead
+        # genres here — which is right when there is no filter — would undo it.
+        return picks[:CATALOGUE_SELECTION_SIZE]
+
+    seen_genres: set[str] = set()
+    varied: list[Movie] = []
+    for m in picks:
+        lead = (m.genres or ["?"])[0]
+        if lead in seen_genres and len(varied) < CATALOGUE_SELECTION_SIZE:
+            continue
+        seen_genres.add(lead)
+        varied.append(m)
+        if len(varied) >= CATALOGUE_SELECTION_SIZE:
+            break
+    return varied
+
+
+def _catalogue_results(movies) -> List[dict]:
+    return [{
+        "movie_id": m.tmdb_id, "title": m.title, "overview": m.overview,
+        "poster_path": m.poster_path, "score": round(m.vectorbox_score or 0),
+        "year": m.year, "runtime": m.runtime, "genres": m.genres or [],
+        "vote_average": m.vote_average, "vectorbox_score": m.vectorbox_score,
+        "title_es": m.title_es, "overview_es": m.overview_es,
+    } for m in movies]
 
 
 async def _run_natural_search(
@@ -236,7 +286,48 @@ async def _run_natural_search(
                 )
                 if result:
                     return result
-        
+
+        # Audience requests never reach the vector, and that is the point.
+        #
+        # Measured 2026-07-29: "family friendly, gentle, wholesome, safe for all
+        # ages" scores 0.548 over its top ten neighbours — HIGHER than "the
+        # loneliness of living in a huge city" at 0.505, one of the queries this
+        # engine answers best. So no confidence threshold can ever catch it: the
+        # vector is not weakly right, it is confidently wrong. The catalogue is
+        # embedded on what a film is ABOUT, so "familiar" finds cinema ABOUT
+        # families — Uncle Buck, Charlotte's Web, at a mean VBS of 55.
+        #
+        # The metadata already holds the right answer. Genre plus the catalogue's
+        # own score gives Spirited Away (99), WALL·E (97), Toy Story (97).
+        #
+        # Placed after the reference-movie branch so "peliculas como Origen"
+        # still wins, and before the embedding so this path costs neither the
+        # CPU-bound encode nor a Qdrant round trip.
+        #
+        # mpaa_ratings is deliberately NOT applied: it covers 74.9% of the
+        # catalogue, so requiring it would drop a quarter of the films for having
+        # no certification rather than for being unsuitable.
+        # A degraded run must not be reported as an unanswerable question.
+        # Measured with scripts/audit_search.py: Groq's free tier caps at 8000
+        # tokens per MINUTE, a parse costs ~2000, and four searches in a row
+        # exhaust it. With no parse there is no `open_request` and no
+        # `min_vectorbox_score`, so every gentle query — "no se que ver", "para
+        # llorar esta noche" — fell straight through to the refusal and the user
+        # got an empty page. The catalogue branch needs no LLM at all, so a
+        # degraded run answers from it instead of apologising.
+        degraded = parse_failed(intent)
+
+        if intent.audience_request:
+            logger.info("Audience request %r (genres=%s)", search_req.query, intent.include_genres)
+            picks = await _catalogue_selection(
+                db, OPEN_REQUEST_MIN_VBS, intent.include_genres
+            )
+            return SearchResponse(
+                results=_catalogue_results(picks),
+                intent={**intent.model_dump(), "reasoning": AUDIENCE_SELECTION_REASONING},
+                degraded=degraded,
+            )
+
         # 2. Generate Embedding for the EXPANDED semantic query
         loop = asyncio.get_running_loop()
         query_vector = await loop.run_in_executor(
@@ -343,15 +434,6 @@ async def _run_natural_search(
         cosines = [r.get("score") or 0.0 for r in raw_results]
         confidence = search_confidence(cosines)
 
-        # A degraded run must not be reported as an unanswerable question.
-        # Measured 2026-07-29 with scripts/audit_search.py: Groq's free tier caps
-        # at 8000 tokens per MINUTE, a parse costs ~2000, and four searches in a
-        # row exhaust it. With no parse there is no `open_request` and no
-        # `min_vectorbox_score`, so every gentle query — "no se que ver", "para
-        # llorar esta noche" — fell straight through to the refusal and the user
-        # got an empty page. The catalogue branch below needs no LLM at all, so
-        # a degraded run answers from it instead of apologising.
-        degraded = parse_failed(intent)
 
         # A weak vector is not the same as an unanswerable question. Measured
         # 2026-07-29, three different things were scoring below the threshold:
@@ -402,31 +484,9 @@ async def _run_natural_search(
             floor = intent.min_vectorbox_score or OPEN_REQUEST_MIN_VBS
             logger.info("Catalogue selection for %r (floor=%s, open=%s, degraded=%s)",
                         search_req.query, floor, intent.open_request, degraded)
-            picks = (await db.execute(
-                select(Movie)
-                .where(Movie.vectorbox_score >= floor)
-                .where(Movie.poster_path.is_not(None))
-                .order_by(func.random())
-                .limit(40)
-            )).scalars().all()
-            seen_genres: set[str] = set()
-            varied: list[Movie] = []
-            for m in picks:
-                lead = (m.genres or ["?"])[0]
-                if lead in seen_genres and len(varied) < 12:
-                    continue
-                seen_genres.add(lead)
-                varied.append(m)
-                if len(varied) >= 12:
-                    break
+            picks = await _catalogue_selection(db, floor)
             return SearchResponse(
-                results=[{
-                    "movie_id": m.tmdb_id, "title": m.title, "overview": m.overview,
-                    "poster_path": m.poster_path, "score": round(m.vectorbox_score or 0),
-                    "year": m.year, "runtime": m.runtime, "genres": m.genres or [],
-                    "vote_average": m.vote_average, "vectorbox_score": m.vectorbox_score,
-                    "title_es": m.title_es, "overview_es": m.overview_es,
-                } for m in varied],
+                results=_catalogue_results(picks),
                 intent={**intent.model_dump(), "confidence": round(confidence, 3),
                         "reasoning": CATALOGUE_SELECTION_REASONING},
                 degraded=degraded,

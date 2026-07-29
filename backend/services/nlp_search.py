@@ -184,11 +184,53 @@ def ensure_quality_filter(intent: "MovieSearchIntent", query: str) -> "MovieSear
     return intent
 
 
+# Phrases that name an AUDIENCE. Deliberately narrow: every one of these says
+# who is in the room, and none of them can be read as a subject. "para ver un
+# domingo" is an occasion and must not match, which is why the cues carry their
+# preposition ("para ver con") instead of the bare verb.
+#
+# Fourth field this session to need a rule behind its description, for the same
+# reason as the other three: a description is a probability, a guard is a rule.
+_AUDIENCE_CUES = tuple(w.translate(_ACCENTS) for w in (
+    "para ver con", "para toda la familia", "en familia", "con niños", "con los niños",
+    "con mis hijos", "con los peques", "que guste a", "padres e hijos", "para niños",
+    "family friendly", "family-friendly", "for the whole family", "for all ages",
+    "with my kids", "with the kids", "for kids", "parents and kids", "kid friendly",
+    "kid-friendly",
+))
+
+# "familiar" / "family" alone is ambiguous — "una peli familiar" is an audience,
+# "un drama familiar" is a subject. Only fire on the bare noun phrase.
+_AUDIENCE_EXACT = tuple(w.translate(_ACCENTS) for w in (
+    "una peli familiar", "una pelicula familiar", "peliculas familiares",
+    "pelis familiares", "cine familiar", "a family movie", "a family film",
+    "family movies", "family films",
+))
+
+
+def names_an_audience(query: str) -> bool:
+    q = query.lower().translate(_ACCENTS)
+    return any(c in q for c in _AUDIENCE_CUES) or any(c in q for c in _AUDIENCE_EXACT)
+
+
+def ensure_audience_request(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Flag an audience request the parser read as a theme.
+
+    Only ever sets the flag, never clears it: the cue list is a floor on
+    recall, not a definition. The model sees phrasings no list will cover.
+    """
+    if not intent.audience_request and names_an_audience(query):
+        logger.info("Audience request detected by cue, parser said theme: %r", query)
+        intent.audience_request = True
+    return intent
+
+
 def finalize_intent(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
     """Every deterministic repair the parser's output needs, in one place."""
     intent = guard_language_filter(intent, query)
     intent = ensure_semantic_query(intent, query)
-    return ensure_quality_filter(intent, query)
+    intent = ensure_quality_filter(intent, query)
+    return ensure_audience_request(intent, query)
 
 
 # The three ways this module gives up, as one predicate. An intent carrying any
@@ -361,6 +403,28 @@ class MovieSearchIntent(BaseModel):
             "giving criteria — 'no se que ver', 'sorprendeme', 'recomiendame algo', "
             "'what should I watch', 'surprise me'. False whenever the request "
             "names any subject, mood, era, genre or constraint, however vague."
+        ),
+    )
+
+    # The one failure no confidence threshold can catch. Measured 2026-07-29:
+    # "family friendly, gentle, wholesome, safe for all ages" scores 0.548 over
+    # its top ten neighbours — HIGHER than "the loneliness of living in a huge
+    # city" at 0.505, one of the queries the engine answers best. The vector is
+    # not weakly right, it is confidently wrong: the catalogue is embedded on
+    # what a film is ABOUT, so "familiar" retrieves cinema ABOUT families
+    # (Uncle Buck, Charlotte's Web at VBS 55) rather than cinema suitable for
+    # watching with them. Only whoever reads the sentence can tell the two
+    # apart, so the model says which one it is.
+    audience_request: bool = Field(
+        False,
+        description=(
+            "Set True when the user is describing WHO will be watching rather "
+            "than what the film is about — 'una peli familiar', 'para ver con "
+            "niños', 'que guste a padres e hijos', 'a movie for the whole "
+            "family', 'something my parents and I can both enjoy'. Still set "
+            "include_genres (e.g. Family, Animation) as usual. False when the "
+            "sentence names a subject, mood or setting: 'una peli sobre una "
+            "familia rota' is a THEME, not an audience."
         ),
     )
 
