@@ -316,3 +316,43 @@ def test_the_guard_only_sets_never_clears():
 
     missed = MovieSearchIntent(semantic_query="x", reasoning="r")
     assert ensure_audience_request(missed, "una peli familiar para ver con niños").audience_request
+
+
+def test_a_cue_hit_supplies_the_genres_it_implies():
+    """Every cue is a family/kids phrase, so a cue hit knows what it means.
+
+    Without genres the audience branch selects on nothing but the quality bar:
+    measured, "a movie parents and kids will both enjoy" returned Athlete A — a
+    documentary about abuse in gymnastics — at VBS 85, dressed as a family pick.
+    """
+    from services.nlp_search import AUDIENCE_CUE_GENRES, MovieSearchIntent, ensure_audience_request
+
+    out = ensure_audience_request(
+        MovieSearchIntent(semantic_query="x", reasoning="r"),
+        "una peli familiar para ver con niños",
+    )
+    assert out.audience_request
+    assert out.include_genres == AUDIENCE_CUE_GENRES
+
+
+def test_genres_the_parser_chose_are_never_overwritten():
+    from services.nlp_search import MovieSearchIntent, ensure_audience_request
+
+    out = ensure_audience_request(
+        MovieSearchIntent(semantic_query="x", reasoning="r", include_genres=["Adventure"]),
+        "una peli familiar para ver con niños",
+    )
+    assert out.include_genres == ["Adventure"]
+
+
+def test_no_cue_means_no_genres_invented():
+    """A model-only flag with no genre must fall through to the vector path, not
+    get a family genre it never asked for."""
+    from services.nlp_search import MovieSearchIntent, ensure_audience_request
+
+    out = ensure_audience_request(
+        MovieSearchIntent(semantic_query="x", reasoning="r", audience_request=True),
+        "algo que terminemos mis padres y yo sin discutir",
+    )
+    assert out.audience_request
+    assert not out.include_genres

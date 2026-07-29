@@ -7,7 +7,7 @@ import asyncio
 from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user, get_redis
 from models.schemas import TokenResponse
-from services.nlp_search import parse_user_intent, parse_failed, search_with_reasoning, MovieSearchIntent
+from services.nlp_search import parse_user_intent, parse_failed, finalize_intent, search_with_reasoning, MovieSearchIntent
 from services.magic_search_ranking import (
     CONFIDENCE_SAMPLE,
     LOW_CONFIDENCE_MEAN,
@@ -245,10 +245,10 @@ async def _run_natural_search(
                 logger.warning(f"Groq intent parsing failed, falling back to pure vector search: {e}")
                 # Same wording parse_user_intent uses for its own give-ups, so
                 # one predicate (parse_failed) covers every route into this state.
-                intent = MovieSearchIntent(
+                intent = finalize_intent(MovieSearchIntent(
                     semantic_query=search_req.query,
                     reasoning=f"LLM unavailable: {e}",
-                )
+                ), search_req.query)
         logger.info(f"Parsed intent: {intent}")
         logger.info(f"Reasoning: {intent.reasoning}")
         
@@ -317,7 +317,16 @@ async def _run_natural_search(
         # degraded run answers from it instead of apologising.
         degraded = parse_failed(intent)
 
-        if intent.audience_request:
+        # Genres are required, not optional. Without them this branch selects on
+        # nothing but the quality bar and hands back whatever the catalogue's top
+        # scorers happen to be — measured, "a movie parents and kids will both
+        # enjoy" returned Athlete A and The Spirit of the Beehive at VBS 85. That
+        # is the failure this branch exists to fix, wearing a better score. When
+        # the cue list is what fired, ensure_audience_request supplies them; when
+        # only the model flagged it and named no genre, the vector path is the
+        # honest fallback (it answered that same query with My Big Fat Greek
+        # Wedding at VBS 55 — worse on paper, right in kind).
+        if intent.audience_request and intent.include_genres:
             logger.info("Audience request %r (genres=%s)", search_req.query, intent.include_genres)
             picks = await _catalogue_selection(
                 db, OPEN_REQUEST_MIN_VBS, intent.include_genres

@@ -163,10 +163,15 @@ def classify(resp) -> str:
 
 
 # When the parser is down, every answer degrades to pure vector search with no
-# filters and no open_request — which the confidence gate then refuses. That
-# looks identical to a product bug in the table, so it gets its own column: a
-# run with unparsed rows is measuring Groq, not the engine.
-_PARSE_FAILED = ("All models failed", "LLM unavailable", "No LLM available", "Groq unavailable")
+# filters and no open_request. That looks identical to a product bug in the
+# table, so it gets its own column: a run with unparsed rows is measuring Groq,
+# not the engine.
+#
+# Read off `resp.degraded`, NOT off the reasoning string. Sniffing the reasoning
+# was a blind spot that took a whole panel run to notice: the catalogue and
+# audience branches REPLACE `reasoning` with their own sentence, so the failure
+# marker was gone by the time this saw it — and those are exactly the branches a
+# degraded run falls into. Every row on them read as a clean pass.
 
 
 async def run_one(expect: str, query: str, tmdb, qdrant, emb) -> dict:
@@ -184,7 +189,7 @@ async def run_one(expect: str, query: str, tmdb, qdrant, emb) -> dict:
                 "fails": [] if got == expect else [f"rama={got}"]}
 
     rows = resp.results or []
-    unparsed = any(m in ((resp.intent or {}).get("reasoning") or "") for m in _PARSE_FAILED)
+    unparsed = bool(resp.degraded)
     vbs = [r["vectorbox_score"] for r in rows[:5] if r.get("vectorbox_score")]
     rule = SHAPE_RULES[expect]
     got = classify(resp)

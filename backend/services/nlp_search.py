@@ -213,15 +213,29 @@ def names_an_audience(query: str) -> bool:
     return any(c in q for c in _AUDIENCE_CUES) or any(c in q for c in _AUDIENCE_EXACT)
 
 
+# Every cue above is a family/kids phrase, so when the CUE is what fired we know
+# which genres the request means and can say so. Without them the audience branch
+# has nothing to select on and returns arbitrary high-scoring films: measured
+# 2026-07-29, "a movie parents and kids will both enjoy" came back with Athlete A
+# (a documentary about abuse in gymnastics) and The Spirit of the Beehive at a
+# mean VBS of 85. High scores, dressed as a family selection — the same
+# confidently-wrong failure this branch exists to fix.
+AUDIENCE_CUE_GENRES = ["Family", "Animation"]
+
+
 def ensure_audience_request(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
     """Flag an audience request the parser read as a theme.
 
     Only ever sets the flag, never clears it: the cue list is a floor on
     recall, not a definition. The model sees phrasings no list will cover.
     """
-    if not intent.audience_request and names_an_audience(query):
+    if not names_an_audience(query):
+        return intent
+    if not intent.audience_request:
         logger.info("Audience request detected by cue, parser said theme: %r", query)
         intent.audience_request = True
+    if not intent.include_genres:
+        intent.include_genres = list(AUDIENCE_CUE_GENRES)
     return intent
 
 
@@ -565,7 +579,8 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     user_query = _normalize_typos(user_query)
     client = get_llm_client()
     if not client:
-        return MovieSearchIntent(semantic_query=user_query, reasoning="No LLM available")
+        return finalize_intent(
+            MovieSearchIntent(semantic_query=user_query, reasoning="No LLM available"), user_query)
 
     system_prompt = """You are an expert film archivist. Translate natural language into structured database filters.
 
@@ -672,15 +687,20 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
                 ), user_query)
             except Exception as e2:
                 logger.warning(f"Fallback model also failed: {e2}.")
-                return MovieSearchIntent(
+                # The guards are pure string rules — they need no model, and
+                # they are the only thing standing between a rate-limited user
+                # and a bad answer. Measured 2026-07-29: with the parser down,
+                # "una peli familiar para ver con niños" lost its audience flag
+                # and fell to the vector, returning Uncle Buck at VBS 57.
+                return finalize_intent(MovieSearchIntent(
                     semantic_query=user_query,
                     reasoning=f"All models failed: {e2}"
-                )
+                ), user_query)
         logger.warning(f"Model failed: {e}.")
-        return MovieSearchIntent(
+        return finalize_intent(MovieSearchIntent(
             semantic_query=user_query,
             reasoning=f"LLM unavailable: {e}"
-        )
+        ), user_query)
 
 async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List[ReasonedMovie]:
     """
