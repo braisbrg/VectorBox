@@ -188,16 +188,43 @@ async def _invalidate_feed_cache(user_id: int) -> None:
     except Exception as e:
         logger.error(f"Feed cache invalidation failed for user_id={user_id}: {e}")
 
+def _watchlist_settled(
+    last_lb_count: "int | None", lb_total: "int | None", additions: int
+) -> bool:
+    """Can the incremental scrape safely STOP at the already-synced boundary?
+
+    At that boundary every addition is already counted (they cluster at the top of
+    a date-added-descending list). Nothing was removed iff Letterboxd's own total
+    now equals our stored baseline plus those additions:  lb_total == last + adds.
+    If lb_total is SHORT of that, a removal is hidden past the boundary (even when
+    an equal addition kept the raw total flat) → keep scraping so the reconcile can
+    find it. We only ever compare Letterboxd-total vs Letterboxd-total, so the
+    resolvable/irresolvable offset (series etc. we can't map to a TMDB movie) never
+    enters — additions here are the resolvable ones we track (`watchlist_added`),
+    and the rare irresolvable-masked case is the weekly net's job.
+
+    Degradation: no total (page-1 parse failed) → stop (plain incremental, weekly
+    net covers removals). No baseline (first sync / Redis-evicted) → don't stop:
+    one full scrape reconciles and re-establishes the baseline.
+    """
+    if lb_total is None:
+        return True
+    if last_lb_count is None:
+        return False
+    return lb_total >= last_lb_count + additions
+
+
 async def _run_sync_background(
-    user_id: int, letterboxd_profile: str, tmdb: TMDBClient, reconcile: bool = False
+    user_id: int, letterboxd_profile: str, tmdb: TMDBClient, force_reconcile: bool = False
 ) -> None:
     """Background task — owns its own session. Never re-raises.
 
-    `reconcile=False` (the sync-button path): fast INCREMENTAL watchlist scrape
-    that early-exits at the already-synced boundary and skips the removal
-    reconcile. `reconcile=True` (the ~daily background path): FULL scrape + F-31
-    removal reconcile. The endpoint runs the full path at most once/day per user
-    so a normal sync is always cheap.
+    Watchlist sync is INCREMENTAL by default: scrape newest-first page by page and
+    early-exit at the first fully-already-synced page — but ONLY if `_watchlist_settled`
+    confirms Letterboxd's total matches our baseline plus the additions we just saw.
+    If it's short (a removal, even one masked by an equal addition), we keep scraping
+    for the F-31 removal reconcile. The weekly `force_reconcile` is the backstop for
+    the rare irresolvable-masked case.
     """
     from config import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
@@ -209,13 +236,29 @@ async def _run_sync_background(
             movie_service = MovieService(db, tmdb=tmdb)
             watchlist_added = 0
 
+            # Removal-detection baseline (Redis): Letterboxd's own watchlist total
+            # from the previous sync. Compared LB-total vs LB-total, so our
+            # resolvable/irresolvable offset (series etc.) never enters the maths.
+            import redis.asyncio as aioredis
+            from config import REDIS_URL
+            rds = aioredis.from_url(REDIS_URL, decode_responses=True)
+            lb_total: "int | None" = None
+
             try:
+                last_lb_count = None
+                try:
+                    _raw = await rds.get(f"rss:wl_lb_count:{user_id}")
+                    last_lb_count = int(_raw) if _raw is not None else None
+                except Exception:
+                    last_lb_count = None
+
                 # B-37 incremental watchlist sync: scrape newest-first PAGE BY PAGE
                 # and STOP at the first page whose films are ALL already in this
                 # user's watchlist (the "already-synced" boundary — the list is
-                # date-added-descending, so new films only ever appear at the top).
-                # One coincidental match is possible; a whole page is not. Cuts a
-                # typical re-sync from ~22 pages to 1-2 and only resolves NEW films.
+                # date-added-descending, so new films only ever appear at the top)
+                # — but only once _watchlist_settled confirms nothing was removed
+                # (lb_total == baseline + additions). Cuts a typical re-sync from
+                # ~22 pages to 1-2 and only resolves NEW films.
                 known_rows = await db.execute(
                     select(Movie.tmdb_id)
                     .join(UserRating, UserRating.movie_id == Movie.id)
@@ -226,12 +269,19 @@ async def _run_sync_background(
                 # Resolved tmdb→movie ids seen this run (for the F-31 removal reconcile).
                 resolved_movie_ids: set[int] = set()
                 full_scrape = True  # False if we early-exit → skip the removal reconcile
+                keep_scraping_for_removal = False  # set once a removal is indicated at the boundary
                 MAX_WATCHLIST_PAGES = 50
 
                 for page in range(1, MAX_WATCHLIST_PAGES + 1):
-                    page_films, has_more = await scraper._scrape_listing_page(
-                        letterboxd_profile, "watchlist", page
-                    )
+                    if page == 1:
+                        # Page 1 carries data-num-entries — the Letterboxd watchlist total.
+                        page_films, has_more, lb_total = await scraper._scrape_listing_page(
+                            letterboxd_profile, "watchlist", page, with_total=True
+                        )
+                    else:
+                        page_films, has_more = await scraper._scrape_listing_page(
+                            letterboxd_profile, "watchlist", page
+                        )
                     if not page_films:
                         break  # natural end (empty/404) — full_scrape stays True
 
@@ -293,16 +343,27 @@ async def _run_sync_background(
                             db.add(UserRating(user_id=user_id, movie_id=movie.id, is_watchlist=True))
                             watchlist_added += 1
 
-                    # Early-exit (incremental path only): an entire page already in
-                    # the watchlist = boundary reached. The reconcile path never
-                    # early-exits (it needs the whole list to detect removals).
-                    if not reconcile and page_tmdb_ids and all(t in known_tmdb_ids for t in page_tmdb_ids):
-                        full_scrape = False
+                    # Already-synced boundary: an entire page's films already in the
+                    # watchlist. Additions are all counted by now (they cluster at the
+                    # top), so only STOP if the count math confirms no removal —
+                    # otherwise a film left (maybe masked by an equal addition) and we
+                    # keep scraping so the reconcile below finds it. The weekly
+                    # force_reconcile never early-exits (it wants the whole list).
+                    if (not force_reconcile and not keep_scraping_for_removal
+                            and page_tmdb_ids and all(t in known_tmdb_ids for t in page_tmdb_ids)):
+                        if _watchlist_settled(last_lb_count, lb_total, watchlist_added):
+                            full_scrape = False
+                            logger.info(
+                                f"[watchlist-sync] user_id={user_id} incremental stop at page {page}: "
+                                f"all known, lb_total={lb_total} == baseline {last_lb_count} + adds {watchlist_added}"
+                            )
+                            break
+                        keep_scraping_for_removal = True
                         logger.info(
-                            f"[watchlist-sync] user_id={user_id} incremental stop at page {page}: "
-                            f"all {len(page_tmdb_ids)} films already synced"
+                            f"[watchlist-sync] user_id={user_id} boundary at page {page} but "
+                            f"lb_total={lb_total} < baseline {last_lb_count} + adds {watchlist_added} "
+                            f"→ removal indicated, full scrape"
                         )
-                        break
                     if not has_more:
                         break  # natural end of the list
 
@@ -339,12 +400,23 @@ async def _run_sync_background(
                         f"skipping reconcile to avoid wiping on a transient scrape failure"
                     )
 
+                # Store the fresh Letterboxd total as next sync's removal baseline.
+                if lb_total is not None:
+                    try:
+                        await rds.set(f"rss:wl_lb_count:{user_id}", lb_total)
+                    except Exception:
+                        pass
+
             finally:
                 await scraper.close()
                 # Releases the lazily-created OMDb/Qdrant clients owned by this
                 # task's MovieService. tmdb is the injected singleton — never
                 # closed by MovieService.close() (it doesn't own it).
                 await movie_service.close()
+                try:
+                    await rds.close()
+                except Exception:
+                    pass
 
             await db.commit()
 
@@ -429,15 +501,17 @@ async def sync_user_data(
         raise HTTPException(status_code=403, detail="Cannot sync another user's Letterboxd account")
     letterboxd_profile = user.letterboxd_username
 
-    # Decouple removal-reconcile from the fast sync: claim a once-per-day slot
-    # with an atomic SET NX EX. The first sync of the day runs the FULL scrape +
-    # reconcile; every other sync is the cheap incremental path.
+    # Weekly SAFETY NET for removals: claim a once-per-week slot with an atomic
+    # SET NX EX. Normally a removal is caught on the very next sync (see
+    # _watchlist_settled: lb_total short of baseline+additions) even when an equal
+    # addition keeps the raw total flat — this weekly forced full scrape is only
+    # the backstop for the rare irresolvable-masked case.
     import redis.asyncio as aioredis
     from config import REDIS_URL
-    reconcile = False
+    force_reconcile = False
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
     try:
-        reconcile = bool(await r.set(f"rss:reconcile:{user.id}", "1", nx=True, ex=86400))
+        force_reconcile = bool(await r.set(f"rss:reconcile:{user.id}", "1", nx=True, ex=604800))
         # In-progress flag so the UI can spin until the sync actually finishes
         # (600s safety TTL — cleared by _run_sync_background's finally).
         await r.set(f"rss:syncing:{user.id}", "1", ex=600)
@@ -449,7 +523,7 @@ async def sync_user_data(
         except Exception:
             pass
 
-    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb, reconcile)
+    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb, force_reconcile)
 
     return {
         "status": "started",

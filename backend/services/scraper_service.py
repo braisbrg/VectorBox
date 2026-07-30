@@ -185,12 +185,17 @@ class ScraperService:
         username: str,
         path_suffix: str,
         page: int,
+        with_total: bool = False,
     ) -> tuple[list[dict], bool]:
         """Scrape one page of any Letterboxd poster-list (watchlist, likes,
         any other `/{user}/{path_suffix}/page/N/`).
 
         Returns (films, has_more). has_more=False signals end of pagination
-        (404 or empty page).
+        (404 or empty page). When `with_total=True`, returns a 3-tuple
+        (films, has_more, total): `total` is the list size Letterboxd stamps as
+        `data-num-entries` on the content wrapper (present on page 1), or None if
+        absent. Used by the watchlist sync to detect removals cheaply (a drop in
+        the total triggers the full removal reconcile — otherwise skipped).
         """
         base = f"https://letterboxd.com/{username}/{path_suffix}/"
         url = base if page == 1 else f"{base}page/{page}/"
@@ -198,7 +203,7 @@ class ScraperService:
 
         html = await self._fetch_with_curl_cffi(url, referer=f"https://letterboxd.com/{username}/")
         if not html:
-            return [], False
+            return ([], False, None) if with_total else ([], False)
 
         soup = BeautifulSoup(html, "html.parser")
         poster_containers = soup.find_all("div", attrs={"data-component-class": "LazyPoster"})
@@ -206,6 +211,15 @@ class ScraperService:
             poster_containers = soup.find_all("li", class_="poster-container")
 
         films = self._parse_poster_containers(poster_containers)
+        if with_total:
+            node = soup.find(attrs={"data-num-entries": True})
+            total = None
+            if node:
+                try:
+                    total = int(node["data-num-entries"])
+                except (ValueError, TypeError):
+                    total = None
+            return films, bool(films), total
         return films, bool(films)
 
     async def _scrape_watchlist_page(self, username: str, page: int) -> tuple[list[dict], bool]:
