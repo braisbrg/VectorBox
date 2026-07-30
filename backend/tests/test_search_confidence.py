@@ -225,24 +225,35 @@ def test_no_bar_is_not_a_quality_only_request():
     assert not is_quality_only_request(MovieSearchIntent(semantic_query="x", reasoning="r"))
 
 
-@pytest.mark.parametrize("kwargs", [
-    {"countries": ["South Korea"]},
-    {"spoken_languages": ["Japanese"]},
-    {"awards_contains": ["Palme"]},
-    {"min_vectorbox_score": 80},
-])
-def test_postgres_side_filters_widen_the_fetch(kwargs):
-    """These are applied AFTER the search, so they can only keep what the fetch
-    returned. At 20 candidates 'thrillers coreanos' kept one film of 219 Korean
-    ones in the catalogue; at 150 it returns Memories of Murder."""
+def test_the_last_postgres_side_filter_widens_the_fetch():
+    """awards_contains is the only dimension still enforced after the search: it
+    is a SUBSTRING match over free text ("Won 3 Oscars"), which needs a full-text
+    payload index rather than a keyword one. So it still needs the headroom."""
     from services.magic_search_ranking import (
         SEARCH_FETCH_DEFAULT, SEARCH_FETCH_POST_FILTERED, search_fetch_limit,
     )
     from services.nlp_search import MovieSearchIntent
 
     assert SEARCH_FETCH_POST_FILTERED > SEARCH_FETCH_DEFAULT
-    intent = MovieSearchIntent(semantic_query="x", reasoning="r", **kwargs)
+    intent = MovieSearchIntent(semantic_query="x", reasoning="r", awards_contains=["Palme"])
     assert search_fetch_limit(intent) == SEARCH_FETCH_POST_FILTERED
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"countries": ["South Korea"]},
+    {"spoken_languages": ["Japanese"]},
+    {"min_vectorbox_score": 80},
+])
+def test_dimensions_that_moved_into_qdrant_no_longer_need_headroom(kwargs):
+    """They narrow DURING the search now, so twenty candidates are twenty real
+    answers. Measured on the query that motivated all of this: with the country
+    filter in the payload, "thrillers coreanos" returns 20 Korean films out of
+    20 candidates, where the post-filter kept 1."""
+    from services.magic_search_ranking import SEARCH_FETCH_DEFAULT, search_fetch_limit
+    from services.nlp_search import MovieSearchIntent
+
+    intent = MovieSearchIntent(semantic_query="x", reasoning="r", **kwargs)
+    assert search_fetch_limit(intent) == SEARCH_FETCH_DEFAULT
 
 
 def test_a_qdrant_only_query_does_not_pay_for_the_wide_fetch():
@@ -255,3 +266,104 @@ def test_a_qdrant_only_query_does_not_pay_for_the_wide_fetch():
                                include_genres=["Horror"], year_min=1970,
                                original_language="ja")
     assert search_fetch_limit(intent) == SEARCH_FETCH_DEFAULT
+
+
+# --- audience requests: the failure no threshold can catch --------------------
+#
+# Measured 2026-07-29: "family friendly, gentle, wholesome, safe for all ages"
+# scores 0.548 over its top ten neighbours — HIGHER than "the loneliness of
+# living in a huge city" at 0.505, one of the queries the engine answers best.
+# The vector is not weakly right, it is confidently wrong, so only whoever reads
+# the sentence can tell an audience from a subject.
+
+
+def test_audience_request_exists_and_defaults_off():
+    from services.nlp_search import MovieSearchIntent
+
+    assert "audience_request" in MovieSearchIntent.model_fields
+    assert MovieSearchIntent.model_fields["audience_request"].default is False
+
+
+@pytest.mark.parametrize("query", [
+    "una peli familiar para ver con niños",
+    "una peli que guste a padres e hijos, sin violencia ni sustos",
+    "algo para ver con mis hijos",
+    "una pelicula familiar",
+    "a movie for the whole family",
+    "something family friendly",
+    "a film to watch with the kids",
+])
+def test_the_cue_list_catches_an_audience(query):
+    from services.nlp_search import names_an_audience
+
+    assert names_an_audience(query)
+
+
+@pytest.mark.parametrize("query", [
+    # An occasion, not an audience — which is why the cues carry their
+    # preposition ("para ver con") instead of the bare verb.
+    "una peli para ver un domingo por la tarde",
+    "algo para ver esta noche",
+    # The same word as a SUBJECT. "familiar"/"family" alone is ambiguous, so the
+    # bare noun phrase is matched exactly and the adjective use is left alone.
+    "un drama sobre una familia rota",
+    "peliculas sobre secretos de familia",
+    "a movie about a dysfunctional family",
+    "algo lento y triste sobre el duelo",
+])
+def test_the_cue_list_leaves_subjects_and_occasions_alone(query):
+    from services.nlp_search import names_an_audience
+
+    assert not names_an_audience(query)
+
+
+def test_the_guard_only_sets_never_clears():
+    """The cue list is a floor on recall, not a definition — the model sees
+    phrasings no list will cover, and must be allowed to say so."""
+    from services.nlp_search import MovieSearchIntent, ensure_audience_request
+
+    flagged = MovieSearchIntent(semantic_query="x", reasoning="r", audience_request=True)
+    assert ensure_audience_request(flagged, "algo lento y triste sobre el duelo").audience_request
+
+    missed = MovieSearchIntent(semantic_query="x", reasoning="r")
+    assert ensure_audience_request(missed, "una peli familiar para ver con niños").audience_request
+
+
+def test_a_cue_hit_supplies_the_genres_it_implies():
+    """Every cue is a family/kids phrase, so a cue hit knows what it means.
+
+    Without genres the audience branch selects on nothing but the quality bar:
+    measured, "a movie parents and kids will both enjoy" returned Athlete A — a
+    documentary about abuse in gymnastics — at VBS 85, dressed as a family pick.
+    """
+    from services.nlp_search import AUDIENCE_CUE_GENRES, MovieSearchIntent, ensure_audience_request
+
+    out = ensure_audience_request(
+        MovieSearchIntent(semantic_query="x", reasoning="r"),
+        "una peli familiar para ver con niños",
+    )
+    assert out.audience_request
+    assert out.include_genres == AUDIENCE_CUE_GENRES
+
+
+def test_genres_the_parser_chose_are_never_overwritten():
+    from services.nlp_search import MovieSearchIntent, ensure_audience_request
+
+    out = ensure_audience_request(
+        MovieSearchIntent(semantic_query="x", reasoning="r", include_genres=["Adventure"]),
+        "una peli familiar para ver con niños",
+    )
+    assert out.include_genres == ["Adventure"]
+
+
+def test_no_cue_means_no_genres_invented():
+    """A model-only flag with no genre must fall through to the vector path, not
+    get a family genre it never asked for."""
+    from services.nlp_search import MovieSearchIntent, ensure_audience_request
+
+    out = ensure_audience_request(
+        MovieSearchIntent(semantic_query="x", reasoning="r", audience_request=True),
+        "algo que terminemos mis padres y yo sin discutir",
+    )
+    assert out.audience_request
+    assert not out.include_genres

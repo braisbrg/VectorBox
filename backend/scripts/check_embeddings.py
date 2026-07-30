@@ -141,7 +141,8 @@ async def _re_enrich_movie(
     # the bulk re-enrich) so a Phase-3-touched point isn't thinner than the rest
     # — the old hand-rolled payload dropped imdb_rating/metacritic/title_es/es.
     from scripts.reembed_catalog import _qdrant_payload
-    payload = _qdrant_payload(movie)
+    # enriched=True: the row flag flips below, AFTER this payload is built
+    payload = _qdrant_payload(movie, enriched=True)
     try:
         await qdrant.upsert_movie_vector(
             movie_id=movie.tmdb_id, vector=vector.tolist(), metadata=payload

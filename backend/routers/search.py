@@ -4,10 +4,11 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import asyncio
+import random
 from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user, get_redis
 from models.schemas import TokenResponse
-from services.nlp_search import parse_user_intent, parse_failed, search_with_reasoning, MovieSearchIntent
+from services.nlp_search import parse_user_intent, parse_failed, finalize_intent, search_with_reasoning, MovieSearchIntent
 from services.magic_search_ranking import (
     CONFIDENCE_SAMPLE,
     LOW_CONFIDENCE_MEAN,
@@ -67,7 +68,6 @@ async def _item_to_item_search(
     movie_id: int,
     movie_title: str,
     qdrant: QdrantService,
-    tmdb: TMDBClient,
 ) -> Optional[SearchResponse]:
     """Shared helper for Item-to-Item recommendation (deduplicated)."""
     vector = await qdrant.get_vector(movie_id)
@@ -129,6 +129,72 @@ from limiter import limiter
 # the vector. A constant because scripts/audit_search.py asserts which branch
 # answered, and matching on a prose sentence is a test that breaks on a typo.
 CATALOGUE_SELECTION_REASONING = "A varied selection of well-regarded films from the catalogue."
+AUDIENCE_SELECTION_REASONING = "Films chosen for who is watching, ranked by the catalogue's own score."
+
+CATALOGUE_SELECTION_SIZE = 12
+CATALOGUE_SELECTION_POOL = 40
+
+
+async def _catalogue_selection(
+    db: AsyncSession,
+    floor: float,
+    genres: Optional[List[str]] = None,
+    top_ranked: bool = False,
+):
+    """Films straight from the catalogue: a quality bar, and nothing else.
+
+    Two shapes of question end up here and they want opposite orderings.
+
+    "no se que ver" wants VARIETY — the bar is what makes the answer good, the
+    order within it is not information, and returning the same twelve films every
+    time would be a worse answer to the same question. So: sample above the floor.
+
+    "las mejores peliculas de la historia" wants the TOP. Sampling above a floor
+    answered it, on 2026-07-30, with Harry Potter and the Deathly Hallows Part 1,
+    A Quiet Place Part II and How to Train Your Dragon 3 — respectable films, and
+    a wrong answer to a superlative. So: rank first, then sample the head, which
+    keeps some rotation without pretending a random 78 belongs on that list.
+    """
+    q = (
+        select(Movie)
+        .where(Movie.vectorbox_score >= floor)
+        .where(Movie.poster_path.is_not(None))
+    )
+    if genres:
+        q = q.where(Movie.genres.overlap(genres))
+    q = q.order_by(Movie.vectorbox_score.desc()) if top_ranked else q.order_by(func.random())
+    picks = (await db.execute(q.limit(CATALOGUE_SELECTION_POOL))).scalars().all()
+    if top_ranked:
+        # The head is already the answer; shuffling inside it only decides which
+        # of the catalogue's very best show up today.
+        picks = random.sample(picks, min(len(picks), CATALOGUE_SELECTION_POOL))
+
+    if genres:
+        # The genre IS the coherence the user asked for. Spreading across lead
+        # genres here — which is right when there is no filter — would undo it.
+        return picks[:CATALOGUE_SELECTION_SIZE]
+
+    seen_genres: set[str] = set()
+    varied: list[Movie] = []
+    for m in picks:
+        lead = (m.genres or ["?"])[0]
+        if lead in seen_genres and len(varied) < CATALOGUE_SELECTION_SIZE:
+            continue
+        seen_genres.add(lead)
+        varied.append(m)
+        if len(varied) >= CATALOGUE_SELECTION_SIZE:
+            break
+    return varied
+
+
+def _catalogue_results(movies) -> List[dict]:
+    return [{
+        "movie_id": m.tmdb_id, "title": m.title, "overview": m.overview,
+        "poster_path": m.poster_path, "score": round(m.vectorbox_score or 0),
+        "year": m.year, "runtime": m.runtime, "genres": m.genres or [],
+        "vote_average": m.vote_average, "vectorbox_score": m.vectorbox_score,
+        "title_es": m.title_es, "overview_es": m.overview_es,
+    } for m in movies]
 
 
 async def _run_natural_search(
@@ -180,7 +246,7 @@ async def _run_natural_search(
         if potential_movie_id:
             logger.info(f"Switching to Item-to-Item search based on movie: {potential_movie_title}")
             result = await _item_to_item_search(
-                potential_movie_id, potential_movie_title, qdrant, tmdb
+                potential_movie_id, potential_movie_title, qdrant
             )
             if result:
                 return result
@@ -195,10 +261,10 @@ async def _run_natural_search(
                 logger.warning(f"Groq intent parsing failed, falling back to pure vector search: {e}")
                 # Same wording parse_user_intent uses for its own give-ups, so
                 # one predicate (parse_failed) covers every route into this state.
-                intent = MovieSearchIntent(
+                intent = finalize_intent(MovieSearchIntent(
                     semantic_query=search_req.query,
                     reasoning=f"LLM unavailable: {e}",
-                )
+                ), search_req.query)
         logger.info(f"Parsed intent: {intent}")
         logger.info(f"Reasoning: {intent.reasoning}")
         
@@ -232,11 +298,61 @@ async def _run_natural_search(
             if potential_movie_id:
                 logger.info(f"Performing Item-to-Item search for reference: {potential_movie_title}")
                 result = await _item_to_item_search(
-                    potential_movie_id, potential_movie_title, qdrant, tmdb
+                    potential_movie_id, potential_movie_title, qdrant
                 )
                 if result:
                     return result
-        
+
+        # Audience requests never reach the vector, and that is the point.
+        #
+        # Measured 2026-07-29: "family friendly, gentle, wholesome, safe for all
+        # ages" scores 0.548 over its top ten neighbours — HIGHER than "the
+        # loneliness of living in a huge city" at 0.505, one of the queries this
+        # engine answers best. So no confidence threshold can ever catch it: the
+        # vector is not weakly right, it is confidently wrong. The catalogue is
+        # embedded on what a film is ABOUT, so "familiar" finds cinema ABOUT
+        # families — Uncle Buck, Charlotte's Web, at a mean VBS of 55.
+        #
+        # The metadata already holds the right answer. Genre plus the catalogue's
+        # own score gives Spirited Away (99), WALL·E (97), Toy Story (97).
+        #
+        # Placed after the reference-movie branch so "peliculas como Origen"
+        # still wins, and before the embedding so this path costs neither the
+        # CPU-bound encode nor a Qdrant round trip.
+        #
+        # mpaa_ratings is deliberately NOT applied: it covers 74.9% of the
+        # catalogue, so requiring it would drop a quarter of the films for having
+        # no certification rather than for being unsuitable.
+        # A degraded run must not be reported as an unanswerable question.
+        # Measured with scripts/audit_search.py: Groq's free tier caps at 8000
+        # tokens per MINUTE, a parse costs ~2000, and four searches in a row
+        # exhaust it. With no parse there is no `open_request` and no
+        # `min_vectorbox_score`, so every gentle query — "no se que ver", "para
+        # llorar esta noche" — fell straight through to the refusal and the user
+        # got an empty page. The catalogue branch needs no LLM at all, so a
+        # degraded run answers from it instead of apologising.
+        degraded = parse_failed(intent)
+
+        # Genres are required, not optional. Without them this branch selects on
+        # nothing but the quality bar and hands back whatever the catalogue's top
+        # scorers happen to be — measured, "a movie parents and kids will both
+        # enjoy" returned Athlete A and The Spirit of the Beehive at VBS 85. That
+        # is the failure this branch exists to fix, wearing a better score. When
+        # the cue list is what fired, ensure_audience_request supplies them; when
+        # only the model flagged it and named no genre, the vector path is the
+        # honest fallback (it answered that same query with My Big Fat Greek
+        # Wedding at VBS 55 — worse on paper, right in kind).
+        if intent.audience_request and intent.include_genres:
+            logger.info("Audience request %r (genres=%s)", search_req.query, intent.include_genres)
+            picks = await _catalogue_selection(
+                db, OPEN_REQUEST_MIN_VBS, intent.include_genres
+            )
+            return SearchResponse(
+                results=_catalogue_results(picks),
+                intent={**intent.model_dump(), "reasoning": AUDIENCE_SELECTION_REASONING},
+                degraded=degraded,
+            )
+
         # 2. Generate Embedding for the EXPANDED semantic query
         loop = asyncio.get_running_loop()
         query_vector = await loop.run_in_executor(
@@ -295,6 +411,16 @@ async def _run_natural_search(
             qdrant_filters["min_imdb_rating"] = intent.min_imdb_rating
         if intent.min_metacritic is not None:
             qdrant_filters["min_metacritic"] = intent.min_metacritic
+        # Payload-backed since 2026-07-29. Before that these were enforced only
+        # in Postgres, AFTER the search — so they subtracted from twenty
+        # neighbours instead of narrowing the search. min_vectorbox_score was
+        # never passed here at all, though Qdrant has supported it all along.
+        if intent.countries:
+            qdrant_filters["countries"] = intent.countries
+        if intent.spoken_languages:
+            qdrant_filters["spoken_languages"] = intent.spoken_languages
+        if intent.min_vectorbox_score is not None:
+            qdrant_filters["min_vectorbox_score"] = intent.min_vectorbox_score
         if intent.safe_mode:
             # Default. Exclude TMDB 'adult' titles unless the user explicitly
             # asks for them via the LLM-parsed safe_mode=False.
@@ -343,15 +469,6 @@ async def _run_natural_search(
         cosines = [r.get("score") or 0.0 for r in raw_results]
         confidence = search_confidence(cosines)
 
-        # A degraded run must not be reported as an unanswerable question.
-        # Measured 2026-07-29 with scripts/audit_search.py: Groq's free tier caps
-        # at 8000 tokens per MINUTE, a parse costs ~2000, and four searches in a
-        # row exhaust it. With no parse there is no `open_request` and no
-        # `min_vectorbox_score`, so every gentle query — "no se que ver", "para
-        # llorar esta noche" — fell straight through to the refusal and the user
-        # got an empty page. The catalogue branch below needs no LLM at all, so
-        # a degraded run answers from it instead of apologising.
-        degraded = parse_failed(intent)
 
         # A weak vector is not the same as an unanswerable question. Measured
         # 2026-07-29, three different things were scoring below the threshold:
@@ -370,7 +487,8 @@ async def _run_natural_search(
         # Confidence cannot separate the third from the fourth (0.306 vs 0.232 is
         # inside the noise), so the parser flags it as `open_request`.
         if (is_low_confidence(cosines) and not has_descriptive_filters(intent)
-                and not intent.open_request and not degraded):
+                and not intent.open_request and not intent.audience_request
+                and not degraded):
             logger.info(
                 "Low-confidence query (mean top-%d cosine %.3f < %.2f): %r",
                 CONFIDENCE_SAMPLE, confidence, LOW_CONFIDENCE_MEAN, search_req.query,
@@ -398,35 +516,25 @@ async def _run_natural_search(
         # second passed the gate and then found almost nothing, because the
         # twenty nearest neighbours of a meaningless vector rarely clear a
         # quality bar. Querying the catalogue directly is the honest answer.
-        if is_low_confidence(cosines) and (intent.open_request or is_quality_only_request(intent) or degraded):
+        # audience_request lands here only when it named no genre — with one it
+        # was answered before the embedding. Someone describing the room is still
+        # asking for a suggestion, so refusing them is the failure with no
+        # recovery. Verified: "algo que terminemos mis padres y yo sin discutir"
+        # was returning an empty page.
+        if is_low_confidence(cosines) and (
+            intent.open_request or intent.audience_request
+            or is_quality_only_request(intent) or degraded
+        ):
             floor = intent.min_vectorbox_score or OPEN_REQUEST_MIN_VBS
             logger.info("Catalogue selection for %r (floor=%s, open=%s, degraded=%s)",
                         search_req.query, floor, intent.open_request, degraded)
-            picks = (await db.execute(
-                select(Movie)
-                .where(Movie.vectorbox_score >= floor)
-                .where(Movie.poster_path.is_not(None))
-                .order_by(func.random())
-                .limit(40)
-            )).scalars().all()
-            seen_genres: set[str] = set()
-            varied: list[Movie] = []
-            for m in picks:
-                lead = (m.genres or ["?"])[0]
-                if lead in seen_genres and len(varied) < 12:
-                    continue
-                seen_genres.add(lead)
-                varied.append(m)
-                if len(varied) >= 12:
-                    break
+            # An explicit quality bar is a request for the top, not for a
+            # sample of the acceptable. open_request is the opposite.
+            picks = await _catalogue_selection(
+                db, floor, top_ranked=bool(intent.min_vectorbox_score)
+            )
             return SearchResponse(
-                results=[{
-                    "movie_id": m.tmdb_id, "title": m.title, "overview": m.overview,
-                    "poster_path": m.poster_path, "score": round(m.vectorbox_score or 0),
-                    "year": m.year, "runtime": m.runtime, "genres": m.genres or [],
-                    "vote_average": m.vote_average, "vectorbox_score": m.vectorbox_score,
-                    "title_es": m.title_es, "overview_es": m.overview_es,
-                } for m in varied],
+                results=_catalogue_results(picks),
                 intent={**intent.model_dump(), "confidence": round(confidence, 3),
                         "reasoning": CATALOGUE_SELECTION_REASONING},
                 degraded=degraded,

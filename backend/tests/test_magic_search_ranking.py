@@ -333,3 +333,25 @@ def test_similar_overfetches_past_its_quality_gate():
     from routers.similar import QUALITY_GATE_OVERFETCH
 
     assert QUALITY_GATE_OVERFETCH >= 8
+
+
+def test_rail_filters_reach_the_query_not_just_the_backstop():
+    """`search_filters` is the QDRANT dict for the wide rows' vector search — only
+    ever {"include_tmdb_ids": [...]} for providers, None otherwise. The rail's own
+    constraints live in a different dict, and wiring the wrong one is a SILENT
+    no-op: apply_rail_filters ignores include_tmdb_ids, the row builds unfiltered,
+    and the post-filter cuts it exactly as before. Measured, not read.
+    """
+    from sqlalchemy import select
+    from models.database import Movie
+    from services.recommendation_engine import apply_rail_filters
+
+    base = select(Movie)
+    assert apply_rail_filters(base, None) is base
+    assert apply_rail_filters(base, {"include_tmdb_ids": [1, 2, 3]}) is base, \
+        "a provider id-set is not a rail filter and must not silently look applied"
+
+    for key, value in (("min_vectorbox_score", 80), ("year_min", 1990),
+                       ("year_max", 2010), ("max_runtime", 100),
+                       ("include_genres", ["Drama"])):
+        assert apply_rail_filters(base, {key: value}) is not base, key

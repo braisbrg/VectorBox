@@ -299,7 +299,9 @@ class MovieFactory:
                     "overview_es": movie.overview_es,
                     "keywords": movie.keywords,
                     "directors": movie.directors,
-                    "cast": movie.cast
+                    "cast": movie.cast,
+                    # True only when the LLM produced the description above
+                    "has_enriched_embedding": bool(movie.has_enriched_embedding)
                 }
             )
 

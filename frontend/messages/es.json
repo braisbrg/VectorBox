@@ -67,7 +67,7 @@
     "about": {
       "title": "Sobre VectorBox",
       "desc": "Sistema de recomendación vectorial basado en tus datos de Letterboxd.",
-      "version": "v1.1.0",
+      "version": "v3.0.0",
       "credits_tmdb": "Este producto usa la API de TMDB pero no está avalado ni certificado por TMDB.",
       "credits_justwatch": "Datos de disponibilidad en streaming proporcionados por JustWatch vía la API de TMDB.",
       "credits_omdb": "Datos de puntuaciones de la API de OMDb, bajo licencia",
@@ -458,7 +458,10 @@
     "cta_or": "o",
     "how": "Cómo funciona",
     "chip_heist": "atracos con estilo, Europa años 70",
-    "chip_loneliness": "la soledad de vivir en una ciudad enorme"
+    "chip_loneliness": "la soledad de vivir en una ciudad enorme",
+    "clear": "limpiar",
+    "go": "buscar",
+    "results_own": "tu búsqueda"
   },
   "explore": {
     "guest_session": "◌ sesión de invitado",

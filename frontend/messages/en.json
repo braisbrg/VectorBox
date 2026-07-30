@@ -67,7 +67,7 @@
     "about": {
       "title": "About VectorBox",
       "desc": "Vector-based recommendation system powered by your Letterboxd data.",
-      "version": "v1.1.0",
+      "version": "v3.0.0",
       "credits_tmdb": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
       "credits_justwatch": "Streaming availability data provided by JustWatch via the TMDB API.",
       "credits_omdb": "Ratings data from the OMDb API, licensed under",
@@ -458,7 +458,10 @@
     "cta_or": "or",
     "how": "How it works",
     "chip_heist": "stylish heists, 1970s Europe",
-    "chip_loneliness": "the loneliness of living in a huge city"
+    "chip_loneliness": "the loneliness of living in a huge city",
+    "clear": "clear",
+    "go": "search",
+    "results_own": "your search"
   },
   "explore": {
     "guest_session": "◌ guest session",

@@ -605,3 +605,27 @@ export const getShowcase = async (slug: ShowcaseSlug, lang: string): Promise<Sho
     const response = await api.get("/api/search/showcase", { params: { slug, lang } });
     return response.data;
 };
+
+// Mirrors TRY_MAX_QUERY_LENGTH in routers/search.py. Enforced on the input too,
+// so the cap is something you can see rather than a 422 you discover.
+export const TRY_MAX_QUERY = 140;
+
+export interface TrySearchResponse {
+    results: ShowcaseFilm[];
+    intent?: Record<string, unknown>;
+    // The catalogue had nothing close enough to call a recommendation, so the
+    // list is deliberately empty rather than twenty films picked for no reason.
+    low_confidence?: boolean;
+    // No model read the sentence — Groq's free tier caps at 8000 tokens per
+    // MINUTE. The films are real, every constraint the user expressed is not.
+    degraded?: boolean;
+}
+
+/** The public door: a sentence, no account. 5/minute per IP, 140 chars, no Tier-2. */
+export const searchTry = async (query: string): Promise<TrySearchResponse> => {
+    const response = await api.post("/api/search/try", {
+        query: query.slice(0, TRY_MAX_QUERY),
+        country_code: "ES",
+    });
+    return response.data;
+};

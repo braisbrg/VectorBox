@@ -51,6 +51,49 @@ async def _ingest_movie_background(tmdb_id: int) -> None:
         finally:
             await movie_service.close()
 
+def apply_rail_filters(q, filters: Optional[Dict]):
+    """Push the rail's constraints into a row's own query.
+
+    Post-filtering can only subtract from a choice the row already made without
+    knowing the filter. Measured 2026-07-29 on real users, asking for 9 films:
+
+        auteur  u210 VBS>=80     post-filter 5/9  ->  at source 9/9  (VBS 85.4 -> 85.0)
+                u210 Drama 90s   post-filter 2/9  ->  at source 9/9  (VBS 71.0 -> 71.2)
+                u212 Drama 90s   post-filter 4/9  ->  at source 9/9  (VBS 76.8 -> 76.2)
+        random  VBS>=80          post-filter 2.2/12 -> at source 12/12
+
+    Quality holds because the pool is large enough that the filter selects rather
+    than starves. `niche` (fetches 60, shows 9) and `wildcard` (50 for 10) were
+    measured too and gain nothing — they already carry the headroom — so they
+    keep post-filtering only.
+
+    Streaming providers are deliberately absent: that is a per-country join
+    computed at request time, not a column any row's query can reach. It stays in
+    _post_filter_sections, which also remains the backstop if a row forgets one
+    of these.
+    """
+    if not filters:
+        return q
+    if filters.get("year_min"):
+        q = q.where(Movie.year >= filters["year_min"])
+    if filters.get("year_max"):
+        q = q.where(Movie.year <= filters["year_max"])
+    if filters.get("max_runtime"):
+        q = q.where(Movie.runtime <= filters["max_runtime"])
+    if filters.get("min_vectorbox_score"):
+        q = q.where(Movie.vectorbox_score >= filters["min_vectorbox_score"])
+    if filters.get("include_genres"):
+        q = q.where(Movie.genres.overlap(filters["include_genres"]))
+    return q
+
+
+# How far down the affinity ranking the auteur / cult-actor rows may walk when a
+# filter is active. Unfiltered they stop at people 4-10, which is plenty; under a
+# filter the measured worst case reached #16 (Fritz Lang for user 210 at
+# <100 min) and the films were still ones that user demonstrably likes.
+FILTERED_PERSON_FALLBACK_DEPTH = 15
+PERSON_FALLBACK_DEPTH = 7
+
 # Minimum quality requirements for any movie to appear in recommendations.
 # Honoured by every discovery surface (feed engine, Magic Box, onboarding
 # carousel) and intentionally NOT consulted by user-chosen surfaces
@@ -348,7 +391,7 @@ class RecommendationEngine:
             s_providers = [p["provider_name"] for p in p_data]
             item = await self.create_feed_item(
                 movie, 0.85, country, tmdb,
-                include_rating=True, provider_service=provider_service,
+                provider_service=provider_service,
                 streaming_providers=s_providers
             )
             items.append(item)
@@ -356,7 +399,7 @@ class RecommendationEngine:
 
         return FeedSection(id="genre_fallback", title="Recommended for You", items=items)
 
-    async def create_feed_item(self, movie: Movie, score: float, country: str, tmdb: TMDBClient, include_rating: bool = False, contributors: List[dict] = None, provider_service: ProviderService = None, streaming_providers: List[str] = None) -> FeedItem:
+    async def create_feed_item(self, movie: Movie, score: float, country: str, tmdb: TMDBClient, contributors: List[dict] = None, provider_service: ProviderService = None, streaming_providers: List[str] = None) -> FeedItem:
         """Helper to create a FeedItem from a Movie (DB Object)"""
         if streaming_providers is None:
             streaming_providers = []
@@ -738,7 +781,6 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
-        background_tasks=None
     ) -> FeedSection:
         """
         Global evocative theme recommendations. Rotates through GLOBAL_THEMES.
@@ -906,7 +948,6 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
-        background_tasks = None,
         filters: Dict = None,
         pool_limit: int = None,
     ) -> FeedSection:
@@ -938,6 +979,9 @@ class RecommendationEngine:
             result = await db.execute(
                 select(Movie)
                 .where(*MOVIE_QUALITY_GATE)
+                # Enriched-vector gate: hidden gems is a "trust us" quality claim —
+                # never surface films whose vector/description is still legacy-recipe
+                .where(Movie.has_enriched_embedding.is_(True))
                 .where(Movie.vectorbox_score >= thresholds["min_score"])
                 .where(Movie.popularity <= thresholds["max_popularity"])
                 .where(Movie.vote_count >= thresholds["min_votes"])
@@ -1043,7 +1087,7 @@ class RecommendationEngine:
                 
                 item = await self.create_feed_item(
                     movie, cand["score"], country, tmdb,
-                    include_rating=True, provider_service=provider_service,
+                    provider_service=provider_service,
                     streaming_providers=s_providers,
                     contributors=[{"type": "crowd", "label": "Critically acclaimed, under the radar"}]
                 )
@@ -1200,7 +1244,7 @@ class RecommendationEngine:
         for m in sample:
             movie_providers = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.create_feed_item(m, 0.85, country, tmdb, include_rating=True, streaming_providers=flat_providers,
+            item = await self.create_feed_item(m, 0.85, country, tmdb, streaming_providers=flat_providers,
                 contributors=[{"type": "vibe", "label": "Outside your comfort zone"}])
             items.append(item)
             seen_ids.add(m.tmdb_id)
@@ -1218,7 +1262,8 @@ class RecommendationEngine:
         tmdb: TMDBClient,
         seen_ids: Set[int],
         country: str,
-        provider_service: ProviderService = None
+        provider_service: ProviderService = None,
+        filters: Dict = None
     ) -> Optional[FeedSection]:
         """Random Picks"""
         # FIX 5: Push seen filter to DB and use func.random() — avoids 500-row scan
@@ -1229,10 +1274,13 @@ class RecommendationEngine:
         )
         excluded_internal_ids = set(excluded_result.scalars().all())
 
-        q = (
+        # Fetches 30 to show ~12 — the thinnest margin of any metadata row, and
+        # it showed: 2.2 of 12 survived a min_vectorbox_score=80 post-filter.
+        q = apply_rail_filters(
             select(Movie)
             .where(*MOVIE_QUALITY_GATE)
-            .where(Movie.vectorbox_score.between(1, 99))
+            .where(Movie.vectorbox_score.between(1, 99)),
+            filters,
         )
         if excluded_internal_ids:
             q = q.where(Movie.id.notin_(excluded_internal_ids))
@@ -1257,7 +1305,7 @@ class RecommendationEngine:
         for m in sample:
             movie_providers = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.create_feed_item(m, 0.9, country, tmdb, include_rating=True, streaming_providers=flat_providers,
+            item = await self.create_feed_item(m, 0.9, country, tmdb, streaming_providers=flat_providers,
                 contributors=[{"type": "crowd", "label": "High quality discovery"}])
             items.append(item)
             seen_ids.add(m.tmdb_id)
@@ -1344,7 +1392,7 @@ class RecommendationEngine:
                 p_data = providers_map.get(movie.id, [])
                 flat_providers = [p["provider_name"] for p in p_data]
                 item = await self.create_feed_item(
-                    movie, 0.95, country, tmdb, include_rating=True,
+                    movie, 0.95, country, tmdb,
                     streaming_providers=flat_providers
                 )
                 scraped_lb = rating_by_tmdb.get(tmdb_id)
@@ -1398,7 +1446,7 @@ class RecommendationEngine:
             p_data = providers_map.get(movie.id, [])
             flat_providers = [p["provider_name"] for p in p_data]
             item = await self.create_feed_item(
-                movie, 1.0, country, tmdb, include_rating=True,
+                movie, 1.0, country, tmdb,
                 streaming_providers=flat_providers
             )
             items.append(item)

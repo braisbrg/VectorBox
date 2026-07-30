@@ -36,27 +36,11 @@ logger = logging.getLogger("reembed")
 BATCH = 256
 
 
-def _qdrant_payload(m: Movie) -> dict:
-    return {
-        "tmdb_id": m.tmdb_id,
-        "title": m.title,
-        "year": m.year,
-        "genres": m.genres or [],
-        "overview": m.overview or "",
-        "poster_path": m.poster_path,
-        "vote_average": m.vote_average,
-        "vote_count": m.vote_count,
-        "runtime": m.runtime,
-        "original_language": m.original_language,
-        "keywords": m.keywords or [],
-        "directors": m.directors,
-        "cast": m.cast,
-        "vectorbox_score": m.vectorbox_score,
-        "imdb_rating": m.imdb_rating,
-        "metacritic_rating": m.metacritic_rating,
-        "title_es": m.title_es,
-        "overview_es": m.overview_es,
-    }
+def _qdrant_payload(m: Movie, *, enriched: bool | None = None) -> dict:
+    """Kept as the name four scripts already import; the payload itself is built
+    in models.external_schemas so every writer shares one definition."""
+    from models.external_schemas import qdrant_payload
+    return qdrant_payload(m, enriched=enriched)
 
 
 def _build_text(m: Movie) -> str | None:

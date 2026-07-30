@@ -36,27 +36,41 @@ logger = logging.getLogger("recalc_vbs_from_db")
 
 
 async def sync_payloads() -> None:
-    """Push every movie's current PG `vectorbox_score` into its Qdrant payload.
+    """Push every movie's current PG `vectorbox_score` AND `has_enriched_embedding`
+    into its Qdrant payload.
 
     Batched (500 ops/request). Films with VBS=None get payload null so they
-    can't ride a stale value past a Q filter. Missing points are skipped by
-    Qdrant silently (vector may not exist yet — embed jobs stamp it on upsert).
+    can't ride a stale value past a Q filter. The enriched flag feeds the
+    recommendation gate in `search_similar` (a point WITHOUT the key is excluded
+    from every gated search — this sync is also the backfill/anti-drift pass).
+    Missing points are skipped by Qdrant silently (vector may not exist yet —
+    embed jobs stamp both keys on upsert).
     """
     qdrant = QdrantService()
     try:
+        # Ensure the BOOL index exists before the first gated query, regardless
+        # of backend restart order (idempotent).
+        await qdrant.init_payload_indexes()
         async with AsyncSessionLocal() as db:
-            rows = (await db.execute(select(Movie.tmdb_id, Movie.vectorbox_score))).all()
-        logger.info(f"Syncing vectorbox_score payload for {len(rows)} films into Qdrant…")
+            rows = (
+                await db.execute(
+                    select(Movie.tmdb_id, Movie.vectorbox_score, Movie.has_enriched_embedding)
+                )
+            ).all()
+        logger.info(f"Syncing vectorbox_score + has_enriched_embedding payload for {len(rows)} films into Qdrant…")
         BATCH = 500
         for i in range(0, len(rows), BATCH):
             ops = [
                 qmodels.SetPayloadOperation(
                     set_payload=qmodels.SetPayload(
-                        payload={"vectorbox_score": score},
+                        payload={
+                            "vectorbox_score": score,
+                            "has_enriched_embedding": bool(enriched),
+                        },
                         points=[tmdb_id],
                     )
                 )
-                for tmdb_id, score in rows[i : i + BATCH]
+                for tmdb_id, score, enriched in rows[i : i + BATCH]
             ]
             await qdrant.client.batch_update_points(
                 collection_name=qdrant.COLLECTION_NAME, update_operations=ops

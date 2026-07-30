@@ -154,3 +154,7 @@ docs/DEPLOYMENT.md
 # Design handoff sources (local reference until archived post-release)
 design_handoff_vectorbox/
 handoff_items/
+
+# Curated-list seed data (third-party lists + derived artifacts — regenerable, not source)
+StartingList*.xls
+backend/scripts/data/

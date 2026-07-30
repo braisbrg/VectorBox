@@ -27,6 +27,7 @@ from services.data_processor import DataProcessor
 from services.task_store import get_task_store
 from utils.embedding_reference import build_embedding_reference_text
 from models.database import User, Movie, UserRating, ZipUpload
+from models.external_schemas import qdrant_payload
 from models.schemas import CSVUploadResponse, TokenResponse
 import hashlib
 from datetime import date as _date
@@ -121,26 +122,9 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                             if vector is None:
                                 continue
 
-                            payload = {
-                                "tmdb_id": movie.tmdb_id,
-                                "title": movie.title,
-                                "year": movie.year,
-                                "genres": movie.genres or [],
-                                "overview": movie.overview or "",
-                                "poster_path": movie.poster_path,
-                                "vote_average": movie.vote_average,
-                                "vote_count": movie.vote_count,
-                                "runtime": movie.runtime,
-                                "original_language": movie.original_language,
-                                "keywords": movie.keywords or [],
-                                "directors": movie.directors,
-                                "cast": movie.cast,
-                                "vectorbox_score": movie.vectorbox_score,
-                                "imdb_rating": movie.imdb_rating,
-                                "metacritic_rating": movie.metacritic_rating,
-                                "title_es": movie.title_es,
-                                "overview_es": movie.overview_es,
-                            }
+                            # enriched=True: the row flag flips below, AFTER
+                            # this payload is built.
+                            payload = qdrant_payload(movie, enriched=True)
                             await qdrant.upsert_movie_vector(
                                 movie_id=movie.tmdb_id,
                                 vector=vector.tolist(),
@@ -202,6 +186,7 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             priority_ids = list(set(medoid_internal_ids + anchor_internal_ids))
 
             flagged = 0
+            flagged_tmdb_ids: list[int] = []
             if priority_ids:
                 movies_to_check_result = await db.execute(
                     select(Movie).where(Movie.id.in_(priority_ids))
@@ -241,12 +226,26 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                     if quality < 0.25:
                         flagged += 1
                         movie.has_enriched_embedding = False
+                        flagged_tmdb_ids.append(movie.tmdb_id)
                         logger.warning(
                             f"[Sanity] Low quality anchor/medoid: {movie.title} "
                             f"({quality:.2f}) — marked for re-enrichment"
                         )
 
                 await db.commit()
+
+                # Mirror the flag flip into the Qdrant payload so the enriched-vector
+                # gate stops recommending these until they are re-enriched (PG and
+                # payload would otherwise drift: point stays True, row goes False).
+                if flagged_tmdb_ids:
+                    try:
+                        await qdrant.client.set_payload(
+                            collection_name=qdrant.COLLECTION_NAME,
+                            payload={"has_enriched_embedding": False},
+                            points=flagged_tmdb_ids,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Sanity] Qdrant flag sync failed: {e}")
                 logger.info(
                     f"[Sanity] Checked {len(movies_to_check)} priority movies, {flagged} flagged"
                 )
@@ -262,7 +261,6 @@ async def _enrich_user_movies_background(user_id: int) -> None:
 
 async def process_single_movie(
     movie_data: dict,
-    user_id: int,
     tmdb_client: "TMDBClient",
     groq_client=None
 ):
@@ -439,7 +437,7 @@ async def enrich_movies_background(
                     # The nightly enrich_vectors.py --enrich-embeddings script handles enrichment.
                     tasks = []
                     for m_data in chunk:
-                        tasks.append(process_single_movie(m_data, user_id, tmdb_client, groq_client=None))
+                        tasks.append(process_single_movie(m_data, tmdb_client, groq_client=None))
 
                     # Results: list of (movie_id | None, needs_vector)
                     results = await asyncio.gather(*tasks)
@@ -541,7 +539,9 @@ async def enrich_movies_background(
 
                                         "title_es": m.title_es,
                                         "overview_es": m.overview_es,
-                                        "keywords": m.keywords
+                                        "keywords": m.keywords,
+                                        # legacy-recipe batch vectorize: reflect row flag
+                                        "has_enriched_embedding": bool(m.has_enriched_embedding)
                                     }
                                 ))
 

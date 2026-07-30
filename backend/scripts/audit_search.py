@@ -13,6 +13,7 @@ rather than numbers to interpret:
 
     films      real recommendations from the vector
     catalogue  the varied high-VBS selection (open request or quality-only)
+    audience   genre + quality, taken when the query names WHO is watching
     similar    item-to-item, taken when the query names a title
     refuse     low_confidence and an empty list
 
@@ -41,7 +42,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import HTTPException
 
 from config import AsyncSessionLocal
-from routers.search import CATALOGUE_SELECTION_REASONING, SearchRequest, _run_natural_search
+from routers.search import (
+    AUDIENCE_SELECTION_REASONING,
+    CATALOGUE_SELECTION_REASONING,
+    SearchRequest,
+    _run_natural_search,
+)
 from services.embedding_service import EmbeddingService
 from services.qdrant_service import QdrantService
 from services.tmdb_client import TMDBClient
@@ -56,6 +62,9 @@ logging.getLogger().setLevel(logging.ERROR)
 SHAPE_RULES = {
     "films":     {"min_n": 5, "min_vbs": 60},
     "catalogue": {"min_n": 8, "min_vbs": 75},
+    # The vector cannot answer these at all (it is confidently wrong, not
+    # unsure), so the bar is the metadata's: a full row of genuinely good films.
+    "audience":  {"min_n": 8, "min_vbs": 75},
     # Item-to-item returns a different row shape with no vectorbox_score — it
     # answers from a stored vector without touching Postgres. Count only.
     "similar":   {"min_n": 5, "min_vbs": None},
@@ -96,10 +105,13 @@ PANEL: list[tuple[str, str]] = [
     #    what a film is ABOUT; no description says "safe for all ages". This is
     #    the family that returned Boss Baby at VBS 44, and the genre filter is
     #    what has to carry the answer instead. ───────────────────────────────
-    ("films", "una peli familiar para ver con niños"),
-    ("films", "una peli que guste a padres e hijos, sin violencia ni sustos"),
-    ("films", "algo que terminemos mis padres y yo sin discutir"),
-    ("films", "a movie parents and kids will both enjoy"),
+    ("audience", "una peli familiar para ver con niños"),
+    ("audience", "una peli que guste a padres e hijos, sin violencia ni sustos"),
+    ("audience", "algo que terminemos mis padres y yo sin discutir"),
+    ("audience", "a movie parents and kids will both enjoy"),
+    # The control: same word, used as a SUBJECT. Must stay on the vector path —
+    # if the audience branch swallows this, the cue list is too greedy.
+    ("films", "un drama sobre una familia rota"),
 
     # ── open requests: the user has explicitly delegated the choice ─────────
     ("catalogue", "no se que ver"),
@@ -143,16 +155,23 @@ def classify(resp) -> str:
     reasoning = (resp.intent or {}).get("reasoning") or ""
     if reasoning == CATALOGUE_SELECTION_REASONING:
         return "catalogue"
+    if reasoning == AUDIENCE_SELECTION_REASONING:
+        return "audience"
     if reasoning.startswith("Showing movies similar to"):
         return "similar"
     return "films"
 
 
 # When the parser is down, every answer degrades to pure vector search with no
-# filters and no open_request — which the confidence gate then refuses. That
-# looks identical to a product bug in the table, so it gets its own column: a
-# run with unparsed rows is measuring Groq, not the engine.
-_PARSE_FAILED = ("All models failed", "LLM unavailable", "No LLM available", "Groq unavailable")
+# filters and no open_request. That looks identical to a product bug in the
+# table, so it gets its own column: a run with unparsed rows is measuring Groq,
+# not the engine.
+#
+# Read off `resp.degraded`, NOT off the reasoning string. Sniffing the reasoning
+# was a blind spot that took a whole panel run to notice: the catalogue and
+# audience branches REPLACE `reasoning` with their own sentence, so the failure
+# marker was gone by the time this saw it — and those are exactly the branches a
+# degraded run falls into. Every row on them read as a clean pass.
 
 
 async def run_one(expect: str, query: str, tmdb, qdrant, emb) -> dict:
@@ -170,7 +189,7 @@ async def run_one(expect: str, query: str, tmdb, qdrant, emb) -> dict:
                 "fails": [] if got == expect else [f"rama={got}"]}
 
     rows = resp.results or []
-    unparsed = any(m in ((resp.intent or {}).get("reasoning") or "") for m in _PARSE_FAILED)
+    unparsed = bool(resp.degraded)
     vbs = [r["vectorbox_score"] for r in rows[:5] if r.get("vectorbox_score")]
     rule = SHAPE_RULES[expect]
     got = classify(resp)

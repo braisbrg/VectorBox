@@ -796,54 +796,50 @@ async def get_hidden_gems_row(
     user_id = current_user.user_id
     feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
     try:
-        clustering = ClusteringService(qdrant=qdrant)
-        results = await clustering.get_user_centric_recommendations(
-            user_id=user_id,
-            db=db,
-            filters={"min_vote_count": 50, "min_rating": 5.0},
-            limit=2000
+        from sqlalchemy import or_
+        from services.feed_service import get_cached_feed_tmdb_ids
+        from services.recommendation_engine import MOVIE_QUALITY_GATE, _get_signal_c_thresholds
+
+        # 1. Same dynamic quality bar as the feed's hidden_gems row (rich
+        #    profiles => VBS >= 70) — a reroll must never LOWER the bar.
+        user_movie_count = (
+            await db.execute(
+                select(func.count(UserRating.id))
+                .where(UserRating.user_id == user_id, UserRating.is_watched.is_(True))
+            )
+        ).scalar() or 0
+        thresholds = _get_signal_c_thresholds(user_movie_count)
+
+        excluded_result = await db.execute(
+            select(UserRating.movie_id)
+            .where(UserRating.user_id == user_id)
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        
-        if not results:
-            raise HTTPException(status_code=404, detail="No recommendations found")
-            
-        random.shuffle(results)
-        
-        # Optimization: Process in batches to avoid N+1
-        # Take a sufficient slice to ensure we find 10 valid items
-        # We process 100 candidates to ensure we find 10 matches after filtering
-        candidates = results[:100] 
-        candidate_ids = [res["movie_id"] for res in candidates]
-        
-        # Batch fetch movies
-        stmt = select(Movie).where(Movie.id.in_(candidate_ids))
-        movie_result = await db.execute(stmt)
-        movies_map = {m.id: m for m in movie_result.scalars().all()}
-        
-        valid_movies = []
-        scores_map = {}
-        
-        # Filter candidates in memory
-        for res in candidates:
-            movie_id = res["movie_id"]
-            movie = movies_map.get(movie_id)
-            
-            if not movie:
-                continue
-                
-            if movie.vote_average and movie.vote_average > 7.0:
-                if movie.vote_count and movie.vote_count < 50:
-                     continue
-                
-                valid_movies.append(movie)
-                scores_map[movie.id] = res["score"]
-                
-                if len(valid_movies) >= 10:
-                    break
-        
-        if not valid_movies:
-             # Fallback if strict filters eliminate everyone (unlikely with 100 pool)
-             raise HTTPException(status_code=404, detail="No hidden gems found")
+        excluded_internal_ids = set(excluded_result.scalars().all())
+
+        # 2. A reroll must bring NEW films: exclude everything the user's
+        #    current (cached) feed is already showing, across ALL sections.
+        feed_tmdb_ids = await get_cached_feed_tmdb_ids(user_id)
+
+        pool_stmt = (
+            select(Movie)
+            .where(*MOVIE_QUALITY_GATE)
+            .where(Movie.has_enriched_embedding.is_(True))
+            .where(Movie.vectorbox_score >= thresholds["min_score"])
+            .where(Movie.popularity <= thresholds["max_popularity"])
+            .where(Movie.vote_count >= thresholds["min_votes"])
+            .where(Movie.id.notin_(excluded_internal_ids) if excluded_internal_ids else True)
+            .where(Movie.tmdb_id.notin_(feed_tmdb_ids) if feed_tmdb_ids else True)
+            .order_by(desc(Movie.vectorbox_score))
+            .limit(200)
+        )
+        pool = (await db.execute(pool_stmt)).scalars().all()
+        if not pool:
+            raise HTTPException(status_code=404, detail="No hidden gems found")
+
+        # 3. Random sample = variety on every reroll; the pool is already
+        #    quality-gated, so any sample is a valid gems row.
+        valid_movies = random.sample(pool, min(10, len(pool)))
 
         # Batch fetch providers
         valid_ids = [m.id for m in valid_movies]
@@ -854,11 +850,11 @@ async def get_hidden_gems_row(
         for movie in valid_movies:
             providers_data = providers_map.get(movie.id, [])
             provider_names = [p["provider_name"] for p in providers_data]
-            
+
             item = await feed_service.engine.create_feed_item(
-                movie=movie, 
-                score=scores_map[movie.id], 
-                country=country_code, 
+                movie=movie,
+                score=(movie.vectorbox_score or 0) / 100.0,
+                country=country_code,
                 tmdb=tmdb,
                 streaming_providers=provider_names
             )
@@ -869,6 +865,8 @@ async def get_hidden_gems_row(
             title="Hidden Gems",
             items=items
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Hidden gems failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate hidden gems")

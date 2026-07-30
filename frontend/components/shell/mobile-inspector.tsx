@@ -72,6 +72,8 @@ export function MobileInspector({ movie, sectionId, onClose, onMarkWatched, onRe
                                             </span>
                                         ))}
                                     </div>
+                                    {/* TMDB API ToS: JustWatch credit wherever provider data renders */}
+                                    <p className="text-[9px] normal-case text-fg-3/70">{t("insp.justwatch")}</p>
                                 </div>
                             )}
 
