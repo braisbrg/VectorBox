@@ -139,9 +139,19 @@ def test_both_llm_returns_go_through_finalize_intent():
     from services import nlp_search
 
     src = inspect.getsource(nlp_search.parse_user_intent)
-    assert src.count("finalize_intent(await client") == 2, (
+    # Matched on `finalize_intent(await ` rather than on the callee's name: the
+    # assertion used to spell out `finalize_intent(await client`, and adding an
+    # OTel wrapper around the same call broke a test whose property was untouched.
+    # What matters is that every model return is repaired, not who makes the call.
+    assert src.count("finalize_intent(await ") == 2, (
         "both the primary and the fallback model call must be wrapped — "
         "an unwrapped path can still emit an empty semantic_query"
+    )
+    # And the give-up paths too, which is what keeps the deterministic guards
+    # working when Groq is rate limited (measured: 8000 tokens per MINUTE).
+    assert src.count("finalize_intent(MovieSearchIntent(") == 2, (
+        "both give-up paths must finalize — otherwise a rate-limited user loses "
+        "the audience/quality guards that need no model at all"
     )
 
 

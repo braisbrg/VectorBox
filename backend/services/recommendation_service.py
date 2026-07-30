@@ -25,6 +25,9 @@ from utils.decorators import safe_execution
 
 logger = logging.getLogger(__name__)
 
+from telemetry import get_tracer
+_tracer = get_tracer("recommendation_service")
+
 MIN_QUALITY_SCORE = 55  # floor for Picked For You; pre-filtered into Signal A and re-checked in hybrid_reranking
 MIN_SIGNAL_C_SCORE = 62  # sweet spot between 55 (too permissive) and 68 (too strict)
 MIN_EMBED_QUALITY_SCORE = 0.35  # below this is low-quality/fallback-embedding noise; produces false centroid matches
@@ -505,6 +508,14 @@ class RecommendationService:
         Signal Auteur: The Auteur Expert (Metadata Graph)
         Finds user's top directors and recommends their high-quality unwatched movies.
         """
+        # The span wraps the delegate rather than the body so the existing code
+        # keeps its indentation; the span is current for everything inside it
+        # anyway, so nothing needs to be handed the object.
+        with _tracer.start_as_current_span("trident.signal_b.auteur") as span:
+            span.set_attribute("user_id", user_id)
+            return await self._signal_b_auteur(user_id, exclude_ids)
+
+    async def _signal_b_auteur(self, user_id: int, exclude_ids: Set[int]) -> List[Movie]:
         user_obj = await self.db.get(User, user_id)
         if not user_obj:
             logger.warning(f"User {user_id} not found for Auteur signal.")

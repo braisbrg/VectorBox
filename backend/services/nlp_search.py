@@ -10,6 +10,30 @@ from services.llm_models import PARSER_CHAIN, REASONING_EFFORT
 
 logger = logging.getLogger(__name__)
 
+from telemetry import get_tracer
+
+_tracer = get_tracer("nlp_search")
+
+
+async def _traced_create(client, *, model: str, span_name: str, **kwargs):
+    """One Groq call, traced.
+
+    The parse is the slowest leg of a Magic Box search — ~1.1s on a good day, 16s
+    back when the SDK retried a 429 before the chain could fall through — and it
+    appeared in no trace at all. Wrapped as a helper rather than around the
+    existing try/except so the fallback logic keeps its shape: each attempt gets
+    its own span, so a trace SHOWS the chain falling through instead of implying
+    the primary was merely slow.
+    """
+    with _tracer.start_as_current_span(span_name) as span:
+        span.set_attribute("llm.model", model)
+        try:
+            return await client.chat.completions.create(model=model, **kwargs)
+        except Exception as e:
+            span.set_attribute("llm.failed", True)
+            span.set_attribute("llm.error", type(e).__name__)
+            raise
+
 # LLM sometimes emits a language NAME ("Spanish") instead of the ISO 639-1 code
 # the catalogue stores ("es") — that mismatch silently zero-results the query
 # (observed live on "cine quinqui"). Map the common names; drop unknown names
@@ -667,8 +691,10 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     # is near-deterministic, not deterministic (measured 6/10 vs 4/10 on identical
     # input), so the rule runs on the way out rather than trusting the prompt.
     try:
-        return finalize_intent(await client.chat.completions.create(
+        return finalize_intent(await _traced_create(
+            client,
             model=primary_model,
+            span_name="llm.parse_intent",
             response_model=MovieSearchIntent,
             messages=messages,
             temperature=0,  # structured extraction — determinism over creativity (cuts search volatility)
@@ -678,8 +704,10 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
         if fallback_model:
             logger.warning(f"Primary model failed: {e}. Trying fallback.")
             try:
-                return finalize_intent(await client.chat.completions.create(
+                return finalize_intent(await _traced_create(
+                    client,
                     model=fallback_model,
+                    span_name="llm.parse_intent.fallback",
                     response_model=MovieSearchIntent,
                     messages=messages,
                     temperature=0,
@@ -731,8 +759,10 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
 
     model = "openai/gpt-oss-120b" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
     try:
-        response = await client.chat.completions.create(
+        response = await _traced_create(
+            client,
             model=model,
+            span_name="llm.deep_analysis",
             response_model=DeepAnalysisResponse,
             messages=[
                 {"role": "system", "content": system_prompt},

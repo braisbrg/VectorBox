@@ -16,6 +16,9 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+from telemetry import get_tracer
+_tracer = get_tracer("qdrant")
+
 
 class QdrantService:
     """Qdrant vector database operations"""
@@ -516,9 +519,13 @@ class QdrantService:
             
             from qdrant_client.http import models
 
-            results = await self.client.query_points(
-                collection_name=self.COLLECTION_NAME,
-                query=query_vector,
+            with _tracer.start_as_current_span("qdrant.search") as _span:
+                _span.set_attribute("qdrant.limit", limit)
+                _span.set_attribute("qdrant.filters", ",".join(sorted(filters)) or "none")
+                _span.set_attribute("qdrant.threshold", effective_threshold)
+                results = await self.client.query_points(
+                    collection_name=self.COLLECTION_NAME,
+                    query=query_vector,
                 limit=limit,
                 offset=offset,
                 score_threshold=effective_threshold,
