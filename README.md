@@ -147,10 +147,52 @@ See [SCRIPTS_GUIDE.md](./docs/SCRIPTS_GUIDE.md) for the full catalogue of mainte
 
 ## Development
 
-- **Branch strategy:** `develop` for active work, `feature/*` for significant changes, `main` for tagged releases only.
+- **Branch strategy:** `develop` for active work, `feature/*` for significant changes, `master` for tagged releases only.
 - **Commit format:** `feat:`, `fix:`, `refactor:`, `perf:`, `docs:`
 - **Package manager:** pnpm (frontend), pip with hash-verified lockfile (backend)
-- **Backend commands** run inside Docker: `docker-compose exec backend ...`
+- **Backend commands** run inside Docker: `docker compose exec backend ...`
+
+### Two traps that will cost you an afternoon
+
+**Your edit is probably not running.** Uvicorn auto-reload does not fire on
+host-side edits under Windows — bind-mount file events never reach the container
+watcher. The frontend container serves a production build, so it does not
+hot-reload at all.
+
+```bash
+docker compose restart backend            # after ANY backend change
+docker compose up -d --build frontend     # after ANY frontend change
+```
+
+A change that type-checks is not a change that ran. If feed logic changed, also
+flush the `section:*` Redis keys: the cache-save block refreshes TTLs on
+cache-hit sections, so stale content self-perpetuates.
+
+**Groq's free tier caps at 8000 tokens per MINUTE**, not per day, and one Magic
+Box parse costs ~2000. Four searches in quick succession exhaust it, after which
+the parser returns nothing and every answer degrades. Any burst test needs pacing
+or it measures the rate limiter instead of the engine.
+
+### Tests
+
+```bash
+docker compose exec backend python -m pytest -q                    # hermetic
+docker compose exec backend python scripts/verify_search_branches.py --repeat 3
+```
+
+The default suite touches no external service; the few that do are marked
+`integration` and deselected. `verify_search_branches.py` pins search behaviour
+using `forced_intent`, which bypasses the LLM entirely — so it is deterministic,
+repeatable, and free. Prefer it to anything that measures *through* the parser.
+
+Three tests are contract guards, each closing a class of bug that fails in
+silence — something declared that never gets applied:
+
+| test | what it refuses to let happen |
+|---|---|
+| `test_qdrant_filter_contract` | a filter key written but never handled, so the search silently runs without it |
+| `test_qdrant_payload_writers` | a payload writer that omits a key, which DELETES it from the point |
+| `test_no_dead_parameters` | a parameter accepted and never read, so every caller passing it is ignored |
 
 ## License
 
