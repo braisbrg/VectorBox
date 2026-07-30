@@ -24,6 +24,7 @@ interface SearchedMovie {
     poster_path?: string;
     year?: number;
     overview?: string;
+    director?: string | null;
 }
 
 interface SimilarRec {
@@ -236,7 +237,9 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
                                             </div>
                                             <div className="min-w-0 flex-1">
                                                 <div className={cn("truncate font-mono text-xs", isPicked ? "text-primary" : "text-fg")}>{movie.title}</div>
-                                                <div className="font-mono text-[10px] text-fg-3">{movie.year}</div>
+                                                <div className="truncate font-mono text-[10px] text-fg-3">
+                                                    {[movie.year, movie.director].filter(Boolean).join(" · ")}
+                                                </div>
                                             </div>
                                             <span className="font-display text-lg text-primary">{isPicked ? "✓" : "+"}</span>
                                         </button>
@@ -268,7 +271,9 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
                                             <div className={cn("mt-1 truncate font-mono text-[10px] leading-tight", isPicked ? "text-primary" : "text-fg-2")}>
                                                 {movie.title}
                                             </div>
-                                            <div className="font-mono text-[9px] text-fg-3">{movie.year}</div>
+                                            <div className="truncate font-mono text-[9px] text-fg-3">
+                                                {[movie.year, movie.director].filter(Boolean).join(" · ")}
+                                            </div>
                                         </button>
                                     );
                                 })}

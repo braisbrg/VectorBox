@@ -31,7 +31,7 @@ from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
 from services.provider_service import ProviderService
 from models.database import UserRating, Movie
-from sqlalchemy import func, select, or_
+from sqlalchemy import func, nulls_last, select, or_
 from utils.scoring import normalize_similarity_score
 from utils.input_validation import validate_user_query
 
@@ -857,27 +857,78 @@ async def showcase_search(
 async def autocomplete_search(
     request: Request,
     q: str,
-    tmdb: TMDBClient = Depends(get_tmdb_client)
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Fast title autocomplete backing the More Like This search.
-    Searches TMDB directly to support multiple languages and broad coverage.
+    Searches TMDB by title, and the catalogue by director, and merges the two.
     """
-    if len(q.strip()) < 2:
+    term = q.strip()
+    if len(term) < 2:
         return []
 
-    data = await tmdb._make_request("/search/movie", {"query": q.strip(), "include_adult": "false"})
-    if not data or not data.get("results"):
-        return []
+    async def by_title():
+        data = await tmdb._make_request("/search/movie", {"query": term, "include_adult": "false"})
+        return (data or {}).get("results") or []
 
-    results = []
-    for m in data["results"][:8]:
+    # Director search runs on our own rows — TMDB's /search/movie never matches a
+    # director's name, so "kurosawa" returned junk or nothing. 99% of the
+    # catalogue has `directors` populated; ordering by VBS puts the canon first.
+    async def by_director():
+        stmt = (
+            select(Movie)
+            .where(func.array_to_string(Movie.directors, "|").ilike(f"%{term}%"))
+            .where(Movie.poster_path.isnot(None))
+            .order_by(nulls_last(Movie.vectorbox_score.desc()))
+            .limit(8)
+        )
+        return (await db.execute(stmt)).scalars().all()
+
+    tmdb_rows, director_rows = await asyncio.gather(by_title(), by_director())
+
+    # A poster-less TMDB row is almost always a duplicate stub or a stray short
+    # ranking above the real film on popularity alone. Drop them — but only while
+    # something else survives, so a legitimately poster-less film is still findable.
+    posterful = [m for m in tmdb_rows if m.get("poster_path")]
+    tmdb_rows = posterful or tmdb_rows
+
+    # Reserve slots when the term is a director's name. "kurosawa" fills all 8
+    # TMDB slots with documentaries *about* Kurosawa, so the films themselves
+    # would land past the dropdown's cut and the feature would look broken.
+    tmdb_take = 5 if director_rows else 8
+    tmdb_rows = tmdb_rows[:tmdb_take]
+
+    # Directors for the TMDB hits come from our catalogue; films we do not have
+    # simply show no director rather than costing a /credits call each.
+    tmdb_ids = [m["id"] for m in tmdb_rows]
+    directors_by_id: dict = {}
+    if tmdb_ids:
+        rows = await db.execute(select(Movie.tmdb_id, Movie.directors).where(Movie.tmdb_id.in_(tmdb_ids)))
+        directors_by_id = {tid: (d[0] if d else None) for tid, d in rows.all()}
+
+    results, seen = [], set()
+    for m in tmdb_rows:
+        seen.add(m["id"])
         results.append({
             "tmdb_id": m["id"],
             "title": m["title"],
             "year": int(m["release_date"][:4]) if m.get("release_date") else None,
             "poster_path": m.get("poster_path"),
-            "overview": m.get("overview", "")
+            "overview": m.get("overview", ""),
+            "director": directors_by_id.get(m["id"]),
+        })
+    for mv in director_rows:
+        if mv.tmdb_id in seen or len(results) >= 12:
+            continue
+        seen.add(mv.tmdb_id)
+        results.append({
+            "tmdb_id": mv.tmdb_id,
+            "title": mv.title,
+            "year": mv.year,
+            "poster_path": mv.poster_path,
+            "overview": mv.overview or "",
+            "director": mv.directors[0] if mv.directors else None,
         })
     return results
 

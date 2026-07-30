@@ -40,6 +40,7 @@ interface TitleResult {
     title: string;
     year: number | null;
     poster_path: string | null;
+    director: string | null;
 }
 
 // Backend MovieSearchIntent fields we surface as chips.
@@ -335,7 +336,12 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                                             <Image src={getTMDBImageUrl(r.poster_path, "w92")} alt={r.title} fill sizes="32px" className="object-cover" />
                                         )}
                                     </span>
-                                    <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg">{r.title}</span>
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block truncate font-mono text-[13px] text-fg">{r.title}</span>
+                                        {r.director && (
+                                            <span className="block truncate font-mono text-[10px] text-fg-3">{r.director}</span>
+                                        )}
+                                    </span>
                                     {r.year && <span className="font-mono text-[11px] text-fg-3">{r.year}</span>}
                                     <span className="font-display text-sm text-fg-3 transition-colors group-hover:text-primary">→</span>
                                 </button>
