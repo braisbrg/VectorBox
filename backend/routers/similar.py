@@ -39,6 +39,20 @@ router = APIRouter()
 # film with few real neighbours correctly returns few.
 QUALITY_GATE_OVERFETCH = 8
 
+# The gate's vote floor was 100, which is not a quality signal — it is a fame
+# signal, and it was deleting the best neighbours. Measured 2026-07-31 on "The 47"
+# (tmdb 1174481): the 5 nearest neighbours (0.776..0.752 — Gloria Mundi, Nasir,
+# Crows and Sparrows, Give Me Liberty, My Brother's Wedding) all cleared VBS≥55
+# and had posters, and all died on votes (99, 4, 9, 66, 21). What survived to the
+# top of the rail instead was Good Will Hunting.
+#
+# Across the catalogue the floor of 100 drops 4,535 films that already clear
+# VBS≥55 + poster, to catch 5 with an empty overview. VBS≥55 is NULL-false, so
+# the phantom stubs the gate was written for (VBS=None, no poster) are already
+# excluded by the other two clauses. 20 keeps the tail honest without charging
+# arthouse for being arthouse.
+MIN_VOTE_COUNT = 20
+
 
 async def _ingest_similar_background(tmdb_ids: List[int], tmdb: TMDBClient) -> None:
     """Background ingest of TMDB recommendations missing from local DB.
@@ -177,7 +191,7 @@ async def get_similar_movies(
                 select(Movie)
                 .where(Movie.tmdb_id.in_(similar_tmdb_ids))
                 .where(Movie.vectorbox_score >= 55)
-                .where(Movie.vote_count >= 100)
+                .where(Movie.vote_count >= MIN_VOTE_COUNT)
                 .where(Movie.poster_path.isnot(None))
             )
             result = await db.execute(stmt)
@@ -399,7 +413,7 @@ async def get_similar_multi(
         select(Movie)
         .where(Movie.tmdb_id.in_(ordered_ids))
         .where(Movie.vectorbox_score >= 55)
-        .where(Movie.vote_count >= 100)
+        .where(Movie.vote_count >= MIN_VOTE_COUNT)
         .where(Movie.poster_path.isnot(None))
     )
     by_id = {m.tmdb_id: m for m in movies_q.scalars().all()}
