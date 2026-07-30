@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import AsyncSessionLocal
 from models.database import Movie
+from models.external_schemas import qdrant_payload
 from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
@@ -136,28 +137,12 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
                 vector = embedding_service.generate_embedding(embedding_data)
                 
                 # C. Upsert to Qdrant
-                payload = {
-                    "tmdb_id": movie.tmdb_id,
-                    "title": title,
-                    "year": movie.year,
-                    "genres": genres,
-                    "overview": overview,
-                    "poster_path": movie.poster_path,
-                    "vote_average": movie.vote_average,
-                    "vote_count": movie.vote_count,
-                    "runtime": movie.runtime,
-                    "original_language": movie.original_language,
-                    "keywords": keywords,
-                    "directors": movie.directors, # Add to payload
-                    "cast": movie.cast,           # Add to payload
-                    "vectorbox_score": movie.vectorbox_score,
-                    "imdb_rating": movie.imdb_rating,
-                    "metacritic_rating": movie.metacritic_rating,
+                # title/overview/genres/keywords are the freshly fetched values,
+                # not yet persisted to the row — they override.
+                payload = qdrant_payload(
+                    movie, title=title, overview=overview, genres=genres, keywords=keywords
+                )
 
-                    "title_es": movie.title_es,
-                    "overview_es": movie.overview_es
-                }
-                
                 await qdrant.upsert_movie_vector(
                     movie_id=movie.tmdb_id, # Use TMDB ID for consistency with seed_db and ingest
                     vector=vector.tolist(),
@@ -186,7 +171,6 @@ MODEL_ALIASES = {
     "gemini":      "gemini-2.5-flash",
     "oss-120":     "openai/gpt-oss-120b",
     "oss-20":      "openai/gpt-oss-20b",
-    "qwen3-32b":   "qwen/qwen3-32b",
     "qwen3.6-27b": "qwen/qwen3.6-27b",
 }
 
@@ -335,26 +319,7 @@ async def enrich_embeddings_via_groq(
 
                     # Upsert to Qdrant
                     try:
-                        payload = {
-                            "tmdb_id": movie.tmdb_id,
-                            "title": movie.title,
-                            "year": movie.year,
-                            "genres": movie.genres or [],
-                            "overview": movie.overview or "",
-                            "poster_path": movie.poster_path,
-                            "vote_average": movie.vote_average,
-                            "vote_count": movie.vote_count,
-                            "runtime": movie.runtime,
-                            "original_language": movie.original_language,
-                            "keywords": movie.keywords or [],
-                            "directors": movie.directors,
-                            "cast": movie.cast,
-                            "vectorbox_score": movie.vectorbox_score,
-                            "imdb_rating": movie.imdb_rating,
-                            "metacritic_rating": movie.metacritic_rating,
-                            "title_es": movie.title_es,
-                            "overview_es": movie.overview_es,
-                        }
+                        payload = qdrant_payload(movie, enriched=True)
 
                         await qdrant.upsert_movie_vector(
                             movie_id=movie.tmdb_id,
@@ -548,7 +513,8 @@ async def enrich_embeddings_parallel(models: list[str], limit: int = None):
                             ),
                         )
                     await qdrant.upsert_movie_vector(
-                        movie_id=movie.tmdb_id, vector=vector.tolist(), metadata=_qdrant_payload(movie)
+                        # enriched=True: the row flag flips two lines below, AFTER the payload
+                        movie_id=movie.tmdb_id, vector=vector.tolist(), metadata=_qdrant_payload(movie, enriched=True)
                     )
 
                     movie.has_enriched_embedding = True
@@ -606,13 +572,13 @@ if __name__ == "__main__":
         default=None,
         help="Restrict enrichment to a single model alias. No fallback to other models. "
              "Stops gracefully when the daily limit for that model is exhausted. "
-             "Aliases: gemini | oss-120 | oss-20 | qwen3-32b | qwen3.6-27b. "
-             "Example: --model-only qwen3-32b  OR  --model-only oss-120"
+             "Aliases: gemini | oss-120 | oss-20 | qwen3.6-27b. "
+             "Example: --model-only qwen3.6-27b  OR  --model-only oss-120"
     )
     parser.add_argument(
         "--smart",
         action="store_true",
-        help="Restrict enrichment to the 4 high-quality models (qwen3-32b, qwen3.6-27b, oss-120, oss-20). "
+        help="Restrict enrichment to the canonical quality chain (qwen3.6-27b, oss-120, oss-20). "
              "Use this when you want consistent high-quality cinematic descriptions across "
              "the whole catalogue. Mutually exclusive with --model-only."
     )
@@ -621,8 +587,8 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Restrict enrichment to a custom, ordered chain of model aliases "
-             "(comma-separated). The 2026-06 sweep found qwen3-32b + oss-120 the "
-             "best free pair for V2 descriptions. Example: --chain qwen3-32b,oss-120. "
+             "(comma-separated). The 2026-06 sweep found qwen3.6-27b + oss-120 the "
+             "best free pair for V2 descriptions. Example: --chain qwen3.6-27b,oss-120. "
              "Mutually exclusive with --model-only and --smart."
     )
     parser.add_argument(
@@ -632,7 +598,7 @@ if __name__ == "__main__":
              "of sequential fallback. Each model has its own rate-limit bucket, so "
              "this drains the shared daily quota in ~half the wall-clock. "
              "Requires --chain with 2+ models. Example: "
-             "--chain qwen3-32b,oss-120 --parallel"
+             "--chain qwen3.6-27b,oss-120 --parallel"
     )
     parser.add_argument(
         "--reset-enrichment",
@@ -678,20 +644,17 @@ if __name__ == "__main__":
                 sys.exit(1)
             chain_override.append(MODEL_ALIASES[alias])
     elif args.smart:
-        # --smart: the 4 high-quality models, quality uniform across catalogue.
-        chain_override = [
-            "qwen/qwen3-32b",
-            "qwen/qwen3.6-27b",
-            "openai/gpt-oss-120b",
-            "openai/gpt-oss-20b",
-        ]
+        # --smart: the canonical quality chain (services/llm_models.ENRICH_CHAIN),
+        # quality uniform across catalogue.
+        from services.llm_models import ENRICH_CHAIN
+        chain_override = list(ENRICH_CHAIN)
     else:
         chain_override = None
 
     if args.parallel:
         if not chain_override or len(chain_override) < 2:
             print("Error: --parallel requires --chain with 2+ models "
-                  "(e.g. --chain qwen3-32b,oss-120 --parallel).")
+                  "(e.g. --chain qwen3.6-27b,oss-120 --parallel).")
             sys.exit(1)
         if not args.enrich_embeddings:
             print("Error: --parallel only applies to --enrich-embeddings.")

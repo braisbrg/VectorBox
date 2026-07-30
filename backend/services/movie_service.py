@@ -5,6 +5,7 @@ from sqlalchemy import select
 from typing import Optional
 
 from models.database import Movie
+from models.external_schemas import qdrant_payload
 from services.tmdb_client import TMDBClient
 from services.omdb_client import OMDbClient
 from services.qdrant_service import QdrantService
@@ -179,20 +180,7 @@ class MovieService:
             await self.qdrant.upsert_movie_vector(
                 movie_id=movie.tmdb_id,
                 vector=vector.tolist(),
-                metadata={
-                    "title": movie.title,
-                    "year": movie.year,
-                    "genres": movie.genres,
-                    "rating": movie.vote_average,
-                    "vote_count": movie.vote_count,
-                    "runtime": movie.runtime,
-                    "poster_path": movie.poster_path,
-                    "vectorbox_score": movie.vectorbox_score,
-                    "imdb_rating": movie.imdb_rating,
-                    "metacritic_rating": movie.metacritic_rating,
-                    "title_es": movie.title_es,
-                    "overview_es": movie.overview_es
-                }
+                metadata=qdrant_payload(movie)
             )
             return True
         except Exception as e:
@@ -292,23 +280,7 @@ class MovieService:
                 )
 
                 if not skip_qdrant:
-                    from models.external_schemas import QdrantPayload
-                    payload = QdrantPayload(
-                        tmdb_id=movie.tmdb_id,
-                        title=movie.title,
-                        year=movie.year,
-                        genres=movie.genres or[],
-                        rating=movie.vote_average,
-                        vote_count=movie.vote_count,
-                        runtime=movie.runtime,
-                        poster_path=movie.poster_path,
-                        vectorbox_score=movie.vectorbox_score,
-                        imdb_rating=movie.imdb_rating,
-                        metacritic_rating=movie.metacritic_rating,
-                        title_es=movie.title_es,
-                        overview_es=movie.overview_es,
-                        keywords=movie.keywords or[]
-                    )
+                    payload = qdrant_payload(movie)
 
                     await self.qdrant.upsert_movie_vector(
                         movie_id=movie.tmdb_id,

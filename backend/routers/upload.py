@@ -27,6 +27,7 @@ from services.data_processor import DataProcessor
 from services.task_store import get_task_store
 from utils.embedding_reference import build_embedding_reference_text
 from models.database import User, Movie, UserRating, ZipUpload
+from models.external_schemas import qdrant_payload
 from models.schemas import CSVUploadResponse, TokenResponse
 import hashlib
 from datetime import date as _date
@@ -121,26 +122,9 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                             if vector is None:
                                 continue
 
-                            payload = {
-                                "tmdb_id": movie.tmdb_id,
-                                "title": movie.title,
-                                "year": movie.year,
-                                "genres": movie.genres or [],
-                                "overview": movie.overview or "",
-                                "poster_path": movie.poster_path,
-                                "vote_average": movie.vote_average,
-                                "vote_count": movie.vote_count,
-                                "runtime": movie.runtime,
-                                "original_language": movie.original_language,
-                                "keywords": movie.keywords or [],
-                                "directors": movie.directors,
-                                "cast": movie.cast,
-                                "vectorbox_score": movie.vectorbox_score,
-                                "imdb_rating": movie.imdb_rating,
-                                "metacritic_rating": movie.metacritic_rating,
-                                "title_es": movie.title_es,
-                                "overview_es": movie.overview_es,
-                            }
+                            # enriched=True: the row flag flips below, AFTER
+                            # this payload is built.
+                            payload = qdrant_payload(movie, enriched=True)
                             await qdrant.upsert_movie_vector(
                                 movie_id=movie.tmdb_id,
                                 vector=vector.tolist(),
