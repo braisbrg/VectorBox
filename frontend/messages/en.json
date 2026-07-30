@@ -458,7 +458,10 @@
     "cta_or": "or",
     "how": "How it works",
     "chip_heist": "stylish heists, 1970s Europe",
-    "chip_loneliness": "the loneliness of living in a huge city"
+    "chip_loneliness": "the loneliness of living in a huge city",
+    "clear": "clear",
+    "go": "search",
+    "results_own": "your search"
   },
   "explore": {
     "guest_session": "◌ guest session",

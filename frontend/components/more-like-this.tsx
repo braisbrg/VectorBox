@@ -5,6 +5,7 @@
 // Right: live recommendations (rank · poster · why · Q + d) → quick-look (mlt).
 
 import { useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { Search, Loader2 } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
 import Image from "next/image";
@@ -45,7 +46,10 @@ const MAX_SEEDS = 5;
 
 export function MoreLikeThis({}: MoreLikeThisProps) {
     const { language, t } = useLanguage();
-    const [searchQuery, setSearchQuery] = useState("");
+    // The landing's title field hands its text over here rather than dropping it
+    // — you typed it once, so you should not type it twice.
+    const handoff = useSearchParams().get("q") ?? "";
+    const [searchQuery, setSearchQuery] = useState(handoff);
     const [searchResults, setSearchResults] = useState<SearchedMovie[]>([]);
     const [seeds, setSeeds] = useState<SearchedMovie[]>([]);
     const [recs, setRecs] = useState<SimilarRec[]>([]);
@@ -86,6 +90,14 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
         return () => clearTimeout(t);
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [seeds]);
+
+    // Run the handed-over text once on arrival. Prefilling the box without
+    // searching would still make the visitor press enter on words they already
+    // typed, which is the handoff failing quietly.
+    useEffect(() => {
+        if (handoff.trim()) searchMutation.mutate(handoff);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();

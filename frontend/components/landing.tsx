@@ -9,12 +9,24 @@
 //
 // The page demonstrates instead of describing. One sentence in, twelve films
 // out, and the account ask comes AFTER the value rather than in front of it.
-// The results are real engine output served from `/api/search/showcase` — a pure
-// cache reader, so default landing traffic never reaches Groq and the set of
-// possible inputs stays closed while `/search/natural` is still open to free
-// text. The field is a doorway to the real Magic Box (/try/magic) rather than a
-// second search implementation, and it carries the same two modes the component
-// has: ◐ a sentence, ⌕ a title.
+// The default results are real engine output served from `/api/search/showcase`
+// — a pure cache reader, so a visitor who only looks never reaches Groq and the
+// default input set stays closed.
+//
+// The field is a real field as of 2026-07-29. It used to be a link wearing a
+// placeholder: you could not type in it, and clicking took you to /try/magic to
+// type the sentence again. A page whose whole argument is "one sentence in,
+// twelve films out" should answer the sentence where it asks for it, so the
+// phrase mode now posts to `/api/search/try` — the bounded public door (140
+// chars, 5/min, no Tier-2) — and swaps its answer into the same rail.
+//
+// The chips still read the CACHE, not /try. That is deliberate: they are the
+// path most visitors take, and keeping them on a closed input set is what stops
+// the landing from being a free LLM proxy for anyone who finds the URL.
+//
+// Title mode stays a handoff, because "movies like X" needs an autocomplete and
+// a seed list, and MoreLikeThis already is that. It carries the typed text now
+// instead of dropping it.
 //
 // Logged-in visitors never see this; page.tsx redirects them to /feed.
 
@@ -22,9 +34,9 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useUser } from "@clerk/nextjs";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import { getShowcase, type ShowcaseSlug } from "@/lib/api";
+import { getShowcase, searchTry, TRY_MAX_QUERY, type ShowcaseFilm, type ShowcaseSlug } from "@/lib/api";
 import { MovieCard } from "@/components/ui/movie-card";
 import { Wordmark } from "@/components/ui/wordmark";
 import { LanguageToggle } from "@/components/language-toggle";
@@ -46,6 +58,10 @@ export function Landing() {
 
     const [slug, setSlug] = useState<ShowcaseSlug>("grief");
     const [mode, setMode] = useState<"phrase" | "title">("phrase");
+    const [query, setQuery] = useState("");
+    // Null until the visitor asks something of their own; the showcase answers
+    // until then. Also what "clear" resets to, so the demo is always reachable.
+    const [own, setOwn] = useState<{ films: ShowcaseFilm[]; lowConf: boolean; degraded: boolean } | null>(null);
     const railRef = useRef<HTMLDivElement>(null);
     const [edges, setEdges] = useState({ left: false, right: false });
 
@@ -61,6 +77,34 @@ export function Landing() {
         enabled: mode === "phrase",
     });
 
+    const search = useMutation({
+        mutationFn: (q: string) => searchTry(q),
+        onSuccess: (d) =>
+            setOwn({
+                films: d.results ?? [],
+                lowConf: Boolean(d.low_confidence),
+                degraded: Boolean(d.degraded),
+            }),
+    });
+
+    const onSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        const q = query.trim();
+        if (!q) return;
+        // Title mode is a handoff, but it takes the words with it now.
+        if (mode === "title") {
+            router.push(`/try/mlt?q=${encodeURIComponent(q)}`);
+            return;
+        }
+        search.mutate(q);
+    };
+
+    const clearOwn = () => {
+        setOwn(null);
+        setQuery("");
+        search.reset();
+    };
+
     // Rail edges drive the arrows. Same split as movie-carousel.tsx: arrows on
     // pointer devices, drag on phones.
     const syncEdges = () => {
@@ -69,7 +113,7 @@ export function Landing() {
         const max = el.scrollWidth - el.clientWidth;
         setEdges({ left: el.scrollLeft > 2, right: el.scrollLeft < max - 2 });
     };
-    useEffect(syncEdges, [data]);
+    useEffect(syncEdges, [data, own]);
 
     const scrollRail = (dir: -1 | 1) => {
         const el = railRef.current;
@@ -84,8 +128,13 @@ export function Landing() {
         );
     }
 
-    const films = data?.results ?? [];
     const phrase = mode === "phrase";
+    // The visitor's own answer wins over the showcase once there is one.
+    const films = own ? own.films : (data?.results ?? []);
+    const busy = search.isPending || (!own && isLoading);
+    // 429 is the interesting failure: /try allows 5 a minute per IP, and saying
+    // so beats a generic error the visitor cannot act on.
+    const rateLimited = (search.error as { response?: { status?: number } } | null)?.response?.status === 429;
 
     return (
         <main className="relative flex min-h-dvh flex-col bg-bg text-fg">
@@ -117,24 +166,40 @@ export function Landing() {
                     <mark className="bg-primary px-[7px] text-primary-ink">{t("land.h1b")}</mark>
                 </h1>
 
-                {/* A doorway, not a form: it links through to the real Magic Box
-                    instead of shipping a second search implementation here. */}
                 <div className="mt-7 w-full max-w-[680px] text-left">
-                    <Link
-                        href={phrase ? "/try/magic" : "/try/mlt"}
-                        className="group flex items-center gap-2.5 border-b border-border-2 px-0.5 pb-3 pt-2.5 transition-colors hover:border-fg"
+                    <form
+                        onSubmit={onSubmit}
+                        className="group flex items-center gap-2.5 border-b border-border-2 px-0.5 pb-3 pt-2.5 transition-colors focus-within:border-primary hover:border-fg"
                     >
-                        <span className="font-display text-[15px] text-primary">{phrase ? "◐" : "⌕"}</span>
-                        <span className="flex-1 truncate font-mono text-[17px] text-fg-3">
-                            {phrase ? t("land.ph_phrase") : t("land.ph_title")}
+                        <span aria-hidden className="font-display text-[15px] text-primary">
+                            {phrase ? "◐" : "⌕"}
                         </span>
-                        <span
-                            aria-hidden
-                            className="grid size-[26px] shrink-0 place-items-center border border-border-2 font-display text-[13px] text-fg-2 transition-colors group-hover:border-primary group-hover:bg-primary group-hover:text-primary-ink"
+                        <input
+                            value={query}
+                            onChange={(e) => setQuery(e.target.value)}
+                            maxLength={TRY_MAX_QUERY}
+                            aria-label={phrase ? t("land.ph_phrase") : t("land.ph_title")}
+                            placeholder={phrase ? t("land.ph_phrase") : t("land.ph_title")}
+                            className="min-w-0 flex-1 bg-transparent font-mono text-[17px] text-fg outline-none placeholder:text-fg-3"
+                        />
+                        {own && (
+                            <button
+                                type="button"
+                                onClick={clearOwn}
+                                className="shrink-0 font-mono text-[11px] text-fg-3 transition-colors hover:text-primary"
+                            >
+                                {t("land.clear")}
+                            </button>
+                        )}
+                        <button
+                            type="submit"
+                            disabled={!query.trim() || search.isPending}
+                            aria-label={t("land.go")}
+                            className="grid size-[26px] shrink-0 place-items-center border border-border-2 font-display text-[13px] text-fg-2 transition-colors hover:border-primary hover:bg-primary hover:text-primary-ink disabled:opacity-30 disabled:hover:border-border-2 disabled:hover:bg-transparent disabled:hover:text-fg-2"
                         >
-                            →
-                        </span>
-                    </Link>
+                            {search.isPending ? "·" : "→"}
+                        </button>
+                    </form>
 
                     <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5">
                         <button
@@ -167,11 +232,20 @@ export function Landing() {
                             {CHIPS.map((c) => (
                                 <button
                                     key={c.slug}
-                                    onClick={() => setSlug(c.slug)}
-                                    aria-pressed={slug === c.slug}
+                                    // Fills the field so the chip reads as an example
+                                    // of what to type, and shows the CACHED answer —
+                                    // the closed input set that keeps this page off
+                                    // Groq for the path most visitors take.
+                                    onClick={() => {
+                                        setSlug(c.slug);
+                                        setQuery(t(c.key));
+                                        setOwn(null);
+                                        search.reset();
+                                    }}
+                                    aria-pressed={!own && slug === c.slug}
                                     className={cn(
                                         "max-w-full truncate border px-2.5 py-1 font-mono text-[10px] transition-colors",
-                                        slug === c.slug
+                                        !own && slug === c.slug
                                             ? "border-primary text-primary"
                                             : "border-border-2 text-fg-3 hover:border-fg-3 hover:text-fg-2"
                                     )}
@@ -189,7 +263,7 @@ export function Landing() {
                 <section className="shrink-0 border-t border-border-2 bg-bg-2 px-5 pb-4 pt-3.5">
                     <div className="mb-2.5 flex items-center justify-center gap-3.5 font-display text-[9px] uppercase tracking-[0.18em] text-fg-3">
                         <span>
-                            {t("land.results")} ·{" "}
+                            {own ? t("land.results_own") : t("land.results")} ·{" "}
                             <b className="font-normal text-primary">
                                 {t("land.results_n").replace("{n}", String(films.length))}
                             </b>{" "}
@@ -217,7 +291,7 @@ export function Landing() {
                         )}
                     </div>
 
-                    {isLoading && (
+                    {busy && (
                         <>
                             <div className="flex justify-center gap-2.5 overflow-hidden">
                                 {Array.from({ length: 8 }).map((_, i) => (
@@ -230,13 +304,30 @@ export function Landing() {
                         </>
                     )}
 
-                    {isError && (
+                    {!busy && (rateLimited || (!own && isError)) && (
                         <p className="mx-auto max-w-[46ch] py-6 text-center font-mono text-[12.5px] leading-relaxed text-fg-2">
                             {t("land.st_err")}
                         </p>
                     )}
 
-                    {!isLoading && !isError && films.length === 0 && (
+                    {/* The engine says it could not read the sentence, which is a
+                        different thing from finding nothing — and the only one of
+                        the two the visitor can act on. */}
+                    {!busy && own?.lowConf && (
+                        <p className="mx-auto max-w-[46ch] py-6 text-center font-mono text-[12.5px] leading-relaxed text-fg-2">
+                            <b className="font-normal text-fg">{t("mb.low_conf")}</b>
+                            <br />
+                            {t("mb.low_conf_hint")}
+                        </p>
+                    )}
+
+                    {!busy && own?.degraded && films.length > 0 && (
+                        <p className="mx-auto mb-3 max-w-[54ch] border border-warn/40 bg-warn/10 px-3 py-2 text-center font-mono text-[11px] leading-relaxed text-fg-2">
+                            {t("mb.degraded")}
+                        </p>
+                    )}
+
+                    {!busy && !rateLimited && !own?.lowConf && !isError && films.length === 0 && (
                         <p className="mx-auto max-w-[46ch] py-6 text-center font-mono text-[12.5px] leading-relaxed text-fg-2">
                             {t("land.st_empty")}
                         </p>
