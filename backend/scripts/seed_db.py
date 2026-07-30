@@ -1,8 +1,10 @@
 import asyncio
 import os
+import re
 import sys
 import logging
 import argparse
+import unicodedata
 from typing import List, Dict, Optional
 from tqdm import tqdm
 from sqlalchemy import select
@@ -35,6 +37,111 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
 
+
+# ---- from_file helpers (TSPDT-style tab-separated lists) ----
+
+_LIST_ARTICLES = (
+    "The", "A", "An", "La", "Le", "Les", "L'", "El", "Los", "Las",
+    "Il", "Lo", "I", "Gli", "Un", "Une", "Una", "Der", "Die", "Das",
+    "De", "Het", "Os", "As", "O",
+)
+_ARTICLE_RE = re.compile(r"^(.+), (%s)$" % "|".join(re.escape(a) for a in _LIST_ARTICLES))
+
+
+def fix_mojibake(s: str) -> str:
+    """Repair UTF-8 text that was decoded as cp1252 ('BuÃ±uel' -> 'Buñuel').
+    Clean text round-trips to invalid UTF-8 and passes through unchanged."""
+    try:
+        return s.encode("cp1252").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return s
+
+
+def deinvert_article(title: str) -> str:
+    """'Rules of the Game, The' -> 'The Rules of the Game'; 'Atalante, L'' -> 'L'Atalante'."""
+    m = _ARTICLE_RE.match(title)
+    if not m:
+        return title
+    rest, art = m.group(1), m.group(2)
+    return art + rest if art.endswith("'") else f"{art} {rest}"
+
+
+def ascii_fold(s: str) -> str:
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+
+
+def wanted_director_keys(director_field: str) -> set:
+    """Alpha-squashed match keys for a list's director field. Handles co-directors
+    ('Keaton, Buster & Edward Sedgwick'), 'Surname, Name' inversion, and spelling
+    variants via last-token fallback ('González Iñárritu' -> 'inarritu')."""
+    keys = set()
+    for name in re.split(r"[&/]", director_field):
+        surname = ascii_fold(name.split(",")[0].strip())
+        if not surname or "various" in surname:
+            continue
+        for candidate in (surname, surname.split()[-1]):
+            squashed = re.sub(r"[^a-z]", "", candidate)
+            if len(squashed) >= 3:
+                keys.add(squashed)
+    return keys
+
+
+def pick_from_filmography(directed: List[Dict], title: str, year: int) -> Optional[int]:
+    """Pick the one film matching title/year inside a director's filmography.
+    Title-agnostic on purpose: inside a filmography, year ±2 or an exact squashed
+    title is nearly always unique. Ambiguity returns None (CSV, never a guess)."""
+    squash = lambda s: re.sub(r"[^a-z0-9]", "", ascii_fold(s or ""))
+    want = squash(title)
+    candidates = []
+    for c in directed:
+        rd = (c.get("release_date") or "")[:4]
+        year_diff = abs(int(rd) - year) if rd.isdigit() else 99
+        title_sq = squash(c.get("title"))
+        orig_sq = squash(c.get("original_title"))
+        exact = bool(want) and want in (title_sq, orig_sq)
+        contains = len(want) >= 5 and (want in title_sq or want in orig_sq)
+        t_score = 0 if exact else (1 if contains else 2)
+        if t_score == 2 and year_diff > 2:
+            continue  # no signal at all
+        if t_score < 2 and year_diff > 25:
+            # Exact-title cap is generous on purpose: shelved/delayed releases are real
+            # (The Long Farewell shot 1971 released 1987; Un chant d'amour shot 1950,
+            # TMDB dates its legal release 1972). Still guards person homonyms.
+            continue
+        candidates.append((t_score, year_diff, c.get("id")))
+    candidates.sort()
+    if not candidates:
+        return None
+    if len(candidates) > 1 and candidates[0][:2] == candidates[1][:2]:
+        return None  # tie -> ambiguous
+    return candidates[0][2]
+
+
+def parse_film_list(path: str) -> List[Dict]:
+    """Parse a TSPDT-style TSV: Pos, PrevRank, Title, Director, Year, Country, Mins.
+    Rows whose first column isn't an integer (headers, blanks) are skipped."""
+    rows = []
+    with open(path, encoding="utf-8", errors="replace") as f:
+        for line in f:
+            parts = line.rstrip("\r\n").split("\t")
+            if len(parts) < 5 or not parts[0].strip().isdigit():
+                continue
+            raw_title = parts[2].strip()
+            year_match = re.search(r"\d{4}", parts[4])
+            if not raw_title or not year_match:
+                continue
+            imdb_match = re.search(r"tt\d+", parts[7]) if len(parts) > 7 else None
+            rows.append({
+                "pos": int(parts[0]),
+                "title": deinvert_article(fix_mojibake(raw_title).replace("[TV]", "").strip()),
+                "director": fix_mojibake(parts[3].strip()),
+                "year": int(year_match.group()),
+                "is_tv": "[TV]" in raw_title,
+                "imdb_id": imdb_match.group() if imdb_match else None,
+            })
+    return rows
+
+
 class DatabaseSeeder:
     def __init__(
         self,
@@ -43,12 +150,16 @@ class DatabaseSeeder:
         language: Optional[str] = None,
         company_id: Optional[int] = None,
         collection_id: Optional[int] = None,
+        file: Optional[str] = None,
+        dry_run: bool = False,
     ):
         self.limit = limit
         self.strategy = strategy
         self.language = language
         self.company_id = company_id
         self.collection_id = collection_id
+        self.file = file
+        self.dry_run = dry_run
         self.tmdb = TMDBClient()
         self.qdrant = QdrantService()
         self.embedding_service = EmbeddingService()
@@ -287,6 +398,145 @@ class DatabaseSeeder:
         logger.info(f"Collection '{name}': {len(parts)} parts, {len(candidates)} NEW to seed")
         return candidates
 
+    async def _resolve_list_row(self, row: Dict) -> Optional[int]:
+        """Resolve a title/director/year row to a tmdb_id, or None if no confident match.
+        IMDb id first when the list provides one (TMDB /find — exact, no heuristics);
+        else title search (cheap, cached, right ~98% of the time); on failure, fall back
+        to the director's filmography (title-agnostic — survives divergent English titles,
+        homonym ranking traps, and director-name transliterations)."""
+        if row.get("imdb_id"):
+            data = await self.tmdb._make_request(
+                f"/find/{row['imdb_id']}", {"external_source": "imdb_id"}
+            )
+            movies = (data or {}).get("movie_results") or []
+            if movies:
+                return movies[0]["id"]
+            # no movie behind that tt-id (TV/episode/dead link) -> heuristic chain
+        tmdb_id = await self._resolve_by_title(row)
+        if tmdb_id is None:
+            tmdb_id = await self._resolve_via_director(row)
+            if tmdb_id is not None:
+                logger.info(
+                    f"Resolved via director filmography: '{row['title']}' ({row['year']}) -> {tmdb_id}"
+                )
+        return tmdb_id
+
+    async def _resolve_via_director(self, row: Dict) -> Optional[int]:
+        """Find the film inside the director's TMDB filmography."""
+        name = row["director"].split("&")[0].split("/")[0].strip()
+        if "," in name:
+            last, _, first = name.partition(",")
+            name = f"{first.strip()} {last.strip()}"
+        if not name or "various" in name.lower():
+            return None
+        data = await self.tmdb._make_request("/search/person", {"query": name})
+        # Top-3 persons: name homonyms are common (Max vs Marcel Ophüls, two Kim Ki-duks)
+        for person in ((data or {}).get("results") or [])[:3]:
+            credits = await self.tmdb._make_request(f"/person/{person['id']}/movie_credits", {})
+            directed = [c for c in (credits or {}).get("crew") or [] if c.get("job") == "Director"]
+            found = pick_from_filmography(directed, row["title"], row["year"])
+            if found is not None:
+                return found
+        return None
+
+    async def _resolve_by_title(self, row: Dict) -> Optional[int]:
+        """Title+year search with a director veto against homonym traps."""
+        title, year = row["title"], row["year"]
+        hit = None
+        for yr in (year, year + 1, year - 1, None):
+            hit = await self.tmdb.search_movie(title, year=yr)
+            if hit:
+                break
+        if not hit:
+            # Mojibake leftovers the round-trip couldn't repair: retry ASCII-only
+            clean = re.sub(r"\s+", " ", re.sub(r"[^\x20-\x7E]", " ", title)).strip(" .")
+            if clean and clean != title:
+                hit = await self.tmdb.search_movie(clean, year=year)
+        if not hit:
+            return None
+
+        # Year sanity — the no-year pass can return a remake/homonym from any era
+        rd = (hit.get("release_date") or "")[:4]
+        if rd.isdigit() and abs(int(rd) - year) > 2:
+            return None
+
+        # Director gate — catches homonym traps ('Blue' 1993: Jarman vs Kieslowski).
+        # get_movie_details is Redis-cached and reused by MovieFactory at ingest,
+        # so this verification costs nothing extra on the real run.
+        wanted = wanted_director_keys(row["director"])
+        if wanted:
+            details = await self.tmdb.get_movie_details(hit["id"])
+            crew = ((details or {}).get("credits") or {}).get("crew") or []
+            directors = [
+                re.sub(r"[^a-z]", "", ascii_fold(c.get("name", "")))
+                for c in crew if c.get("job") == "Director"
+            ]
+            if directors and not any(w in d for w in wanted for d in directors):
+                logger.info(
+                    f"Director mismatch for '{title}' ({year}): wanted ~{wanted}, got {directors}"
+                )
+                return None
+        return hit["id"]
+
+    async def fetch_from_file(self, existing_ids: set) -> List[Dict]:
+        """Curated-list ingestion (e.g. TSPDT 1000): resolve title/director/year rows
+        to TMDB IDs. No popularity floor — the list IS the curation. Unresolved rows
+        go to <file>.unresolved.csv for manual review, never a silent guess."""
+        if not self.file:
+            logger.error("from_file strategy requires --file <path>")
+            return []
+        rows = parse_film_list(self.file)
+        if not rows:
+            logger.error(f"No parseable rows in {self.file}")
+            return []
+
+        stats = {"tv_skipped": 0, "already": 0, "unresolved": 0}
+        candidates, unresolved = [], []
+        target = len(rows) if self.dry_run else self.limit
+        pbar = tqdm(total=len(rows), desc="Resolving list rows")
+        for row in rows:
+            if row["is_tv"]:
+                stats["tv_skipped"] += 1
+                pbar.update(1)
+                continue
+            if len(candidates) >= target:
+                break
+            tmdb_id = await self._resolve_list_row(row)
+            if tmdb_id is None:
+                stats["unresolved"] += 1
+                unresolved.append(row)
+            elif tmdb_id in existing_ids:
+                stats["already"] += 1
+            else:
+                candidates.append({"id": tmdb_id})
+                existing_ids.add(tmdb_id)
+            # the bar tracks rows SCANNED; the postfix tracks what --limit actually caps
+            pbar.set_postfix(
+                new=f"{len(candidates)}/{target}",
+                already=stats["already"],
+                unresolved=stats["unresolved"],
+                refresh=False,
+            )
+            pbar.update(1)
+        pbar.close()
+
+        out = self.file + ".unresolved.csv"
+        if unresolved:
+            with open(out, "w", encoding="utf-8") as f:
+                f.write("pos\ttitle\tdirector\tyear\n")
+                for r in unresolved:
+                    f.write(f"{r['pos']}\t{r['title']}\t{r['director']}\t{r['year']}\n")
+            logger.info(f"Unresolved rows written to {out}")
+        elif os.path.exists(out):
+            os.remove(out)  # stale CSV from a previous run
+
+        logger.info(
+            f"List report: {len(rows)} rows | {stats['tv_skipped']} TV skipped | "
+            f"{stats['already']} already in catalogue | {len(candidates)} NEW | "
+            f"{stats['unresolved']} unresolved"
+        )
+        return candidates
+
     async def fetch_upcoming_movies(self, existing_ids: set) -> list:
         """Fetch upcoming movies releasing in next 6 months."""
         from datetime import date, timedelta
@@ -378,6 +628,8 @@ class DatabaseSeeder:
             return await self.fetch_by_company_movies(existing_ids)
         if self.strategy == "by_collection":
             return await self.fetch_by_collection_movies(existing_ids)
+        if self.strategy == "from_file":
+            return await self.fetch_from_file(existing_ids)
         return await self.fetch_top_movies(existing_ids)
 
     async def seed_batch(self, db, existing_ids: set):
@@ -389,6 +641,10 @@ class DatabaseSeeder:
         logger.info(f"Seeding batch (Strategy: {self.strategy}, Limit: {self.limit})")
         new_movies = await self.fetch_for_current_strategy(existing_ids)
         logger.info(f"Fetched {len(new_movies)} NEW movies to process")
+
+        if self.dry_run:
+            logger.info(f"DRY RUN — {len(new_movies)} new movies WOULD be ingested; nothing written")
+            return
 
         if not new_movies:
             return
@@ -484,7 +740,7 @@ async def main():
         choices=[
             "popular", "recent", "upcoming", "top_rated", "by_language", "classic", "trending",
             "trakt_popular", "trakt_trending", "trakt_anticipated",
-            "by_company", "by_collection",
+            "by_company", "by_collection", "from_file",
         ],
         default="popular",
         help=(
@@ -494,7 +750,8 @@ async def main():
             "classic: pre-1990 by vote_count | trending: /trending/movie/week | "
             "trakt_popular | trakt_trending | trakt_anticipated (require TRAKT_CLIENT_ID) | "
             "by_company: requires --company-id <N> | "
-            "by_collection: requires --collection-id <N> (enumerates the whole saga)"
+            "by_collection: requires --collection-id <N> (enumerates the whole saga) | "
+            "from_file: requires --file <TSV: Pos/Rank/Title/Director/Year/Country/Mins>"
         ),
     )
     parser.add_argument(
@@ -515,6 +772,17 @@ async def main():
         default=None,
         help="TMDB collection ID for by_collection (e.g. 10=Star Wars, 1241=Harry Potter, 645=James Bond)",
     )
+    parser.add_argument(
+        "--file",
+        type=str,
+        default=None,
+        help="Path to a curated list TSV for from_file (e.g. scripts/data/tspdt_top1000.tsv)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Resolve and report (rows / already-in-catalogue / NEW / unresolved) without ingesting anything",
+    )
     args = parser.parse_args()
 
     seeder = DatabaseSeeder(
@@ -523,6 +791,8 @@ async def main():
         language=args.language,
         company_id=args.company_id,
         collection_id=args.collection_id,
+        file=args.file,
+        dry_run=args.dry_run,
     )
     await seeder.run()
 
