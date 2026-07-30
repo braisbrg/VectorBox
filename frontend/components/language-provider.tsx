@@ -11,14 +11,25 @@ interface LanguageContextType {
 
 const LanguageContext = createContext<LanguageContextType | undefined>(undefined);
 
-export function LanguageProvider({ children }: { children: React.ReactNode }) {
-    const [language, setLanguage] = useState<Language>("en");
+export function LanguageProvider({
+    children,
+    initialLanguage = "en",
+}: {
+    children: React.ReactNode;
+    initialLanguage?: Language;
+}) {
+    // Initialised from the server-resolved locale (NEXT_LOCALE cookie set by the
+    // middleware from Accept-Language), so SSR and the first client render agree.
+    const [language, setLanguage] = useState<Language>(initialLanguage);
 
-    // Load from local storage on mount
+    // Reconcile with an explicit prior choice in localStorage: if the user had
+    // picked a language before but the cookie was cleared/expired, that explicit
+    // choice still wins over detection. Re-syncs the cookie so it sticks.
     useEffect(() => {
-        const saved = localStorage.getItem("vectorbox_language") as Language;
-        if (saved && (saved === "en" || saved === "es")) {
+        const saved = localStorage.getItem("vectorbox_language") as Language | null;
+        if ((saved === "en" || saved === "es") && saved !== language) {
             setLanguage(saved);
+            document.cookie = `NEXT_LOCALE=${saved}; path=/; max-age=31536000; SameSite=Lax`;
         }
     }, []);
 

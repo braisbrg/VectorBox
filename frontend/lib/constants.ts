@@ -48,3 +48,12 @@ export const COUNTRIES = [
     { code: "BR", name: "Brazil" },
     { code: "CA", name: "Canada" },
 ] as const;
+
+// F10 — TMDB standard genre names for the rail's genre filter. These are DATA
+// values (must match Movie.genres exactly), so they stay EN in both locales,
+// same as the ONBOARDING_TAGS precedent.
+export const GENRES = [
+    "Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary",
+    "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery",
+    "Romance", "Science Fiction", "Thriller", "War", "Western",
+] as const;

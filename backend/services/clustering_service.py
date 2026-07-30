@@ -3,7 +3,6 @@ K-Means Clustering Service for User Taste Profiles
 Implements dynamic clustering: n_clusters = min(5, max(2, total_movies // 20))
 """
 from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
 from collections import Counter
 import numpy as np
 import math
@@ -208,34 +207,73 @@ class ClusteringService:
             "\n\nRespond with ONLY the label. No quotes, no explanation, no trailing punctuation."
         )
 
-        import os
-        model_name = "meta-llama/llama-4-scout-17b-16e-instruct" if os.getenv("GROQ_API_KEY") else "gemini-2.5-flash"
-        try:
-            response = await groq_client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            "You name film clusters honestly. Respond with ONLY a 2-4 word English label. "
-                            "No punctuation at the end. If films don't share a coherent theme, use a generic label."
-                        ),
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                max_tokens=40,
-            )
-            label = response.choices[0].message.content.strip().rstrip(".!,;:")
-            if label and 1 < len(label) < 60:
-                logger.info(f"LLM cluster label generated: '{label}'")
+        from services.cinematic_enricher import (
+            _strip_think, _get_model_chain, _REASONING_EFFORT,
+            _parse_retry_after, _is_daily_limit,
+        )
+        # Cascade across ENRICH_CHAIN (qwen3.6-27b → gpt-oss-120b → gpt-oss-20b) —
+        # each model has a SEPARATE TPM bucket, so a 429 on one tries the next
+        # instead of degrading. Labels are tiny (~500 tok) but the buckets are
+        # small (qwen3.6-27b ~8K TPM), so re-clustering many users back-to-back
+        # used to 429 and drop straight to a genre label. If the WHOLE chain is
+        # per-minute rate-limited, wait the suggested time ONCE and retry rather
+        # than degrade — genres is the true last resort (chain fully exhausted /
+        # daily limit). _strip_think guards <think> leaks.
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You name film clusters honestly. Respond with ONLY a 2-4 word English label. "
+                    "No punctuation at the end. If films don't share a coherent theme, use a generic label."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        async def _try_chain():
+            """One cascade pass over the model chain.
+
+            Returns (label, shortest_minute_429_wait). label is None if every
+            model failed; the wait is set only when the failures were recoverable
+            per-minute 429s (not daily limits / hard errors).
+            """
+            min_wait = None
+            for model_name in _get_model_chain():
+                effort = _REASONING_EFFORT.get(model_name)
+                extra_body = {"reasoning_effort": effort} if effort else None
+                try:
+                    response = await groq_client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        temperature=0.3,
+                        max_tokens=120,  # reasoning headroom even at effort='none'
+                        extra_body=extra_body,
+                    )
+                    label = _strip_think(response.choices[0].message.content or "").strip().rstrip(".!,;:")
+                    if label and 1 < len(label) < 60:
+                        logger.info(f"LLM cluster label '{label}' (model={model_name})")
+                        return label, None
+                except Exception as e:
+                    err = str(e)
+                    if "429" in err and not _is_daily_limit(err):
+                        w = _parse_retry_after(err)
+                        if w and (min_wait is None or w < min_wait):
+                            min_wait = w
+            return None, min_wait
+
+        label, wait = await _try_chain()
+        if label:
+            return label
+        # Whole chain per-minute rate-limited → wait once (capped — this runs in a
+        # background task, but don't stall a label for minutes) and retry.
+        if wait and wait < 30:
+            logger.info(f"Cluster naming: whole chain minute-limited, waiting {wait:.0f}s then retrying")
+            await asyncio.sleep(wait + 1)
+            label, _ = await _try_chain()
+            if label:
                 return label
-            
-            logger.warning(f"LLM cluster label fell back to genres (invalid response: '{label}')")
-            return fallback
-        except Exception as e:
-            logger.warning(f"LLM cluster label fell back to genres (Groq error: {e})")
-            return fallback
+        logger.warning("LLM cluster label fell back to genres (model chain exhausted)")
+        return fallback
     
     async def create_user_clusters(
         self,
@@ -322,8 +360,8 @@ class ClusteringService:
         
         X = np.array(vectors)
         
-        if X.shape[1] != 384:
-            logger.error(f"Vector Dimension Mismatch! Expected 384, got {X.shape[1]}. Aborting clustering.")
+        if X.shape[1] != QdrantService.VECTOR_SIZE:
+            logger.error(f"Vector Dimension Mismatch! Expected {QdrantService.VECTOR_SIZE}, got {X.shape[1]}. Aborting clustering.")
             return []
         
         from sklearn.preprocessing import normalize
@@ -538,7 +576,6 @@ class ClusteringService:
         filters: Dict = None,
         limit: int = 20,
         page: int = 1,
-        background_tasks = None,
         query_vector_override: list[float] = None
     ) -> List[Dict]:
         """
@@ -1148,23 +1185,15 @@ class ClusteringService:
         redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
         r = None
         try:
+            from services.cache_service import scan_and_delete
             r = redis.from_url(redis_url, encoding="utf-8", decode_responses=True)
-            patterns = [
+            total_deleted = 0
+            for pattern in (
                 f"fastapi-cache:*{user_id}*",
                 f"section:{FEED_CACHE_VERSION}:{user_id}:*",
                 f"signal_cache:{user_id}:*",
-            ]
-            total_deleted = 0
-            for pattern in patterns:
-                cursor = 0
-                while True:
-                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
-                    if keys:
-                        await r.delete(*keys)
-                        total_deleted += len(keys)
-                    if cursor == 0:
-                        break
-            # Direct-key deletions (no scan needed)
+            ):
+                total_deleted += await scan_and_delete(r, pattern)
             await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
             if total_deleted:
                 logger.info(f"Cleared {total_deleted} cache keys due to cluster regeneration (user_id={user_id}).")

@@ -9,32 +9,38 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 import logging
 
 from config import get_db
-from dependencies import get_current_user, verify_user_ownership, get_embedding_service, get_qdrant_service
+from limiter import limiter
+from dependencies import (
+    get_current_user,
+    get_embedding_service,
+    get_qdrant_service,
+    get_tmdb_client,
+)
 from services.embedding_service import EmbeddingService
-from services.qdrant_service import QdrantService
 from services.clustering_service import ClusteringService
 from services.provider_service import ProviderService
 
 from services.data_processor import DataProcessor
 from services.task_store import get_task_store
-from models.database import User, Movie, UserRating
+from utils.embedding_reference import build_embedding_reference_text
+from models.database import User, Movie, UserRating, ZipUpload
+from models.external_schemas import qdrant_payload
 from models.schemas import CSVUploadResponse, TokenResponse
+import hashlib
+from datetime import date as _date
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-limiter = Limiter(key_func=get_remote_address)
-
-# Legacy in-memory status (kept for backwards compatibility)
-upload_status = {}
+# SEC-3: use the shared, proxy-aware limiter (keys on CF-Connecting-IP /
+# X-Forwarded-For) instead of a local Limiter(get_remote_address), which
+# bucketed every user behind the tunnel under the proxy's egress IP.
 
 async def _enrich_user_movies_background(user_id: int) -> None:
     """
-    Post-upload enrichment: enrich movies imported by this user that lack Scout embeddings.
+    Post-upload enrichment: enrich movies imported by this user that lack LLM-enriched embeddings.
     Runs silently after upload completes. On finish, invalidates cache and re-clusters.
     """
     import os
@@ -69,17 +75,19 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                     api_key=groq_key,
                     base_url="https://api.groq.com/openai/v1",
                     max_retries=0,
+                    timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
                 )
             elif gemini_key:
                 llm_client = AsyncOpenAI(
                     api_key=gemini_key,
                     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                    timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
                 )
             else:
                 logger.warning("[Enrichment] No LLM API key available, skipping enrichment")
                 return
 
-            qdrant = QdrantService()
+            qdrant = await get_qdrant_service()
             embedding_service = await get_embedding_service()
             enriched_count = 0
             batch_size = 10
@@ -114,26 +122,9 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                             if vector is None:
                                 continue
 
-                            payload = {
-                                "tmdb_id": movie.tmdb_id,
-                                "title": movie.title,
-                                "year": movie.year,
-                                "genres": movie.genres or [],
-                                "overview": movie.overview or "",
-                                "poster_path": movie.poster_path,
-                                "vote_average": movie.vote_average,
-                                "vote_count": movie.vote_count,
-                                "runtime": movie.runtime,
-                                "original_language": movie.original_language,
-                                "keywords": movie.keywords or [],
-                                "directors": movie.directors,
-                                "cast": movie.cast,
-                                "vectorbox_score": movie.vectorbox_score,
-                                "imdb_rating": movie.imdb_rating,
-                                "metacritic_rating": movie.metacritic_rating,
-                                "title_es": movie.title_es,
-                                "overview_es": movie.overview_es,
-                            }
+                            # enriched=True: the row flag flips below, AFTER
+                            # this payload is built.
+                            payload = qdrant_payload(movie, enriched=True)
                             await qdrant.upsert_movie_vector(
                                 movie_id=movie.tmdb_id,
                                 vector=vector.tolist(),
@@ -164,8 +155,9 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             clustering = ClusteringService(qdrant=qdrant)
             await clustering.create_user_clusters(user_id, db)
 
-            # T-03: Sanity-check embeddings against a MiniLM reference vector built from
-            # title/year/genres/directors. Restricted to medoids + top anchor candidates
+            # T-03: Sanity-check embeddings against an embeddinggemma reference vector built
+            # from the shared name-free recipe (overview + genres + keywords — see
+            # utils.embedding_reference). Restricted to medoids + top anchor candidates
             # (~10 movies) — these are the only movies that downstream feed sections actually
             # surface, so checking the rest wastes LLM/encoder budget.
             logger.info(f"[Sanity] Checking medoids + anchor candidates for user {user_id}")
@@ -194,6 +186,7 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             priority_ids = list(set(medoid_internal_ids + anchor_internal_ids))
 
             flagged = 0
+            flagged_tmdb_ids: list[int] = []
             if priority_ids:
                 movies_to_check_result = await db.execute(
                     select(Movie).where(Movie.id.in_(priority_ids))
@@ -207,10 +200,7 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                     stored = vectors_by_tmdb.get(movie.tmdb_id)
                     if not stored:
                         continue
-                    ref_text = (
-                        f"{movie.title or ''} {movie.year or ''} "
-                        f"{' '.join(movie.genres or [])} {' '.join(movie.directors or [])}"
-                    ).strip()
+                    ref_text = build_embedding_reference_text(movie)
                     if not ref_text:
                         continue
                     loop = asyncio.get_running_loop()
@@ -236,12 +226,26 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                     if quality < 0.25:
                         flagged += 1
                         movie.has_enriched_embedding = False
+                        flagged_tmdb_ids.append(movie.tmdb_id)
                         logger.warning(
                             f"[Sanity] Low quality anchor/medoid: {movie.title} "
                             f"({quality:.2f}) — marked for re-enrichment"
                         )
 
                 await db.commit()
+
+                # Mirror the flag flip into the Qdrant payload so the enriched-vector
+                # gate stops recommending these until they are re-enriched (PG and
+                # payload would otherwise drift: point stays True, row goes False).
+                if flagged_tmdb_ids:
+                    try:
+                        await qdrant.client.set_payload(
+                            collection_name=qdrant.COLLECTION_NAME,
+                            payload={"has_enriched_embedding": False},
+                            points=flagged_tmdb_ids,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Sanity] Qdrant flag sync failed: {e}")
                 logger.info(
                     f"[Sanity] Checked {len(movies_to_check)} priority movies, {flagged} flagged"
                 )
@@ -255,17 +259,8 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             logger.error(f"[Enrichment] Pipeline failed for user {user_id}: {e}")
 
 
-@router.get("/status/{user_id}")
-async def get_upload_status(
-    user_id: int,
-    current_user: TokenResponse = Depends(verify_user_ownership)
-):
-    """Get current upload status for user (legacy endpoint)"""
-    return upload_status.get(user_id, {"status": "idle", "message": "", "progress": 0})
-
 async def process_single_movie(
     movie_data: dict,
-    user_id: int,
     tmdb_client: "TMDBClient",
     groq_client=None
 ):
@@ -381,15 +376,6 @@ async def enrich_movies_background(
     CHUNK_SIZE = 50
     enriched_count = 0
 
-    # Legacy status init
-    upload_status[user_id] = {
-        "status": "processing",
-        "message": "Starting batch enrichment...",
-        "progress": 0,
-        "total": total_movies,
-        "current": 0
-    }
-
     if task_id:
         await task_store.update_progress(task_id, 0, f"Starting batch processing of {total_movies} movies...")
 
@@ -397,8 +383,7 @@ async def enrich_movies_background(
 
     try:
         # Shared TMDB client for parallel HTTP lookups (HTTP-safe, no DB)
-        from services.tmdb_client import TMDBClient
-        tmdb_client = TMDBClient()
+        tmdb_client = await get_tmdb_client()
 
         import os
         from openai import AsyncOpenAI
@@ -407,21 +392,30 @@ async def enrich_movies_background(
                 api_key=os.getenv("GROQ_API_KEY"),
                 base_url="https://api.groq.com/openai/v1",
                 max_retries=0,
+                timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
             )
         elif os.getenv("GEMINI_API_KEY"):
             groq_client = AsyncOpenAI(
                 api_key=os.getenv("GEMINI_API_KEY"),
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
             )
         else:
             groq_client = None
 
         try:
             async with AsyncSessionLocal() as db:
-                # Clear existing ratings for clean re-import
-                from sqlalchemy import delete as sa_delete
-                await db.execute(sa_delete(UserRating).where(UserRating.user_id == user_id))
-                await db.commit()
+                # NO up-front delete. The rating write below is an idempotent
+                # UPSERT, so a re-import overwrites in place without one — and
+                # the old `DELETE … WHERE user_id` ran in a BACKGROUND task,
+                # committed immediately, before any film had been resolved.
+                # process_single_movie returns None on any TMDB failure, so a
+                # TMDB outage (or an open circuit breaker) wiped the user's
+                # entire library and re-inserted nothing, irreversibly, after
+                # the endpoint had already returned 200.
+                # Stale rows are pruned AFTER a successful import instead — see
+                # the prune block below the chunk loop.
+                imported_movie_ids: set[int] = set()
 
                 # Process in Chunks
                 for i in range(0, total_movies, CHUNK_SIZE):
@@ -439,11 +433,11 @@ async def enrich_movies_background(
                         await task_store.update_progress(task_id, progress, msg)
 
                     # 1. Parallel Resolve & Ingest (each task owns its own session)
-                    # FIX 5: Skip Scout enrichment during bulk upload to preserve quota.
+                    # FIX 5: Skip LLM enrichment during bulk upload to preserve quota.
                     # The nightly enrich_vectors.py --enrich-embeddings script handles enrichment.
                     tasks = []
                     for m_data in chunk:
-                        tasks.append(process_single_movie(m_data, user_id, tmdb_client, groq_client=None))
+                        tasks.append(process_single_movie(m_data, tmdb_client, groq_client=None))
 
                     # Results: list of (movie_id | None, needs_vector)
                     results = await asyncio.gather(*tasks)
@@ -480,6 +474,7 @@ async def enrich_movies_background(
                                 }
                             )
                             await db.execute(stmt)
+                            imported_movie_ids.add(movie_id)
 
                             if needs_vector:
                                 movies_to_vectorize_ids.append(movie_id)
@@ -544,7 +539,9 @@ async def enrich_movies_background(
 
                                         "title_es": m.title_es,
                                         "overview_es": m.overview_es,
-                                        "keywords": m.keywords
+                                        "keywords": m.keywords,
+                                        # legacy-recipe batch vectorize: reflect row flag
+                                        "has_enriched_embedding": bool(m.has_enriched_embedding)
                                     }
                                 ))
 
@@ -557,6 +554,39 @@ async def enrich_movies_background(
                             logger.error(f"Batch vector upsert failed: {e}")
 
                     # End of Chunk Loop
+
+                # Prune rows this import did NOT touch (films the user removed
+                # from Letterboxd). Replaces the old destructive up-front delete.
+                #
+                # Two guards the old version lacked:
+                #  1. Resolution-health floor. If fewer than half the ZIP's films
+                #     resolved, TMDB is degraded — skip the prune entirely rather
+                #     than delete a library we failed to rebuild.
+                #  2. watch_count == 0 marks WEB-WATCHES (rated in our carousel,
+                #     not yet on Letterboxd). They are legitimately absent from
+                #     every ZIP, so pruning them destroyed the watched-on-web
+                #     list + CSV export on every single import.
+                resolved_ratio = len(imported_movie_ids) / max(total_movies, 1)
+                if resolved_ratio < 0.5:
+                    logger.error(
+                        f"[Upload] Only {len(imported_movie_ids)}/{total_movies} films resolved "
+                        f"({resolved_ratio:.0%}) — skipping stale-row prune to avoid data loss. "
+                        f"Existing ratings left untouched."
+                    )
+                else:
+                    from sqlalchemy import delete as sa_delete
+                    prune = await db.execute(
+                        sa_delete(UserRating)
+                        .where(UserRating.user_id == user_id)
+                        .where(UserRating.movie_id.notin_(imported_movie_ids))
+                        .where(UserRating.watch_count != 0)
+                    )
+                    await db.commit()
+                    if prune.rowcount:
+                        logger.info(
+                            f"[Upload] Pruned {prune.rowcount} rows absent from this export "
+                            f"(user_id={user_id})"
+                        )
 
                 # After all movies processed, create clusters
                 if task_id:
@@ -588,26 +618,23 @@ async def enrich_movies_background(
             if groq_client:
                 await groq_client.close()
 
-        # Mark as complete (outside the session context — uses in-memory dict + Redis)
-        upload_status[user_id] = {
-            "status": "completed",
-            "message": "Upload complete!",
-            "progress": 100
-        }
-
         if task_id:
             await task_store.complete_task(task_id, "Upload complete!")
+
+        # F-37: flip onboarding_completed once the user crosses the rating
+        # threshold via ZIP. Previously this was only updated by the carousel
+        # /rate flow, so ZIP-imported users stayed flagged as in-onboarding.
+        try:
+            from services.onboarding_service import maybe_complete_onboarding
+            await maybe_complete_onboarding(user_id, db)
+        except Exception as e:
+            logger.warning(f"[onboarding] post-ZIP flag refresh failed for user_id={user_id}: {e}")
 
         asyncio.create_task(_enrich_user_movies_background(user_id))
         logger.info(f"[Upload] Scheduled post-upload enrichment for user {user_id}")
 
     except Exception as e:
         logger.error(f"Background enrichment failed for user {user_id}: {e}")
-        upload_status[user_id] = {
-            "status": "error",
-            "message": f"Enrichment failed: {str(e)}",
-            "progress": 0
-        }
         if task_id:
             try:
                 await task_store.update_progress(task_id, -1, f"Error: {str(e)}")
@@ -622,12 +649,19 @@ async def upload_export(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
+    force: bool = False,
     current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
     Upload Letterboxd export ZIP file.
     Parses ratings, watchlist, likes, and watched history.
+
+    F-35 idempotency:
+      - Returns 409 if (user, sha256) already processed.
+      - Returns 409 if max(Watched Date) in the new ZIP is older than the
+        last successfully processed ZIP for this user. Pass `?force=true`
+        to bypass the staleness check (user knows what they're doing).
     """
     user_id = current_user.user_id
 
@@ -638,41 +672,136 @@ async def upload_export(
         file.file.seek(0, 2)
         size = file.file.tell()
         file.file.seek(0)
-        
+
         if size > MAX_FILE_SIZE:
              raise HTTPException(status_code=413, detail="File too large (Max 10MB)")
 
         # Security: Zip Bomb & Path Traversal Check
         import zipfile
         import io
-        
+        import posixpath
+
         content = await file.read()
+        # Per-entry and aggregate caps. A real Letterboxd export is well under
+        # both — these are paranoid limits, not user-facing knobs.
+        MAX_ENTRY_SIZE = 50 * 1024 * 1024     # 50MB single CSV
+        MAX_TOTAL_UNCOMPRESSED = 100 * 1024 * 1024  # 100MB total
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
-                # Check for zip bomb (compression ratio)
-                total_size = sum(info.file_size for info in zf.infolist())
-                if total_size > 100 * 1024 * 1024: # Max 100MB extracted
-                    raise HTTPException(status_code=400, detail="Decompression bomb detected")
-                
-                # Check for path traversal
+                total_size = 0
                 for info in zf.infolist():
-                    if ".." in info.filename or info.filename.startswith("/"):
-                        raise HTTPException(status_code=400, detail="Malicious path in ZIP detected")
-                        
+                    # Per-entry cap (defeats zip bombs that bury the payload
+                    # in a single inner file).
+                    if info.file_size > MAX_ENTRY_SIZE:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="ZIP entry exceeds 50MB cap",
+                        )
+                    total_size += info.file_size
+
+                    # Path traversal: normalize and reject anything that
+                    # escapes the implied root or uses an absolute path.
+                    # Covers '..', '..\\', 'C:\\foo', '/etc/passwd', NTFS
+                    # alternate streams, and posixpath edge cases.
+                    name = info.filename
+                    if (
+                        ".." in name.replace("\\", "/").split("/")
+                        or posixpath.isabs(name)
+                        or name.startswith(("/", "\\"))
+                        or (len(name) >= 2 and name[1] == ":")  # Windows drive
+                    ):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Malicious path in ZIP detected",
+                        )
+
+                if total_size > MAX_TOTAL_UNCOMPRESSED:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Decompression bomb detected",
+                    )
+
             # Reset file cursor for DataProcessor
             file.file.seek(0)
-            
+
         except zipfile.BadZipFile:
              raise HTTPException(status_code=400, detail="Invalid ZIP file")
 
+        # F-35: idempotency by SHA-256 of the uploaded bytes. Duplicate uploads
+        # (same user + same file) short-circuit here before any expensive
+        # parsing / enrichment / Qdrant work runs.
+        sha256_hash = hashlib.sha256(content).hexdigest()
+        existing_zip = (await db.execute(
+            select(ZipUpload)
+            .where(ZipUpload.user_id == user_id)
+            .where(ZipUpload.sha256 == sha256_hash)
+        )).scalar_one_or_none()
+        if existing_zip is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "reason": "duplicate_zip",
+                    "message": (
+                        f"This ZIP was already processed on "
+                        f"{existing_zip.processed_at.date().isoformat()} "
+                        f"({existing_zip.films_count or '?'} films). Nothing to do."
+                    ),
+                    "processed_at": existing_zip.processed_at.isoformat(),
+                    "films_count": existing_zip.films_count,
+                },
+            )
+
         movies_data, errors = await DataProcessor.process_zip_export(file)
-        
+
         if not movies_data:
             raise HTTPException(
                 status_code=400,
                 detail="No valid movies found in ZIP export"
             )
-        
+
+        # F-35 staleness check. Compute the max Watched Date in this ZIP and
+        # compare against the freshest previously-uploaded ZIP. If the new
+        # ZIP is OLDER, the user is probably uploading a stale backup —
+        # warn (409) so they confirm with `?force=true` before we overwrite
+        # state with old data.
+        zip_max_watched: _date | None = None
+        for m in movies_data:
+            wd = m.get("watched_date")
+            if not wd:
+                continue
+            try:
+                # watched_date might be date, datetime, or ISO string
+                wd_date = wd if isinstance(wd, _date) else _date.fromisoformat(str(wd)[:10])
+            except (ValueError, TypeError):
+                continue
+            if zip_max_watched is None or wd_date > zip_max_watched:
+                zip_max_watched = wd_date
+
+        if not force and zip_max_watched is not None:
+            prev = (await db.execute(
+                select(ZipUpload)
+                .where(ZipUpload.user_id == user_id)
+                .where(ZipUpload.max_watched_date.isnot(None))
+                .order_by(ZipUpload.processed_at.desc())
+                .limit(1)
+            )).scalar_one_or_none()
+            if prev is not None and prev.max_watched_date and zip_max_watched < prev.max_watched_date:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "reason": "stale_zip",
+                        "message": (
+                            f"This ZIP's most recent watched date "
+                            f"({zip_max_watched.isoformat()}) is older than your "
+                            f"previous upload ({prev.max_watched_date.isoformat()}). "
+                            f"It looks like a stale backup. Re-submit with "
+                            f"?force=true to proceed anyway."
+                        ),
+                        "zip_max_watched": zip_max_watched.isoformat(),
+                        "previous_max_watched": prev.max_watched_date.isoformat(),
+                    },
+                )
+
         # Ensure user exists
         result = await db.execute(select(User).where(User.id == user_id))
         user = result.scalar_one_or_none()
@@ -699,7 +828,23 @@ async def upload_export(
         task_store = get_task_store()
         task_id = task_store.generate_task_id()
         await task_store.create_task(task_id, 100, "Preparing upload...", user_id=user_id)
-        
+
+        # F-35: persist the upload audit row now (NOT after the background
+        # task finishes) so that an immediate re-upload during enrichment
+        # short-circuits on the duplicate check. The UNIQUE(user_id, sha256)
+        # constraint also guards against a concurrent duplicate request.
+        db.add(ZipUpload(
+            user_id=user_id,
+            sha256=sha256_hash,
+            films_count=len(movies_data),
+            max_watched_date=zip_max_watched,
+        ))
+        try:
+            await db.commit()
+        except Exception as e:
+            await db.rollback()
+            logger.warning(f"[F-35] zip_uploads insert failed (likely race): {e}")
+
         # Process in background to avoid timeout
         background_tasks.add_task(
             enrich_movies_background,
@@ -707,7 +852,7 @@ async def upload_export(
             user_id,
             task_id
         )
-        
+
         return {
             "status": "processing",
             "message": f"Processing {len(movies_data)} movies from export",

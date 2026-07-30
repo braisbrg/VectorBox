@@ -7,19 +7,18 @@ Public endpoints:
 
 Auth-required endpoints (Clerk JWT OR vb_anon_session cookie):
     POST /rate          — Save a single carousel rating to DB
-    POST /migrate-guest — Migrate localStorage ratings/tags to Postgres (legacy)
     POST /tags          — Save tag preferences (Settings UI)
     GET  /status        — Onboarding completion status
 """
 import logging
 import random
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, conlist, constr
-from sqlalchemy import select, func, desc
+from sqlalchemy import select, func, desc, literal_column, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import ARRAY, array, insert as pg_insert
 from sqlalchemy import String, cast
@@ -27,8 +26,8 @@ from sqlalchemy import String, cast
 from config import get_db, REDIS_URL, AsyncSessionLocal, IS_PRODUCTION, ANON_SESSION_MAX_AGE
 from dependencies import (
     get_current_user,
-    get_optional_current_user,
     get_current_or_anonymous_user,
+    get_optional_current_user,
     get_qdrant_service,
     get_anonymous_user,
     sign_anon_session,
@@ -40,6 +39,7 @@ from models.schemas import TokenResponse
 from services.recommendation_engine import MOVIE_QUALITY_GATE
 from services.profile_cache import set_profile_dirty
 from services.qdrant_service import QdrantService
+from services.onboarding_service import ONBOARDING_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -106,11 +106,6 @@ TAG_WHITELIST = set(TAG_FILTERS.keys())
 # Request / Response schemas
 # ---------------------------------------------------------------------------
 
-class MigrateGuestRequest(BaseModel):
-    # Onboarding caps at ~30 ratings; 200 is a generous ceiling that still bounds payload size.
-    ratings: Dict[int, constr(max_length=10)] = Field(..., max_length=200)
-    tags: Dict[constr(max_length=20), conlist(constr(max_length=40), max_length=30)] = Field(..., max_length=10)
-
 class TagsRequest(BaseModel):
     avoided: conlist(constr(max_length=40), max_length=30)
 
@@ -169,7 +164,12 @@ def _apply_diversity_filters(candidates: List[Movie], limit: int) -> List[Movie]
 # ---------------------------------------------------------------------------
 
 SIGNAL_TO_RATING = {
-    "positive": 4.5,
+    # 4-signal cold-start scale. "positive" (liked) → 4.0: strong-but-sub-maximal
+    # (a quick tap shouldn't hit the _director_weight ≥4.5 ceiling of 2.0).
+    # "favorite" → 5.0 + is_liked: the max weight is EARNED only by an explicit
+    # favorite (deliberate 5★), not a generic positive. Forward-only.
+    "favorite": 5.0,
+    "positive": 4.0,
     "neutral": 3.0,
     "negative": 1.5,
 }
@@ -219,18 +219,25 @@ def _apply_tag_exclude_filters(query, avoided_tags: List[str]):
 
 @router.get("/movies")
 async def get_onboarding_movies(
-    country_code: str = "ES",
     avoided_tags: str = "",
     page: int = 1,
     exclude_ids: str = "",
     db: AsyncSession = Depends(get_db),
-    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
 ):
     """
     Return 15 movies for the onboarding carousel.
     First 5: one per genre pole (guaranteed diversity).
     Next 10: diverse pool with genre/decade caps.
-    Guest-safe (no auth required). If authed, excludes already-rated movies.
+
+    Auth: requires either a Clerk JWT or a vb_anon_session cookie. The
+    /explore + /onboarding pages always call /init-session before this
+    endpoint, so the cookie is guaranteed by the time we hit /movies.
+    Switched from get_optional_current_user — which only saw Clerk JWTs
+    and treated anon-cookie guests as "no user" — so guests had no
+    rated-exclusion applied and got the same films again on /rate-more.
+    Now anonymous guest ratings are filtered out the same way as authed
+    user ratings.
     """
     # Build base exclusion set
     rated_movie_ids: set = set()
@@ -265,17 +272,22 @@ async def get_onboarding_movies(
 
     if page > 1:
         shown_ids = [int(x) for x in exclude_ids.split(",") if x.strip()]
-        
-        # Get diverse pool excluding already shown
+
+        # Combine: films shown in current session + films already rated globally.
+        # The page-1 path applies rated_movie_ids — page-2+ was missing this,
+        # so films rated in a previous session could resurface when the user
+        # clicked "Rate more films" with an empty in-session `shown_ids`.
+        exclude_combined = set(shown_ids) | rated_movie_ids
+
         pool_query = (
             select(Movie)
             .where(*MOVIE_QUALITY_GATE)
-            .where(Movie.tmdb_id.notin_(shown_ids))
+            .where(Movie.tmdb_id.notin_(exclude_combined) if exclude_combined else True)
             .where(Movie.vote_count >= 500)
             .where(Movie.vectorbox_score >= 55)
             .where(Movie.poster_path.isnot(None))
         )
-        
+
         if avoided_tags_list:
             pool_query = _apply_tag_exclude_filters(pool_query, avoided_tags_list)
             
@@ -405,15 +417,24 @@ async def init_session(
     response: Response,
     db: AsyncSession = Depends(get_db),
     anon_user: Optional[User] = Depends(get_anonymous_user),
+    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
 ):
     """
     Idempotent session initializer for guest users.
     If a valid vb_anon_session cookie is present, return the existing user.
     Otherwise, create a new anonymous user and set the cookie.
     """
+    # If the request is ALREADY authenticated (Clerk), never create an anon
+    # user. Both /explore and /onboarding ("Rate more films") call this on
+    # mount, so without this guard every page-open by a signed-in user minted a
+    # junk `guest_…` row + anon cookie. Return their real identity instead; the
+    # caller re-queries /status for the authoritative rating count.
+    if current_user is not None:
+        return {"user_id": current_user.user_id, "is_anonymous": False, "ratings_count": 0}
+
     if anon_user is not None:
         # Existing anonymous session — refresh last_active_at
-        anon_user.last_active_at = datetime.utcnow()
+        anon_user.last_active_at = datetime.now(timezone.utc)
         await db.commit()
         return {"user_id": anon_user.id, "is_anonymous": True, "ratings_count": anon_user.onboarding_ratings_count}
 
@@ -422,19 +443,23 @@ async def init_session(
     user = User(
         username=f"guest_{guest_suffix}",
         is_anonymous=True,
-        last_active_at=datetime.utcnow(),
+        last_active_at=datetime.now(timezone.utc),
     )
     db.add(user)
     await db.commit()
     await db.refresh(user)
 
-    # Set httponly cookie
+    # Set httponly cookie. SameSite=Strict — this cookie is only ever read
+    # by same-site XHRs from the onboarding flow; there's no legitimate
+    # cross-site navigation that needs to attach it, so Strict eliminates
+    # the cross-origin POST CSRF surface that Lax leaves open on top-level
+    # navigation.
     cookie_value = sign_anon_session(user.id)
     response.set_cookie(
         key=ANON_COOKIE_NAME,
         value=cookie_value,
         httponly=True,
-        samesite="lax",
+        samesite="strict",
         secure=IS_PRODUCTION,
         max_age=ANON_SESSION_MAX_AGE,
         path="/",
@@ -483,45 +508,88 @@ async def rate_movie(
             detail=f"Movie tmdb_id={body.tmdb_id} not found in DB",
         )
 
-    # Upsert rating (idempotent — re-rating the same movie updates it)
-    existing = await db.execute(
-        select(UserRating).where(
-            UserRating.user_id == user_id,
-            UserRating.movie_id == movie.id,
-        )
-    )
-    existing_rating = existing.scalar_one_or_none()
-
-    if existing_rating is not None:
-        existing_rating.rating = rating_value
-        existing_rating.is_watched = True
-    else:
-        db.add(UserRating(
+    # Upsert rating (idempotent — re-rating the same movie updates it).
+    # CONC-1: atomic INSERT ... ON CONFLICT so two concurrent rates of the same
+    # film can't both pass a "not exists" check and then collide on the
+    # uq idx_user_movie unique index (which previously surfaced as a 500).
+    # "favorite" → explicit like (Letterboxd's like ≡ 5★ favorite).
+    is_favorite = body.signal == "favorite"
+    # watch_count=0 marks these as WEB-WATCHES (seen via our carousel, not yet on
+    # Letterboxd) so they flow into the watched-on-web list + CSV export (which
+    # exports watched-only, no rating — our SIGNAL_TO_RATING is an inference, not
+    # the user's real star). Self-cleans: a later ZIP import bumps watch_count≥1.
+    upsert = (
+        pg_insert(UserRating)
+        .values(
             user_id=user_id,
             movie_id=movie.id,
             rating=rating_value,
             is_watched=True,
-            watch_count=1,
-        ))
+            is_liked=is_favorite,
+            watch_count=0,
+        )
+        .on_conflict_do_update(
+            index_elements=[UserRating.user_id, UserRating.movie_id],
+            # OR-preserve is_liked so re-rating a Letterboxd-liked film as merely
+            # "liked" (not favorite) doesn't strip its existing like. Don't touch
+            # watch_count on conflict (keep an imported film's real count).
+            set_={"rating": rating_value, "is_watched": True, "is_liked": or_(UserRating.is_liked, is_favorite)},
+        )
+        # `xmax = 0` is true for a freshly INSERTed row, false for an UPDATEd
+        # one — lets us tell a new rating from a re-rate atomically (used below
+        # to gate the clustering trigger) without a separate existence SELECT.
+        .returning(literal_column("(xmax = 0)"))
+    )
+    was_new_rating = (await db.execute(upsert)).scalar_one()
+    await db.flush()
 
-    # Update denormalized counter
+    # Update denormalized counter. CONC-2: derive the count from the DB *after*
+    # the upsert is flushed (the COUNT already reflects this rating), instead of
+    # the old stale "(pre-insert count) + 1", which lost increments under
+    # concurrent rates.
     user_result = await db.execute(select(User).where(User.id == user_id))
     user = user_result.scalar_one_or_none()
     if user:
-        # Count actual ratings for accuracy
-        count = await db.scalar(
+        new_count = await db.scalar(
             select(func.count(UserRating.id)).where(UserRating.user_id == user_id)
-        )
-        new_count = (count or 0) + (0 if existing_rating else 1)
+        ) or 0
         user.onboarding_ratings_count = new_count
-        if new_count >= 15:
+        if new_count >= ONBOARDING_THRESHOLD:
             user.onboarding_completed = True
 
     await db.commit()
 
+    # Invalidate the user's feed cache so the next /feed render reflects this
+    # rating. mark_watched and reject_movie already do this; rate was the only
+    # mutation path missing it — which is why guests who rated films via the
+    # carousel and returned to /explore kept seeing the pre-rating sections.
+    async def _invalidate_after_rate(uid: int):
+        import os
+        import redis.asyncio as aioredis
+        from config import FEED_CACHE_VERSION
+        from services.cache_service import scan_and_delete
+        try:
+            r = aioredis.from_url(
+                os.environ.get("REDIS_URL", "redis://redis:6379"),
+                decode_responses=True,
+            )
+            try:
+                for pattern in (
+                    f"section:{FEED_CACHE_VERSION}:{uid}:*",
+                    f"signal_cache:{uid}:*",
+                ):
+                    await scan_and_delete(r, pattern)
+                await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{uid}")
+            finally:
+                await r.close()
+        except Exception as e:
+            logger.warning(f"[rate] Cache invalidation failed for user {uid}: {e}")
+
+    background_tasks.add_task(_invalidate_after_rate, user_id)
+
     # Trigger clustering when enough ratings accumulate
     final_count = user.onboarding_ratings_count if user else 0
-    if final_count >= 5 and existing_rating is None:
+    if final_count >= 5 and was_new_rating:
         qdrant_singleton = qdrant
 
         async def _run_clustering(uid: int):
@@ -547,117 +615,6 @@ async def rate_movie(
 
 
 # ---------------------------------------------------------------------------
-# POST /migrate-guest — Migrate localStorage ratings + tags to Postgres
-# ---------------------------------------------------------------------------
-
-@router.post("/migrate-guest")
-@limiter.limit("3/hour")
-async def migrate_guest(
-    request: Request,
-    body: MigrateGuestRequest,
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-    current_user: TokenResponse = Depends(get_current_user),
-    qdrant: QdrantService = Depends(get_qdrant_service),
-):
-    """
-    Migrate guest localStorage ratings + tags to the authenticated user's profile.
-    Idempotency: if the user already has ratings, return skipped.
-    """
-    user_id = current_user.user_id
-
-    # Idempotency guard
-    existing_count = await db.scalar(
-        select(func.count(UserRating.id)).where(UserRating.user_id == user_id)
-    )
-    if existing_count and existing_count > 0:
-        return {"status": "skipped", "reason": "user already has ratings"}
-
-    # Save tag preferences
-    tag_data = {
-        "avoided": body.tags.get("avoided", []),
-    }
-    user_result = await db.execute(select(User).where(User.id == user_id))
-    user = user_result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    user.tag_preferences = tag_data
-
-    # Map signal → rating and insert UserRatings
-    # Batch fetch all candidate movies in a single query (no N+1)
-    valid_pairs: List[tuple[int, float]] = []
-    for tmdb_id_str, signal in body.ratings.items():
-        rating_value = SIGNAL_TO_RATING.get(signal)
-        if rating_value is None:
-            continue
-        try:
-            valid_pairs.append((int(tmdb_id_str), rating_value))
-        except (TypeError, ValueError):
-            continue
-
-    movies_by_tmdb: Dict[int, Movie] = {}
-    if valid_pairs:
-        tmdb_ids = [tid for tid, _ in valid_pairs]
-        movies_q = await db.execute(select(Movie).where(Movie.tmdb_id.in_(tmdb_ids)))
-        movies_by_tmdb = {m.tmdb_id: m for m in movies_q.scalars().all()}
-
-    rows: List[Dict] = []
-    for tmdb_id, rating_value in valid_pairs:
-        movie = movies_by_tmdb.get(tmdb_id)
-        if not movie:
-            logger.warning(f"[migrate-guest] Skipping tmdb_id={tmdb_id}: not in DB")
-            continue
-        rows.append({
-            "user_id": user_id,
-            "movie_id": movie.id,
-            "rating": rating_value,
-            "is_watched": True,
-            "watch_count": 1,
-        })
-
-    migrated = 0
-    if rows:
-        # Idempotent upsert — protects against retries after the existing_count guard passes
-        stmt = pg_insert(UserRating).values(rows).on_conflict_do_update(
-            index_elements=["user_id", "movie_id"],
-            set_={
-                "rating": pg_insert(UserRating).excluded.rating,
-                "is_watched": True,
-            },
-        )
-        result = await db.execute(stmt)
-        migrated = result.rowcount or len(rows)
-
-    # Update denormalized counters
-    user.onboarding_ratings_count = migrated
-    if migrated >= 15:
-        user.onboarding_completed = True
-
-    await db.commit()
-
-    # Trigger clustering in background if enough ratings (AGENTS.md Background Tasks rule)
-    if migrated >= 5:
-        qdrant_singleton = qdrant
-
-        async def _run_clustering(uid: int):
-            from services.clustering_service import ClusteringService
-            async with AsyncSessionLocal() as session:
-                try:
-                    clustering = ClusteringService(qdrant=qdrant_singleton)
-                    await clustering.create_user_clusters(uid, session, groq_client=None)
-                except Exception as e:
-                    logger.error(f"[migrate-guest] Clustering failed for user {uid}: {e}")
-
-        background_tasks.add_task(_run_clustering, user_id)
-
-    # Invalidate profile cache
-    await set_profile_dirty(user_id, REDIS_URL)
-
-    return {"status": "ok", "migrated": migrated}
-
-
-# ---------------------------------------------------------------------------
 # POST /tags — Save tag preferences (Settings UI)
 # ---------------------------------------------------------------------------
 
@@ -667,9 +624,13 @@ async def save_tags(
     request: Request,
     body: TagsRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: TokenResponse = Depends(get_current_user),
+    current_user: TokenResponse = Depends(get_current_or_anonymous_user),
 ):
-    """Save content tag preferences. Used by Settings UI."""
+    """Save content tag preferences. Used by Settings UI (authed) and the
+    guest /onboarding/tags page (anon cookie). Storing server-side for guests
+    is what makes the tag_preferences copy in claim-anonymous reliable —
+    previously guests-only-in-localStorage created an AuthBridge-timing race
+    after Clerk signup."""
     # Validate against whitelist
     unknown_avoided = set(body.avoided) - TAG_WHITELIST
     if unknown_avoided:

@@ -54,10 +54,9 @@ test.describe('Phase 12 - Web Quality', () => {
 
   test('Search bar has aria-live region', async ({ page, isMobile }) => {
     if (isMobile) {
-      const hamburger = page.getByRole('button').filter({ has: page.locator('svg.lucide-menu') }).first();
-      await hamburger.click({ force: true });
-      const navBtn = page.getByRole('dialog').getByText(/magic box/i).first();
-      await navBtn.click({ force: true, timeout: 5000 });
+      // Center magic tab in the bottom bar (hamburger removed — handoff)
+      const magicTab = page.locator('nav.fixed.bottom-0').getByText(/magic/i).first();
+      await magicTab.click({ force: true, timeout: 5000 });
     } else {
       const navBtn = page.getByText(/magic box/i).first();
       await navBtn.click({ timeout: 5000 });

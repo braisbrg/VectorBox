@@ -1,21 +1,37 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, constr
+from pydantic import BaseModel, ConfigDict, constr
 from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import asyncio
-from difflib import SequenceMatcher
-
+import random
 from config import get_db
-from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user
+from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user, get_redis
 from models.schemas import TokenResponse
-from services.nlp_search import parse_user_intent, search_with_reasoning, MovieSearchIntent
+from services.nlp_search import parse_user_intent, parse_failed, finalize_intent, search_with_reasoning, MovieSearchIntent
+from services.magic_search_ranking import (
+    CONFIDENCE_SAMPLE,
+    LOW_CONFIDENCE_MEAN,
+    OPEN_REQUEST_MIN_VBS,
+    compute_blended_score,
+    has_descriptive_filters,
+    intent_complexity,
+    is_low_confidence,
+    is_quality_only_request,
+    SEARCH_RESULT_LIMIT,
+    search_fetch_limit,
+    movie_passes_post_filter,
+    search_confidence,
+    should_run_deep_analysis,
+    title_sim_score,
+)
+from services import showcase_service
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
 from services.provider_service import ProviderService
 from models.database import UserRating, Movie
-from sqlalchemy import select, or_
+from sqlalchemy import func, select, or_
 from utils.scoring import normalize_similarity_score
 from utils.input_validation import validate_user_query
 
@@ -31,6 +47,16 @@ class SearchRequest(BaseModel):
 class SearchResponse(BaseModel):
     results: List[dict]
     intent: dict
+    # True when the catalogue had nothing close enough to be a recommendation.
+    # `results` is empty in that case — deliberately: showing the twenty nearest
+    # films under a "we are not sure" banner is worse than showing none, because
+    # the engine looks confident about films it picked for no reason.
+    low_confidence: bool = False
+    # True when no model parsed the sentence, so the answer came from the raw
+    # text and not from an understanding of it. The results are still real films;
+    # what is missing is every constraint the user expressed. The UI owes them
+    # that fact — silently serving a worse answer is the one option we ruled out.
+    degraded: bool = False
 
 def filter_es_providers(all_providers: List[str]) -> List[str]:
     """Pure function to filter provider names against the ES whitelist."""
@@ -42,7 +68,6 @@ async def _item_to_item_search(
     movie_id: int,
     movie_title: str,
     qdrant: QdrantService,
-    tmdb: TMDBClient,
 ) -> Optional[SearchResponse]:
     """Shared helper for Item-to-Item recommendation (deduplicated)."""
     vector = await qdrant.get_vector(movie_id)
@@ -81,21 +106,112 @@ async def _item_to_item_search(
 # Re-implementing with proper decorator injection
 from limiter import limiter
 
-@router.post("/natural", response_model=SearchResponse)
-@limiter.limit("5/minute")
-async def natural_language_search(
-    request: Request, # Request object is required for slowapi
-    search_req: SearchRequest,
-    current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
-    db: AsyncSession = Depends(get_db),
-    tmdb: TMDBClient = Depends(get_tmdb_client),
-    qdrant: QdrantService = Depends(get_qdrant_service),
-    embedding_service: EmbeddingService = Depends(get_embedding_service)
+# ── Fase 3 of the landing plan (2026-07-28) ─────────────────────────────────
+#
+# This handler used to BE the public endpoint, while its own docstring said the
+# opposite: "Auth required: this endpoint fans out to Groq… Leaving it open to
+# guests turns it into a paid-LLM proxy." Someone reasoned that through and the
+# code drifted from it. Free text plus no session plus a 200k-token daily budget
+# is a free LLM proxy for anyone who finds the URL, and on 2026-07-25 the budget
+# was in fact exhausted (197,753 of 200,000 used).
+#
+# The body is now shared by two doors with different trust:
+#   POST /natural  — signed in. Full budget: 500-char queries, Tier-2 deep
+#                    analysis, 10/minute.
+#   POST /try      — anonymous. Deliberately bounded: 140 chars, no Tier-2, and
+#                    5/minute. Enough to try the product, too little to farm.
+#
+# The landing does not use either by default: its chips read /search/showcase,
+# which is a cache with a closed input set. This path only runs when a visitor
+# types something of their own.
+#
+# Set on the response when the answer came from the catalogue rather than from
+# the vector. A constant because scripts/audit_search.py asserts which branch
+# answered, and matching on a prose sentence is a test that breaks on a typo.
+CATALOGUE_SELECTION_REASONING = "A varied selection of well-regarded films from the catalogue."
+AUDIENCE_SELECTION_REASONING = "Films chosen for who is watching, ranked by the catalogue's own score."
+
+CATALOGUE_SELECTION_SIZE = 12
+CATALOGUE_SELECTION_POOL = 40
+
+
+async def _catalogue_selection(
+    db: AsyncSession,
+    floor: float,
+    genres: Optional[List[str]] = None,
+    top_ranked: bool = False,
 ):
+    """Films straight from the catalogue: a quality bar, and nothing else.
+
+    Two shapes of question end up here and they want opposite orderings.
+
+    "no se que ver" wants VARIETY — the bar is what makes the answer good, the
+    order within it is not information, and returning the same twelve films every
+    time would be a worse answer to the same question. So: sample above the floor.
+
+    "las mejores peliculas de la historia" wants the TOP. Sampling above a floor
+    answered it, on 2026-07-30, with Harry Potter and the Deathly Hallows Part 1,
+    A Quiet Place Part II and How to Train Your Dragon 3 — respectable films, and
+    a wrong answer to a superlative. So: rank first, then sample the head, which
+    keeps some rotation without pretending a random 78 belongs on that list.
     """
-    Advanced natural language search with semantic expansion and vibe filtering.
-    Handles complex queries like "old gangster movie", "90s hidden gem", "short anime".
-    Also handles "Movies like X" by detecting title matches.
+    q = (
+        select(Movie)
+        .where(Movie.vectorbox_score >= floor)
+        .where(Movie.poster_path.is_not(None))
+    )
+    if genres:
+        q = q.where(Movie.genres.overlap(genres))
+    q = q.order_by(Movie.vectorbox_score.desc()) if top_ranked else q.order_by(func.random())
+    picks = (await db.execute(q.limit(CATALOGUE_SELECTION_POOL))).scalars().all()
+    if top_ranked:
+        # The head is already the answer; shuffling inside it only decides which
+        # of the catalogue's very best show up today.
+        picks = random.sample(picks, min(len(picks), CATALOGUE_SELECTION_POOL))
+
+    if genres:
+        # The genre IS the coherence the user asked for. Spreading across lead
+        # genres here — which is right when there is no filter — would undo it.
+        return picks[:CATALOGUE_SELECTION_SIZE]
+
+    seen_genres: set[str] = set()
+    varied: list[Movie] = []
+    for m in picks:
+        lead = (m.genres or ["?"])[0]
+        if lead in seen_genres and len(varied) < CATALOGUE_SELECTION_SIZE:
+            continue
+        seen_genres.add(lead)
+        varied.append(m)
+        if len(varied) >= CATALOGUE_SELECTION_SIZE:
+            break
+    return varied
+
+
+def _catalogue_results(movies) -> List[dict]:
+    return [{
+        "movie_id": m.tmdb_id, "title": m.title, "overview": m.overview,
+        "poster_path": m.poster_path, "score": round(m.vectorbox_score or 0),
+        "year": m.year, "runtime": m.runtime, "genres": m.genres or [],
+        "vote_average": m.vote_average, "vectorbox_score": m.vectorbox_score,
+        "title_es": m.title_es, "overview_es": m.overview_es,
+    } for m in movies]
+
+
+async def _run_natural_search(
+    search_req: SearchRequest,
+    current_user: Optional[TokenResponse],
+    db: AsyncSession,
+    tmdb: TMDBClient,
+    qdrant: QdrantService,
+    embedding_service: EmbeddingService,
+):
+    """Shared body. Advanced natural-language search with semantic expansion.
+
+    Also handles "Movies like X" by detecting title matches and switching to
+    item-to-item, which short-circuits before the LLM — that path costs nothing.
+
+    Not a route: the two routes below decide who may reach it and with what
+    budget. Anything trusted must be enforced by the CALLER, not here.
     """
     try:
         # Validate input for LLM injection
@@ -130,7 +246,7 @@ async def natural_language_search(
         if potential_movie_id:
             logger.info(f"Switching to Item-to-Item search based on movie: {potential_movie_title}")
             result = await _item_to_item_search(
-                potential_movie_id, potential_movie_title, qdrant, tmdb
+                potential_movie_id, potential_movie_title, qdrant
             )
             if result:
                 return result
@@ -143,10 +259,12 @@ async def natural_language_search(
                 intent = await parse_user_intent(search_req.query)
             except Exception as e:
                 logger.warning(f"Groq intent parsing failed, falling back to pure vector search: {e}")
-                intent = MovieSearchIntent(
+                # Same wording parse_user_intent uses for its own give-ups, so
+                # one predicate (parse_failed) covers every route into this state.
+                intent = finalize_intent(MovieSearchIntent(
                     semantic_query=search_req.query,
-                    reasoning="Groq unavailable — direct vector search",
-                )
+                    reasoning=f"LLM unavailable: {e}",
+                ), search_req.query)
         logger.info(f"Parsed intent: {intent}")
         logger.info(f"Reasoning: {intent.reasoning}")
         
@@ -180,11 +298,61 @@ async def natural_language_search(
             if potential_movie_id:
                 logger.info(f"Performing Item-to-Item search for reference: {potential_movie_title}")
                 result = await _item_to_item_search(
-                    potential_movie_id, potential_movie_title, qdrant, tmdb
+                    potential_movie_id, potential_movie_title, qdrant
                 )
                 if result:
                     return result
-        
+
+        # Audience requests never reach the vector, and that is the point.
+        #
+        # Measured 2026-07-29: "family friendly, gentle, wholesome, safe for all
+        # ages" scores 0.548 over its top ten neighbours — HIGHER than "the
+        # loneliness of living in a huge city" at 0.505, one of the queries this
+        # engine answers best. So no confidence threshold can ever catch it: the
+        # vector is not weakly right, it is confidently wrong. The catalogue is
+        # embedded on what a film is ABOUT, so "familiar" finds cinema ABOUT
+        # families — Uncle Buck, Charlotte's Web, at a mean VBS of 55.
+        #
+        # The metadata already holds the right answer. Genre plus the catalogue's
+        # own score gives Spirited Away (99), WALL·E (97), Toy Story (97).
+        #
+        # Placed after the reference-movie branch so "peliculas como Origen"
+        # still wins, and before the embedding so this path costs neither the
+        # CPU-bound encode nor a Qdrant round trip.
+        #
+        # mpaa_ratings is deliberately NOT applied: it covers 74.9% of the
+        # catalogue, so requiring it would drop a quarter of the films for having
+        # no certification rather than for being unsuitable.
+        # A degraded run must not be reported as an unanswerable question.
+        # Measured with scripts/audit_search.py: Groq's free tier caps at 8000
+        # tokens per MINUTE, a parse costs ~2000, and four searches in a row
+        # exhaust it. With no parse there is no `open_request` and no
+        # `min_vectorbox_score`, so every gentle query — "no se que ver", "para
+        # llorar esta noche" — fell straight through to the refusal and the user
+        # got an empty page. The catalogue branch needs no LLM at all, so a
+        # degraded run answers from it instead of apologising.
+        degraded = parse_failed(intent)
+
+        # Genres are required, not optional. Without them this branch selects on
+        # nothing but the quality bar and hands back whatever the catalogue's top
+        # scorers happen to be — measured, "a movie parents and kids will both
+        # enjoy" returned Athlete A and The Spirit of the Beehive at VBS 85. That
+        # is the failure this branch exists to fix, wearing a better score. When
+        # the cue list is what fired, ensure_audience_request supplies them; when
+        # only the model flagged it and named no genre, the vector path is the
+        # honest fallback (it answered that same query with My Big Fat Greek
+        # Wedding at VBS 55 — worse on paper, right in kind).
+        if intent.audience_request and intent.include_genres:
+            logger.info("Audience request %r (genres=%s)", search_req.query, intent.include_genres)
+            picks = await _catalogue_selection(
+                db, OPEN_REQUEST_MIN_VBS, intent.include_genres
+            )
+            return SearchResponse(
+                results=_catalogue_results(picks),
+                intent={**intent.model_dump(), "reasoning": AUDIENCE_SELECTION_REASONING},
+                degraded=degraded,
+            )
+
         # 2. Generate Embedding for the EXPANDED semantic query
         loop = asyncio.get_running_loop()
         query_vector = await loop.run_in_executor(
@@ -229,8 +397,37 @@ async def natural_language_search(
         # Language filter
         if intent.original_language:
             qdrant_filters["original_language"] = intent.original_language
-            
-        # 3.5. Exclude Watched Movies (authed users only — guests have no history)
+
+        # NEW (Sprint 1, migration o3p4q5r6s7t8): extended metadata filters.
+        # These payload fields aren't currently indexed in Qdrant — we pre-fetch
+        # the candidate set from Qdrant by the cheap filters, then DB-filter
+        # by the new dimensions before returning. Adding payload indexes is a
+        # follow-up (cheap once we know which dimensions get used in anger).
+        if intent.mpaa_ratings:
+            qdrant_filters["mpaa_ratings"] = intent.mpaa_ratings
+        if intent.min_oscar_wins:
+            qdrant_filters["min_oscar_wins"] = intent.min_oscar_wins
+        if intent.min_imdb_rating is not None:
+            qdrant_filters["min_imdb_rating"] = intent.min_imdb_rating
+        if intent.min_metacritic is not None:
+            qdrant_filters["min_metacritic"] = intent.min_metacritic
+        # Payload-backed since 2026-07-29. Before that these were enforced only
+        # in Postgres, AFTER the search — so they subtracted from twenty
+        # neighbours instead of narrowing the search. min_vectorbox_score was
+        # never passed here at all, though Qdrant has supported it all along.
+        if intent.countries:
+            qdrant_filters["countries"] = intent.countries
+        if intent.spoken_languages:
+            qdrant_filters["spoken_languages"] = intent.spoken_languages
+        if intent.min_vectorbox_score is not None:
+            qdrant_filters["min_vectorbox_score"] = intent.min_vectorbox_score
+        if intent.safe_mode:
+            # Default. Exclude TMDB 'adult' titles unless the user explicitly
+            # asks for them via the LLM-parsed safe_mode=False.
+            qdrant_filters["exclude_adult"] = True
+
+        # 3.5. Exclude Watched Movies (signed-in users only — guests have none)
+        watched_tmdb_ids = []
         if current_user is not None:
             result = await db.execute(
                 select(Movie.tmdb_id)
@@ -244,18 +441,104 @@ async def natural_language_search(
             )
             watched_tmdb_ids = [row[0] for row in result.all() if row[0] is not None]
 
-            if watched_tmdb_ids:
-                qdrant_filters["exclude_tmdb_ids"] = watched_tmdb_ids
+        if watched_tmdb_ids:
+            qdrant_filters["exclude_tmdb_ids"] = watched_tmdb_ids
             
         # 4. Search Qdrant with Advanced Filters
+        # Wider when a Postgres-side post-filter has to survive the fetch — see
+        # services.magic_search_ranking.search_fetch_limit for the measurement.
         raw_results = await qdrant.search_similar(
             query_vector=query_vector,
-            limit=20,
+            limit=search_fetch_limit(intent),
             score_threshold=0.3, # Semantic search standard
             filters=qdrant_filters
         )
         
         logger.info(f"Qdrant returned {len(raw_results)} results")
+
+        # Confidence gate. Measured over 54 runs of an 18-query panel
+        # (scripts/experiment_confidence.py): answerable questions never fell
+        # below a 0.443 mean over the top ten neighbours, unanswerable ones never
+        # rose above 0.425. Below the threshold the catalogue has nothing close
+        # enough to call a recommendation, and returning the nearest twenty
+        # anyway is how "receta de tortilla de patatas" used to answer with
+        # Ratatouille — confidently, and wrong.
+        #
+        # Read BEFORE the quality gate and the post-filter: those drop films for
+        # reasons unrelated to whether the question made sense.
+        cosines = [r.get("score") or 0.0 for r in raw_results]
+        confidence = search_confidence(cosines)
+
+
+        # A weak vector is not the same as an unanswerable question. Measured
+        # 2026-07-29, three different things were scoring below the threshold:
+        #
+        #   "algo muy aclamado por la critica"  0.355  min_metacritic=75
+        #   "algo corto, menos de 90 minutos"   0.371  max_runtime_minutes=90
+        #   "no se que ver"                     0.306  no filters
+        #   "receta de tortilla de patatas"     0.232  no filters
+        #
+        # The first two are perfectly answerable — just by FILTERS rather than by
+        # similarity — and refusing them was a bug. The third is a real request
+        # for a good default that nobody can make more specific: telling someone
+        # who does not know what to watch to be more precise leaves them with
+        # nothing. Only the fourth is genuinely unanswerable.
+        #
+        # Confidence cannot separate the third from the fourth (0.306 vs 0.232 is
+        # inside the noise), so the parser flags it as `open_request`.
+        if (is_low_confidence(cosines) and not has_descriptive_filters(intent)
+                and not intent.open_request and not intent.audience_request
+                and not degraded):
+            logger.info(
+                "Low-confidence query (mean top-%d cosine %.3f < %.2f): %r",
+                CONFIDENCE_SAMPLE, confidence, LOW_CONFIDENCE_MEAN, search_req.query,
+            )
+            return SearchResponse(
+                results=[],
+                intent={**intent.model_dump(), "confidence": round(confidence, 3)},
+                low_confidence=True,
+                degraded=degraded,
+            )
+
+        # "I don't know what to watch". The vector is meaningless here — it was
+        # returning Glitter (VBS 14) for "sorprendeme con algo bueno" — so the
+        # answer comes from the catalogue's own quality, spread across genres so
+        # it reads as a selection rather than a leaderboard.
+        # When the vector says nothing but the request still has criteria, the
+        # answer must come from the CATALOGUE, not from twenty arbitrary
+        # neighbours. Three shapes end up here:
+        #
+        #   "no se que ver"                    -> open_request, no criteria
+        #   "peliculas muy bien valoradas"     -> a quality bar and nothing else
+        #   parser down (rate limit)           -> no criteria we can read
+        #
+        # All three used to return zero. The first was refused outright; the
+        # second passed the gate and then found almost nothing, because the
+        # twenty nearest neighbours of a meaningless vector rarely clear a
+        # quality bar. Querying the catalogue directly is the honest answer.
+        # audience_request lands here only when it named no genre — with one it
+        # was answered before the embedding. Someone describing the room is still
+        # asking for a suggestion, so refusing them is the failure with no
+        # recovery. Verified: "algo que terminemos mis padres y yo sin discutir"
+        # was returning an empty page.
+        if is_low_confidence(cosines) and (
+            intent.open_request or intent.audience_request
+            or is_quality_only_request(intent) or degraded
+        ):
+            floor = intent.min_vectorbox_score or OPEN_REQUEST_MIN_VBS
+            logger.info("Catalogue selection for %r (floor=%s, open=%s, degraded=%s)",
+                        search_req.query, floor, intent.open_request, degraded)
+            # An explicit quality bar is a request for the top, not for a
+            # sample of the acceptable. open_request is the opposite.
+            picks = await _catalogue_selection(
+                db, floor, top_ranked=bool(intent.min_vectorbox_score)
+            )
+            return SearchResponse(
+                results=_catalogue_results(picks),
+                intent={**intent.model_dump(), "confidence": round(confidence, 3),
+                        "reasoning": CATALOGUE_SELECTION_REASONING},
+                degraded=degraded,
+            )
 
         # Minimum quality gate — drop movies with no TMDB signal (e.g. vote_count=0)
         raw_results = [
@@ -283,6 +566,24 @@ async def natural_language_search(
             db_res = await db.execute(stmt)
             for m in db_res.scalars().all():
                 db_movies[m.tmdb_id] = m
+
+        # Sprint 1+2 post-filter (DB-side, since these columns aren't in the
+        # Qdrant payload yet — migration o3p4q5r6s7t8). See
+        # services.magic_search_ranking.movie_passes_post_filter for the
+        # per-row decision matrix.
+        post_filter_drop = {
+            tid for tid, m in db_movies.items()
+            if not movie_passes_post_filter(m, intent)
+        }
+        if post_filter_drop:
+            raw_results = [
+                r for r in raw_results
+                if int(r.get("metadata", {}).get("tmdb_id") or r["movie_id"]) not in post_filter_drop
+            ]
+            logger.info(
+                f"After Magic-Search post-filter: {len(raw_results)} results "
+                f"(dropped {len(post_filter_drop)})"
+            )
 
         missing_details_ids = []
         for r in raw_results:
@@ -316,40 +617,22 @@ async def natural_language_search(
                     if not metadata.get("overview"):
                         metadata["overview"] = details.get("overview", "")
 
-            final_score = normalize_similarity_score(r["score"])
-
-            # Title Match Boost (Weighted Average)
-            # If query is very similar to title, blend the scores
-            
-            # Check similarity
-            title_sim = SequenceMatcher(None, search_req.query.lower(), metadata.get("title", "").lower()).ratio()
-            
-            # If > 0.8 similarity, blend 50/50 with vector score
-            if title_sim > 0.8:
-                title_score = 90 + (title_sim * 9)
-                # Blend: 50% Vector, 50% Title
-                # This ensures semantic relevance still matters (avoiding "Avatar 1916" issue)
-                # but boosts "Parasites" -> "Parasite" significantly.
-                final_score = (final_score * 0.5) + (title_score * 0.5)
-                logger.info(f"Blended score for {metadata.get('title')} (Sim: {title_sim:.2f}): {final_score}")
-
-            # Imp 3: Dynamic quality gate — sigmoid weight with floor.
-            # Old gate (midpoint=65, steepness=0.15) annihilated thematically-strong
-            # but obscure films (Sky High at VBS=63 got weight ≈ 0.4; Barrio at 78
-            # got 0.88; Cure 1997 at low VBS got near-zero). The new VBS catalog
-            # median sits around 55, so we anchor the midpoint there. We also add
-            # a 0.20 floor so a strong vector match cannot be fully zeroed by VBS,
-            # keeping legitimate cult/foreign/obscure cinema reachable.
-            vb_score = db_movie.vectorbox_score if db_movie else None
-            if vb_score is not None:
-                import math as _math
-                if intent.quality_gate_bypass:
-                    midpoint, steepness, floor = 25, 0.10, 0.10
-                else:
-                    midpoint, steepness, floor = 55, 0.10, 0.20
-                sigmoid = 1.0 / (1.0 + _math.exp(-steepness * (vb_score - midpoint)))
-                weight = floor + (1.0 - floor) * sigmoid
-                final_score = final_score * weight
+            # Compound score: cosine → optional title boost → VBS sigmoid gate.
+            # See services.magic_search_ranking.compute_blended_score for the
+            # full decision tree + thresholds. Pulled out so the pipeline is
+            # testable without the FastAPI / Qdrant / DB stack.
+            final_score, title_sim, _quality_weight = compute_blended_score(
+                raw_cosine=r["score"],
+                query=search_req.query,
+                intent=intent,
+                title=metadata.get("title") or "",
+                vbs=(db_movie.vectorbox_score if db_movie else None),
+            )
+            if title_sim is not None and title_sim >= 0.85:
+                logger.info(
+                    f"Title-match boost for {metadata.get('title')} "
+                    f"(sim={title_sim:.2f}): {final_score:.1f}"
+                )
 
             result = {
                 "movie_id": tmdb_id,
@@ -357,6 +640,7 @@ async def natural_language_search(
                 "overview": metadata.get("overview", ""),
                 "poster_path": poster_path,
                 "score": round(final_score, 0),
+                "_final_score": final_score,  # precise float kept for sorting
                 "year": metadata.get("year"),
                 "runtime": metadata.get("runtime"),
                 "genres": metadata.get("genres", []),
@@ -370,7 +654,22 @@ async def natural_language_search(
                 "overview_es": db_movie.overview_es if db_movie else None
             }
             results.append(result)
-        
+
+        # Sprint 3 (2026-05-15): re-sort by the BLENDED final_score so that
+        # title-match boost and the VBS sigmoid gate actually affect ordering.
+        # Before this, results came back in raw Qdrant cosine order — the
+        # `score` field on each row was the blended value but the FRONTEND
+        # only got to see the ordering the API returned. Now Qdrant is the
+        # initial filter / coarse rank, and our compound score is the final
+        # order. Strip the internal `_final_score` key before returning.
+        results.sort(key=lambda r: r.get("_final_score", 0.0), reverse=True)
+        # Truncate BEFORE the provider fan-out below: a post-filtered query now
+        # fetches up to 150 candidates, and every survivor would otherwise cost a
+        # provider lookup and a row in the response.
+        del results[SEARCH_RESULT_LIMIT:]
+        for r in results:
+            r.pop("_final_score", None)
+
         # 6. Fetch Streaming Providers
         try:
             provider_service = ProviderService(db, tmdb)
@@ -399,11 +698,16 @@ async def natural_language_search(
             for r in results:
                 r["streaming_providers"] = []
 
-        # 7. Deep Analysis (Optional RAG Step)
-        if search_req.use_deep_analysis and results:
-            logger.info("Deep Analysis requested. Calling Tier 2 Intelligence...")
+        # Deep Analysis (Tier 2 LLM re-rank) — auto-trigger on complexity ≥ 3
+        # via services.magic_search_ranking.should_run_deep_analysis. Explicit
+        # `use_deep_analysis=True` still wins as an override.
+        if should_run_deep_analysis(intent, user_requested=search_req.use_deep_analysis) and results:
+            logger.info(
+                f"Deep Analysis triggered (explicit={search_req.use_deep_analysis} "
+                f"complexity={intent_complexity(intent)}). Calling Tier 2..."
+            )
             try:
-                # Pass results to Llama 70B
+                # Pass results to GPT-OSS-120B (deep-analysis rerank)
                 reasoned_picks = await search_with_reasoning(search_req.query, results)
                 
                 if reasoned_picks:
@@ -428,196 +732,124 @@ async def natural_language_search(
 
         return SearchResponse(
             results=results,
-            intent=intent.model_dump()
+            intent=intent.model_dump(),
+            degraded=degraded,
         )
         
+    except HTTPException:
+        # validate_user_query raises 400 on a prompt-injection attempt, and the
+        # blanket handler below was turning that into "Search service
+        # unavailable" — the guard worked and then reported itself as our
+        # outage. Any deliberate status set upstream travels unchanged.
+        raise
     except Exception as e:
         import traceback
         logger.error(f"Search failed: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Search service unavailable")
 
-@router.get("/movies", response_model=SearchResponse)
-async def search_movies(
-    query: str,
+
+@router.post("/natural", response_model=SearchResponse)
+@limiter.limit("10/minute")
+async def natural_language_search(
+    request: Request,  # required by slowapi
+    search_req: SearchRequest,
+    current_user: TokenResponse = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
     embedding_service: EmbeddingService = Depends(get_embedding_service),
-    current_user: TokenResponse = Depends(get_current_user)
 ):
+    """Magic Box for signed-in users. Full budget.
+
+    Auth is required again as of Fase 3 — the docstring said so all along while
+    the signature said `get_optional_current_user`. Guests get `/try` below.
     """
-    Hybrid search:
-    1. Search Qdrant for local matches
-    2. If insufficient results, search TMDB
-    3. Auto-populate Qdrant with new TMDB discoveries
+    return await _run_natural_search(
+        search_req, current_user, db, tmdb, qdrant, embedding_service
+    )
+
+
+# A guest sentence is a sentence, not an essay: 140 characters fits every example
+# query the landing ships and every phrasing we tested, while making the endpoint
+# useless as a general-purpose LLM proxy.
+TRY_MAX_QUERY_LENGTH = 140
+
+
+class TrySearchRequest(BaseModel):
+    # extra="forbid" so a caller who tries to smuggle `forced_intent` or
+    # `use_deep_analysis` gets a 422 instead of a silent 200. Pydantic would drop
+    # them either way, but a contract that answers "no" is worth more than one
+    # that quietly ignores you — and it makes the attempt visible in the logs.
+    model_config = ConfigDict(extra="forbid")
+
+    query: constr(min_length=1, max_length=TRY_MAX_QUERY_LENGTH)
+    country_code: Optional[str] = "ES"
+    # Deliberately absent: `use_deep_analysis` (Tier-2 is the expensive LLM call)
+    # and `forced_intent` (an internal bypass — accepting it from the public
+    # would let a caller hand-craft filters and skip every guard we have).
+
+
+@router.post("/try", response_model=SearchResponse)
+@limiter.limit("5/minute")
+async def try_search(
+    request: Request,  # required by slowapi
+    try_req: TrySearchRequest,
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding_service: EmbeddingService = Depends(get_embedding_service),
+):
+    """The public door: type your own sentence without an account.
+
+    Bounded on every axis that costs money — 140 characters, 5/minute, no Tier-2
+    deep analysis, no forced_intent. A visitor can try the product; nobody can
+    farm the daily Groq budget through it.
+
+    `current_user=None` is passed explicitly rather than resolved: this route
+    must behave identically for everyone, and reading a session here would make
+    a signed-in user's results differ from a guest's on the same URL.
     """
-    try:
-        # Validate input
-        query = validate_user_query(query)
+    return await _run_natural_search(
+        SearchRequest(query=try_req.query, country_code=try_req.country_code,
+                      use_deep_analysis=False, forced_intent=None),
+        None, db, tmdb, qdrant, embedding_service,
+    )
 
-        # 1. Generate query vector — this endpoint takes a raw title string and
-        # finds Qdrant matches; title MUST be in the embedding (opt-in).
-        loop = asyncio.get_running_loop()
-        query_vector = await loop.run_in_executor(
-            None,
-            lambda: embedding_service.generate_embedding({
-                "title": query,
-                "overview": "",
-                "genres": [],
-                "keywords": []
-            }, include_title=True).tolist()
-        )
-        
-        # 2. Search Qdrant (Local)
-        local_results = await qdrant.search_similar(
-            query_vector=query_vector,
-            limit=10,
-            score_threshold=0.6 # High threshold for exact-ish matches
-        )
-        
-        results = []
-        seen_ids = set()
-        
-        # Process local results
-        # Process local results
-        
-        # Collect IDs to fetch from DB
-        tmdb_ids = []
-        for r in local_results:
-            metadata = r.get("metadata", {})
-            movie_id = metadata.get("tmdb_id") or r["movie_id"]
-            if movie_id:
-                tmdb_ids.append(int(movie_id))
-        
-        # Fetch from DB
-        db_movies = {}
-        if tmdb_ids:
-            stmt = select(Movie).where(Movie.tmdb_id.in_(tmdb_ids))
-            db_res = await db.execute(stmt)
-            for m in db_res.scalars().all():
-                db_movies[m.tmdb_id] = m
 
-        for r in local_results:
-            metadata = r.get("metadata", {})
-            # Use TMDB ID from metadata if available, otherwise fallback to internal ID (which might be wrong for external links)
-            movie_id = metadata.get("tmdb_id") or r["movie_id"]
-            if movie_id:
-                seen_ids.add(int(movie_id))
-            
-            # Enrich from DB if available
-            db_movie = db_movies.get(int(movie_id)) if movie_id else None
+@router.get("/showcase")
+@limiter.limit("60/minute")
+async def showcase_search(
+    request: Request,
+    slug: str,
+    lang: str = "es",
+    redis=Depends(get_redis),
+):
+    """The landing's canned queries. Reads Redis and nothing else.
 
-            # Title Match Boost (Weighted Average)
-            title_sim = SequenceMatcher(None, query.lower(), metadata.get("title", "").lower()).ratio()
-            
-            final_score = min(round(r["score"] * 100), 100)
-            
-            if title_sim > 0.8:
-                title_score = 90 + (title_sim * 9)
-                final_score = (final_score * 0.5) + (title_score * 0.5)
+    This is the counterweight to `/natural` being open: the landing's default
+    traffic lands here, where the set of possible inputs is closed (the slugs in
+    `showcase_service.SHOWCASE_QUERIES`) and no free text ever reaches Groq.
 
-            results.append({
-                "movie_id": movie_id,
-                "title": metadata.get("title", "Unknown"),
-                "overview": metadata.get("overview", ""),
-                "poster_path": metadata.get("poster_path"),
-                "score": round(final_score, 0),
-                "year": metadata.get("year"),
-                "runtime": metadata.get("runtime"),
-                "genres": metadata.get("genres", []),
-                "vote_average": metadata.get("vote_average"),
-                # Phase 12 Fields (from DB)
-                "vectorbox_score": db_movie.vectorbox_score if db_movie else None,
-                "imdb_rating": db_movie.imdb_rating if db_movie else None,
-                "metacritic_rating": db_movie.metacritic_rating if db_movie else None,
+    A miss returns 503 rather than computing on demand — on purpose. The moment
+    this endpoint can trigger a search, the closed-input guarantee is gone and
+    it becomes `/natural` with extra steps. Filling the cache is the job of
+    `scripts/warm_showcase.py`, run on deploy.
+    """
+    if not showcase_service.is_valid_slug(slug):
+        # 404 before any I/O: an unknown slug costs a dict lookup.
+        raise HTTPException(status_code=404, detail="Unknown showcase slug")
 
-                "title_es": db_movie.title_es if db_movie else None,
-                "overview_es": db_movie.overview_es if db_movie else None
-            })
-            
-        # 3. Fallback to TMDB if few results
-        if len(results) < 5:
-            logger.info(f"Few local results ({len(results)}), searching TMDB for: {query}")
-            
-            try:
-                # Search TMDB
-                tmdb_results = await tmdb._make_request("/search/movie", {"query": query})
-                
-                if tmdb_results and tmdb_results.get("results"):
-                    unseen_ids = [m["id"] for m in tmdb_results["results"][:5] if int(m["id"]) not in seen_ids]
-                    
-                    if unseen_ids:
-                        detail_tasks = [tmdb.get_movie_details(mid) for mid in unseen_ids]
-                        kw_tasks = [tmdb.get_movie_keywords(mid) for mid in unseen_ids]
-                        
-                        details_results = await asyncio.gather(*detail_tasks, return_exceptions=True)
-                        kw_results = await asyncio.gather(*kw_tasks, return_exceptions=True)
-                        
-                        for tmdb_id, details, keywords_res in zip(unseen_ids, details_results, kw_results):
-                            if isinstance(details, Exception) or not details:
-                                continue
-                            
-                            keywords = keywords_res if not isinstance(keywords_res, Exception) else []
-                            
-                            # Extract metadata (FIX 3: now inside the for loop)
-                            title = details.get("title")
-                            overview = details.get("overview", "")
-                            year = int(details["release_date"][:4]) if details.get("release_date") else None
-                            genres = [g["name"] for g in details.get("genres", [])]
-                        
-                            # Generate embedding
-                            loop = asyncio.get_running_loop()
-                            vector = await loop.run_in_executor(
-                                None,
-                                lambda: embedding_service.generate_embedding({
-                                    "title": title,
-                                    "overview": overview,
-                                    "genres": genres,
-                                    "keywords": keywords
-                                }).tolist()
-                            )
-                            
-                            # Prepare metadata for Qdrant
-                            payload = {
-                                "title": title,
-                                "overview": overview,
-                                "year": year,
-                                "runtime": details.get("runtime"),
-                                "genres": genres,
-                                "poster_path": details.get("poster_path"),
-                                "vote_average": details.get("vote_average"),
-                                "vote_count": details.get("vote_count"),
-                                "tmdb_id": tmdb_id
-                            }
-                            
-                            # Upsert to Qdrant (Fire & Forget / Async)
-                            # Note: In production, consider background task
-                            await qdrant.upsert_movie_vector(tmdb_id, vector, payload)
-                            logger.info(f"Auto-populated movie: {title} ({tmdb_id})")
-                            
-                            # Add to results
-                            results.append({
-                                "movie_id": tmdb_id,
-                                "title": title,
-                                "overview": overview,
-                                "poster_path": payload["poster_path"],
-                                "score": 100 if query.lower() in title.lower() else 80, # Artificial score for exact matches
-                                "year": year,
-                                "runtime": payload["runtime"],
-                                "genres": genres,
-                                "vote_average": payload["vote_average"]
-                            })
-                        
-            except Exception as e:
-                logger.error(f"TMDB fallback failed: {e}")
-        
-        return SearchResponse(
-            results=results,
-            intent={"semantic_query": query}
-        )
-    except Exception as e:
-        logger.error(f"Movie search failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Search service unavailable")
+    if redis is None:
+        raise HTTPException(status_code=503, detail="Showcase cache unavailable")
+
+    payload = await showcase_service.read(redis, slug, lang)
+    if payload is None:
+        # Cold cache. The landing has a state for this; do not paper over it by
+        # running a query, which is exactly what this endpoint exists to avoid.
+        logger.warning("Showcase cache miss for slug=%s lang=%s — run warm_showcase.py", slug, lang)
+        raise HTTPException(status_code=503, detail="Showcase not warmed yet")
+
+    return payload
 
 
 @router.get("/autocomplete")

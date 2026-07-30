@@ -14,7 +14,7 @@ A full E2E certification pass was executed on the VectorBox application. All sys
 |-------|-----------|-----------|--------|-------|
 | -1 | Dependencies | Frontend UI | ✅ Pass | Merged `framer-motion`, `lucide-react`. Build succeeds. |
 | -1 | Dependencies | Frontend Tools | ✅ Pass | Merged `eslint`, `lint-staged`. |
-| -1 | Dependencies | Backend Core | ✅ Pass | Safe bumps (`groq`, `bcrypt`, `sentence-transformers`) merged. Vector dims verified at 384. |
+| -1 | Dependencies | Backend Core | ✅ Pass | Safe bumps (`groq`, `bcrypt`, `sentence-transformers`) merged. Vector dims verified at 768 (`google/embeddinggemma-300m`). |
 | -1 | Dependencies | High Risk | ⚠️ Held | Deferring `openai`, `fastapi`, `curl-cffi` to post-launch. |
 | 0 | Data Reset | PostgreSQL | ✅ Pass | Cleanly wiped users, ratings, and clusters. |
 | 0 | Data Reset | Qdrant | ✅ Pass | Re-created `movies` collection and ingested 192 seed movies successfully. |

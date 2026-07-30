@@ -1,4 +1,4 @@
-FROM node:26-alpine AS base
+FROM node:22-alpine AS base
 
 # 1. Install dependencies only when needed
 FROM base AS deps
@@ -18,7 +18,8 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Enable pnpm for build if needed (though node_modules are already here, pnpm might be used in build scripts)
+# Enable pnpm via corepack — Node 22 LTS still bundles corepack natively.
+# pnpm is the strict package manager (AGENTS.md / STACK_RULES.md) — never npm.
 RUN corepack enable && corepack prepare pnpm@11 --activate
 
 # Next.js collects completely anonymous telemetry data about general usage.

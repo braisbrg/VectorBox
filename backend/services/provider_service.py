@@ -1,6 +1,6 @@
 import logging
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Set
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, update, delete
@@ -38,7 +38,7 @@ class ProviderService:
         
         if availability:
             # Check freshness
-            if availability.last_updated > datetime.utcnow() - timedelta(days=self.CACHE_DURATION_DAYS):
+            if availability.last_updated > datetime.now(timezone.utc) - timedelta(days=self.CACHE_DURATION_DAYS):
                 return availability.providers or []
             else:
                 logger.info(f"Provider cache stale for movie {movie_id}, refreshing...")
@@ -77,10 +77,10 @@ class ProviderService:
             movie_id=movie_id,
             country_code=country_code,
             providers=final_providers,
-            last_updated=datetime.utcnow()
+            last_updated=datetime.now(timezone.utc)
         ).on_conflict_do_update(
             index_elements=["movie_id", "country_code"],
-            set_={"providers": final_providers, "last_updated": datetime.utcnow()}
+            set_={"providers": final_providers, "last_updated": datetime.now(timezone.utc)}
         )
         try:
             await self.db.execute(upsert_stmt)
@@ -116,7 +116,7 @@ class ProviderService:
         
         for mid in movie_ids:
             avail = availability_map.get(mid)
-            if avail and avail.last_updated > datetime.utcnow() - timedelta(days=self.CACHE_DURATION_DAYS):
+            if avail and avail.last_updated > datetime.now(timezone.utc) - timedelta(days=self.CACHE_DURATION_DAYS):
                 final_results[mid] = avail.providers or []
             else:
                 missing_ids.append(mid)
@@ -137,17 +137,21 @@ class ProviderService:
         # Return exceptions=True to prevent one failure from crashing the batch
         tmdb_results = await asyncio.gather(*tasks, return_exceptions=True)
         
+        # PERF-1: accumulate all upsert rows and write them in ONE statement +
+        # ONE commit after the loop, instead of an execute()+commit() per movie
+        # (was 20 round-trips + 20 commits for a 20-movie watchlist refresh on a
+        # hot path).
+        now = datetime.now(timezone.utc)
+        rows_to_upsert = []
         for i, movie in enumerate(movies):
             providers_data = tmdb_results[i]
-            
+
             if isinstance(providers_data, Exception) or not providers_data:
                 if isinstance(providers_data, Exception):
                      logger.error(f"Failed to fetch providers for movie {movie.id}: {providers_data}")
                 final_providers = []
-                # Don't cache empty failures? Or cache empty? 
-                # If network error, maybe don't cache. If valid empty, cache.
-                # TMDBClient returns None on error.
-                if providers_data is None: 
+                # TMDBClient returns None on error — skip caching network failures.
+                if providers_data is None:
                     continue
             else:
                  providers_list = []
@@ -158,29 +162,35 @@ class ProviderService:
                                  "provider_id": p["provider_id"],
                                  "provider_name": p["provider_name"]
                              })
-                 
+
                  unique_providers = {p["provider_id"]: p for p in providers_list}.values()
                  final_providers = list(unique_providers)
-            
-            final_results[movie.id] = final_providers
 
-            # Upsert into DB — avoids UniqueViolationError on concurrent requests
-            upsert_stmt = insert(MovieAvailability).values(
-                movie_id=movie.id,
-                country_code=country_code,
-                providers=final_providers,
-                last_updated=datetime.utcnow()
-            ).on_conflict_do_update(
+            final_results[movie.id] = final_providers
+            rows_to_upsert.append({
+                "movie_id": movie.id,
+                "country_code": country_code,
+                "providers": final_providers,
+                "last_updated": now,
+            })
+
+        # Single bulk upsert — avoids UniqueViolationError on concurrent requests.
+        if rows_to_upsert:
+            upsert_stmt = insert(MovieAvailability).values(rows_to_upsert)
+            upsert_stmt = upsert_stmt.on_conflict_do_update(
                 index_elements=["movie_id", "country_code"],
-                set_={"providers": final_providers, "last_updated": datetime.utcnow()}
+                set_={
+                    "providers": upsert_stmt.excluded.providers,
+                    "last_updated": upsert_stmt.excluded.last_updated,
+                },
             )
             try:
                 await self.db.execute(upsert_stmt)
                 await self.db.commit()
             except Exception as e:
                 await self.db.rollback()
-                logger.error(f"Failed to upsert providers for movie {movie.id}: {e}")
-        
+                logger.error(f"Failed to bulk-upsert providers for {len(rows_to_upsert)} movies: {e}")
+
         return final_results
 
     async def save_providers(self, movie_id: int, country_code: str, providers_raw: List[Dict]):
@@ -205,10 +215,10 @@ class ProviderService:
             movie_id=movie_id,
             country_code=country_code,
             providers=final_providers,
-            last_updated=datetime.utcnow()
+            last_updated=datetime.now(timezone.utc)
         ).on_conflict_do_update(
             index_elements=["movie_id", "country_code"],
-            set_={"providers": final_providers, "last_updated": datetime.utcnow()}
+            set_={"providers": final_providers, "last_updated": datetime.now(timezone.utc)}
         )
         try:
             await self.db.execute(stmt)

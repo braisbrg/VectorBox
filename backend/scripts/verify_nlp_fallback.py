@@ -10,7 +10,7 @@ from services.nlp_search import parse_user_intent, MovieSearchIntent
 import pytest
 
 async def run_test():
-    with patch('services.nlp_search.get_scout_client') as mock_scout:
+    with patch('services.nlp_search.get_llm_client') as mock_factory:
         mock_client = AsyncMock()
         
         success_response = MovieSearchIntent(
@@ -24,7 +24,7 @@ async def run_test():
             success_response
         ]
         
-        mock_scout.return_value = mock_client
+        mock_factory.return_value = mock_client
         
         try:
             result = await parse_user_intent("gangster movies")

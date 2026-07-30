@@ -8,6 +8,7 @@ import json
 import orjson
 import asyncio
 import os
+import random
 from typing import Optional, Dict, List
 from datetime import timedelta
 import logging
@@ -69,7 +70,14 @@ class TMDBClient:
         self._lock = asyncio.Lock() # Added lock
     
     async def close(self):
-        """Close the httpx client if it was created internally."""
+        """Full cleanup: Redis + httpx (whichever this client owns). `aclose()` is an alias.
+
+        Previously closed only httpx, so callers using close() leaked the Redis
+        connection — Redis is now folded in so both methods do the same thing.
+        """
+        if self.redis_client:
+            await self.redis_client.close()
+            self.redis_client = None
         if not self._external_client and self.client:
             await self.client.aclose()
     
@@ -139,15 +147,28 @@ class TMDBClient:
                 if e.response.status_code == 429:  # Rate limited
                     logger.warning("TMDB rate limit hit, backing off...")
                     await asyncio.sleep(2)
+                elif e.response.status_code in (502, 503, 504):
+                    # Gateway/unavailable errors are TMDB-edge hiccups — same class
+                    # as the transport errors below. They spike when the watchlist
+                    # fires a burst of parallel /watch/providers fetches and TMDB's
+                    # CDN briefly 502s; that is NOT "TMDB is down", so don't trip the
+                    # breaker (tripping it made one bad film blank out providers for
+                    # the whole list via the cached-fallback path).
+                    logger.warning(f"TMDB transient gateway error {e.response.status_code} on {endpoint} — not tripping breaker")
                 elif e.response.status_code >= 500:
-                     # Server error - Trip Circuit Breaker
+                     # Genuine server error (500/etc.) - Trip Circuit Breaker
                      self._record_failure()
                 return None
             except orjson.JSONDecodeError as e:
                 logger.error(f"JSON Parse Error: {e}")
                 return None
+            except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
+                # Transient transport errors — don't trip the circuit breaker.
+                # These are network hiccups (esp. with HTTP/2), not "TMDB is down".
+                logger.warning(f"TMDB transient transport error ({type(e).__name__}) on {endpoint}: {e or '<no message>'}")
+                return None
             except Exception as e:
-                logger.error(f"TMDB request failed: {e}")
+                logger.error(f"TMDB request failed ({type(e).__name__}) on {endpoint}: {e or '<no message>'}")
                 self._record_failure()
                 return None
 
@@ -355,6 +376,20 @@ class TMDBClient:
 
         return result
 
+    async def get_collection(self, collection_id: int) -> Optional[Dict]:
+        """Fetch all films in a TMDB collection (saga). Returns the collection
+        dict with `parts: [...]` listing every movie, or None on error.
+        Cache: 7 days (collections add new films rarely)."""
+        cache_key = f"tmdb:collection:{collection_id}"
+        r = await self._get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return orjson.loads(cached)
+        data = await self._make_request(f"/collection/{collection_id}")
+        if data:
+            await r.setex(cache_key, timedelta(days=7), orjson.dumps(data))
+        return data
+
     async def discover_movies(
         self,
         with_genres: Optional[List[int]] = None,
@@ -370,6 +405,8 @@ class TMDBClient:
         page: int = 1,
         primary_release_date_gte: Optional[str] = None,
         primary_release_date_lte: Optional[str] = None,
+        with_original_language: Optional[str] = None,
+        with_companies: Optional[str] = None,
     ) -> List[Dict]:
         """
         Discover movies using TMDB's Discover API.
@@ -404,6 +441,10 @@ class TMDBClient:
             params["primary_release_date.gte"] = primary_release_date_gte
         if primary_release_date_lte:
             params["primary_release_date.lte"] = primary_release_date_lte
+        if with_original_language:
+            params["with_original_language"] = with_original_language
+        if with_companies:
+            params["with_companies"] = with_companies
 
         try:
             # Optimized: Use the shared _make_request which uses the connection pool
@@ -451,10 +492,6 @@ class TMDBClient:
         return all_results[:limit]
     
     async def aclose(self):
-        """Close Redis connection and HTTP client"""
-        if self.redis_client:
-            await self.redis_client.close()
-            self.redis_client = None
-        
+        """Canonical alias for close() (full Redis + httpx cleanup)."""
         await self.close()
         logger.info("TMDB client closed")

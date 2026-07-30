@@ -87,7 +87,7 @@ Write-Host "✅ Qdrant Indexes Created." -ForegroundColor Green
 
 # 7. Datos en Tiempo Real (Tendencias)
 Write-Host "🔥 Fetching Trending Movies..." -ForegroundColor Yellow
-Invoke-Compose exec -T backend python scripts/popular_scraper.py
+Invoke-Compose exec -T backend python scripts/maintenance_orchestrator.py --phases 8
 if ($LASTEXITCODE -ne 0) { Write-Error "Trend fetch failed"; exit 1 }
 Write-Host "✅ Trending Movies Updated." -ForegroundColor Green
 

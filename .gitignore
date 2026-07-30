@@ -42,6 +42,15 @@ ENV/
 htmlcov/
 *.log
 
+# Local run logs (re-embed / experiment / maintenance outputs)
+/reembed_log.txt
+/refresh_full_log.txt
+/experiment_results*.txt
+/check_embeddings*.txt
+# A/B experiment result dumps written into backend/ by scripts/experiment_*.py
+backend/experiment_*.md
+/maintenance_log.txt
+
 # Node.js / Frontend
 node_modules/
 .next/
@@ -84,6 +93,12 @@ test-results/
 *.png
 python_procs.txt
 backend/tests/fixtures/*.zip
+
+# pnpm audit / pip-audit dumps — frozen-in-time snapshots are misleading;
+# always re-run audits at build time instead of trusting the committed file.
+audit_results.json
+**/audit_results.json
+pip-audit-*.json
 
 # Playwright
 frontend/e2e/reports/
@@ -131,7 +146,15 @@ skills-lock.json
 AGENTS.md
 CLAUDE.md
 STACK_RULES.md
-PROJECT_MASTER_GUIDE.md
-QA_TESTING_MANUAL.md
-DEPLOYMENT.md
 BACKLOG.md
+docs/PROJECT_MASTER_GUIDE.md
+docs/QA_TESTING_MANUAL.md
+docs/DEPLOYMENT.md
+
+# Design handoff sources (local reference until archived post-release)
+design_handoff_vectorbox/
+handoff_items/
+
+# Curated-list seed data (third-party lists + derived artifacts — regenerable, not source)
+StartingList*.xls
+backend/scripts/data/

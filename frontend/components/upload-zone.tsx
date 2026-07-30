@@ -3,7 +3,8 @@
 import { useState, useCallback, useEffect } from "react";
 import { Upload, FileText, Loader2, FileArchive, Plus, User as UserIcon, RefreshCw, Check, AlertCircle, Link as LinkIcon, Save, ArrowRight } from "lucide-react";
 import { useMutation } from "@tanstack/react-query";
-import { uploadExportZIP, syncRSS, linkLetterboxd, VectorboxUser } from "@/lib/api";
+import { useAuth } from "@clerk/nextjs";
+import { uploadExportZIP, syncRSS, linkLetterboxd, VectorboxUser, USER_SESSION_KEY } from "@/lib/api";
 import { m } from "framer-motion";
 import { ProgressModal } from "./progress-modal";
 import { useLanguage } from "@/components/language-provider";
@@ -67,7 +68,7 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
                     <button
                         onClick={handleSync}
                         disabled={isLoading}
-                        className="px-4 py-2 bg-secondary text-secondary-foreground rounded-md text-sm font-medium hover:bg-secondary/80 disabled:opacity-50 flex items-center gap-2 transition-colors"
+                        className="flex items-center gap-2 border border-border-2 bg-bg-2 px-4 py-2 font-mono text-xs uppercase tracking-wide text-fg-2 transition-colors hover:border-primary hover:text-primary disabled:opacity-50"
                     >
                         {isLoading ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
                         {t("rss.sync_btn")} {username}
@@ -75,21 +76,21 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
                 </div>
 
                 {/* Info Box */}
-                <div className="text-xs text-muted-foreground bg-muted/50 p-3 rounded border w-full text-center">
+                <div className="w-full border border-border-2 bg-bg-2 p-3 text-center font-mono text-xs text-fg-3">
                     <p>
                         {t("rss.info")}
                     </p>
                 </div>
 
                 {status === "success" && (
-                    <div className="text-xs text-green-500 flex items-center gap-1.5 bg-green-500/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
+                    <div className="flex items-center gap-1.5 border border-letterboxd/40 bg-letterboxd/10 p-2 font-mono text-xs text-letterboxd">
                         <Check className="size-3" />
                         <span>{t("rss.synced")}</span>
                     </div>
                 )}
 
                 {status === "error" && (
-                    <div className="text-xs text-destructive flex items-center gap-1.5 bg-destructive/10 p-2 rounded animate-in fade-in slide-in-from-top-1">
+                    <div className="flex items-center gap-1.5 border border-danger/40 bg-danger/10 p-2 font-mono text-xs text-danger">
                         <AlertCircle className="size-3" />
                         <span>{t("rss.error")}</span>
                     </div>
@@ -102,6 +103,10 @@ function RSSSyncButton({ username, onSyncSuccess }: { username: string, onSyncSu
 export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, activeSessionUserId, onSessionUserSelect }: UploadZoneProps) {
     const [isDragging, setIsDragging] = useState(false);
     const [file, setFile] = useState<File | null>(null);
+    // Used by the "Skip for now" button to route correctly: signed-in users
+    // go to dashboard `/`, guests go to `/explore` (the only public landing
+    // for unauthenticated users — middleware redirects `/` to /login).
+    const { isSignedIn } = useAuth();
 
     // Flattened State Logic
     // STRICT TYPE SAFETY: Use strict equality for ID lookup
@@ -130,18 +135,18 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
 
             // Persist to LocalStorage
             if (typeof window !== "undefined") {
-                const stored = localStorage.getItem("vectorbox_user");
+                const stored = localStorage.getItem(USER_SESSION_KEY);
                 if (stored) {
                     try {
                         const user = JSON.parse(stored);
                         user.letterboxd_username = data.letterboxd_username;
-                        localStorage.setItem("vectorbox_user", JSON.stringify(user));
+                        localStorage.setItem(USER_SESSION_KEY, JSON.stringify(user));
                     } catch (e) {
                         console.error("LS Error", e);
                     }
                 }
             }
-            
+
             // UX: Slight delay before reload to let user see success
             setTimeout(() => {
                 window.location.reload();
@@ -238,29 +243,26 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                 {/* STEP 1: IDENTITY LINK */}
                 {!isLinked && (
                     <m.div
-                        initial={{ opacity: 0, scale: 0.95 }}
+                        initial={{ opacity: 0, scale: 0.98 }}
                         animate={{ opacity: 1, scale: 1 }}
-                        className="bg-zinc-900 border border-yellow-500/30 rounded-xl p-8 text-center space-y-6 shadow-[0_0_20px_rgba(234,179,8,0.1)] relative overflow-hidden"
+                        className="relative space-y-6 border border-border-2 bg-bg-2 p-8 text-center shadow-acid"
                     >
-                        {/* Acid Design Background Element */}
-                        <div className="absolute top-0 right-0 size-32 bg-yellow-500/5 rounded-full blur-3xl -translate-y-1/2 translate-x-1/2 pointer-events-none" />
-
                         {linkStep === 'input' ? (
                             <>
-                                <div className="size-16 bg-yellow-500/20 text-yellow-500 rounded-full flex items-center justify-center mx-auto mb-4 border border-yellow-500/20">
-                                    <LinkIcon size={32} />
+                                <div className="mx-auto mb-4 flex size-14 items-center justify-center border border-primary/40 text-primary">
+                                    <LinkIcon size={26} />
                                 </div>
 
                                 <div className="space-y-2">
-                                    <h3 className="text-xl font-semibold text-white tracking-tight">{t("onboarding.link_title")}</h3>
-                                    <p className="text-zinc-400 text-sm max-w-sm mx-auto">
+                                    <h3 className="font-display text-xl uppercase tracking-tight text-fg">{t("onboarding.link_title")}</h3>
+                                    <p className="mx-auto max-w-sm font-mono text-sm text-fg-2">
                                         {t("onboarding.link_desc")}
                                     </p>
                                 </div>
 
-                                <div className="flex flex-col gap-3 max-w-xs mx-auto">
-                                    <div className="relative group">
-                                        <UserIcon className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-zinc-500 group-focus-within:text-yellow-500 transition-colors" />
+                                <div className="mx-auto flex max-w-xs flex-col gap-3">
+                                    <div className="group relative">
+                                        <UserIcon className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-fg-3 transition-colors group-focus-within:text-primary" />
                                         <input
                                             type="text"
                                             value={linkUsername}
@@ -269,45 +271,45 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                                                 if (e.key === 'Enter' && linkUsername.trim()) setLinkStep('confirm');
                                             }}
                                             placeholder="Letterboxd Username"
-                                            className="w-full bg-zinc-950/50 border border-zinc-700 rounded-md pl-10 pr-4 py-3 text-white placeholder-zinc-600 focus:outline-none focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 transition-all font-mono"
+                                            className="w-full border border-border-2 bg-bg-3 py-3 pl-10 pr-4 font-mono text-fg placeholder:text-fg-3 focus:border-primary focus:outline-none"
                                         />
                                     </div>
 
                                     <button
                                         onClick={() => setLinkStep('confirm')}
                                         disabled={!linkUsername.trim()}
-                                        className="w-full bg-yellow-600 text-white font-bold py-3 rounded-md hover:bg-yellow-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                                        className="flex w-full items-center justify-center gap-2 bg-primary py-3 font-display text-xs font-bold uppercase tracking-[0.08em] text-primary-ink disabled:cursor-not-allowed disabled:opacity-50"
                                     >
                                         {t("onboarding.btn_link")} <ArrowRight className="size-4" />
                                     </button>
                                 </div>
                             </>
                         ) : (
-                            <div className="space-y-6 animate-in zoom-in-95 duration-200">
+                            <div className="space-y-6">
                                 <div className="space-y-2">
-                                    <h3 className="text-lg font-bold text-zinc-100 uppercase tracking-widest text-xs">{t("onboarding.confirm_title")}</h3>
+                                    <h3 className="eyebrow text-fg-2">{t("onboarding.confirm_title")}</h3>
                                 </div>
 
-                                <div className="py-6 bg-zinc-950/40 rounded-lg border border-yellow-500/20">
-                                    <p className="text-4xl md:text-5xl font-black text-yellow-400 font-mono tracking-tighter break-all px-4">
+                                <div className="border border-primary/40 bg-bg py-6">
+                                    <p className="break-all px-4 font-display text-4xl tracking-tight text-primary md:text-5xl">
                                         {linkUsername}
                                     </p>
                                 </div>
 
-                                <div className="bg-yellow-500/10 border border-yellow-500/20 p-4 rounded-md text-sm text-yellow-200/80 flex items-start gap-3 text-left">
-                                    <AlertCircle className="size-5 shrink-0 text-yellow-500 mt-0.5" />
+                                <div className="flex items-start gap-3 border border-warn/40 bg-bg-3 p-4 text-left font-mono text-sm text-fg-2">
+                                    <AlertCircle className="mt-0.5 size-5 shrink-0 text-warn" />
                                     <p>
                                         {t("onboarding.confirm_warning")}
                                         <br />
-                                        <span className="text-xs opacity-70 mt-1 block">{t("onboarding.confirm_warning_hint")}</span>
+                                        <span className="mt-1 block text-xs opacity-70">{t("onboarding.confirm_warning_hint")}</span>
                                     </p>
                                 </div>
 
-                                <div className="flex flex-col gap-3 max-w-xs mx-auto pt-2">
+                                <div className="mx-auto flex max-w-xs flex-col gap-3 pt-2">
                                     <button
                                         onClick={handleLink}
                                         disabled={linkMutation.isPending}
-                                        className="w-full bg-yellow-500 text-black font-black uppercase tracking-wide py-3 rounded-md hover:bg-yellow-400 hover:scale-[1.02] transition-all disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-yellow-500/20"
+                                        className="flex w-full items-center justify-center gap-2 bg-primary py-3 font-display text-xs font-bold uppercase tracking-[0.08em] text-primary-ink shadow-acid-fg disabled:opacity-50"
                                     >
                                         {linkMutation.isPending ? (
                                             <Loader2 className="size-4 animate-spin" />
@@ -321,7 +323,7 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                                     <button
                                         onClick={() => setLinkStep('input')}
                                         disabled={linkMutation.isPending}
-                                        className="w-full text-zinc-500 hover:text-white text-sm font-medium py-2 transition-colors"
+                                        className="w-full py-2 font-mono text-sm text-fg-3 transition-colors hover:text-fg"
                                     >
                                         {t("onboarding.confirm_no")}
                                     </button>
@@ -333,7 +335,7 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                             <m.div
                                 initial={{ opacity: 0, height: 0 }}
                                 animate={{ opacity: 1, height: "auto" }}
-                                className="bg-red-500/10 border border-red-500/20 text-red-500 p-3 rounded-md text-sm flex items-center gap-2 mt-4"
+                                className="mt-4 flex items-center gap-2 border border-danger/40 bg-bg-3 p-3 font-mono text-sm text-danger"
                             >
                                 <AlertCircle className="size-4 shrink-0" />
                                 <span>
@@ -354,7 +356,7 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                     >
                         {/* Header for Step 2 */}
                         <div className="text-center space-y-2">
-                            <h2 className="text-lg font-medium text-zinc-300">
+                            <h2 className="font-display text-lg uppercase tracking-tight text-fg">
                                 Import History for <span className="text-primary font-bold">{activeUserProfile?.letterboxd_username || localLinkedUser}</span>
                             </h2>
                         </div>
@@ -367,8 +369,8 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                             onDragLeave={() => setIsDragging(false)}
                             onDrop={handleDrop}
                             className={`
-                                relative border-2 border-dashed rounded-xl p-12 text-center transition-all cursor-pointer group
-                                ${isDragging ? "border-primary bg-primary/10 scale-[1.02]" : "border-zinc-800 bg-zinc-900/50 hover:border-zinc-700"}
+                                relative border-2 border-dashed p-12 text-center transition-colors cursor-pointer group
+                                ${isDragging ? "border-primary bg-primary/5" : "border-border-2 bg-bg-2 hover:border-fg-3"}
                                 ${uploadMutation.isPending || taskId ? "opacity-50 pointer-events-none" : ""}
                             `}
                         >
@@ -380,20 +382,18 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                             />
 
                             <div className="pointer-events-none space-y-4">
-                                <div className="size-16 mx-auto bg-zinc-800 rounded-full flex items-center justify-center group-hover:bg-zinc-700 transition-colors">
-                                    {file ? <FileArchive className="size-8 text-primary" /> : <Upload className="size-8 text-zinc-500 group-hover:text-zinc-300" />}
-                                </div>
+                                {file ? <FileArchive className="mx-auto size-10 text-primary" /> : <Upload className="mx-auto size-10 text-fg-3" />}
 
                                 <div className="space-y-1">
                                     {file ? (
                                         <>
-                                            <p className="text-lg font-bold text-white break-all">{file.name}</p>
-                                            <p className="text-sm text-primary">Ready to upload</p>
+                                            <p className="break-all font-mono text-lg font-bold text-fg">{file.name}</p>
+                                            <p className="font-mono text-sm text-primary">Ready to upload</p>
                                         </>
                                     ) : (
                                         <>
-                                            <p className="text-lg font-bold text-zinc-300 group-hover:text-white transition-colors">{t("onboarding.upload_title")}</p>
-                                            <p className="text-sm text-zinc-500">{t("onboarding.upload_desc")}</p>
+                                            <p className="font-mono text-lg font-bold text-fg-2 transition-colors group-hover:text-fg">{t("onboarding.upload_title")}</p>
+                                            <p className="font-mono text-sm text-fg-3">{t("onboarding.upload_desc")}</p>
                                         </>
                                     )}
                                 </div>
@@ -401,11 +401,11 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                         </div>
 
                         {file && (
-                            <div className="flex justify-center animate-in slide-in-from-bottom-2">
+                            <div className="flex justify-center">
                                 <button
                                     onClick={handleUpload}
                                     disabled={uploadMutation.isPending}
-                                    className="bg-primary text-black font-bold uppercase tracking-wide px-8 py-3 rounded-full hover:bg-primary/90 transition-transform hover:scale-105 shadow-lg shadow-primary/20 flex items-center gap-2"
+                                    className="flex items-center gap-2 bg-primary px-8 py-3 font-display text-xs font-bold uppercase tracking-[0.08em] text-primary-ink shadow-acid-fg transition-transform hover:-translate-x-px hover:-translate-y-px"
                                 >
                                     {uploadMutation.isPending ? <Loader2 className="size-4 animate-spin" /> : null}
                                     {t("onboarding.btn_start")}
@@ -414,7 +414,7 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                         )}
 
                         {/* RSS Fallback / Sync */}
-                        <div className="pt-8 border-t border-zinc-900/50">
+                        <div className="border-t border-border pt-8">
                             <RSSSyncButton
                                 username={activeUserProfile?.letterboxd_username || localLinkedUser || ""}
                                 onSyncSuccess={() => activeSessionUserId && onUploadSuccess(activeSessionUserId)}
@@ -423,19 +423,43 @@ export function UploadZone({ onUploadSuccess, registeredUsers, onUserCreated, ac
                     </m.div>
                 )}
 
-                <div className="mt-8 text-center text-xs text-zinc-600">
+                <div className="mt-8 text-center font-mono text-xs text-fg-3">
                     <p>
                         {t("onboarding.footer_export")}{" "}
                         <a
                             href="https://letterboxd.com/settings/data/"
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-zinc-400 hover:text-primary underline transition-colors"
+                            className="text-fg-2 underline transition-colors hover:text-primary"
                         >
                             Letterboxd Settings → Data
                         </a>
                     </p>
                 </div>
+
+                {/* Skip escape — visible only when user has no data (i.e. UploadZone
+                    is rendered inside the ONBOARDING JAIL on dashboard.tsx). In
+                    Settings / feed-empty-state callsites the user already has
+                    ratings, so this button doesn't apply. Mirrors the Skip
+                    in /onboarding header — same flag (vb_skip_onboarding) so
+                    Dashboard suppresses both the JAIL and the sub-15 redirect. */}
+                {!activeUserProfile?.has_data && (
+                    <div className="mt-6 text-center">
+                        <button
+                            onClick={() => {
+                                localStorage.setItem("vb_skip_onboarding", "true");
+                                // Guests land on /explore (the only public-route
+                                // home equivalent). Signed-in users land on the
+                                // dashboard. Sending a guest to `/` here would
+                                // bounce them through middleware → /login.
+                                window.location.href = isSignedIn ? "/" : "/explore";
+                            }}
+                            className="font-mono text-xs uppercase tracking-wider text-fg-3 underline decoration-border-2 underline-offset-4 transition-colors hover:text-fg-2"
+                        >
+                            Skip for now — browse without imports
+                        </button>
+                    </div>
+                )}
             </div>
         </>
     );

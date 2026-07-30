@@ -112,18 +112,11 @@ def test_diary_rewatch_after_ratings_seed_increments_correctly():
 
 
 # ---------------- RSS bump-rule unit logic ----------------
-# Replicates the Python-side condition `rewatch_flag = ...` from rss_service.py
-# without spinning up a DB session. Guards the idempotency contract.
+# Imports the REAL production rule from rss_service (extracted to a module-level
+# function so this test can't silently drift from what production actually does).
+# Guards the idempotency contract without spinning up a DB session.
 
-
-def _should_bump(rewatch: bool, incoming_date, existing_date) -> bool:
-    if not rewatch:
-        return False
-    if existing_date is None:
-        return True
-    if incoming_date is None:
-        return False
-    return incoming_date > existing_date
+from services.rss_service import rss_watch_count_should_bump as _should_bump
 
 
 def test_rss_no_rewatch_never_bumps():

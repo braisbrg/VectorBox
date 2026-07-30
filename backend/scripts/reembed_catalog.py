@@ -1,9 +1,10 @@
-"""Re-embed every movie in the catalog without title (Variant A fix).
+"""Re-embed every movie in the catalog without title.
 
 Drops title from the encoded text to eliminate token-overlap leakage that
 makes BYW/Magic Box pull off-theme neighbours (Howl's → The Howling, Faster
-Faster → Fast X). Same model (all-MiniLM-L6-v2), same dimension (384), so
-the Qdrant collection stays in place — we just upsert new vectors.
+Faster → Fast X). Uses whatever model + dim `EmbeddingService` currently
+declares (today `google/embeddinggemma-300m`, 768-dim) — the collection
+must already exist with the matching dim.
 
 When `cinematic_description` is present (Groq-enriched, ~99% of catalog), it
 is used as the embedding text directly — captures deeper themes than the raw
@@ -35,27 +36,11 @@ logger = logging.getLogger("reembed")
 BATCH = 256
 
 
-def _qdrant_payload(m: Movie) -> dict:
-    return {
-        "tmdb_id": m.tmdb_id,
-        "title": m.title,
-        "year": m.year,
-        "genres": m.genres or [],
-        "overview": m.overview or "",
-        "poster_path": m.poster_path,
-        "vote_average": m.vote_average,
-        "vote_count": m.vote_count,
-        "runtime": m.runtime,
-        "original_language": m.original_language,
-        "keywords": m.keywords or [],
-        "directors": m.directors,
-        "cast": m.cast,
-        "vectorbox_score": m.vectorbox_score,
-        "imdb_rating": m.imdb_rating,
-        "metacritic_rating": m.metacritic_rating,
-        "title_es": m.title_es,
-        "overview_es": m.overview_es,
-    }
+def _qdrant_payload(m: Movie, *, enriched: bool | None = None) -> dict:
+    """Kept as the name four scripts already import; the payload itself is built
+    in models.external_schemas so every writer shares one definition."""
+    from models.external_schemas import qdrant_payload
+    return qdrant_payload(m, enriched=enriched)
 
 
 def _build_text(m: Movie) -> str | None:

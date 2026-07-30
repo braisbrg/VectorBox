@@ -5,7 +5,6 @@ import logging
 import os
 import httpx
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,7 +22,7 @@ from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 
 from database import init_db
-from routers import upload, recommendations, tools, users, search, rss, auth, tasks, movies, onboarding
+from routers import upload, recommendations, users, search, rss, auth, tasks, movies, onboarding
 from routers.similar import router as similar_router
 from services.qdrant_service import QdrantService
 from models.schemas import HealthResponse, RootResponse
@@ -45,8 +44,6 @@ logger = logging.getLogger(__name__)
 from limiter import limiter
 
 
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.redis import RedisBackend
 from redis import asyncio as aioredis
 
 @asynccontextmanager
@@ -82,7 +79,6 @@ async def lifespan(app: FastAPI):
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
     redis = aioredis.from_url(redis_url, encoding="utf8", decode_responses=True)
     app.state.redis = redis
-    FastAPICache.init(RedisBackend(redis), prefix="fastapi-cache")
     logger.info(f"Redis singleton initialized at {redis_url}")
     
     # Initialize Qdrant collection
@@ -100,7 +96,11 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, 'http_client'):
         await app.state.http_client.aclose()
     if hasattr(app.state, 'redis'):
-        await app.state.redis.aclose()
+        # redis-py 4.x async client only has close(); aclose() arrived in
+        # 5.0.1. We pin redis==4.6.0 — calling aclose() unconditionally raised
+        # AttributeError on every shutdown and skipped close_services() below.
+        r = app.state.redis
+        await (r.aclose() if hasattr(r, "aclose") else r.close())
         logger.info("Redis singleton closed.")
     await close_services()
 
@@ -149,6 +149,15 @@ allowed_origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
 allowed_origins = [o.strip() for o in allowed_origins_str.split(",") if o.strip()]
 logger.info(f"CORS allowed origins: {allowed_origins}")
 
+# Security (SEC-2): with allow_credentials=True a wildcard origin lets any site
+# make credentialed cross-origin calls. Refuse to boot in production with an
+# empty or wildcard allowlist — symmetric to the TRUSTED_HOSTS guard above.
+if IS_PRODUCTION and (not allowed_origins or "*" in allowed_origins):
+    raise RuntimeError(
+        "ALLOWED_ORIGINS must be an explicit allowlist in production (no '*'); "
+        "with allow_credentials=True a wildcard exposes credentialed CORS."
+    )
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -182,25 +191,37 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """
-    Catch-all handler to prevent information leakage
-    Security: Hide traceback in production
+    Catch-all handler to prevent information leakage.
+
+    Fail-safe: only treat the request as a dev environment when ENVIRONMENT
+    is explicitly "development". Any other value — including unset, typo'd,
+    or accidentally cleared — is treated as production and leaks nothing.
     """
-    is_production = os.getenv("ENVIRONMENT", "development") == "production"
-    
-    if is_production:
-        logger.error(f"Unhandled exception: {str(exc)}") # Log error but not full stack trace if sensitive? better to log full stack trace for admins but hide from user.
-        # Actually standard practice is log full trace, return generic message.
-        logger.error(f"Internal Server Error: {exc}", exc_info=True)
+    environment = os.getenv("ENVIRONMENT", "production")
+    is_development = environment == "development"
+
+    # Always log full traceback server-side. Server logs are not user-facing.
+    logger.error(f"Unhandled exception ({request.method} {request.url.path}): {exc}", exc_info=True)
+
+    if not is_development:
         return JSONResponse(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": "Internal Server Error"}
+            content={"detail": "Internal Server Error"},
         )
-    else:
-        logger.error(f"Unhandled exception: {exc}", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            content={"detail": str(exc), "trace": str(exc)}
-        )
+
+    # Dev-only: include the exception message + class to speed up debugging.
+    # We do NOT include a real traceback in the response body — that ships
+    # source paths and module names to the browser, which is fine in dev
+    # but trivially copy-pasted into a screenshot that ends up in a public
+    # issue tracker. Keep it minimal even in dev.
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={
+            "detail": "Internal Server Error",
+            "dev_exception_class": type(exc).__name__,
+            "dev_exception_message": str(exc),
+        },
+    )
 
 
 # Health check endpoint (no rate limiting)
@@ -222,7 +243,10 @@ async def health_check(qdrant: QdrantService = Depends(get_qdrant_service)) -> H
             await session.execute(text("SELECT 1"))
         health_status["dependencies"]["postgres"] = "ok"
     except Exception as e:
-        health_status["dependencies"]["postgres"] = f"down: {str(e)}"
+        # Status only. /health is unauthenticated and unmetered, so str(e) here
+        # handed internal hostnames, ports and DB names to anyone during an
+        # outage. The full exception still goes to the server log below.
+        health_status["dependencies"]["postgres"] = "down"
         health_status["status"] = "unhealthy"
         logger.error(f"Health Check Failed (Postgres): {e}")
 
@@ -235,10 +259,12 @@ async def health_check(qdrant: QdrantService = Depends(get_qdrant_service)) -> H
             # Fallback during tests / cold boot
             r = aioredis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379"), encoding="utf8", decode_responses=True)
             await r.ping()
-            await r.aclose()
+            # redis-py renamed close()→aclose() at 5.0.1; support both so the
+            # fallback health check doesn't itself error out (OBS-1).
+            await (r.aclose() if hasattr(r, "aclose") else r.close())
         health_status["dependencies"]["redis"] = "ok"
     except Exception as e:
-        health_status["dependencies"]["redis"] = f"down: {str(e)}"
+        health_status["dependencies"]["redis"] = "down"
         health_status["status"] = "unhealthy"
         logger.error(f"Health Check Failed (Redis): {e}")
 
@@ -247,7 +273,7 @@ async def health_check(qdrant: QdrantService = Depends(get_qdrant_service)) -> H
         await qdrant.client.get_collections()
         health_status["dependencies"]["qdrant"] = "ok"
     except Exception as e:
-        health_status["dependencies"]["qdrant"] = f"down: {str(e)}"
+        health_status["dependencies"]["qdrant"] = "down"
         health_status["status"] = "unhealthy"
         logger.error(f"Health Check Failed (Qdrant): {e}")
 
@@ -267,14 +293,26 @@ async def add_security_headers(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
-    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = (
+        "camera=(), microphone=(), geolocation=(), payment=(), usb=(), "
+        "magnetometer=(), gyroscope=(), accelerometer=()"
+    )
+    # `preload` only takes effect once the apex domain is submitted to
+    # https://hstspreload.org — safe to advertise either way.
+    response.headers["Strict-Transport-Security"] = (
+        "max-age=31536000; includeSubDomains; preload"
+    )
+    # API responses never render HTML; the lockdown CSP is correct.
+    # Docs routes (Swagger/ReDoc) are mounted only in non-production and
+    # served by FastAPI itself — if you re-enable them in production,
+    # carve out a route-specific exemption.
     response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
     return response
 
 # Include routers
 app.include_router(upload.router, prefix="/api/upload", tags=["Upload"])
 app.include_router(recommendations.router, prefix="/api/recommendations", tags=["Recommendations"])
-app.include_router(tools.router, prefix="/api/tools", tags=["Tools"])
 app.include_router(users.router, prefix="/api/users", tags=["Users"])
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(search.router, prefix="/api/search", tags=["Search"])
@@ -285,9 +323,15 @@ app.include_router(movies.router, prefix="/api/movies", tags=["Movies"])
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["Onboarding"])
 
 @app.get("/api/health", tags=["System"], include_in_schema=False)
-async def api_health_alias():
-    """Alias so frontend /api/health calls don't 404."""
-    return {"status": "healthy"}
+async def api_health_alias(qdrant: QdrantService = Depends(get_qdrant_service)):
+    """Alias so frontend /api/health calls don't 404.
+
+    OBS-1: delegate to the real deep check instead of returning a static
+    {"status":"healthy"}. The previous stub always reported healthy, so any
+    monitor/LB pointed at /api/health saw green during a Postgres/Redis/Qdrant
+    outage.
+    """
+    return await health_check(qdrant=qdrant)
 
 
 @app.get("/", tags=["System"], response_model=RootResponse)

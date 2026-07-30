@@ -9,17 +9,38 @@ import os
 import re
 from typing import List
 
+from services.llm_models import ENRICH_CHAIN, REASONING_EFFORT
+
 logger = logging.getLogger(__name__)
 
 
+# Re-exported for clustering_service (cluster-naming shares this chain). Model
+# IDs + reasoning-effort live in services/llm_models.py — the single source of
+# truth. See _get_model_chain below.
+_REASONING_EFFORT = REASONING_EFFORT
+
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_think(text: str) -> str:
+    """Remove any leaked <think>…</think> chain-of-thought (closed or dangling)
+    so it never contaminates a cinematic_description fed to the embedder."""
+    text = _THINK_RE.sub("", text)
+    low = text.lower()
+    if "<think>" in low:
+        text = text[: low.rfind("<think>")]
+    return text.strip()
+
+
 def _get_model_chain() -> list[str]:
-    """Return the LLM model chain based on available API keys."""
+    """Return the enrichment model chain based on available API keys.
+
+    Chain (IDs + rationale) lives in services/llm_models.ENRICH_CHAIN — the
+    single source of truth, verified live against /v1/models. Falls back to
+    Gemini when there's no Groq key.
+    """
     if os.getenv("GROQ_API_KEY"):
-        return [
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-            "llama-3.3-70b-versatile",
-            "llama-3.1-8b-instant",
-        ]
+        return list(ENRICH_CHAIN)
     if os.getenv("GEMINI_API_KEY"):
         return ["gemini-2.5-flash"]
     return []
@@ -82,6 +103,7 @@ async def generate_cinematic_description(
     year: int,
     groq_client,  # AsyncOpenAI pointing to Groq — receive as parameter, never instantiate here
     force_model: str = None,
+    model_chain_override: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """
     Use Groq to generate a rich cinematic description for embedding.
@@ -98,54 +120,109 @@ async def generate_cinematic_description(
     if groq_client is None:
         return fallback, None
 
+    # No real source text → the model hallucinates a plausible description from
+    # the title/genre alone. Observed live: an overview-less TMDB stub ("Wolf
+    # Totem", tmdb 417613) got a fabricated "nature-infused animation"
+    # description that scored 0.81 to Nausicaä. Refuse: return the legacy
+    # fallback with model_id=None so the caller never stamps
+    # has_enriched_embedding — the film stays out of gated recommendations.
+    # ponytail: <20 chars = effectively empty; raise the floor if real
+    # terse-overview films start getting skipped.
+    if len((overview or "").strip()) < 20:
+        return fallback, None
+
     genres_str = ", ".join(genres) if genres else "Unknown"
     keywords_str = ", ".join(keywords[:10]) if keywords else "None"
     directors_str = ", ".join(directors) if directors else "Unknown"
     cast_str = ", ".join(cast[:3]) if cast else "Unknown"
+    decade = f"{(year // 10) * 10}s" if year else "unspecified era"
 
+    # Prompt recipe "v2" (2026-06). This text is the embedding recipe — every
+    # caller (new ingest, RSS, re-enrich, maintenance) MUST use this exact
+    # prompt so the catalogue stays in one vector space. Design rules, learned
+    # the hard way from the title-token-leakage incident:
+    #   - NO proper nouns of ANY kind in the output. Not the film's title /
+    #     director / actor / character, and crucially not OTHER films, directors,
+    #     studios, or franchises (the old prompt literally said "fans of Kubrick,
+    #     A24 films" — those identity tokens create false similarity between
+    #     unrelated films, exactly like the title leak did).
+    #   - Comparables expressed ONLY as movements / subgenres / descriptive
+    #     categories ("magic realism", "Korean revenge thriller").
+    #   - No awards / "critically acclaimed" language: quality lives in VBS, not
+    #     in the thematic embedding, and "award-winning" glues unrelated films.
+    #   - Plain decade, not editorialised era tags ("Reagan-era", "post-9/11"),
+    #     which inject shared political tokens across unrelated genres.
+    system_content = (
+        "You are a cinematic analyst writing concise, evocative descriptions for "
+        "film-recommendation embeddings. Output plain prose only — no markdown, "
+        "lists, or headers. Avoid clichés ('masterpiece', 'unforgettable', "
+        "'must-see', 'tour de force'). Always respond in English regardless of "
+        "the film's original language.\n\n"
+        "STRICT NAME-BAN (critical for embedding quality): write NO proper noun "
+        "that identifies a specific entity — not this film's title, not any "
+        "director, actor, or character name, and NOT the names of OTHER films, "
+        "directors, studios, or franchises (never write things like 'A24', "
+        "'Kubrick', 'Studio Ghibli', 'Tarantino-esque', 'like The Matrix'). "
+        "Describe authorial style and comparable cinema ONLY as movements, "
+        "subgenres, or descriptive categories (e.g. 'magic realism', 'Korean "
+        "revenge thriller', 'slow-burn folk horror'). Do not copy character or "
+        "place names out of the plot synopsis. Identity tokens leak between "
+        "unrelated films and corrupt similarity search."
+    )
     prompt = (
-        f"Movie: {title} ({year})\n"
+        f"Film (title for your reference only — DO NOT write it): {title}\n"
+        f"Decade: {decade}\n"
         f"Genres: {genres_str}\n"
-        f"Keywords: {keywords_str}\n"
-        f"Directors: {directors_str}\n"
-        f"Cast: {cast_str}\n"
-        f"Plot: {overview or 'No plot available.'}\n\n"
-        "Write a rich cinematic description of this film in English. "
-        "Plain text only — no markdown, no headers, no bullet points. "
-        "Maximum 80 words. Cover ALL of the following:\n"
-        "- Tone (e.g. melancholic, tense, comedic, dreamlike)\n"
-        "- Themes (e.g. identity, revenge, family dysfunction)\n"
-        "- Visual style (e.g. handheld gritty, static long takes, neon-lit)\n"
-        "- Pacing (e.g. slow burn, frenetic, episodic)\n"
-        "- Audience affinity (e.g. fans of Kubrick, A24 films, Korean revenge cinema)\n"
-        "- Mood keywords (3-5 single words at the end)"
+        f"Themes/Keywords: {keywords_str}\n"
+        f"Director(s) (context only — DO NOT name): {directors_str}\n"
+        f"Lead cast (context only — DO NOT name): {cast_str}\n"
+        f"Plot synopsis (for understanding — do NOT copy names from it): "
+        f"{overview or 'No plot available.'}\n\n"
+        "Style examples (these illustrate tone; note they contain NO names):\n\n"
+        "Example A — a 1940s dark-fantasy war fable:\n"
+        "A dreamlike anti-fascist fable that weaves brutal wartime violence with "
+        "baroque dark fantasy through painterly amber-and-blue cinematography. "
+        "Pacing alternates between tense military encounters and contemplative "
+        "supernatural reverie. For viewers drawn to magic realism, gothic "
+        "fairy-tale horror, and historical allegory. Mood: haunting, melancholic, "
+        "mythic, brutal, transcendent.\n\n"
+        "Example B — a 1990s mob epic:\n"
+        "A propulsive epic tracking three decades of organized-crime life through "
+        "an amoral first-person voiceover. Frenetic editing, needle-drop "
+        "soundtrack, and restless camerawork give it a documentary-meets-rock-"
+        "opera energy. Pacing escalates from nostalgic to paranoid as excess and "
+        "betrayal unravel a brotherhood. For viewers drawn to non-romanticised "
+        "ensemble crime cinema and kinetic realism. Mood: kinetic, decadent, "
+        "paranoid, cynical, propulsive.\n\n"
+        "Now write the description for the film above. Maximum 80 words. Cover "
+        "tone, themes, visual/aural style, pacing, and the kind of viewer it "
+        "appeals to (as categories, never named fans), in flowing prose. End "
+        "with 3-5 single-word mood keywords. Absolutely no proper nouns."
     )
 
     if force_model:
         models = [force_model]
+    elif model_chain_override is not None:
+        models = model_chain_override
     else:
         models = _get_model_chain()
     messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a cinematic analyst. Respond ONLY with the description. "
-                "Always respond in English regardless of the film's language. "
-                "No markdown, no headers."
-            ),
-        },
+        {"role": "system", "content": system_content},
         {"role": "user", "content": prompt},
     ]
 
     for model_id in models:
+        effort = _REASONING_EFFORT.get(model_id)
+        extra_body = {"reasoning_effort": effort} if effort else None
         try:
             response = await groq_client.chat.completions.create(
                 model=model_id,
                 messages=messages,
                 temperature=0.4,
                 max_tokens=1000,
+                extra_body=extra_body,
             )
-            description = response.choices[0].message.content.strip()
+            description = _strip_think(response.choices[0].message.content or "")
             if description and len(description) > 20:
                 return description, model_id
             logger.warning(f"Groq ({model_id}) returned empty/short description for '{title}', trying next model")
@@ -173,8 +250,9 @@ async def generate_cinematic_description(
                                 messages=messages,
                                 temperature=0.4,
                                 max_tokens=1000,
+                                extra_body=extra_body,
                             )
-                            description = response.choices[0].message.content.strip()
+                            description = _strip_think(response.choices[0].message.content or "")
                             if description and len(description) > 20:
                                 return description, model_id
                         except Exception as retry_err:
@@ -202,7 +280,8 @@ async def generate_profile_summary(
     Respond with ONLY a comma-separated list of 12-15 keywords. No sentences, no explanations, no punctuation other than commas.
     Focus on: tone (e.g. melancholic, darkly comedic), themes (e.g. moral ambiguity, identity), visual style (e.g. handheld gritty, long takes), pacing (e.g. slow burn, frenetic), and cinematic movements or affinities (e.g. French New Wave, A24, Korean revenge).
     Example format: slow burn, melancholic, morally complex, atmospheric, character-driven, contemplative, humanist, European art house, naturalistic lighting, existential themes, quiet intensity, bittersweet
-    Uses llama-4-scout-17b exclusively for high-fidelity profiling.
+    Uses the chain's primary model (see ENRICH_CHAIN in llm_models) for
+    high-fidelity profiling.
     """
     if not groq_client or not top_rated_films:
         return None

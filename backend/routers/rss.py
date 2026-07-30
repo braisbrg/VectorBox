@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, func
 from typing import List, Dict
 from pydantic import BaseModel, conlist, constr
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,8 +16,117 @@ from config import get_db
 from dependencies import get_tmdb_client, get_current_user, get_qdrant_service
 from limiter import limiter
 import logging
+import os
+from difflib import SequenceMatcher
+from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+# Fuzzy-match gate thresholds for the watchlist-scrape fallback. Conservative
+# because a false positive lands the wrong film in a user's watchlist (see the
+# 2026-05-10 user-212 phantom "Samuel and the Light" incident).
+#
+# Two-tier acceptance — the higher tier exists so legitimate ultra-indie
+# cinema (cine galego/español de festival, 1-5 TMDB votes) is not rejected
+# along with the phantoms. Phantoms always fail title similarity because
+# the scraped title doesn't match the TMDB top-1.
+#
+# All four thresholds are env-tunable (F-34) so operators can dial recall vs
+# precision without a redeploy. Defaults are the values validated against
+# user 212's 552-row watchlist audit on 2026-05-15.
+_FUZZY_TITLE_RATIO_STRICT = float(os.getenv("WATCHLIST_FUZZY_TITLE_STRICT", "0.95"))
+_FUZZY_TITLE_RATIO_MIN = float(os.getenv("WATCHLIST_FUZZY_TITLE_MIN", "0.85"))
+_FUZZY_VOTE_COUNT_MIN = int(os.getenv("WATCHLIST_FUZZY_VOTE_MIN", "20"))
+_FUZZY_YEAR_TOLERANCE = int(os.getenv("WATCHLIST_FUZZY_YEAR_TOLERANCE", "1"))
+
+
+def _normalise_for_title_match(text: str) -> str:
+    """Lowercase, strip non-alphanumerics. Used for fuzzy title comparison
+    so 'It's a Wonderful Life' matches 'Its a Wonderful Life' and en/em
+    dashes don't sabotage the ratio."""
+    return "".join(ch.lower() for ch in (text or "") if ch.isalnum() or ch.isspace()).strip()
+
+
+def _accept_fuzzy_match(
+    candidate: dict,
+    scraped_title: Optional[str],
+    scraped_year: Optional[int],
+    slug: str,
+) -> bool:
+    """Two-tier acceptance gate for the TMDB top-1 fuzzy hit. Logs the verdict
+    either way so future watchlist false positives are traceable.
+
+    Order of checks: year match first (cheapest reject), then scraped_title
+    present (gate cannot run without it), then title-similarity tier decides
+    whether vote_count matters.
+
+    Tier A — strict title match (ratio ≥ 0.95) bypasses vote_count.
+        Covers legitimate ultra-indie cinema (1-vote festival entries,
+        Galician/Spanish indies, etc.) where the title matches near-exactly
+        but the film has too few TMDB votes for the standard gate.
+
+    Tier B — weak title match (0.85 ≤ ratio < 0.95) still requires
+        vote_count ≥ 20. Catches phantoms where TMDB's relevance ranker
+        promoted an unrelated low-vote film to the top.
+    """
+    cand_title = candidate.get("title") or ""
+    cand_orig = candidate.get("original_title") or ""
+    cand_release = candidate.get("release_date") or ""
+    cand_year = int(cand_release[:4]) if len(cand_release) >= 4 and cand_release[:4].isdigit() else None
+    cand_votes = candidate.get("vote_count") or 0
+    cand_pop = candidate.get("popularity") or 0.0
+
+    # Year (within tolerance, when both available)
+    if scraped_year and cand_year and abs(scraped_year - cand_year) > _FUZZY_YEAR_TOLERANCE:
+        logger.warning(
+            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=year_mismatch "
+            f"scraped_year={scraped_year} cand_year={cand_year} cand_title={cand_title!r}"
+        )
+        return False
+
+    # Title similarity — required gate. If we don't have a scraped title
+    # (legacy poster layout), we cannot run the gate.
+    if not scraped_title:
+        logger.warning(
+            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=no_scraped_title "
+            f"(legacy poster layout); fuzzy cannot be verified"
+        )
+        return False
+
+    scraped_norm = _normalise_for_title_match(scraped_title)
+    best_ratio = max(
+        SequenceMatcher(None, scraped_norm, _normalise_for_title_match(cand_title)).ratio(),
+        SequenceMatcher(None, scraped_norm, _normalise_for_title_match(cand_orig)).ratio(),
+    )
+
+    if best_ratio >= _FUZZY_TITLE_RATIO_STRICT:
+        logger.info(
+            f"[watchlist-fuzzy] ACCEPT(strict) slug={slug!r} cand_id={candidate.get('id')} "
+            f"cand_title={cand_title!r} year={cand_year} votes={cand_votes} title_ratio={best_ratio:.2f}"
+        )
+        return True
+
+    if best_ratio < _FUZZY_TITLE_RATIO_MIN:
+        logger.warning(
+            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=title_drift "
+            f"scraped={scraped_title!r} cand={cand_title!r} ratio={best_ratio:.2f}"
+        )
+        return False
+
+    # Tier B — weak match still requires vote_count floor.
+    if cand_votes < _FUZZY_VOTE_COUNT_MIN:
+        logger.warning(
+            f"[watchlist-fuzzy] REJECT slug={slug!r} reason=weak_title_and_low_votes "
+            f"votes={cand_votes} popularity={cand_pop:.3f} cand_title={cand_title!r} ratio={best_ratio:.2f}"
+        )
+        return False
+
+    logger.info(
+        f"[watchlist-fuzzy] ACCEPT(weak) slug={slug!r} cand_id={candidate.get('id')} "
+        f"cand_title={cand_title!r} year={cand_year} votes={cand_votes} title_ratio={best_ratio:.2f}"
+    )
+    return True
 
 router = APIRouter(
     tags=["rss"],
@@ -29,8 +138,30 @@ class SyncResponse(BaseModel):
     stats: Dict[str, int]
     message: str
 
+# These are VectorBox usernames OR Letterboxd handles, so this is deliberately
+# looser than LETTERBOXD_USERNAME_RE in users.py — VB usernames are seeded from
+# an email prefix and legitimately contain '.', '+', '-'. What it DOES block is
+# every URL-structural character ('/', '?', '#', '%', ':', '\', whitespace,
+# control chars), because each value is interpolated into
+# f"https://letterboxd.com/{username}/rss/" in rss_service.fetch_user_rss.
+# The host is fixed before the injection point so this was never SSRF, but
+# an unconstrained field aimed at a URL builder is a loaded gun.
+_GROUP_HANDLE = constr(min_length=1, max_length=80, pattern=r"^[A-Za-z0-9._+\-]+$")
+
+
 class GroupVibeRequest(BaseModel):
-    usernames: conlist(constr(min_length=1, max_length=80), min_length=2, max_length=8)
+    usernames: conlist(_GROUP_HANDLE, min_length=2, max_length=8)
+    # B-34: per-profile source override — {"username": "letterboxd"} forces the
+    # RSS path even when a VectorBox account with that name exists. Anything
+    # else (or absent) keeps the auto-detection (DB user preferred).
+    sources: Optional[Dict[str, str]] = None
+    # "tonight favours X": base scoring on this member's similarity instead of
+    # the group max (None = balanced).
+    focus: Optional[_GROUP_HANDLE] = None
+    # Session filters ("we only have 90 min and filmin+hbo"): runtime cap in
+    # minutes and/or provider names (case-insensitive match on TMDB names).
+    max_runtime: Optional[int] = None
+    providers: Optional[List[str]] = None
 
 async def _invalidate_feed_cache(user_id: int) -> None:
     """Delete all cached feed keys for this user after RSS sync or upload."""
@@ -42,24 +173,14 @@ async def _invalidate_feed_cache(user_id: int) -> None:
         r = aioredis.from_url(redis_url, decode_responses=True)
         try:
             from services.feed_service import FEED_CACHE_VERSION
+            from services.cache_service import scan_and_delete
             deleted_count = 0
-            # Sweep all key patterns that encode user-specific feed state
-            patterns = [
+            for pattern in (
                 f"section:{FEED_CACHE_VERSION}:{user_id}:*",
                 f"signal_cache:{user_id}:*",
-            ]
-            for pattern in patterns:
-                cursor = 0
-                while True:
-                    cursor, keys = await r.scan(cursor, match=pattern, count=100)
-                    if keys:
-                        await r.delete(*keys)
-                        deleted_count += len(keys)
-                    if cursor == 0:
-                        break
-            # Delete cluster rotation counter
+            ):
+                deleted_count += await scan_and_delete(r, pattern)
             await r.delete(f"cluster_rotation:{FEED_CACHE_VERSION}:{user_id}")
-
             if deleted_count:
                 logger.info(f"Invalidated {deleted_count} feed/signal cache keys and rotation for user_id={user_id}")
         finally:
@@ -67,8 +188,17 @@ async def _invalidate_feed_cache(user_id: int) -> None:
     except Exception as e:
         logger.error(f"Feed cache invalidation failed for user_id={user_id}: {e}")
 
-async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDBClient) -> None:
-    """Background task — owns its own session. Never re-raises."""
+async def _run_sync_background(
+    user_id: int, letterboxd_profile: str, tmdb: TMDBClient, reconcile: bool = False
+) -> None:
+    """Background task — owns its own session. Never re-raises.
+
+    `reconcile=False` (the sync-button path): fast INCREMENTAL watchlist scrape
+    that early-exits at the already-synced boundary and skips the removal
+    reconcile. `reconcile=True` (the ~daily background path): FULL scrape + F-31
+    removal reconcile. The endpoint runs the full path at most once/day per user
+    so a normal sync is always cheap.
+    """
     from config import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
         try:
@@ -80,62 +210,151 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
             watchlist_added = 0
 
             try:
-                watchlist_items = await scraper.scrape_watchlist_recent(letterboxd_profile)
+                # B-37 incremental watchlist sync: scrape newest-first PAGE BY PAGE
+                # and STOP at the first page whose films are ALL already in this
+                # user's watchlist (the "already-synced" boundary — the list is
+                # date-added-descending, so new films only ever appear at the top).
+                # One coincidental match is possible; a whole page is not. Cuts a
+                # typical re-sync from ~22 pages to 1-2 and only resolves NEW films.
+                known_rows = await db.execute(
+                    select(Movie.tmdb_id)
+                    .join(UserRating, UserRating.movie_id == Movie.id)
+                    .where(UserRating.user_id == user_id, UserRating.is_watchlist.is_(True))
+                )
+                known_tmdb_ids = {r[0] for r in known_rows.all()}
 
-                for item in watchlist_items:
-                    film_slug = item["film_slug"]
-                    film_year = item.get("year")
+                # Resolved tmdb→movie ids seen this run (for the F-31 removal reconcile).
+                resolved_movie_ids: set[int] = set()
+                full_scrape = True  # False if we early-exit → skip the removal reconcile
+                MAX_WATCHLIST_PAGES = 50
 
-                    page_tmdb_id = await scraper.get_tmdb_id(film_slug)
-                    tmdb_id = page_tmdb_id
-                    if tmdb_id:
-                        logger.info(f"Found authoritative TMDB ID {tmdb_id} for {film_slug}")
-                    else:
-                        logger.info(f"No ID found on page for {film_slug}. Fallback to search...")
-                        params = {"query": film_slug.replace("-", " ")}
-                        if film_year:
-                            params["year"] = film_year
-                        tmdb_results = await tmdb._make_request("/search/movie", params)
-                        if tmdb_results and tmdb_results.get("results"):
-                            top_match = tmdb_results["results"][0]
-                            tmdb_id = top_match["id"]
-                            logger.info(f"Found fuzzy match: {top_match['title']} (ID: {tmdb_id})")
-
-                    if not tmdb_id:
-                        continue
-
-                    movie = await movie_service.get_or_create_movie(
-                        tmdb_id=tmdb_id,
-                        letterboxd_uri=f"https://letterboxd.com/film/{film_slug}/"
+                for page in range(1, MAX_WATCHLIST_PAGES + 1):
+                    page_films, has_more = await scraper._scrape_listing_page(
+                        letterboxd_profile, "watchlist", page
                     )
+                    if not page_films:
+                        break  # natural end (empty/404) — full_scrape stays True
 
-                    if not movie:
-                        continue
+                    page_tmdb_ids: list[int] = []
+                    for item in page_films:
+                        film_slug = item["film_slug"]
+                        film_year = item.get("year")
+                        film_title = item.get("title")  # preserves accents/punct
 
-                    # Year check only for fuzzy matches — reuse page_tmdb_id from first call, no second HTTP request
-                    if not page_tmdb_id and film_year and movie.year and abs(movie.year - int(film_year)) > 1:
-                        logger.warning(f"Year mismatch for {film_slug}: {film_year} vs {movie.year}. Skipping.")
-                        continue
+                        tmdb_id = await scraper.get_tmdb_id(film_slug)  # slug cache (30d) → cheap on re-sync
+                        if tmdb_id:
+                            logger.info(
+                                f"[watchlist-resolve] PAGE slug={film_slug!r} tmdb_id={tmdb_id} title={film_title!r}"
+                            )
+                        else:
+                            # Fuzzy fallback — query with the richer scraped title when available.
+                            query = film_title or film_slug.replace("-", " ")
+                            params = {"query": query}
+                            if film_year:
+                                params["year"] = film_year
+                            logger.info(
+                                f"[watchlist-resolve] PAGE_MISS slug={film_slug!r} trying fuzzy "
+                                f"query={query!r} year={film_year}"
+                            )
+                            tmdb_results = await tmdb._make_request("/search/movie", params)
+                            candidate = None
+                            if tmdb_results and tmdb_results.get("results"):
+                                candidate = tmdb_results["results"][0]
+                            tmdb_id = (
+                                candidate["id"]
+                                if candidate and _accept_fuzzy_match(candidate, film_title, film_year, film_slug)
+                                else None
+                            )
+                            # Cache result (positive 30d / MISS 7d) so the next sync skips the search.
+                            await scraper.set_resolved_tmdb_id(film_slug, tmdb_id)
 
-                    rating_stmt = select(UserRating).where(
-                        UserRating.user_id == user_id,
-                        UserRating.movie_id == movie.id
-                    )
-                    existing = (await db.execute(rating_stmt)).scalars().first()
-                    if existing:
-                        if not existing.is_watchlist:
-                            existing.is_watchlist = True
+                        if not tmdb_id:
+                            continue
+                        page_tmdb_ids.append(tmdb_id)
+
+                        movie = await movie_service.get_or_create_movie(
+                            tmdb_id=tmdb_id,
+                            letterboxd_uri=f"https://letterboxd.com/film/{film_slug}/"
+                        )
+                        if not movie:
+                            continue
+                        resolved_movie_ids.add(movie.id)
+
+                        rating_stmt = select(UserRating).where(
+                            UserRating.user_id == user_id,
+                            UserRating.movie_id == movie.id
+                        )
+                        existing = (await db.execute(rating_stmt)).scalars().first()
+                        if existing:
+                            if not existing.is_watchlist:
+                                existing.is_watchlist = True
+                                watchlist_added += 1
+                        else:
+                            db.add(UserRating(user_id=user_id, movie_id=movie.id, is_watchlist=True))
                             watchlist_added += 1
-                    else:
-                        db.add(UserRating(user_id=user_id, movie_id=movie.id, is_watchlist=True))
-                        watchlist_added += 1
+
+                    # Early-exit (incremental path only): an entire page already in
+                    # the watchlist = boundary reached. The reconcile path never
+                    # early-exits (it needs the whole list to detect removals).
+                    if not reconcile and page_tmdb_ids and all(t in known_tmdb_ids for t in page_tmdb_ids):
+                        full_scrape = False
+                        logger.info(
+                            f"[watchlist-sync] user_id={user_id} incremental stop at page {page}: "
+                            f"all {len(page_tmdb_ids)} films already synced"
+                        )
+                        break
+                    if not has_more:
+                        break  # natural end of the list
+
+                # F-31 reconcile (removals) — ONLY on a FULL scrape. On an
+                # incremental (early-exit) sync we didn't see the whole list, so
+                # demoting here would wrongly clear everything past the boundary.
+                # (Removals are picked up on the next full scrape — which happens
+                # whenever no whole page is already-known.) Skip on 0-films too
+                # (transient scrape failure — don't wipe the watchlist).
+                watchlist_removed = 0
+                if full_scrape and resolved_movie_ids:
+                    from sqlalchemy import update as sql_update
+                    upd_result = await db.execute(
+                        sql_update(UserRating)
+                        .where(UserRating.user_id == user_id)
+                        .where(UserRating.is_watchlist.is_(True))
+                        .where(UserRating.movie_id.notin_(resolved_movie_ids))
+                        .values(is_watchlist=False)
+                    )
+                    watchlist_removed = upd_result.rowcount or 0
+                    if watchlist_removed:
+                        logger.info(
+                            f"[watchlist-reconcile] user_id={user_id} demoted {watchlist_removed} "
+                            f"rows whose film was no longer in the Letterboxd watchlist"
+                        )
+                elif not full_scrape:
+                    logger.info(
+                        f"[watchlist-reconcile] user_id={user_id} incremental sync (early-exit) — "
+                        f"skipping removal reconcile (removals caught on the next full scrape)"
+                    )
+                else:
+                    logger.warning(
+                        f"[watchlist-reconcile] user_id={user_id} resolved 0 films; "
+                        f"skipping reconcile to avoid wiping on a transient scrape failure"
+                    )
 
             finally:
                 await scraper.close()
-                # tmdb is the injected singleton — never close it
+                # Releases the lazily-created OMDb/Qdrant clients owned by this
+                # task's MovieService. tmdb is the injected singleton — never
+                # closed by MovieService.close() (it doesn't own it).
+                await movie_service.close()
 
             await db.commit()
-            
+
+            # F-37: keep onboarding_completed in sync after RSS ingest.
+            try:
+                from services.onboarding_service import maybe_complete_onboarding
+                await maybe_complete_onboarding(user_id, db)
+            except Exception as e:
+                logger.warning(f"[onboarding] post-RSS flag refresh failed for user_id={user_id}: {e}")
+
             # Imp 10: Invalidate feed cache after sync completes
             await _invalidate_feed_cache(user_id)
             
@@ -144,10 +363,42 @@ async def _run_sync_background(user_id: int, letterboxd_profile: str, tmdb: TMDB
             from config import REDIS_URL
             await invalidate_profile_summary(user_id, REDIS_URL)
             
-            logger.info(f"Background sync complete for user_id={user_id}. Watchlist added: {watchlist_added}")
+            logger.info(
+                f"Background sync complete for user_id={user_id}. "
+                f"Watchlist added: {watchlist_added}, demoted by reconcile: {watchlist_removed}"
+            )
 
         except Exception as e:
             logger.error(f"Background sync failed for user_id={user_id}: {e}")
+        finally:
+            # Clear the in-progress flag so the UI stops spinning.
+            try:
+                import redis.asyncio as aioredis
+                from config import REDIS_URL
+                rr = aioredis.from_url(REDIS_URL, decode_responses=True)
+                await rr.delete(f"rss:syncing:{user_id}")
+                await rr.close()
+            except Exception:
+                pass
+
+
+@router.get("/sync-status")
+async def rss_sync_status(current_user: TokenResponse = Depends(get_current_user)):
+    """Whether a background RSS sync is currently running for this user
+    (drives the sidebar sync spinner)."""
+    import redis.asyncio as aioredis
+    from config import REDIS_URL
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    try:
+        syncing = bool(await r.get(f"rss:syncing:{current_user.user_id}"))
+    except Exception:
+        syncing = False
+    finally:
+        try:
+            await r.close()
+        except Exception:
+            pass
+    return {"syncing": syncing}
 
 
 @router.post("/sync/{username}", response_model=SyncResponse)
@@ -177,7 +428,28 @@ async def sync_user_data(
     if user.letterboxd_username != username:
         raise HTTPException(status_code=403, detail="Cannot sync another user's Letterboxd account")
     letterboxd_profile = user.letterboxd_username
-    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb)
+
+    # Decouple removal-reconcile from the fast sync: claim a once-per-day slot
+    # with an atomic SET NX EX. The first sync of the day runs the FULL scrape +
+    # reconcile; every other sync is the cheap incremental path.
+    import redis.asyncio as aioredis
+    from config import REDIS_URL
+    reconcile = False
+    r = aioredis.from_url(REDIS_URL, decode_responses=True)
+    try:
+        reconcile = bool(await r.set(f"rss:reconcile:{user.id}", "1", nx=True, ex=86400))
+        # In-progress flag so the UI can spin until the sync actually finishes
+        # (600s safety TTL — cleared by _run_sync_background's finally).
+        await r.set(f"rss:syncing:{user.id}", "1", ex=600)
+    except Exception:
+        pass
+    finally:
+        try:
+            await r.close()
+        except Exception:
+            pass
+
+    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb, reconcile)
 
     return {
         "status": "started",
@@ -188,8 +460,11 @@ async def sync_user_data(
 @router.post("/group/vibe")
 @limiter.limit("10/minute")
 async def get_group_recommendations(
-    http_request: Request,  # required by slowapi
-    request: GroupVibeRequest,
+    # slowapi requires the starlette Request to be the param NAMED `request` —
+    # naming the pydantic body `request` made the limiter wrapper 500 on every
+    # call ("parameter `request` must be an instance of starlette.requests.Request").
+    request: Request,
+    payload: GroupVibeRequest,
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
@@ -197,15 +472,16 @@ async def get_group_recommendations(
 ):
     """
     Get recommendations based on the 'Group Vibe' (centroid of multiple users).
-    H-2: Requesting user must be one of the group members.
+
+    H-2 RELAXED (user decision 2026-07-04): any signed-in user can run a group —
+    Letterboxd profiles/watchlists are public anyway, and the old
+    requester-must-be-a-member check just 403'd anyone typing a Letterboxd
+    handle. Auth (Depends) + the 10/min rate limit stay.
     """
-    # H-2: Ownership check — user must be in the group
-    if current_user.username not in request.usernames:
-        raise HTTPException(status_code=403, detail="Access denied: you must be a member of the group")
     rss_service = RSSService(db, tmdb=tmdb, qdrant=qdrant)
-    
+
     # Get Hybrid Recommendations
-    scored_results = await rss_service.get_group_recommendations_hybrid(request.usernames)
+    scored_results = await rss_service.get_group_recommendations_hybrid(payload.usernames, sources=payload.sources, focus=payload.focus)
     
     if not scored_results:
         return []
@@ -233,12 +509,72 @@ async def get_group_recommendations(
             except Exception as e:
                 logger.error(f"Group vibe movie ingest failed for tmdb_id={tmdb_id}: {e}")
 
-    # Resolve providers for all movies in parallel
+    # Member summaries (DB members get real counts; the rest are RSS guests).
+    members = []
+    db_member_ids: Dict[str, int] = {}
+    for username in payload.usernames:
+        # B-34: forced-letterboxd members are treated as RSS guests everywhere
+        member = None
+        if (payload.sources or {}).get(username) != "letterboxd":
+            member = (
+                await db.execute(select(User).where(User.username == username))
+            ).scalar_one_or_none()
+        if member:
+            db_member_ids[username] = member.id
+            films = (
+                await db.execute(
+                    select(func.count()).select_from(UserRating).where(
+                        UserRating.user_id == member.id,
+                        UserRating.rating.isnot(None),
+                    )
+                )
+            ).scalar_one()
+            members.append({"username": username, "source": "vectorbox", "films": int(films)})
+        else:
+            members.append({"username": username, "source": "letterboxd", "films": None})
+
+    # Per-peer watchlist flags for the agreement matrix (DB members only —
+    # guest watchlists aren't reachable via RSS).
+    watchlisted_by: Dict[int, List[str]] = {}
+    if db_member_ids and movie_map:
+        movie_id_by_tmdb = {m.tmdb_id: m.id for m in movie_map.values()}
+        rows = (
+            await db.execute(
+                select(UserRating.user_id, UserRating.movie_id).where(
+                    UserRating.user_id.in_(list(db_member_ids.values())),
+                    UserRating.movie_id.in_(list(movie_id_by_tmdb.values())),
+                    UserRating.is_watchlist.is_(True),
+                )
+            )
+        ).all()
+        uid_to_name = {v: k for k, v in db_member_ids.items()}
+        tmdb_by_movie_id = {v: k for k, v in movie_id_by_tmdb.items()}
+        for uid, mid in rows:
+            tid = tmdb_by_movie_id.get(mid)
+            if tid is not None:
+                watchlisted_by.setdefault(tid, []).append(uid_to_name[uid])
+
+    # Resolve providers for all movies in parallel.
+    # B-24 fix: serialize movies to plain dicts — the raw SQLAlchemy ORM object
+    # in "movie" crashed FastAPI's jsonable_encoder (_sa_instance_state) → 500.
     import asyncio
+
+    wanted_providers = {p.strip().lower() for p in (payload.providers or []) if p.strip()}
 
     async def _build(res):
         movie = movie_map.get(res['tmdb_id'])
         if not movie:
+            return None
+        # No unreleased films in a "watch tonight together" list (user 2026-07-05).
+        # is_upcoming alone missed in-production films with NO dates at all
+        # (Merrily We Roll Along: year=None, runtime=0, is_upcoming=False) —
+        # require a past-or-present year AND a real runtime.
+        from datetime import date as _date
+        if movie.is_upcoming or not movie.year or movie.year > _date.today().year or not movie.runtime:
+            return None
+        # Session runtime cap — unknown runtimes are dropped too ("we have 90
+        # minutes" is a hard constraint, an unknown 3h film breaks the promise)
+        if payload.max_runtime and (movie.runtime is None or movie.runtime > payload.max_runtime):
             return None
         try:
             providers_data = await rss_service.tmdb.get_watch_providers(movie.tmdb_id, "ES")
@@ -246,17 +582,34 @@ async def get_group_recommendations(
             logger.warning(f"Provider fetch failed for tmdb_id={movie.tmdb_id}: {e}")
             providers_data = None
         flat_providers = [p['provider_name'] for p in (providers_data or {}).get('flatrate', [])]
+        if wanted_providers and not any(p.lower() in wanted_providers for p in flat_providers):
+            return None
         return {
-            "movie": movie,
+            "movie": {
+                "tmdb_id": movie.tmdb_id,
+                "title": movie.title,
+                "year": movie.year,
+                "runtime": movie.runtime,
+                "genres": movie.genres or [],
+                "overview": movie.overview,
+                "poster_path": movie.poster_path,
+                "vote_average": movie.vote_average,
+                "vectorbox_score": movie.vectorbox_score,
+                "title_es": movie.title_es,
+            },
             "similarity_score": res['score'],
-            "providers": flat_providers,
+            "streaming_providers": flat_providers,
+            "watchlisted_by": watchlisted_by.get(res['tmdb_id'], []),
             "contributors": [
-                {"seed_title": c["username"], "contribution": c["score"]}
+                {"username": c["username"], "score": c["score"]}
                 for c in res.get("contributors", [])
             ]
         }
 
-    tasks = [_build(res) for res in scored_results[:20]]
-    final_results = [r for r in await asyncio.gather(*tasks) if r is not None]
+    # With session filters active, run the whole 50-candidate pool through the
+    # filter so the list doesn't starve; otherwise the top 20 as before.
+    pool = scored_results[:50] if (payload.max_runtime or wanted_providers) else scored_results[:20]
+    tasks = [_build(res) for res in pool]
+    final_results = [r for r in await asyncio.gather(*tasks) if r is not None][:20]
 
-    return final_results
+    return {"members": members, "recommendations": final_results}

@@ -1,16 +1,95 @@
 import asyncio
 import logging
+import re
 from typing import Optional, Tuple, Dict, Any, List
 from datetime import datetime
 
 from models.database import Movie
 from services.tmdb_client import TMDBClient
-from services.omdb_client import OMDbClient
+from services.omdb_client import OMDbClient, parse_oscar_wins, split_omdb_csv
 from services.embedding_service import EmbeddingService
 from services.cinematic_enricher import generate_cinematic_description
 from qdrant_client.models import PointStruct
 
 logger = logging.getLogger(__name__)
+
+
+# Narrow title regex — each alternative must NOT match real film titles. Avoid
+# generic words like "Special" / "Tour" / "Concert" alone (too many FPs).
+# Calibrated against the catalog probe (scripts/probe_non_film_heuristic.py).
+_NON_FILM_TITLE_RE = re.compile(
+    r"(?i)\b(?:"
+    r"UFC\s\d+"
+    r"|WWE\s"
+    r"|AEW\s(?:Double|Revolution|Dynamite|All\sOut|Full\sGear|Forbidden|Collision)"
+    r"|ROH\s(?:Supercard|Final\sBattle|Death\sBefore\sDishonor)"
+    r"|ONE\s(?:Championship|Fight\sNight)"
+    r"|Bellator\s\d+"
+    r"|Glory\s\d+"
+    r"|PRIDE\s(?:FC|\d+)"
+    r"|WrestleMania\s\d"
+    r"|SummerSlam\s\d"
+    r"|Royal\sRumble\s\d"
+    r"|NXT\sTakeOver"
+    r"|IMPACT\sWrestling"
+    r"|TNA\s(?:Slammiversary|Bound\sfor\sGlory)"
+    r"|Looney\sTunes\sCollector"
+    r")\b"
+)
+
+
+def is_likely_non_film(
+    title: Optional[str],
+    year: Optional[int],
+    runtime: Optional[int],
+    genres: Optional[List[str]],
+    directors: Optional[List[str]],
+    overview: Optional[str],
+) -> bool:
+    """Heuristic flag for "not really a film": UFC/AEW/wrestling events,
+    multi-hour cartoon recopilations, fight nights, etc.
+
+    The rule is calibrated to be **conservative** (high precision, accepting
+    we miss some). False positives would silently hide real indie films, which
+    is worse than letting one UFC event slip through.
+
+    Two independent gates — flag if EITHER triggers:
+
+      (a) Strict title whitelist (`_NON_FILM_TITLE_RE`) — for events whose
+          names are unambiguous regardless of metadata.
+
+      (b) Structural heuristic: `directors == []` is required (real films
+          almost always have ≥1 director in TMDB; events practically never)
+          AND at least 2 other "non-film" signals — thin overview, anomalous
+          runtime, or only-Action/empty genres.
+
+    Future films are exempt from (b) — they're TMDB-poor by construction
+    (announced but no metadata yet); Phase 1 fills them in as release date
+    approaches. We don't want to flag "Narnia 2027" just because TMDB
+    hasn't catalogued it yet.
+    """
+    # Gate (a): explicit title patterns
+    if title and _NON_FILM_TITLE_RE.search(title):
+        return True
+
+    # Future films: TMDB-poor by construction, skip heuristic
+    current_year = datetime.utcnow().year
+    if year is not None and year > current_year:
+        return False
+
+    # Gate (b): structural heuristic — director absent is the anchor signal
+    if directors and len(directors) > 0:
+        return False  # real films have directors, events don't
+
+    other_signals = 0
+    if not overview or len(overview.strip()) < 50:
+        other_signals += 1
+    if runtime is None or runtime == 0 or runtime > 240:
+        other_signals += 1
+    if not genres or genres == ["Action"]:
+        other_signals += 1
+
+    return other_signals >= 2
 
 class MovieFactory:
     """
@@ -24,7 +103,7 @@ class MovieFactory:
         self.embedding_service = embedding_service
         self.groq_client = groq_client
 
-    async def build_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None) -> Tuple[Optional[Movie], Optional[PointStruct]]:
+    async def build_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None) -> Tuple[Optional[Movie], Optional[PointStruct], Optional[Dict]]:
         """
         Orchestrates the full pipeline:
         1. Fetch TMDB Details
@@ -33,18 +112,22 @@ class MovieFactory:
         4. Construct SQL Model
         5. Generate Embedding
         6. Construct Qdrant Point
-        
-        Returns: (Movie, PointStruct) or (None, None) if failed.
+
+        Returns: (Movie, PointStruct, providers_data) or (None, None, None) if failed.
         """
         try:
             # 1. Fetch TMDB Details
             details = await self.tmdb.get_movie_details(tmdb_id)
             if not details:
                 logger.warning(f"TMDB ID {tmdb_id} not found.")
-                return None, None
+                return None, None, None
 
             # 2. Fetch OMDb Data (VectorBox Score)
-            imdb_id = details.get("imdb_id")
+            # Normalize empty string → None. TMDB returns imdb_id="" for shorts
+            # and unreleased films; without this, the UNIQUE constraint on
+            # Movie.imdb_id treats multiple "" as duplicates and the second
+            # insert blows up. NULLs are fine — Postgres treats them as distinct.
+            imdb_id = (details.get("imdb_id") or "").strip() or None
             omdb_data = None
             if imdb_id:
                 omdb_data = await self.omdb.fetch_movie_data(imdb_id)
@@ -76,23 +159,68 @@ class MovieFactory:
             # 3. Process Release Dates
             release_dates_map = self._process_release_dates(details)
 
+            # OMDb extended metadata (Rated/Awards/Country/Language) — silently
+            # skipped before; kept symmetrical with refresh_metadata.refresh_movie
+            # so a re-ingest of an existing tmdb_id never *drops* a field that the
+            # refresh script would persist.
+            mpaa_rating = None
+            awards_text = None
+            oscar_wins = 0
+            omdb_countries = None
+            omdb_languages = None
+            if omdb_data:
+                if omdb_data.Rated and omdb_data.Rated != "N/A":
+                    mpaa_rating = omdb_data.Rated
+                if omdb_data.Awards and omdb_data.Awards != "N/A":
+                    awards_text = omdb_data.Awards
+                    oscar_wins = parse_oscar_wins(omdb_data.Awards)
+                omdb_countries = split_omdb_csv(omdb_data.Country)
+                omdb_languages = split_omdb_csv(omdb_data.Language)
+
+            collection = details.get("belongs_to_collection") or {}
+
+            # Pre-compute the non-film flag from the materialised metadata
+            # (matches the columns we're about to write to the SQL row).
+            # DATA-6: TMDB can return a non-empty but malformed release_date; the
+            # old `int(rd[:4])` would raise on e.g. "" after slicing or non-digits.
+            _rd = (details.get("release_date") or "")[:4]
+            _year = int(_rd) if _rd.isdigit() else None
+            _genres = [g["name"] for g in details.get("genres", [])]
+            _directors = details.get("directors", [])
+            _excluded = is_likely_non_film(
+                title=details.get("title"),
+                year=_year,
+                runtime=details.get("runtime"),
+                genres=_genres,
+                directors=_directors,
+                overview=details.get("overview"),
+            )
+            if _excluded:
+                logger.info(
+                    f"[ingest] tmdb_id={tmdb_id} flagged is_excluded=True ('{details.get('title')}') "
+                    f"— will be hidden from recommendations, visible in user-chosen surfaces"
+                )
+
             # 4. Construct Movie Object (SQL)
             movie = Movie(
                 tmdb_id=tmdb_id,
                 title=details.get("title"),
                 original_title=details.get("original_title"),
-                year=int(details.get("release_date", "0000")[:4]) if details.get("release_date") else None,
+                year=_year,
                 runtime=details.get("runtime"),
-                genres=[g["name"] for g in details.get("genres", [])],
+                genres=_genres,
                 overview=details.get("overview"),
                 poster_path=details.get("poster_path"),
                 backdrop_path=details.get("backdrop_path"),
+                tagline=details.get("tagline") or None,
+                is_adult=bool(details.get("adult", False)),
+                is_excluded=_excluded,
                 vote_average=details.get("vote_average"),
                 vote_count=details.get("vote_count"),
                 popularity=details.get("popularity"),
                 original_language=details.get("original_language"),
                 letterboxd_uri=letterboxd_uri or f"https://letterboxd.com/tmdb/{tmdb_id}",
-                
+
                 # Extended Fields
                 imdb_id=imdb_id,
                 imdb_vote_count=imdb_vote_count,
@@ -101,11 +229,19 @@ class MovieFactory:
                 vectorbox_score=vectorbox_score,
                 title_es=details.get("title_es"),
                 overview_es=details.get("overview_es"),
-                collection_id=details.get("belongs_to_collection", {}).get("id") if details.get("belongs_to_collection") else None,
+                collection_id=collection.get("id"),
+                collection_name=collection.get("name"),
                 keywords=details.get("keywords_flat", []),
                 directors=details.get("directors", []),
                 cast=details.get("cast", []),
-                release_dates=release_dates_map
+                release_dates=release_dates_map,
+
+                # OMDb extended (migration o3p4q5r6s7t8)
+                mpaa_rating=mpaa_rating,
+                awards_text=awards_text,
+                oscar_wins=oscar_wins,
+                omdb_countries=omdb_countries,
+                omdb_languages=omdb_languages,
             )
 
             # 5. Generate Embedding
@@ -128,6 +264,8 @@ class MovieFactory:
                     # Only mark as enriched if an LLM model actually produced it
                     if model_used is not None:
                         movie.has_enriched_embedding = True
+                        movie.enriched_by_model = model_used
+                        movie.cinematic_description = text_override
                 except Exception as e:
                     logger.warning(f"Cinematic enrichment failed for {movie.title}: {e}")
                     text_override = None
@@ -161,7 +299,9 @@ class MovieFactory:
                     "overview_es": movie.overview_es,
                     "keywords": movie.keywords,
                     "directors": movie.directors,
-                    "cast": movie.cast
+                    "cast": movie.cast,
+                    # True only when the LLM produced the description above
+                    "has_enriched_embedding": bool(movie.has_enriched_embedding)
                 }
             )
 

@@ -108,6 +108,18 @@ class RecommendationRequest(BaseModel):
         return v
 
 
+class FilteredSearchRequest(BaseModel):
+    """Rail EXECUTE_QUERY: filter-first, taste-ranked. Hard constraints define the
+    pool (whole catalogue), the user's taste centroid ranks within it."""
+    year_min: Optional[conint(ge=1800, le=2100)] = None
+    year_max: Optional[conint(ge=1800, le=2100)] = None
+    max_runtime: Optional[conint(ge=1, le=1000)] = None
+    min_score: Optional[confloat(ge=0, le=100)] = None  # VBS quality floor Q 0-100
+    genres: Optional[List[constr(max_length=50)]] = None
+    providers: Optional[List[int]] = None  # TMDB provider IDs to require (match is robust vs names)
+    country_code: constr(min_length=2, max_length=2) = "ES"
+
+
 class RecommendationResponse(BaseModel):
     """Movie recommendation with similarity score"""
     movie: MovieMetadata
@@ -115,13 +127,6 @@ class RecommendationResponse(BaseModel):
     streaming_available: bool
     streaming_providers: List[str] = []
     contributors: List[Dict] = [] # For "Why Recommended"
-
-
-class UserCreate(BaseModel):
-    """Create new user"""
-    username: constr(min_length=3, max_length=20, pattern=r'^[a-zA-Z0-9_-]+$', strip_whitespace=True)
-    email: Optional[constr(max_length=255, strip_whitespace=True)] = None
-    country_code: constr(min_length=2, max_length=2, strip_whitespace=True) = "ES"
 
 
 class UserResponse(BaseModel):
@@ -154,34 +159,6 @@ class TaskStatusResponse(BaseModel):
     step: Optional[str] = None  # Current step description
 
 
-class StreamingProviderCreate(BaseModel):
-    """Add streaming provider to user profile"""
-    provider_id: int
-    provider_name: constr(max_length=100)
-    country_code: constr(min_length=2, max_length=2)
-
-
-class CompatibilityRequest(BaseModel):
-    """Request for user compatibility calculation"""
-    user_id_1: int
-    user_id_2: int
-
-
-class CompatibilityResponse(BaseModel):
-    """User compatibility score"""
-    user_1: str
-    user_2: str
-    similarity_score: confloat(ge=0, le=1)
-    shared_movies: int
-    shared_genres: List[str]
-
-
-class GroupWatchlistRequest(BaseModel):
-    """Request for group watchlist intersection"""
-    user_ids: List[int] = Field(..., min_items=2, max_items=10)  # Security: Limit group size
-    min_avg_rating: Optional[confloat(ge=0, le=5)] = None
-
-
 class GroupRecommendationRequest(BaseModel):
     """Request for group recommendations"""
     user_ids: List[int] = Field(..., min_items=2, max_items=10)
@@ -197,12 +174,6 @@ class GroupRecommendationRequest(BaseModel):
     def validate_country_code(cls, v):
         """Ensure country code is uppercase"""
         return v.upper() if v else "ES"
-
-
-class ErrorResponse(BaseModel):
-    """Standard error response"""
-    detail: str
-    error_code: Optional[str] = None
 
 
 class FeedItem(BaseModel):
@@ -227,6 +198,7 @@ class FeedItem(BaseModel):
     title_es: Optional[str] = None
     overview_es: Optional[str] = None
     letterboxd_rating: Optional[float] = None
+    backdrop_url: Optional[str] = None  # wide art for the feed hero
 
 
 class FeedSection(BaseModel):

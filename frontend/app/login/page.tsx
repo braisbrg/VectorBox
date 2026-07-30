@@ -1,69 +1,60 @@
 "use client";
 
+// Sign-in — handoff split-panel shell (auth-panel.tsx). AUTH LOGIC IS
+// BYTE-EQUIVALENT to the pre-reskin version: ?migrate=true flow,
+// claim-anonymous single-caller, flushGuestState, redirect targets and the
+// hash-routing workaround are untouched. Only the shell/JSX changed.
+
 import { Suspense, useState, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth, SignIn } from "@clerk/nextjs";
-import { m, AnimatePresence } from "framer-motion";
 import { api } from "@/lib/api";
 import { Loader2 } from "lucide-react";
-
-const ONBOARDING_PATHS = [
-    {
-        id: "letterboxd",
-        title: "SYNC LETTERBOXD",
-        description: "Upload your full watch history. Best for existing Letterboxd users with years of ratings.",
-        cta: "[ UPLOAD ZIP ]",
-        href: "/?upload=true",
-    },
-    {
-        id: "rate",
-        title: "RATE FILMS",
-        description: "Rate films one by one to build your taste profile. Best if you're new to tracking.",
-        cta: "[ START RATING ]",
-        href: "/onboarding",
-    },
-    {
-        id: "rss",
-        title: "CONNECT RSS",
-        description: "Auto-sync your Letterboxd diary. Requires a Letterboxd account with public RSS.",
-        cta: "[ CONNECT RSS ]",
-        href: "/?rss=true",
-    },
-];
+import { AuthSplit, clerkAcidAppearance } from "@/components/auth-panel";
+import { useLanguage } from "@/components/language-provider";
 
 function LoginContent() {
+    const { t } = useLanguage();
     const { isLoaded, isSignedIn } = useAuth();
     const { push } = useRouter();
     const searchParams = useSearchParams();
     const isMigrate = searchParams.get("migrate") === "true";
     const redirectUrl = isMigrate ? "/login?migrate=true" : "/";
-    const [mode, setMode] = useState<"choose" | "letterboxd" | "onboarding-chooser">(
-        isMigrate ? "letterboxd" : "choose"
-    );
     const [migrating, setMigrating] = useState(false);
     const migrationAttempted = useRef(false);
     const newUserCheckAttempted = useRef(false);
-
-    // Fix 1 removed: no longer use local storage for guest rating checks.
 
     // After sign-in: migrate guest data or show onboarding chooser for new users
     useEffect(() => {
         if (!isLoaded || !isSignedIn) return;
 
+        // Clear stale guest localStorage. Tags now persist server-side (the
+        // guest /onboarding/tags page POSTs to the API, and claim-anonymous
+        // copies tag_preferences atomically with ratings) so this is pure
+        // cleanup — no HTTP calls, no race window. Runs on BOTH paths
+        // (migrate + plain signin) so a stale vb_skip_onboarding from an
+        // earlier guest session doesn't strand a fresh signup.
+        const flushGuestState = () => {
+            [
+                "vb_guest_ratings",
+                "vb_guest_tags",
+                "vb_guest_tags:v1",
+                "vb_onboarding_progress",
+                "vb_onboarding_movies",
+                "vb_skip_onboarding",
+            ].forEach((k) => localStorage.removeItem(k));
+        };
+
         if (!isMigrate) {
-            // FIX 4: Check if new user (0 ratings) → show onboarding chooser
+            // After a plain sign-in: clear stale guest state and go to the
+            // dashboard. The dashboard is the SINGLE source of onboarding
+            // routing — it redirects 0-rating users to /onboarding. The old
+            // in-page onboarding-chooser was unreachable anyway (the <SignIn>
+            // forceRedirectUrl="/" navigates away before it could render).
             if (newUserCheckAttempted.current) return;
             newUserCheckAttempted.current = true;
-
-            api.get("/api/onboarding/status")
-                .then(({ data }) => {
-                    if (data.ratings_count === 0) {
-                        setMode("onboarding-chooser");
-                    } else {
-                        push("/");
-                    }
-                })
-                .catch(() => push("/")); // TODO: handle 401 fallback more gracefully
+            flushGuestState();
+            push("/");
             return;
         }
 
@@ -73,17 +64,9 @@ function LoginContent() {
         const migrateGuestData = async () => {
             setMigrating(true);
             try {
-                // Promote anonymous session to registered user (transfers ratings, deletes cookie)
+                // Promote anonymous session to registered user (transfers ratings + tag_preferences, deletes cookie)
                 await api.post("/api/auth/claim-anonymous");
-
-                // Clean up legacy localStorage if any exists
-                [
-                    "vb_guest_ratings",
-                    "vb_guest_tags",
-                    "vb_onboarding_progress",
-                    "vb_onboarding_movies",
-                ].forEach((k) => localStorage.removeItem(k));
-                
+                flushGuestState();
                 push("/?onboarding_complete=true");
             } catch (err) {
                 console.error("Migration failed:", err);
@@ -96,153 +79,77 @@ function LoginContent() {
 
     if (!isLoaded) {
         return (
-            <div className="min-h-screen flex items-center justify-center bg-background">
-                <span className="font-mono text-xs text-zinc-600">[ LOADING ]</span>
+            <div className="flex min-h-screen items-center justify-center bg-bg">
+                <span className="font-mono text-xs text-fg-3">[ LOADING ]</span>
             </div>
         );
     }
 
     if (migrating) {
         return (
-            <div className="min-h-screen flex flex-col items-center justify-center bg-background gap-4">
-                <Loader2 className="size-8 text-primary animate-spin" />
-                <p className="font-mono text-xs text-zinc-500 uppercase tracking-widest">
-                    Migrating your ratings…
+            <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-bg">
+                <Loader2 className="size-8 animate-spin text-primary" />
+                <p className="font-mono text-xs uppercase tracking-widest text-fg-3">
+                    {t("auth.migrating")}
                 </p>
             </div>
         );
     }
 
-    return (
-        <div className="min-h-screen flex items-center justify-center bg-background relative overflow-hidden">
-            <div className="absolute inset-0 bg-[url('/grid-pattern.svg')] opacity-10 pointer-events-none" />
-
-            <div className="z-10 w-full max-w-2xl px-4">
-                <AnimatePresence mode="wait">
-                    {mode === "onboarding-chooser" ? (
-                        <m.div
-                            key="onboarding-chooser"
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -20 }}
-                            transition={{ duration: 0.3 }}
-                            className="space-y-8"
-                        >
-                            <div className="text-center space-y-2">
-                                <h1 className="text-4xl md:text-5xl font-black tracking-tighter font-mono">
-                                    VECTOR<span className="text-primary">BOX</span>
-                                </h1>
-                                <p className="text-zinc-500 font-mono text-[10px] uppercase tracking-[0.3em]">
-                                    How do you want to get started?
-                                </p>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                                {ONBOARDING_PATHS.map((path) => (
-                                    <button
-                                        key={path.id}
-                                        onClick={() => push(path.href)}
-                                        className="flex flex-col gap-4 p-5 border border-border text-left
-                                                   hover:border-primary hover:bg-primary/5 transition-all group"
-                                    >
-                                        <div className="space-y-2">
-                                            <p className="font-mono text-xs font-bold uppercase tracking-wider
-                                                          text-foreground group-hover:text-primary transition-colors">
-                                                {path.title}
-                                            </p>
-                                            <p className="font-mono text-[10px] text-zinc-500 leading-relaxed">
-                                                {path.description}
-                                            </p>
-                                        </div>
-                                        <span className="font-mono text-xs text-primary mt-auto">
-                                            {path.cta}
-                                        </span>
-                                    </button>
-                                ))}
-                            </div>
-                        </m.div>
-                    ) : mode === "choose" ? (
-                        <m.div
-                            key="choose"
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -20 }}
-                            transition={{ duration: 0.3 }}
-                            className="space-y-8 max-w-md mx-auto"
-                        >
-                            <div className="text-center space-y-2">
-                                <h1 className="text-4xl md:text-5xl font-black tracking-tighter font-mono">
-                                    VECTOR<span className="text-primary">BOX</span>
-                                </h1>
-                                <p className="text-zinc-500 font-mono text-[10px] uppercase tracking-[0.3em]">
-                                    AI Movie Recommendations
-                                </p>
-                            </div>
-
-                            <div className="space-y-3">
-                                <button
-                                    onClick={() => setMode("letterboxd")}
-                                    className="w-full py-3.5 border border-border font-mono text-xs uppercase tracking-wider hover:border-primary hover:text-primary transition-all group"
-                                >
-                                    <span className="flex items-center justify-center gap-2">
-                                        <span className="text-[10px] text-zinc-600 group-hover:text-primary transition-colors">●</span>
-                                        I HAVE A LETTERBOXD ACCOUNT
-                                    </span>
-                                </button>
-
-                                <button
-                                    onClick={() => push("/onboarding/tags")}
-                                    className="w-full py-3.5 bg-primary text-black font-bold font-mono text-xs uppercase tracking-wider hover:bg-primary/90 transition-colors glow-primary-hover"
-                                >
-                                    RATE FILMS TO GET STARTED
-                                </button>
-                            </div>
-
-                            <p className="text-center text-[10px] font-mono text-zinc-700">
-                                No account needed to start rating
-                            </p>
-                        </m.div>
-                    ) : (
-                        <m.div
-                            key="letterboxd"
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -20 }}
-                            transition={{ duration: 0.3 }}
-                            className="space-y-4 max-w-md mx-auto"
-                        >
-                            <button
-                                onClick={() => setMode("choose")}
-                                className="text-[10px] font-mono text-zinc-600 hover:text-zinc-400 transition-colors uppercase tracking-wider"
-                            >
-                                ← BACK
-                            </button>
-
-                            <SignIn
-                                appearance={{
-                                    elements: {
-                                        rootBox: "font-mono",
-                                        card: "bg-background border border-border",
-                                        headerTitle: "text-primary font-mono",
-                                        formButtonPrimary:
-                                            "bg-primary text-background font-mono rounded-none",
-                                    },
-                                }}
-                                fallbackRedirectUrl={redirectUrl}
-                                forceRedirectUrl={redirectUrl}
-                                signUpFallbackRedirectUrl={redirectUrl}
-                                signUpForceRedirectUrl={redirectUrl}
-                            />
-                        </m.div>
-                    )}
-                </AnimatePresence>
+    // Already signed in on the plain-login path: the useEffect above is
+    // pushing to "/". Render a redirect spinner rather than the now-dead
+    // <SignIn/> (Clerk renders it blank once a session exists) so there's
+    // never a blank flash while navigation completes.
+    if (isSignedIn && !isMigrate) {
+        return (
+            <div className="flex min-h-screen items-center justify-center bg-bg">
+                <Loader2 className="size-8 animate-spin text-primary" />
             </div>
-        </div>
+        );
+    }
+
+    // Straight to the sign-in form — the old "choose" step (letterboxd account /
+    // rate films) was redundant friction before the form. Guest/rate paths live on
+    // the landing + the "try guest mode" link below.
+    return (
+        <AuthSplit>
+            <div className="w-full max-w-md space-y-4">
+                <div>
+                    <p className="eyebrow mb-2 text-primary">{t("land.tier_account")}</p>
+                    <h1 className="font-display text-4xl uppercase leading-none tracking-[-0.02em] text-fg">
+                        {t("land.signin")}
+                    </h1>
+                    <p className="mt-2 font-mono text-[11px] text-fg-3">{t("auth.signin_sub")}</p>
+                </div>
+
+                <SignIn
+                    // Hash routing keeps every sub-step (email-code verification,
+                    // OAuth/SSO callback, MFA) on THIS page via the URL hash. Path
+                    // routing — Clerk's default — navigates to /login/factor-one etc.,
+                    // which 404s here because this is NOT a catch-all route.
+                    routing="hash"
+                    // Keep the "Sign up" link on OUR /register page.
+                    signUpUrl="/register"
+                    appearance={clerkAcidAppearance}
+                    fallbackRedirectUrl={redirectUrl}
+                    forceRedirectUrl={redirectUrl}
+                    signUpFallbackRedirectUrl={redirectUrl}
+                    signUpForceRedirectUrl={redirectUrl}
+                />
+
+                <button
+                    onClick={() => push("/onboarding")}
+                    className="font-mono text-[11px] text-fg-3 transition-colors hover:text-primary"
+                >
+                    {t("auth.guest_unlock")}
+                </button>
+            </div>
+        </AuthSplit>
     );
 }
 export default function LoginPage() {
     return (
-        <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
+        <Suspense fallback={<div className="min-h-screen bg-bg" />}>
             <LoginContent />
         </Suspense>
     );

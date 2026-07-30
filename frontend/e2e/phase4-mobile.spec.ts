@@ -17,24 +17,28 @@ test.describe('Phase 4 - Mobile UX', () => {
     expect(bodyWidth).toBeLessThanOrEqual(viewportWidth + 5); // 5px tolerance
   });
 
-  test('Navigation hamburger visible on mobile', async ({ page }) => {
-    const hamburger = page.locator('button[aria-label="aria.open_menu"], button[aria-label="Open menu"]').first();
-    await expect(hamburger).toBeVisible({ timeout: 5_000 });
+  test('Bottom tab bar visible on mobile (no hamburger — handoff)', async ({ page }) => {
+    // 5-slot tab bar: feed · similars · magic(center) · groups · you
+    const tabBar = page.locator('nav.fixed.bottom-0').first();
+    await expect(tabBar).toBeVisible({ timeout: 5_000 });
+    await expect(tabBar.getByText(/feed/i).first()).toBeVisible();
+    await expect(tabBar.getByText(/magic/i).first()).toBeVisible();
+    // Hamburger is gone
+    await expect(page.locator('svg.lucide-menu')).toHaveCount(0);
   });
 
   test('MagicSearch input fills full width on mobile', async ({ page, isMobile }) => {
     // Navigate to Magic Box view
     try {
       if (isMobile) {
-         const hamburger = page.getByRole('button').filter({ has: page.locator('svg.lucide-menu') }).first();
-         await hamburger.click({ force: true });
-         const navBtn = page.getByRole('dialog').getByText(/magic box/i).first();
-         await navBtn.click({ force: true, timeout: 5000 });
+         // Center magic tab in the bottom bar opens the full-screen overlay
+         const magicTab = page.locator('nav.fixed.bottom-0').getByText(/magic/i).first();
+         await magicTab.click({ force: true, timeout: 5000 });
       } else {
          await page.getByText(/magic box/i).first().click({ timeout: 5000 });
       }
     } catch (e) {
-      test.skip(true, 'SKIP: Sidebar navigation "Magic Box" not found or slow');
+      test.skip(true, 'SKIP: Magic box entry point not found or slow');
       return;
     }
     

@@ -2,28 +2,82 @@ import httpx
 import os
 import logging
 import orjson
-from typing import Optional, Dict, Any, Union
+import re
+from datetime import timedelta
+from typing import Optional, Dict, Any, Union, List
+import redis.asyncio as redis
 from models.external_schemas import OMDbResponse, VectorBoxScore, VectorBoxBreakdown
 
 logger = logging.getLogger(__name__)
 
+
+_OSCAR_WINS_RE = re.compile(r"won\s+(\d+)\s+oscar", re.IGNORECASE)
+
+
+def parse_oscar_wins(awards: Optional[str]) -> int:
+    """Extract Oscar win count from an OMDb `Awards` string.
+
+    OMDb format is free text, e.g.:
+      "Won 11 Oscars. 33 wins & 41 nominations total"
+      "Nominated for 3 BAFTA Film Awards. 5 wins & 12 nominations total"
+      "1 win & 5 nominations total"
+
+    Returns 0 if no Oscar-win pattern matches (covers nominees and non-Oscar awards).
+    """
+    if not awards:
+        return 0
+    m = _OSCAR_WINS_RE.search(awards)
+    return int(m.group(1)) if m else 0
+
+
+def split_omdb_csv(value: Optional[str]) -> Optional[List[str]]:
+    """Split an OMDb comma-separated field (e.g. Country, Language) into a
+    list, skipping the literal 'N/A' and empties. Returns None when there is
+    nothing to store, so callers can use the value to decide whether to write."""
+    if not value or value == "N/A":
+        return None
+    parts = [p.strip() for p in value.split(",") if p.strip()]
+    return parts or None
+
 class OMDbClient:
+    MISS_CACHE_TTL = timedelta(days=30)
+
     def __init__(self, api_key: Optional[str] = None, client: httpx.AsyncClient = None):
         self.api_key = api_key or os.getenv("OMDB_API_KEY")
         self.base_url = "http://www.omdbapi.com/"
         self._external_client = client
         self.client = client if client else httpx.AsyncClient(timeout=10.0)
-        
+        self.redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        self.redis_client: Optional[redis.Redis] = None
+
         # [RESILIENCE] Circuit Breaker
-        self.cb_state = "CLOSED" 
+        self.cb_state = "CLOSED"
         self.cb_failure_count = 0
         self.cb_threshold = 3
         self.cb_reset_timeout = 60
         self.cb_last_failure_time = 0
 
+    async def _get_redis(self) -> redis.Redis:
+        if not self.redis_client:
+            self.redis_client = redis.from_url(
+                self.redis_url, encoding="utf-8", decode_responses=True
+            )
+        return self.redis_client
+
     async def close(self):
+        if self.redis_client:
+            await self.redis_client.close()
+            self.redis_client = None
         if not self._external_client:
             await self.client.aclose()
+
+    async def aclose(self):
+        """Canonical full-cleanup alias — matches TMDB/Qdrant/Trakt.
+
+        dependencies.close_services() calls aclose() on every singleton; without
+        this, OMDb raised AttributeError on shutdown and leaked its connections.
+        """
+        await self.close()
 
     async def fetch_movie_data(self, imdb_id: str) -> Optional[OMDbResponse]:
         """
@@ -31,6 +85,12 @@ class OMDbClient:
         Returns Pydantic model OMDbResponse or None.
         """
         if not self.api_key or not imdb_id:
+            return None
+
+        # Negative cache: skip known-missing IDs (refreshed every 30d).
+        r = await self._get_redis()
+        miss_key = f"omdb:miss:{imdb_id}"
+        if await r.get(miss_key):
             return None
 
         # [RESILIENCE] Circuit Breaker Check
@@ -67,7 +127,10 @@ class OMDbClient:
                     # Validate with Pydantic
                     return OMDbResponse(**data)
                 else:
-                    logger.warning(f"OMDb Error for {imdb_id}: {data.get('Error')}")
+                    # Expected coverage gap (new/obscure film). Cache the miss
+                    # for 30 days so we stop re-asking OMDb and stop spamming logs.
+                    await r.setex(miss_key, self.MISS_CACHE_TTL, "1")
+                    logger.info(f"OMDb miss for {imdb_id}: {data.get('Error')} (cached 30d)")
             else:
                 logger.error(f"OMDb HTTP Error {response.status_code} for {imdb_id}")
                 if response.status_code >= 500:

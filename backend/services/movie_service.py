@@ -5,6 +5,7 @@ from sqlalchemy import select
 from typing import Optional
 
 from models.database import Movie
+from models.external_schemas import qdrant_payload
 from services.tmdb_client import TMDBClient
 from services.omdb_client import OMDbClient
 from services.qdrant_service import QdrantService
@@ -93,11 +94,31 @@ class MovieService:
             
             # A. Build Movie & Point using Factory
             movie, point, providers_raw = await self.factory.build_movie(tmdb_id, letterboxd_uri)
-            
+
             if not movie:
                 return None
 
-            # B. Save to SQL
+            # A2. Refuse TMDB `adult` titles on every user-triggered ingest path
+            # (rate, similar, group-vibe, rss, ZIP). Seed scripts call
+            # MovieFactory.build_movie directly and are deliberately unaffected.
+            # Without this, one authenticated user can inject arbitrary porn
+            # into the catalogue every other user's feed reads from.
+            if movie.is_adult:
+                logger.warning(f"Rejected adult TMDB title at ingest: tmdb_id={tmdb_id}")
+                return None
+
+            # B. Upsert to Qdrant FIRST (REL-2). The point is keyed by tmdb_id
+            # (movie_factory), so it needs nothing from the not-yet-committed PG
+            # row. Doing the vector write before the DB commit means a Qdrant
+            # failure aborts the whole ingest — we never persist a PG movie that
+            # is invisible to vector search (BYW / Magic Box). The only residual
+            # is a harmless orphan *vector* if the commit below then fails: a
+            # point with no PG row is simply never returned to users, and a
+            # later re-ingest of the same tmdb_id overwrites it in place.
+            if not skip_qdrant and point:
+                await self.qdrant.upsert_batch([point])
+
+            # C. Save to SQL
             self.db.add(movie)
             try:
                 await self.db.commit()
@@ -107,10 +128,6 @@ class MovieService:
                 logger.error(f"DB commit failed ingesting new movie: {e}")
                 raise
             logger.info(f"Created movie: {movie.title} (VB Score: {movie.vectorbox_score})")
-
-            # C. Upsert to Qdrant (if not skipped)
-            if not skip_qdrant and point:
-                await self.qdrant.upsert_batch([point])
 
             # D. Save Providers (if available)
             if providers_raw:
@@ -125,7 +142,11 @@ class MovieService:
             return movie
 
         except Exception as e:
+            # OBS-2: this used to swallow `e` silently (return None), hiding the
+            # cause of every failed ingest — including, now, a Qdrant upsert that
+            # aborts the ingest under the REL-2 ordering. Log before bailing.
             await self.db.rollback()
+            logger.error(f"Failed to ingest movie tmdb_id={tmdb_id}: {e}", exc_info=True)
             return None
 
     async def ensure_vector_exists(self, movie: Movie) -> bool:
@@ -138,8 +159,13 @@ class MovieService:
                 return True
                 
             logger.warning(f"Vector missing for {movie.title} ({movie.tmdb_id}). Regenerating...")
-            
+
             keywords = await self.tmdb.get_movie_keywords(movie.tmdb_id)
+            # AGENTS.md: when re-encoding is unavoidable, prefer the Groq
+            # cinematic_description (the catalogue encoding) over the
+            # overview+genres+keywords fallback — otherwise the regenerated
+            # vector lives in a different text space than its neighbours.
+            text_override = movie.cinematic_description or None
             loop = asyncio.get_running_loop()
             vector = await loop.run_in_executor(
                 None,
@@ -148,26 +174,13 @@ class MovieService:
                     "overview": movie.overview,
                     "genres": movie.genres,
                     "keywords": keywords
-                })
+                }, text_override=text_override)
             )
 
             await self.qdrant.upsert_movie_vector(
                 movie_id=movie.tmdb_id,
                 vector=vector.tolist(),
-                metadata={
-                    "title": movie.title,
-                    "year": movie.year,
-                    "genres": movie.genres,
-                    "rating": movie.vote_average,
-                    "vote_count": movie.vote_count,
-                    "runtime": movie.runtime,
-                    "poster_path": movie.poster_path,
-                    "vectorbox_score": movie.vectorbox_score,
-                    "imdb_rating": movie.imdb_rating,
-                    "metacritic_rating": movie.metacritic_rating,
-                    "title_es": movie.title_es,
-                    "overview_es": movie.overview_es
-                }
+                metadata=qdrant_payload(movie)
             )
             return True
         except Exception as e:
@@ -193,8 +206,9 @@ class MovieService:
             if movie.vectorbox_score is None or movie.imdb_id is None or movie.imdb_rating is None or force:
                 logger.info(f"Enriching OMDb data for {movie.title}...")
                 details = await self.tmdb.get_movie_details(movie.tmdb_id)
-                if details and details.get("imdb_id"):
-                    imdb_id = details.get("imdb_id")
+                # Normalize empty string / missing → None (TMDB sometimes returns "")
+                imdb_id = ((details or {}).get("imdb_id") or "").strip() or None
+                if imdb_id:
                     omdb_data = await self.omdb.fetch_movie_data(imdb_id)
                     vb_score_obj = self.omdb.calculate_vectorbox_score(
                         omdb_data,
@@ -249,6 +263,11 @@ class MovieService:
                     logger.error(f"DB commit failed enriching movie: {e}")
                     raise
 
+                # Same rule as ensure_vector_exists: re-encode from the
+                # cinematic_description when the movie has one, so a metadata
+                # refresh (OMDb/keywords/release_dates) can never silently
+                # replace a Groq-enriched vector with the fallback recipe.
+                text_override = movie.cinematic_description or None
                 loop = asyncio.get_running_loop()
                 vector = await loop.run_in_executor(
                     None,
@@ -257,27 +276,11 @@ class MovieService:
                         "overview": movie.overview,
                         "genres": movie.genres,
                         "keywords": movie.keywords or []
-                    })
+                    }, text_override=text_override)
                 )
 
                 if not skip_qdrant:
-                    from models.external_schemas import QdrantPayload
-                    payload = QdrantPayload(
-                        tmdb_id=movie.tmdb_id,
-                        title=movie.title,
-                        year=movie.year,
-                        genres=movie.genres or[],
-                        rating=movie.vote_average,
-                        vote_count=movie.vote_count,
-                        runtime=movie.runtime,
-                        poster_path=movie.poster_path,
-                        vectorbox_score=movie.vectorbox_score,
-                        imdb_rating=movie.imdb_rating,
-                        metacritic_rating=movie.metacritic_rating,
-                        title_es=movie.title_es,
-                        overview_es=movie.overview_es,
-                        keywords=movie.keywords or[]
-                    )
+                    payload = qdrant_payload(movie)
 
                     await self.qdrant.upsert_movie_vector(
                         movie_id=movie.tmdb_id,
@@ -302,3 +305,7 @@ class MovieService:
             await self.tmdb.aclose()
         if self._omdb is not None:
             await self._omdb.close()
+        # _qdrant is always lazily self-created (never injected), so closing
+        # it here can't kill a shared singleton.
+        if self._qdrant is not None:
+            await self._qdrant.aclose()

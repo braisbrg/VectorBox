@@ -8,13 +8,14 @@ import random
 import math
 import json
 import hashlib
+import uuid
 import numpy as np
 import redis.asyncio as redis
 
 from models.database import UserRating, Movie, UserCluster, User
 from models.schemas import FeedSection, FeedItem
 from services.tmdb_client import TMDBClient
-from services.trakt_client import TraktClient
+from services.trakt_client import TraktClient, get_trakt_client
 from services.qdrant_service import QdrantService
 from services.clustering_service import ClusteringService
 from services.movie_service import MovieService
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 MIN_QUALITY_SCORE = 55  # floor for Picked For You; pre-filtered into Signal A and re-checked in hybrid_reranking
 MIN_SIGNAL_C_SCORE = 62  # sweet spot between 55 (too permissive) and 68 (too strict)
-MIN_EMBED_QUALITY_SCORE = 0.35  # below this is MiniLM-only noise; produces false centroid matches
+MIN_EMBED_QUALITY_SCORE = 0.35  # below this is low-quality/fallback-embedding noise; produces false centroid matches
 
 # Signal C source: Trakt /related (replaced TMDB /recommendations on 2026-05-10
 # after experiment_signal_c.py vs experiment_trakt.py showed Trakt's collab
@@ -37,6 +38,15 @@ SIGNAL_C_VEC_SIM_THRESHOLD = 0.40  # min cosine between seed and candidate
 SIGNAL_C_REQUIRE_GENRE_OVERLAP = True  # candidate must share ≥1 genre with the seed that recommended it
 SIGNAL_C_MAX_SEEDS = 8  # number of high-quality user films to query for related (was 5; broader pool)
 SIGNAL_C_PER_SEED_TAKE = 5  # candidates kept per seed
+# RRF fusion weight for Signal C (crowd/gems) relative to vibe/auteur (both 1.0).
+# The large Trakt related pool made crowd-ONLY films (no vibe/auteur corroboration)
+# flood Picked For You. Measured crowd-DOMINANT share of the top-10 across two real
+# users (917 + 2713 ratings) vs this weight:
+#   1.0 → 70% / 40%   (flooded)
+#   0.7 → 30% / 30%   ← chosen: "turned down" but keeps ~3/10 collab discovery
+#   0.5 →  0% /  0%   (eliminates crowd from the visible row)
+# Lower it toward 0.5 for a harder cut; raise toward 1.0 to restore the flood.
+SIGNAL_C_RRF_WEIGHT = 0.7
 
 # Generic genres co-occur across most films and don't tell us anything about user taste.
 # Removed before computing the user's "distinctive" genre set for Signal A coherence.
@@ -50,15 +60,23 @@ ANTI_VECTOR_BATCH_LIMIT = 30  # bound batch fetch cost; tail of raw_recs left un
 
 
 async def _ingest_movie_rs_background(tmdb_id: int) -> None:
-    """Background task: ingest a missing movie using its own DB session."""
+    """Background task: ingest a missing movie using its own DB session.
+
+    Reuses the TMDB singleton and closes the service afterwards so the
+    lazily-created OMDb/Qdrant clients don't leak per ingest.
+    """
     from config import AsyncSessionLocal
+    from dependencies import get_tmdb_client
+    tmdb = await get_tmdb_client()
     async with AsyncSessionLocal() as session:
+        movie_service = MovieService(session, tmdb=tmdb)
         try:
-            movie_service = MovieService(session)
             await movie_service.get_or_create_movie(tmdb_id)
             await session.commit()
         except Exception as e:
             logger.error(f"Background ingest failed for tmdb_id={tmdb_id}: {e}")
+        finally:
+            await movie_service.close()
 
 class RecommendationService:
     """
@@ -80,19 +98,25 @@ class RecommendationService:
         self.db = db
         self.tmdb = tmdb
         self.qdrant = qdrant
-        self.trakt = trakt or TraktClient()  # default singleton; falls back gracefully if no TRAKT_CLIENT_ID
+        # Module singleton — RecommendationService is built several times per
+        # feed request (hybrid + auteur + cult_actor tasks); a fresh
+        # TraktClient() each time leaked an unclosed httpx.AsyncClient + Redis
+        # connection per instance. Falls back gracefully if no TRAKT_CLIENT_ID.
+        self.trakt = trakt or get_trakt_client()
         self.redis = redis_client
         self.clustering = ClusteringService(qdrant=qdrant)
         self.movie_service = MovieService(db, tmdb=tmdb)
 
     @safe_execution(fallback_return=FeedSection(id="picked_for_you", title="Picked For You (Signal Lost)", items=[]))
     async def get_hybrid_picks_section(
-        self, 
-        user_id: int, 
+        self,
+        user_id: int,
         country: str,
         seen_ids: Set[int],
         provider_service: ProviderService = None,
-        background_tasks = None
+        background_tasks = None,
+        filters: Dict = None,
+        pool_limit: int = None,
     ) -> FeedSection:
         """
         Main entry point for "The Trident" row.
@@ -116,7 +140,7 @@ class RecommendationService:
             logger.info(f"[TRIDENT] Signal {name} took {duration:.0f}ms")
             return res
 
-        signal_a_task = measure_signal("A (Vibe)", "get_signal_a_vibe", user_id, exclude_ids=seen_ids, background_tasks=background_tasks)
+        signal_a_task = measure_signal("A (Vibe)", "get_signal_a_vibe", user_id, exclude_ids=seen_ids, background_tasks=background_tasks, filters=filters)
         signal_b_task = measure_signal("Auteur", "get_signal_b_auteur", user_id, exclude_ids=seen_ids)
         signal_c_task = measure_signal("C (Crowd)", "get_signal_c_crowd", user_id, exclude_ids=seen_ids, background_tasks=background_tasks)
         
@@ -141,20 +165,26 @@ class RecommendationService:
         # Build per-signal score maps for contributor provenance (A3)
         signal_a_ids = {m.id: 1 / (60 + i) for i, m in enumerate(signal_a)}
         signal_b_ids = {m.id: 1 / (60 + i) for i, m in enumerate(signal_b)}
-        signal_c_ids = {m.id: 1 / (60 + i) for i, m in enumerate(signal_c)}
+        # Same down-weight as fusion so the /why trident composition matches ranking.
+        signal_c_ids = {m.id: SIGNAL_C_RRF_WEIGHT / (60 + i) for i, m in enumerate(signal_c)}
 
         # 2. Fusion (RRF)
         # We assume candidates are Movie objects (or dicts representing them)
         # We need uniform ID access. Let's make sure signals return Movie objects.
 
-        rrf_scores = self.reciprocal_rank_fusion([signal_a, signal_b, signal_c])
+        # Down-weight Signal C (crowd/gems) so crowd-only films don't flood the
+        # row — see SIGNAL_C_RRF_WEIGHT. Order must match [A (vibe), B (auteur), C].
+        rrf_scores = self.reciprocal_rank_fusion(
+            [signal_a, signal_b, signal_c], weights=[1.0, 1.0, SIGNAL_C_RRF_WEIGHT]
+        )
 
         # 3. Post-Processing (Quality & Diversity)
         final_items = await self.hybrid_reranking(
             rrf_scores, user_id, country, provider_service,
             signal_a_ids=signal_a_ids,
             signal_b_ids=signal_b_ids,
-            signal_c_ids=signal_c_ids
+            signal_c_ids=signal_c_ids,
+            pool_limit=pool_limit,
         )
         
         # Update seen_ids
@@ -200,15 +230,18 @@ class RecommendationService:
             return ordered_movies
 
         # Cache Miss - Recompute with Lock to prevent cache stampedes (Fix 2.3/4.1)
+        # CONC-3: acquire the lock atomically with SET NX EX (single round-trip),
+        # so a crash can never leave a lock with no expiry (the old setnx-then-
+        # expire pair could). Tag it with a unique token and release only if the
+        # token is still ours, so a worker whose compute outran the 30s TTL can't
+        # delete a *different* worker's freshly-acquired lock.
         lock_key = f"lock:{cache_key}"
-        lock_acquired = await self.redis.setnx(lock_key, "locked")
-        
+        lock_token = uuid.uuid4().hex
+        lock_acquired = await self.redis.set(lock_key, lock_token, nx=True, ex=30)
+
         if lock_acquired:
             # We got the lock! We must compute, set the cache, and release the lock.
             try:
-                # Set a short expiration on the lock itself as a safety net
-                await self.redis.expire(lock_key, 30) # 30 seconds expiration
-                
                 # Signal Generation
                 result = await compute_method(user.id, **params)
 
@@ -222,11 +255,15 @@ class RecommendationService:
                     86400, # 24h TTL
                     json.dumps(signal_data)
                 )
-                
+
             finally:
-                # Always release the lock
-                await self.redis.delete(lock_key)
-                
+                # Compare-and-delete: only release the lock if it's still ours.
+                await self.redis.eval(
+                    "if redis.call('get', KEYS[1]) == ARGV[1] "
+                    "then return redis.call('del', KEYS[1]) else return 0 end",
+                    1, lock_key, lock_token,
+                )
+
             return result
             
         else:
@@ -254,7 +291,7 @@ class RecommendationService:
             logger.warning(f"Timeout waiting for lock {lock_key}. Computing fallback.")
             return await compute_method(user.id, **params)
 
-    async def get_signal_a_vibe(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
+    async def get_signal_a_vibe(self, user_id: int, exclude_ids: Set[int], background_tasks = None, filters: Dict = None) -> List[Movie]:
         """
         Signal A: The Vibe Expert (Vectors)
         Uses Qdrant via ClusteringService logic.
@@ -265,101 +302,28 @@ class RecommendationService:
             logger.warning(f"User {user_id} not found for Vibe signal.")
             return []
 
+        # F8: only add `filters` to the params (→ signal cache key + compute kwargs)
+        # when present, so the unfiltered feed's cache key is byte-identical to before.
+        params = {"exclude_ids": list(exclude_ids), "background_tasks": background_tasks}
+        if filters:
+            params["filters"] = filters
+
         return await self._get_signal_with_cache_and_lock(
             user=user_obj,
             signal_type="vibe",
-            params={"exclude_ids": list(exclude_ids), "background_tasks": background_tasks},
+            params=params,
             compute_method=self._compute_vibe_signal_raw
         )
 
     async def _get_anti_vector(self, user_id: int) -> Optional[List[float]]:
-        """Progressive anti-vector with recency decay — see
-        RecommendationEngine._get_anti_vector (recommendation_engine.py) for
-        the policy. Duplicated here to avoid the engine→service import cycle.
-        Returns L2-normalized weighted mean, or None when fewer than 3
-        negative films have vectors.
+        """Delegates to `utils.anti_vector.compute_anti_vector`.
 
-        Each weight is multiplied by a recency decay factor with a 365-day
-        half-life, so old rejections/low ratings gradually lose influence.
+        Kept as a thin instance method so the existing `self._get_anti_vector`
+        call sites (and the four sections that depend on it) don't change.
+        Full policy + rationale live in the utility.
         """
-        from datetime import datetime, timezone
-
-        rating_result = await self.db.execute(
-            select(UserRating, Movie.tmdb_id)
-            .join(Movie, UserRating.movie_id == Movie.id)
-            .where(UserRating.user_id == user_id)
-            .where(
-                or_(
-                    UserRating.is_rejected.is_(True),
-                    UserRating.rating <= 3.0,
-                )
-            )
-            .limit(50)
-        )
-        rows = rating_result.all()
-        if len(rows) < 3:
-            return None
-
-        tmdb_ids = [tmdb_id for _, tmdb_id in rows if tmdb_id is not None]
-        if len(tmdb_ids) < 3:
-            return None
-        vectors_map = await self.qdrant.get_vectors_batch(tmdb_ids)
-        if len(vectors_map) < 3:
-            return None
-
-        now = datetime.now(timezone.utc)
-        HALF_LIFE_DAYS = 365
-
-        weighted_vectors: list[np.ndarray] = []
-        weights: list[float] = []
-        for ur, tmdb_id in rows:
-            vec = vectors_map.get(tmdb_id)
-            if vec is None:
-                continue
-            if ur.is_rejected:
-                w = 2.0
-            elif ur.rating is None:
-                continue
-            elif ur.rating <= 2.0:
-                w = 1.5
-            elif ur.rating <= 2.5:
-                w = 1.0
-            elif ur.rating <= 3.0:
-                w = 0.4
-            else:
-                continue
-
-            # Recency decay: 365-day half-life
-            ref_date = ur.watched_date or ur.created_at
-            if ref_date is not None:
-                if ref_date.tzinfo is None:
-                    ref_date = ref_date.replace(tzinfo=timezone.utc)
-                days_ago = max(0, (now - ref_date).days)
-            else:
-                days_ago = HALF_LIFE_DAYS  # assume 1 half-life if undated
-            decay = 0.5 ** (days_ago / HALF_LIFE_DAYS)
-            w *= decay
-
-            if w < 0.05:
-                continue  # negligible weight — skip
-
-            weighted_vectors.append(np.array(vec) * w)
-            weights.append(w)
-
-        if len(weighted_vectors) < 3:
-            return None
-
-        loop = asyncio.get_running_loop()
-
-        def _compute_mean():
-            total_w = float(sum(weights))
-            mean_vec = np.sum(np.stack(weighted_vectors), axis=0) / total_w
-            norm = float(np.linalg.norm(mean_vec))
-            if norm > 0:
-                mean_vec = mean_vec / norm
-            return mean_vec.tolist()
-
-        return await loop.run_in_executor(None, _compute_mean)
+        from utils.anti_vector import compute_anti_vector
+        return await compute_anti_vector(user_id, self.db, self.qdrant)
 
     async def _filter_by_anti_vector(
         self,
@@ -411,14 +375,16 @@ class RecommendationService:
         from utils.genre_utils import get_distinctive_user_genres
         return await get_distinctive_user_genres(user_id, self.db)
 
-    async def _compute_vibe_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
+    async def _compute_vibe_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None, filters: Dict = None) -> List[Movie]:
         """
         Raw computation for Signal A: The Vibe Expert (Vectors)
         """
         raw_recs = await self.clustering.get_user_centric_recommendations(
             user_id=user_id,
             db=self.db,
-            filters={"min_vote_count": 500}, # Basic quality filter
+            # F8: fold the rail's hard constraints into the centroid search so the
+            # Trident's vibe pool is filtered AT SOURCE (whole catalogue, no starvation).
+            filters={"min_vote_count": 500, **(filters or {})},
             limit=50,
             background_tasks=background_tasks
         )
@@ -515,7 +481,7 @@ class RecommendationService:
             ordered = kept
         after_genre_count = len(ordered)
 
-        # T-04: Drop films with corrupt MiniLM-only embeddings — they reach the
+        # T-04: Drop films with corrupt low-quality embeddings — they reach the
         # centroid via accidental proximity, not real cinematic similarity.
         # NULL = unchecked (allow through), < 0.35 = noisy and worth dropping.
         ordered = [
@@ -629,29 +595,34 @@ class RecommendationService:
         from services.recommendation_engine import MOVIE_QUALITY_GATE
         stmt = select(Movie).where(
             *MOVIE_QUALITY_GATE,
+            # Enriched-vector gate: Signal B feeds picked_for_you (the flagship
+            # personalization row) — keep it as clean as the vector signals.
+            # The explicit "From Your Favorite Directors" ROW stays ungated.
+            Movie.has_enriched_embedding.is_(True),
             Movie.vectorbox_score > 70,
             Movie.directors.overlap(top_directors)
         ).limit(100)
         
         candidates = (await self.db.execute(stmt)).scalars().all()
         
-        # Filter watched/excluded
-        watched_stmt = select(UserRating.movie_id).where(
-            UserRating.user_id == user_id, UserRating.is_watched.is_(True)
+        # Filter excluded (watched, rejected, or passed-in exclude_ids)
+        excluded_stmt = select(UserRating.movie_id).where(
+            UserRating.user_id == user_id,
+            or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)),
         )
-        watched_ids = set((await self.db.execute(watched_stmt)).scalars().all())
-        
+        excluded_ids_internal = set((await self.db.execute(excluded_stmt)).scalars().all())
+
         final_list = []
         dropped = 0
         for m in candidates:
-            if m.tmdb_id in exclude_ids or m.id in watched_ids:
+            if m.tmdb_id in exclude_ids or m.id in excluded_ids_internal:
                 dropped += 1
                 continue
             final_list.append(m)
 
         logger.info(
             f"[Signal Auteur] user={user_id} db_candidates={len(candidates)} "
-            f"dropped_watched_or_excluded={dropped} kept={len(final_list[:50])}"
+            f"dropped_excluded={dropped} kept={len(final_list[:50])}"
         )
         return final_list[:50]
 
@@ -747,6 +718,12 @@ class RecommendationService:
         existing_movies = existing_result.scalars().all()
         existing_tmdb_ids = {m.tmdb_id for m in existing_movies}
 
+        # Enriched-vector gate. AFTER computing existing_tmdb_ids (which must stay
+        # complete or non-enriched catalogue rows would get re-queued for ingest
+        # below) — this also closes the "no vector -> let through" leniency in the
+        # cross-validation gate for legacy-vector rows.
+        existing_movies = [m for m in existing_movies if m.has_enriched_embedding]
+
         # 4. Ingest only the missing ones (max 5 to avoid long waits)
         missing_ids = [tid for tid in all_tmdb_ids if tid not in existing_tmdb_ids][:5]
         for tid in missing_ids:
@@ -815,12 +792,21 @@ class RecommendationService:
         # the Lambs while rejecting the obvious low-quality TMDB suggestions.
         signal_c_min_score = MIN_SIGNAL_C_SCORE
 
-        # 7. Filter and deduplicate
+        # 7. Filter and deduplicate. Build rejected_internal_ids — the caller's
+        # exclude_ids carries tmdb_ids of films the user has already rated, but
+        # cache hits and feed-section boundaries can let rejected films slip
+        # through that set. Hard-filter against the DB-of-record here.
+        rejected_stmt = select(UserRating.movie_id).where(
+            UserRating.user_id == user_id,
+            or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)),
+        )
+        rejected_internal_ids = set((await self.db.execute(rejected_stmt)).scalars().all())
+
         seen_local: Set[int] = set()
         unique: List[Movie] = []
         dropped_excluded = dropped_quality = 0
         for m in existing_movies:
-            if m.id in seen_local or m.tmdb_id in exclude_ids:
+            if m.id in seen_local or m.tmdb_id in exclude_ids or m.id in rejected_internal_ids:
                 dropped_excluded += 1
                 continue
             if cross_val_pass is not None and m.tmdb_id not in cross_val_pass:
@@ -841,22 +827,25 @@ class RecommendationService:
         )
         return unique
 
-    def reciprocal_rank_fusion(self, candidate_lists: List[List[Movie]], k=60) -> Dict[int, float]:
+    def reciprocal_rank_fusion(
+        self, candidate_lists: List[List[Movie]], k=60, weights: List[float] = None
+    ) -> Dict[int, float]:
         """
         RRF Algorithm: Merges multiple ranked lists.
-        Score = sum(1 / (k + rank))
+        Score = sum(weight_list / (k + rank)); weights default to 1.0 per list.
         """
         scores = {}
         movies_map = {} # To keep track of objects
-        
-        for lst in candidate_lists:
+
+        for i, lst in enumerate(candidate_lists):
+            w = weights[i] if weights else 1.0
             for rank, movie in enumerate(lst):
                 if movie.id not in scores:
                     scores[movie.id] = 0.0
                     movies_map[movie.id] = movie
-                
-                scores[movie.id] += 1 / (k + rank)
-                
+
+                scores[movie.id] += w / (k + rank)
+
         return scores
 
     async def hybrid_reranking(
@@ -868,16 +857,17 @@ class RecommendationService:
         signal_a_ids: Dict[int, float] = None,
         signal_b_ids: Dict[int, float] = None,
         signal_c_ids: Dict[int, float] = None,
+        pool_limit: int = None,
     ) -> List[FeedItem]:
-        def build_contributors(movie_id, sa, sb, sc):
-            sa, sb, sc = sa or {}, sb or {}, sc or {}
+        def build_contributors(movie_id, score_a, score_b, score_c):
+            score_a, score_b, score_c = score_a or {}, score_b or {}, score_c or {}
             raw = []
-            if movie_id in sa:
-                raw.append(("vibe", "Semantic Match", sa[movie_id]))
-            if movie_id in sb:
-                raw.append(("auteur", "Director/Actor You Follow", sb[movie_id]))
-            if movie_id in sc:
-                raw.append(("crowd", "Hidden Gem Signal", sc[movie_id]))
+            if movie_id in score_a:
+                raw.append(("vibe", "Semantic Match", score_a[movie_id]))
+            if movie_id in score_b:
+                raw.append(("auteur", "Director/Actor You Follow", score_b[movie_id]))
+            if movie_id in score_c:
+                raw.append(("crowd", "Hidden Gem Signal", score_c[movie_id]))
             if not raw:
                 return []
             total = sum(s for _, _, s in raw)
@@ -984,6 +974,16 @@ class RecommendationService:
                     if len(final_list) >= 10:
                         break
 
+        # F8 deep pool (filtered feed only): APPEND the next-best candidates (score
+        # order, already director-capped) below the MMR top-10. The displayed head
+        # stays byte-identical to the live feed — the tail exists solely as fodder
+        # for the output filter, which caps the row back to its live size after.
+        if pool_limit and len(final_list) < pool_limit:
+            picked_ids = {c["movie_id"] for c in final_list}
+            final_list = list(final_list) + [
+                c for c in candidates if c["movie_id"] not in picked_ids
+            ][: pool_limit - len(final_list)]
+
         # 5. Batch-fetch providers (single query, no N+1)
         feed_items = []
         if provider_service and final_list:
@@ -1013,16 +1013,21 @@ class RecommendationService:
                 metacritic_rating=movie.metacritic_rating,
 
                 title_es=movie.title_es,
-                overview_es=movie.overview_es
+                overview_es=movie.overview_es,
+                backdrop_url=movie.backdrop_path,
             ))
 
         return feed_items
 
     @safe_execution(fallback_return=FeedSection(id="auteur", title="From Your Favorite Directors", items=[]))
-    async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
+    async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None, filters: Dict = None) -> FeedSection:
         """
         Signal Auteur row — top 3 directors by score × up to 3 unwatched films each (max 9).
         """
+        from services.recommendation_engine import (
+            FILTERED_PERSON_FALLBACK_DEPTH, PERSON_FALLBACK_DEPTH, apply_rail_filters,
+        )  # local: recommendation_engine imports this module
+
         director_scores = await self._compute_director_scores(user_id)
         top_directors = [
             name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True)
@@ -1032,12 +1037,12 @@ class RecommendationService:
         if not top_directors:
             return FeedSection(id="auteur", title="From Your Favorite Directors", items=[])
 
-        watched_result = await self.db.execute(
+        excluded_result = await self.db.execute(
             select(UserRating.movie_id)
             .where(UserRating.user_id == user_id)
-            .where(UserRating.is_watched.is_(True))
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        watched_internal_ids = set(watched_result.scalars().all())
+        excluded_internal_ids = set(excluded_result.scalars().all())
 
         all_items: List[Tuple[Movie, str]] = []
         seen_local: Set[int] = set()
@@ -1047,16 +1052,17 @@ class RecommendationService:
         # already shown in earlier sections (Picked For You, Because You Watched, etc.).
         # Post-trim happens in feed_service to keep <=3 per director × <=9 total.
         for director_name in top_directors:
-            stmt = (
+            stmt = apply_rail_filters(
                 select(Movie)
                 .where(Movie.directors.any(director_name))
-                .where(Movie.id.notin_(watched_internal_ids))
+                .where(Movie.id.notin_(excluded_internal_ids))
                 .where(Movie.id.notin_(seen_local))
                 .where(Movie.vectorbox_score >= 60)
                 .where(Movie.vote_count >= 50)
                 .where(Movie.year.isnot(None))
                 .order_by(desc(Movie.vectorbox_score))
-                .limit(12)
+                .limit(12),
+                filters,
             )
             result = await self.db.execute(stmt)
             director_films = result.scalars().all()
@@ -1074,20 +1080,26 @@ class RecommendationService:
             if per_director > 0:
                 directors_used.append(director_name)
 
-        # Progressive fallback: if fewer than 3 distinct directors had films, expand to directors 4-10
-        if len(directors_used) < 3:
+        # Progressive fallback: if fewer than 3 distinct directors had films, expand
+        # to directors 4-10. Under a filter the trigger is the FILM count, not the
+        # director count: three directors with two qualifying films each is still a
+        # broken row, and that is exactly the shape post-filtering used to produce
+        # (measured 2/9 for user 210 at Drama 1990-2010). Walking further down the
+        # ranking is what fills it — to 9/9, with directors the user demonstrably
+        # likes; the deepest one observed was #16.
+        if len(directors_used) < 3 or (filters and len(all_items) < 9):
             extended_directors = [
                 name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True)
                 if score >= 1.5 and name not in top_directors
-            ][:7]
+            ][:FILTERED_PERSON_FALLBACK_DEPTH if filters else PERSON_FALLBACK_DEPTH]
 
             for director_name in extended_directors:
                 if len(all_items) >= 21:
                     break
 
-                stmt = (
+                stmt = apply_rail_filters(
                     select(Movie)
-                    .where(Movie.id.notin_(watched_internal_ids))
+                    .where(Movie.id.notin_(excluded_internal_ids))
                     .where(Movie.tmdb_id.notin_(seen_ids))
                     .where(Movie.id.notin_(seen_local))
                     .where(Movie.directors.any(director_name))
@@ -1095,7 +1107,8 @@ class RecommendationService:
                     .where(Movie.vote_count >= 50)
                     .where(Movie.year.isnot(None))
                     .order_by(desc(Movie.vectorbox_score))
-                    .limit(7)
+                    .limit(7),
+                    filters,
                 )
                 result = await self.db.execute(stmt)
                 fallback_films = result.scalars().all()
@@ -1156,6 +1169,7 @@ class RecommendationService:
                 runtime=m.runtime,
                 overview=m.overview,
                 vectorbox_score=m.vectorbox_score,
+                backdrop_url=m.backdrop_path,
                 contributors=[{
                     "type": "auteur",
                     "label": f"Director you follow: {director_name}",
@@ -1167,11 +1181,14 @@ class RecommendationService:
         return FeedSection(id="auteur", title=title, items=items)
 
     @safe_execution(fallback_return=FeedSection(id="cult_actor", title="Cast Picks", items=[]))
-    async def get_cult_actor_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None) -> FeedSection:
+    async def get_cult_actor_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None, filters: Dict = None) -> FeedSection:
         """
         Imp 2: Cast-based auteur signal — "Because you follow {actor_name}"
         """
         from services.recommendation_engine import _director_weight
+        from services.recommendation_engine import (
+            FILTERED_PERSON_FALLBACK_DEPTH, PERSON_FALLBACK_DEPTH, apply_rail_filters,
+        )  # local: recommendation_engine imports this module
 
         # 1. Get rated/liked movies with cast data
         stmt = select(UserRating, Movie).join(Movie, UserRating.movie_id == Movie.id)\
@@ -1232,13 +1249,13 @@ class RecommendationService:
         # 3. Top 3 cult actors by weighted score (mirrors auteur)
         top_actors = sorted(actor_scores.items(), key=lambda x: x[1], reverse=True)[:3]
 
-        # Get watched internal IDs
-        watched_result = await self.db.execute(
+        # Get excluded internal IDs (watched + rejected)
+        excluded_result = await self.db.execute(
             select(UserRating.movie_id)
             .where(UserRating.user_id == user_id)
-            .where(UserRating.is_watched.is_(True))
+            .where(or_(UserRating.is_watched.is_(True), UserRating.is_rejected.is_(True)))
         )
-        watched_internal_ids = set(watched_result.scalars().all())
+        excluded_internal_ids = set(excluded_result.scalars().all())
 
         all_items: List[Tuple[Movie, str]] = []
         seen_local: Set[int] = set()
@@ -1268,15 +1285,16 @@ class RecommendationService:
         actor_names = [name for name, _ in top_actors]
         if actor_names:
             actor_priority = {name: idx for idx, name in enumerate(actor_names)}
-            stmt = (
+            stmt = apply_rail_filters(
                 select(Movie)
                 .where(Movie.cast.overlap(actor_names))
-                .where(Movie.id.notin_(watched_internal_ids))
+                .where(Movie.id.notin_(excluded_internal_ids))
                 .where(Movie.vectorbox_score >= 60)
                 .where(Movie.vote_count >= 50)
                 .where(Movie.year.isnot(None))
                 .order_by(desc(Movie.vectorbox_score))
-                .limit(8 * len(actor_names))
+                .limit(8 * len(actor_names)),
+                filters,
             )
             result = await self.db.execute(stmt)
             actor_films = result.scalars().all()
@@ -1290,19 +1308,20 @@ class RecommendationService:
             extended_actors = [
                 name for name, score in sorted(actor_scores.items(), key=lambda x: x[1], reverse=True)
                 if score >= 1.5 and name not in top_actor_names
-            ][:7]
+            ][:FILTERED_PERSON_FALLBACK_DEPTH if filters else PERSON_FALLBACK_DEPTH]
 
             if extended_actors:
                 ext_priority = {name: idx for idx, name in enumerate(extended_actors)}
-                stmt = (
+                stmt = apply_rail_filters(
                     select(Movie)
                     .where(Movie.cast.overlap(extended_actors))
-                    .where(Movie.id.notin_(watched_internal_ids))
+                    .where(Movie.id.notin_(excluded_internal_ids))
                     .where(Movie.vectorbox_score >= 60)
                     .where(Movie.vote_count >= 50)
                     .where(Movie.year.isnot(None))
                     .order_by(desc(Movie.vectorbox_score))
-                    .limit(5 * len(extended_actors))
+                    .limit(5 * len(extended_actors)),
+                    filters,
                 )
                 result = await self.db.execute(stmt)
                 fallback_films = result.scalars().all()
@@ -1362,6 +1381,7 @@ class RecommendationService:
                 runtime=m.runtime,
                 overview=m.overview,
                 vectorbox_score=m.vectorbox_score,
+                backdrop_url=m.backdrop_path,
                 contributors=[{
                     "type": "cult_actor",
                     "label": f"Actor you follow: {matched_actor}",
@@ -1377,8 +1397,11 @@ class RecommendationService:
         )
 
     async def close(self):
-        """Cleanup resources"""
-        if self.tmdb:
-            await self.tmdb.aclose()
+        """Cleanup resources.
+
+        `self.tmdb` is the injected singleton (or None) — never owned here, so it
+        must NOT be closed (that would kill the shared client mid-request for every
+        other caller). MovieService.close() closes only the TMDB it actually owns.
+        """
         if self.movie_service:
             await self.movie_service.close()

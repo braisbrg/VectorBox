@@ -5,7 +5,7 @@
 services:
   # PostgreSQL Database
   postgres:
-    image: postgres:15-alpine
+    image: postgres@sha256:1d1095b0503145be79c79239372aefadfacf6b7c33c9245bbf99ce4b6b89c737  # postgres:15.15-alpine, digest-pinned (INF-A)
     container_name: vectorbox-postgres
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-vectorbox}
@@ -24,7 +24,10 @@ services:
 
   # Qdrant Vector Database
   qdrant:
-    image: qdrant/qdrant:latest
+    # Pinned to match qdrant-client==1.18.0 (PERF-F): `:latest` was non-deterministic
+    # and resolved to 1.16.3 in cache, firing a client/server incompatibility warning
+    # on every call. Pin both server + client to the same version.
+    image: qdrant/qdrant:v1.18.0
     container_name: vectorbox-qdrant
     # Security: Ports removed for production (internal access only)
     ports:
@@ -35,14 +38,16 @@ services:
 
   # Redis Cache
   redis:
-    image: redis:7-alpine
+    image: redis@sha256:02f2cc4882f8bf87c79a220ac958f58c700bdec0dfb9b9ea61b62fb0e8f1bfcf  # redis:7.4.7-alpine, digest-pinned (INF-A)
     container_name: vectorbox-redis
     # Security: Ports removed for production (internal access only)
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
-    command: redis-server --appendonly yes
+    # OPT-A: cap memory + LRU eviction so cache/limiter keys can't grow until
+    # the host OOMs (default is unbounded + noeviction, which fails writes when full).
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -51,7 +56,7 @@ services:
 
   # Observability: Jaeger All-in-One (Tracing UI + OTLP Collector)
   jaeger:
-    image: jaegertracing/all-in-one:latest
+    image: jaegertracing/all-in-one@sha256:ab6f1a1f0fb49ea08bcd19f6b84f6081d0d44b364b6de148e1798eb5816bacac  # all-in-one:latest pinned to current digest (INF-A)
     container_name: vectorbox-jaeger
     ports:
       - "127.0.0.1:16686:16686"  # Jaeger UI
@@ -65,9 +70,19 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+      # HF_TOKEN is passed via BuildKit secret mount (see backend/Dockerfile),
+      # NOT as a build ARG — ARGs end up in `docker history`. Compose
+      # forwards the env var to BuildKit when DOCKER_BUILDKIT=1 (Compose
+      # v2.10+ enables it by default).
+      secrets:
+        - hf_token
     container_name: vectorbox-backend
+    # SEC-A: bind to loopback only. The browser (host) reaches it via
+    # localhost:8000 and the frontend container via the internal `backend:8000`;
+    # binding 0.0.0.0 exposed the origin off-tunnel, letting attackers spoof
+    # CF-Connecting-IP / X-Forwarded-For to bypass every rate limit.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://vectorbox_user:change_me_in_prod@postgres:5432/vectorbox}
       - REDIS_URL=redis://redis:6379
@@ -80,13 +95,22 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OMDB_API_KEY=${OMDB_API_KEY}
       - TRAKT_CLIENT_ID=${TRAKT_CLIENT_ID:-}
+      # HF_TOKEN at RUNTIME: the BuildKit secret (line 143) only feeds
+      # download_model.py at image-build time. The running app also needs
+      # it any time HuggingFace Hub is hit (e.g. first-time model warmup
+      # if the cache is missing, or sentence-transformers version check).
+      # Without this, HF Hub responds with the "unauthenticated" warning
+      # and rate limits apply.
+      - HF_TOKEN=${HF_TOKEN:-}
       - CLERK_SECRET_KEY=${CLERK_SECRET_KEY}
       - CLERK_JWKS_URL=${CLERK_JWKS_URL}
       # Observability
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://jaeger:4317
       - OTEL_SERVICE_NAME=vectorbox-backend
       - PIP_CONFIG_FILE=/app/pip.conf
-      - TESTING_MODE=True
+      # TESTING_MODE disables rate limiting. Pulled from .env so prod
+      # cannot accidentally inherit a True value baked into this file.
+      - TESTING_MODE=${TESTING_MODE:-False}
     volumes:
       - ./backend:/app
       - ./backups:/app/backups
@@ -126,3 +150,10 @@ volumes:
   qdrant_data:
   redis_data:
   models_cache:
+
+secrets:
+  # HF_TOKEN is read from the host environment (or .env) at build time and
+  # mounted into the backend image as /run/secrets/hf_token only during
+  # the `download_model.py` RUN. It never lands in the final image.
+  hf_token:
+    environment: HF_TOKEN

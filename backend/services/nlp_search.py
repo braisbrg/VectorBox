@@ -1,12 +1,266 @@
 import os
 import re
 import instructor
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal
 from openai import AsyncOpenAI
 import logging
 
+from services.llm_models import PARSER_CHAIN, REASONING_EFFORT
+
 logger = logging.getLogger(__name__)
+
+# LLM sometimes emits a language NAME ("Spanish") instead of the ISO 639-1 code
+# the catalogue stores ("es") — that mismatch silently zero-results the query
+# (observed live on "cine quinqui"). Map the common names; drop unknown names
+# rather than pass a value that can only over-filter to nothing.
+_LANG_NAME_TO_ISO = {
+    "spanish": "es", "castilian": "es", "english": "en", "french": "fr",
+    "german": "de", "italian": "it", "portuguese": "pt", "japanese": "ja",
+    "korean": "ko", "mandarin": "zh", "chinese": "zh", "cantonese": "zh",
+    "russian": "ru", "hindi": "hi", "arabic": "ar", "swedish": "sv",
+    "danish": "da", "norwegian": "no", "finnish": "fi", "dutch": "nl",
+    "polish": "pl", "turkish": "tr", "greek": "el", "hebrew": "he",
+    "thai": "th", "catalan": "ca", "basque": "eu", "galician": "gl",
+    "farsi": "fa", "persian": "fa", "vietnamese": "vi", "indonesian": "id",
+}
+
+
+def normalize_language(value: Optional[str]) -> Optional[str]:
+    """Coerce an LLM language value to an ISO 639-1 code (or None)."""
+    if not value:
+        return None
+    s = value.strip().lower()
+    if len(s) == 2:
+        return s
+    return _LANG_NAME_TO_ISO.get(s)  # unknown → None (drop the over-filter)
+
+
+# Words that make an `original_language` filter legitimate: the user named a
+# language, a nationality or a region. Anything else and the field is the model
+# improvising — measured 2026-07-26, "algo lento y triste sobre el duelo, sin
+# sustos" (which names no language at all) came back with original_language="es"
+# in 6 of 10 identical calls, collapsing the answer to Spanish-language cinema.
+# The model's own `reasoning` never justified it, and the same query in English
+# never triggered it, so it is noise rather than a rule about query language.
+# Strip accents so "japonés" and "japones" are the same cue.
+_ACCENTS = str.maketrans("áàäâéèëêíìïîóòöôúùüûñç", "aaaaeeeeiiiioooouuuunc")
+
+# Review 2026-07-28 found two holes in the first version of this list:
+#   · It had nationality adjectives ("coreano") and language names ("korean")
+#     but NO country names — "cine de Corea del Sur" lost its legitimate filter.
+#   · It matched by substring, so "Chinatown" contained "china" and wrongly
+#     kept a hallucinated filter. Exact words fix that ("indiana" ≠ "india");
+#     the few deliberate prefixes live in _LANG_CUE_STEMS below.
+_LANG_CUE_WORDS = frozenset(
+    w.translate(_ACCENTS) for w in (
+        list(_LANG_NAME_TO_ISO)
+        + [
+            # ES language / nationality forms
+            "español", "española", "castellano", "inglés", "inglesa", "francés",
+            "francesa", "alemán", "alemana", "italiano", "italiana", "portugués",
+            "portuguesa", "japonés", "japonesa", "coreano", "coreana", "chino",
+            "china", "ruso", "rusa", "sueco", "sueca", "danés", "danesa",
+            "noruego", "noruega", "holandés", "holandesa", "polaco", "polaca",
+            "turco", "turca", "griego", "griega", "hindú", "árabe", "iraní",
+            "tailandés", "catalán", "catalana", "vasco", "vasca", "euskera",
+            "gallego", "gallega", "latino", "latina", "mexicano", "mexicana",
+            "argentino", "argentina", "brasileño", "brasileña",
+            # country names, ES + EN — the gap the review caught
+            "españa", "francia", "japón", "corea", "italia", "alemania", "rusia",
+            "india", "méxico", "brasil", "suecia", "dinamarca", "polonia",
+            "turquía", "grecia", "irán", "tailandia", "portugal", "holanda",
+            "france", "japan", "korea", "italy", "germany", "spain", "russia",
+            "mexico", "brazil", "sweden", "denmark", "norway", "poland",
+            "turkey", "greece", "iran", "thailand", "netherlands", "britain",
+            # regions / broad markers, ES + EN
+            "europeo", "europea", "european", "europe", "asiático", "asian",
+            "asia", "nórdico", "nórdica", "nordic", "scandinavian", "escandinavo",
+            "escandinava", "hollywood", "bollywood", "idioma", "language",
+            "foreign", "spoken",
+        ]
+    )
+)
+
+# Prefixes that legitimately need substring semantics ("subtituladas",
+# "doblada", "extranjeras", "latinoamericano"…). Kept short on purpose.
+_LANG_CUE_STEMS = ("subtitul", "doblad", "extranjer", "latinoamerican", "iberoamerican", "habla hispana")
+
+_WORD_RE = re.compile(r"[a-zñç]+")
+
+
+def _query_names_a_language(query: str) -> bool:
+    """True when the query itself mentions a language, nationality or region.
+
+    Whole words, not substrings ("Chinatown" must not count as "china"), but
+    with plural stripping — "japoneses"/"koreans" must still match "japonés"/
+    "korean". The length guards keep the stripping from firing on short words.
+    """
+    q = query.lower().translate(_ACCENTS)
+    if any(s in q for s in _LANG_CUE_STEMS):
+        return True
+    for w in _WORD_RE.findall(q):
+        # Strip a plural only when the word actually carries the suffix —
+        # blind w[:-2] turned "indiana" into "india" and matched a country.
+        if (w in _LANG_CUE_WORDS
+                or (w.endswith("s") and w[:-1] in _LANG_CUE_WORDS)     # coreanos → coreano
+                or (w.endswith("es") and w[:-2] in _LANG_CUE_WORDS)):  # japoneses → japonés
+            return True
+    return False
+
+
+def guard_language_filter(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Drop `original_language` unless the query actually asked for one.
+
+    A rule beats a probability here: the LLM decides *when* the field applies,
+    and its Field(...) description only ever told it *how* to format the value.
+    Rather than hope a prompt tweak sticks across model swaps, the caller — which
+    is the only place that still has the raw query — makes the call deterministic.
+    """
+    if intent.original_language and not _query_names_a_language(query):
+        logger.info(
+            "Dropping unrequested original_language=%r (query names no language): %r",
+            intent.original_language, query,
+        )
+        intent.original_language = None
+    return intent
+
+
+def ensure_semantic_query(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Never let an empty `semantic_query` reach the embedder.
+
+    Found 2026-07-28 with "algo que terminemos mis padres y yo sin discutir":
+    the model returned a well-formed intent whose `semantic_query` was an empty
+    string. It satisfies the schema (the field is `str`, not `str | None`), so
+    nothing complained until `generate_embedding` raised
+    "No text available for embedding generation" and the whole request 500'd.
+
+    The repair is obvious once seen: `semantic_query` is meant to be an
+    *expansion* of what the user typed, so the user's own words are always a
+    valid floor. A weaker query beats a crash, and the crash was reachable from
+    plain user input.
+    """
+    if not (intent.semantic_query or "").strip():
+        logger.warning("Empty semantic_query from the parser; falling back to the raw query: %r", query)
+        intent.semantic_query = query
+    return intent
+
+
+# Words that mean "give me good ones" without naming a number or a source.
+_QUALITY_CUES = tuple(w.translate(_ACCENTS) for w in (
+    "bien valorad", "mejor valorad", "aclamad", "obra maestra", "obras maestras",
+    "imprescindible", "lo mejor", "las mejores", "los mejores", "peliculazo",
+    "acclaimed", "well rated", "well-rated", "highly rated", "critically",
+    "masterpiece", "the best", "top rated", "top-rated", "must see", "must-see",
+))
+
+QUALITY_REQUEST_MIN_VBS = 75
+
+
+def ensure_quality_filter(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Give a vague quality request an actual quality filter.
+
+    Third field to need a deterministic guard rather than a prompt, and the
+    reason is the same each time: a description is a probability. Measured on
+    "peliculas muy bien valoradas" — first the parser set min_rating=8.0, the top
+    ~2% of TMDB, which ANDed with everything else and cut the answer to three
+    films; after the description was tightened it set NOTHING, and the query fell
+    through to the confidence gate and returned zero. Neither is an answer.
+
+    So the rule: if the user asked for quality in words and the parser produced no
+    quality filter of any kind, apply the catalogue's own score. VBS is the right
+    one because it is already blended and shrunk, so it widens towards good films
+    instead of collapsing to a handful.
+    """
+    asked = any(c in query.lower().translate(_ACCENTS) for c in _QUALITY_CUES)
+    already = any((
+        intent.min_vectorbox_score, intent.min_rating, intent.min_imdb_rating,
+        intent.min_metacritic, intent.min_oscar_wins,
+    ))
+    if asked and not already:
+        logger.info("Quality asked for but no filter set; applying min_vectorbox_score=%d: %r",
+                    QUALITY_REQUEST_MIN_VBS, query)
+        intent.min_vectorbox_score = QUALITY_REQUEST_MIN_VBS
+    return intent
+
+
+# Phrases that name an AUDIENCE. Deliberately narrow: every one of these says
+# who is in the room, and none of them can be read as a subject. "para ver un
+# domingo" is an occasion and must not match, which is why the cues carry their
+# preposition ("para ver con") instead of the bare verb.
+#
+# Fourth field this session to need a rule behind its description, for the same
+# reason as the other three: a description is a probability, a guard is a rule.
+_AUDIENCE_CUES = tuple(w.translate(_ACCENTS) for w in (
+    "para ver con", "para toda la familia", "en familia", "con niños", "con los niños",
+    "con mis hijos", "con los peques", "que guste a", "padres e hijos", "para niños",
+    "family friendly", "family-friendly", "for the whole family", "for all ages",
+    "with my kids", "with the kids", "for kids", "parents and kids", "kid friendly",
+    "kid-friendly",
+))
+
+# "familiar" / "family" alone is ambiguous — "una peli familiar" is an audience,
+# "un drama familiar" is a subject. Only fire on the bare noun phrase.
+_AUDIENCE_EXACT = tuple(w.translate(_ACCENTS) for w in (
+    "una peli familiar", "una pelicula familiar", "peliculas familiares",
+    "pelis familiares", "cine familiar", "a family movie", "a family film",
+    "family movies", "family films",
+))
+
+
+def names_an_audience(query: str) -> bool:
+    q = query.lower().translate(_ACCENTS)
+    return any(c in q for c in _AUDIENCE_CUES) or any(c in q for c in _AUDIENCE_EXACT)
+
+
+# Every cue above is a family/kids phrase, so when the CUE is what fired we know
+# which genres the request means and can say so. Without them the audience branch
+# has nothing to select on and returns arbitrary high-scoring films: measured
+# 2026-07-29, "a movie parents and kids will both enjoy" came back with Athlete A
+# (a documentary about abuse in gymnastics) and The Spirit of the Beehive at a
+# mean VBS of 85. High scores, dressed as a family selection — the same
+# confidently-wrong failure this branch exists to fix.
+AUDIENCE_CUE_GENRES = ["Family", "Animation"]
+
+
+def ensure_audience_request(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Flag an audience request the parser read as a theme.
+
+    Only ever sets the flag, never clears it: the cue list is a floor on
+    recall, not a definition. The model sees phrasings no list will cover.
+    """
+    if not names_an_audience(query):
+        return intent
+    if not intent.audience_request:
+        logger.info("Audience request detected by cue, parser said theme: %r", query)
+        intent.audience_request = True
+    if not intent.include_genres:
+        intent.include_genres = list(AUDIENCE_CUE_GENRES)
+    return intent
+
+
+def finalize_intent(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
+    """Every deterministic repair the parser's output needs, in one place."""
+    intent = guard_language_filter(intent, query)
+    intent = ensure_semantic_query(intent, query)
+    intent = ensure_quality_filter(intent, query)
+    return ensure_audience_request(intent, query)
+
+
+# The three ways this module gives up, as one predicate. An intent carrying any
+# of these is NOT an analysis of the query: every field is a default and
+# `semantic_query` is the raw text. Callers must not read meaning into what it
+# does not say — in particular, a low similarity score on an unparsed query says
+# nothing about whether the question was answerable.
+#
+# Groq's free tier caps at 8000 tokens per MINUTE and a parse costs ~2000, so
+# this is not a rare outage path: four searches in quick succession reach it.
+PARSE_FAILURE_PREFIXES = ("No LLM available", "All models failed", "LLM unavailable")
+
+
+def parse_failed(intent: "MovieSearchIntent") -> bool:
+    """True when no model produced this intent."""
+    return (intent.reasoning or "").startswith(PARSE_FAILURE_PREFIXES)
 
 # Curated typo / informal-spelling normalisation applied BEFORE the LLM.
 # Only includes terms where Llama 4 Scout 17B has been observed to drift
@@ -43,20 +297,228 @@ def _normalize_typos(text: str) -> str:
 class MovieSearchIntent(BaseModel):
     """Advanced search intent with semantic expansion and nuanced interpretation"""
     
+    # The boundary below is the whole point, and it was missing (2026-07-29).
+    # The description said HOW to expand but never WHAT belongs here, so the model
+    # dumped the entire request in — including things the vector space does not
+    # hold. Catalogue vectors are built from `cinematic_description`: tone, theme,
+    # subject, style. Nothing else is in there.
+    #
+    # Measured: "a film parents and kids will both enjoy, no violence or scares"
+    # expanded to "family-friendly, suitable for parents and children, gentle,
+    # wholesome, non-violent, safe for all ages" — none of which any film's
+    # description says about itself. Mean similarity fell to 44.7 and the shelf
+    # filled with Boss Baby and a direct-to-video Charlotte's Web sequel. The same
+    # request's AUDIENCE half was already captured correctly in mpaa_ratings; it
+    # simply should not have been in here as well.
+    #
+    # HONEST STATUS: this wording is architecturally right and NOT a fix. Measured
+    # after adding it — Spanish improved (mean 44.7 -> 50.9, E.T. to the top,
+    # Boss Baby gone) and English got worse (44.7 -> 37.7). One up, one down is
+    # noise from a non-deterministic parser, not a win. The model still emits
+    # "family-friendly, safe for all ages" here despite being told not to.
+    #
+    # The real problem is architectural and no prompt wording reaches it: a
+    # request with no thematic content HAS no good vector, because the catalogue
+    # only encodes what films are about. The fix is confidence-aware ranking —
+    # when mean similarity is low the structured filters (here mpaa G/PG) and
+    # vectorbox_score should carry the ordering instead of a meaningless cosine.
+    # That is a change to compute_blended_score, not to this string.
     semantic_query: str = Field(
-        ..., 
-        description="A rich, descriptive version of the user's request for vector search. You MUST expand keywords with synonyms and related themes. Example: Input 'gangsters' -> Output 'organized crime, mafia, mob, crime drama, violence, noir'."
+        ...,
+        description=(
+            "What the film is ABOUT, for vector search against plot/tone/theme "
+            "descriptions. Expand with synonyms and related themes: "
+            "'gangsters' -> 'organized crime, mafia, mob, crime drama, noir'.\n"
+            "ONLY include subject, theme, tone, mood, style and setting — the "
+            "things a description of the film would actually say.\n"
+            "NEVER include audience or suitability ('family-friendly', 'safe for "
+            "all ages', 'for kids'), age ratings, era, country, language, "
+            "popularity or quality. Every one of those has its own field, and "
+            "putting them here poisons the search with words no film description "
+            "contains.\n"
+            "If the request is entirely non-thematic (e.g. 'something my parents "
+            "and I would both finish'), put the user's own words here rather than "
+            "inventing themes — never leave this empty."
+        ),
     )
     year_min: Optional[int] = Field(None, description="Start year. Interpret '80s' as 1980, 'Modern' as 2010, 'Recent' as 2020.")
     year_max: Optional[int] = Field(None, description="End year. Interpret 'Old/Classic' as 1985, '90s' as 1999.")
     include_genres: Optional[List[str]] = Field(None, description="Official TMDB genres to include.")
     min_runtime_minutes: Optional[int] = Field(None, description="Min duration in minutes.")
     max_runtime_minutes: Optional[int] = Field(None, description="Max duration in minutes.")
-    min_rating: Optional[float] = Field(None, description="Minimum TMDB vote_average (0-10).")
+    # Measured 2026-07-29: "peliculas muy bien valoradas" set min_rating=8.0,
+    # which is roughly the top 2% of TMDB and cut the answer to THREE films. A
+    # vague quality request should widen towards good films, not narrow to a
+    # handful — every filter here ANDs with the others, so a strict one silently
+    # empties the shelf.
+    min_rating: Optional[float] = Field(
+        None,
+        description=(
+            "Minimum TMDB vote_average (0-10). ONLY when the user names a numeric "
+            "rating ('above 8', 'de 7 para arriba'). For vague quality requests "
+            "('well rated', 'muy bien valoradas', 'good') use min_vectorbox_score "
+            "instead — it is the catalogue's own blended score and does not "
+            "collapse the result set."
+        ),
+    )
+    # Described the PLUMBING, not the trigger — "used by the rail quality slider"
+    # tells the model which UI control owns it, never when a user request calls
+    # for it. Measured 2026-07-29: "peliculas muy bien valoradas" extracted no
+    # filter at all and fell through to a meaningless vector search. Third field
+    # to be bitten by this exact omission, after original_language and
+    # semantic_query.
+    min_vectorbox_score: Optional[float] = Field(
+        None,
+        description=(
+            "Minimum VectorBox quality score (0-100). SET THIS whenever the user "
+            "asks for quality without naming a source — 'well rated', 'acclaimed', "
+            "'highly regarded', 'the best', 'muy bien valoradas', 'lo mejor'. Use "
+            "75 for 'good/well rated' and 85 for 'the best/masterpieces'. Prefer "
+            "min_imdb_rating or min_metacritic only when the user names IMDb, "
+            "Metacritic or critics explicitly."
+        ),
+    )
     popularity_vibe: Literal["blockbuster", "hidden_gem", "any"] = Field("any", description="Select 'hidden_gem' for obscure/underrated, 'blockbuster' for famous/hits.")
-    original_language: Optional[str] = Field(None, description="ISO 639-1 language code.")
+    # The description used to say only HOW to format the value, never WHEN it
+    # applies — unlike its neighbours (popularity_vibe, quality_gate_bypass),
+    # which carry a trigger condition and behave. That omission is why the model
+    # filled it unprompted. Stating the condition is layer one; guard_language_filter()
+    # is layer two, because a prompt is a probability and the guard is a rule.
+    original_language: Optional[str] = Field(
+        None,
+        description=(
+            "ISO 639-1 language code (e.g. 'es', 'en', 'ko'). Use the 2-letter code, "
+            "never the language name. ONLY set this when the user explicitly names a "
+            "language, nationality or region of the FILM ('Korean cinema', 'in French', "
+            "'cine español'). NEVER infer it from the language the query is written in — "
+            "a Spanish speaker asking about grief wants films about grief, not Spanish films."
+        ),
+    )
+
+    @field_validator("original_language")
+    @classmethod
+    def _coerce_lang_iso(cls, v):
+        # Defends against the LLM emitting "Spanish" instead of "es".
+        return normalize_language(v)
+
     reference_movie: Optional[str] = Field(None, description="If user asks for movies 'like' X, extract title.")
     quality_gate_bypass: bool = Field(False, description="Set True when user seeks campy, trashy, guilty-pleasure, so-bad-its-good, or B-movie content. Keeps low-scored films in results.")
+
+    # Added 2026-07-29. "no se que ver" scored 0.306 confidence and was refused —
+    # but a person who does not know what to watch cannot be asked to be more
+    # specific, and refusing leaves them with nothing. It is not nonsense like
+    # "receta de tortilla de patatas"; it is an explicit request for a good
+    # default, and confidence alone cannot tell the two apart (0.306 vs 0.29).
+    # Only the model can, so it says so here.
+    open_request: bool = Field(
+        False,
+        description=(
+            "Set True when the user is explicitly asking for a suggestion WITHOUT "
+            "giving criteria — 'no se que ver', 'sorprendeme', 'recomiendame algo', "
+            "'what should I watch', 'surprise me'. False whenever the request "
+            "names any subject, mood, era, genre or constraint, however vague."
+        ),
+    )
+
+    # The one failure no confidence threshold can catch. Measured 2026-07-29:
+    # "family friendly, gentle, wholesome, safe for all ages" scores 0.548 over
+    # its top ten neighbours — HIGHER than "the loneliness of living in a huge
+    # city" at 0.505, one of the queries the engine answers best. The vector is
+    # not weakly right, it is confidently wrong: the catalogue is embedded on
+    # what a film is ABOUT, so "familiar" retrieves cinema ABOUT families
+    # (Uncle Buck, Charlotte's Web at VBS 55) rather than cinema suitable for
+    # watching with them. Only whoever reads the sentence can tell the two
+    # apart, so the model says which one it is.
+    audience_request: bool = Field(
+        False,
+        description=(
+            "Set True when the user is describing WHO will be watching rather "
+            "than what the film is about — 'una peli familiar', 'para ver con "
+            "niños', 'que guste a padres e hijos', 'a movie for the whole "
+            "family', 'something my parents and I can both enjoy'. Still set "
+            "include_genres (e.g. Family, Animation) as usual. False when the "
+            "sentence names a subject, mood or setting: 'una peli sobre una "
+            "familia rota' is a THEME, not an audience."
+        ),
+    )
+
+    # NEW (Sprint 1, migration o3p4q5r6s7t8): five filter dimensions sourced
+    # from OMDb/TMDB extended metadata. ~88-91% catalog coverage.
+    mpaa_ratings: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Allowed MPAA/TV content ratings as a list. Use for queries about "
+            "audience suitability. Examples: 'family-friendly' -> ['G','PG'], "
+            "'para niños' -> ['G','PG'], 'kids' -> ['G','PG'], 'teen' -> "
+            "['PG','PG-13'], 'rated R' / 'adultas' / 'maduras' -> ['R','NC-17']. "
+            "Leave null if the user does not constrain rating."
+        ),
+    )
+    min_oscar_wins: Optional[int] = Field(
+        None,
+        description=(
+            "Minimum count of Oscar wins the film must have. Use for queries "
+            "like 'oscar winners', 'ganadoras del Oscar', 'award-winning'. "
+            "Typically 1 (any Oscar) or 3 (multiple). Leave null otherwise."
+        ),
+    )
+    min_imdb_rating: Optional[float] = Field(
+        None,
+        description=(
+            "Minimum IMDb rating (0-10). Use for 'highly rated on IMDb', "
+            "'top-rated', 'bien valoradas'. Pair with min_rating only if "
+            "the user explicitly says 'on IMDb' / 'en IMDb'; otherwise prefer "
+            "min_rating (TMDB)."
+        ),
+    )
+    min_metacritic: Optional[int] = Field(
+        None,
+        description=(
+            "Minimum Metacritic score (0-100). Use for 'critically acclaimed', "
+            "'aclamadas por la crítica'. Typical cutoffs: 70 = generally "
+            "favourable, 80 = universal acclaim."
+        ),
+    )
+    safe_mode: bool = Field(
+        True,
+        description=(
+            "When True, exclude TMDB 'adult' titles from results. Default True. "
+            "Set False ONLY if the user explicitly requests adult / NSFW / porn "
+            "/ 'adultas para mayores' content."
+        ),
+    )
+
+    # Sprint 2 (2026-05-15): three more dimensions sourced from OMDb fields
+    # that are 87-99% populated catalog-wide.
+    countries: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Country-of-origin filter. Use OMDb's English country names as a "
+            "list: 'cine francés' -> ['France'], 'Korean cinema' -> ['South "
+            "Korea'], 'European films' -> ['France','Germany','Spain','Italy',"
+            "'United Kingdom']. Different from `original_language` (ISO code) — "
+            "use this when the user talks about geography, not language."
+        ),
+    )
+    spoken_languages: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Languages SPOKEN in the film (OMDb names, list): 'películas en "
+            "gallego' -> ['Galician'], 'spoken in Mandarin' -> ['Mandarin']. "
+            "A film can have several. Use this for queries about audio language "
+            "(richer than `original_language` which only names the primary)."
+        ),
+    )
+    awards_contains: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Free-text substrings to match against OMDb's `Awards` string. "
+            "'BAFTA winners' -> ['BAFTA'], 'Cannes' -> ['Palme', 'Cannes'], "
+            "'Golden Globe' -> ['Golden Globe']. AND-combined (every substring "
+            "must appear). Distinct from `min_oscar_wins` which is Oscar-only."
+        ),
+    )
+
     reasoning: str = Field(..., description="Briefly explain interpretation logic.")
 
 class ReasonedMovie(BaseModel):
@@ -70,16 +532,32 @@ class DeepAnalysisResponse(BaseModel):
 
 # 2. Dual-Model Architecture
 
-def get_scout_client():
+def get_llm_client():
     """LLM client: Groq preferred, Gemini fallback."""
     groq_key = os.environ.get("GROQ_API_KEY")
     gemini_key = os.environ.get("GEMINI_API_KEY")
+    # max_retries=0 is load-bearing, not tuning. The SDK default is 2, and on a
+    # 429 it sleeps 14-16s and retries the SAME model before the exception ever
+    # reaches the PARSER_CHAIN fallback below — which exists precisely because
+    # "each model has a SEPARATE TPM bucket, so a per-minute 429 on one cascades
+    # to the next" (llm_models.py). With the SDK retrying first, that cascade
+    # never ran: measured 2026-07-26, a burst of 10 identical parses went from
+    # ~1.4s cold to a 16.4s median, with `Retrying request ... in 15 seconds`
+    # in the logs. scripts/backfill_descriptions.py already set this; the
+    # interactive path never inherited it.
     if groq_key:
-        client = AsyncOpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+        client = AsyncOpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=groq_key,
+            timeout=30.0,
+            max_retries=0,
+        )
     elif gemini_key:
         client = AsyncOpenAI(
             api_key=gemini_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
+            max_retries=0,
         )
     else:
         logger.warning("Neither GROQ_API_KEY nor GEMINI_API_KEY found.")
@@ -90,12 +568,19 @@ def get_scout_client():
 
 async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     """
-    Tier 1: Uses Llama 4 Scout for sub-millisecond intent parsing.
+    Tier-1 intent parser. Primary = GPT-OSS-120B (chosen 2026-06-29 after a live
+    benchmark on the real prompt + response model: flat ~1.1s, 5/5 valid — the
+    fastest and most consistent; effort='low'). Fallback = Qwen3-32B
+    (vendor-diverse, proven on the multilingual panel — no quinqui→Almodóvar
+    hallucination, real country lists, correct awards_contains; effort='none').
+    Both qwen models spike to ~18s on some queries, so neither is the primary.
+    Llama 3.3 70B removed (Groq decommission 2026-08-16).
     """
     user_query = _normalize_typos(user_query)
-    client = get_scout_client()
+    client = get_llm_client()
     if not client:
-        return MovieSearchIntent(semantic_query=user_query, reasoning="No LLM available")
+        return finalize_intent(
+            MovieSearchIntent(semantic_query=user_query, reasoning="No LLM available"), user_query)
 
     system_prompt = """You are an expert film archivist. Translate natural language into structured database filters.
 
@@ -131,6 +616,37 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
        - "spaghetti western" -> "Italian western, gunslinger, Sergio Leone style"
        - "giallo" -> "Italian giallo, slasher mystery, Argento, Bava"
        - "j-horror" / "jhorror" -> "Japanese horror, ghosts, Ringu, Ju-On style"
+    8. Extended filter dimensions (only fill when the user query implies them):
+       - `mpaa_ratings`: list of allowed MPAA codes.
+            "family", "para niños", "para toda la familia" -> ["G","PG"]
+            "teen", "adolescentes" -> ["PG","PG-13"]
+            "adult", "rated R", "maduras", "para adultos" -> ["R","NC-17"]
+       - `min_oscar_wins`: integer.
+            "oscar winners", "ganadoras del Oscar", "premiadas en los Oscars" -> 1
+            "multiples Oscars", "que ganaron varios Oscars" -> 3
+       - `min_imdb_rating`: float 0-10. Only when user EXPLICITLY mentions IMDb.
+            "bien valoradas en IMDb", "highly rated on IMDb" -> 7.5
+       - `min_metacritic`: int 0-100. For critical acclaim phrasing.
+            "critically acclaimed", "aclamadas por la crítica" -> 75
+            "universally acclaimed" -> 85
+       - `safe_mode`: bool. Default True. Set False ONLY when user explicitly
+         seeks adult/NSFW/porn content (very rare; conservative default).
+       - `countries`: list of country-of-origin names (OMDb English form).
+            "cine francés" -> ["France"]
+            "Korean cinema" -> ["South Korea"]
+            "cine español" -> ["Spain"]
+            "cine japonés" / "cine asiático" -> ["Japan"] / ["Japan","South Korea","China","Hong Kong","Taiwan"]
+            "European films" -> ["France","Germany","Spain","Italy","United Kingdom"]
+         Use this for GEOGRAPHY, not language. Different from `original_language`.
+       - `spoken_languages`: list of OMDb language names spoken in the film.
+            "en gallego" / "in Galician" -> ["Galician"]
+            "in Mandarin" -> ["Mandarin"]
+            "Spanish-speaking" -> ["Spanish"]
+       - `awards_contains`: list of substrings to match in OMDb's Awards string.
+            "BAFTA winners" -> ["BAFTA"]
+            "Cannes" / "Palme d'Or" -> ["Palme"]  (the canonical substring in the Awards text)
+            "Golden Globe" -> ["Golden Globe"]
+         AND-combined — every substring must appear in `awards_text`.
     """
 
     messages = [
@@ -138,44 +654,60 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
         {"role": "user", "content": f"### USER QUERY ###\n{user_query}\n### END USER QUERY ###"},
     ]
 
-    primary_model = "meta-llama/llama-4-scout-17b-16e-instruct" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
-    fallback_model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else None
+    # Parser model order lives in services/llm_models.PARSER_CHAIN (single source
+    # of truth): gpt-oss-120b primary (~1.1s, 5/5 valid), qwen3.6-27b the
+    # vendor-diverse fallback. Reasoning-effort from the shared REASONING_EFFORT.
+    _EFFORT = REASONING_EFFORT
+    if os.environ.get("GROQ_API_KEY"):
+        primary_model, fallback_model = PARSER_CHAIN[0], PARSER_CHAIN[1]
+    else:
+        primary_model, fallback_model = "gemini-2.5-flash", None
 
+    # Every LLM-produced intent goes through guard_language_filter: temperature=0
+    # is near-deterministic, not deterministic (measured 6/10 vs 4/10 on identical
+    # input), so the rule runs on the way out rather than trusting the prompt.
     try:
-        return await client.chat.completions.create(
+        return finalize_intent(await client.chat.completions.create(
             model=primary_model,
             response_model=MovieSearchIntent,
             messages=messages,
-            temperature=0.1,
-        )
+            temperature=0,  # structured extraction — determinism over creativity (cuts search volatility)
+            extra_body={"reasoning_effort": _EFFORT[primary_model]} if primary_model in _EFFORT else None,
+        ), user_query)
     except Exception as e:
         if fallback_model:
             logger.warning(f"Primary model failed: {e}. Trying fallback.")
             try:
-                return await client.chat.completions.create(
+                return finalize_intent(await client.chat.completions.create(
                     model=fallback_model,
                     response_model=MovieSearchIntent,
                     messages=messages,
-                    temperature=0.1,
-                )
+                    temperature=0,
+                    extra_body={"reasoning_effort": _EFFORT[fallback_model]} if fallback_model in _EFFORT else None,
+                ), user_query)
             except Exception as e2:
                 logger.warning(f"Fallback model also failed: {e2}.")
-                return MovieSearchIntent(
+                # The guards are pure string rules — they need no model, and
+                # they are the only thing standing between a rate-limited user
+                # and a bad answer. Measured 2026-07-29: with the parser down,
+                # "una peli familiar para ver con niños" lost its audience flag
+                # and fell to the vector, returning Uncle Buck at VBS 57.
+                return finalize_intent(MovieSearchIntent(
                     semantic_query=user_query,
                     reasoning=f"All models failed: {e2}"
-                )
+                ), user_query)
         logger.warning(f"Model failed: {e}.")
-        return MovieSearchIntent(
+        return finalize_intent(MovieSearchIntent(
             semantic_query=user_query,
             reasoning=f"LLM unavailable: {e}"
-        )
+        ), user_query)
 
 async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List[ReasonedMovie]:
     """
-    Tier 2: Uses Llama 3.3 70B for Deep Analysis (RAG Re-ranking).
+    Tier 2: Uses GPT-OSS-120B for Deep Analysis (RAG Re-ranking).
     Analyzing Top 20 candidates to find the Top 5 that match the *nuance*.
     """
-    client = get_scout_client()
+    client = get_llm_client()
     if not client:
         return []
 
@@ -197,7 +729,7 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
     For each selected movie, write a 1-sentence 'AI Reason' explaining why it fits this specific request perfectly.
     """
 
-    model = "llama-3.3-70b-versatile" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
+    model = "openai/gpt-oss-120b" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
     try:
         response = await client.chat.completions.create(
             model=model,
@@ -207,6 +739,21 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
                 {"role": "user", "content": f"Candidates:\n{context_str}"},
             ],
             temperature=0.3, # Slight creativity for reasoning
+            # gpt-oss-120b is a reasoning model (replaced 70B 2026-06-29) — min
+            # effort keeps the structured rerank clean. None for gemini.
+            extra_body={"reasoning_effort": "low"} if model.startswith("openai/") else None,
+            # One attempt. instructor defaults to 3, and this call carries the
+            # whole 20-candidate context (~2000 tokens), so a failure costs ~7500
+            # of Groq's 8000-token MINUTE budget and starves the next user's
+            # parse. Observed 2026-07-29: when the model answers with prose
+            # instead of calling the tool it does so identically all three times,
+            # so the retries buy nothing and the fallback below — keep the
+            # ranking we already have — is a perfectly good answer.
+            #
+            # Same defect as the parser's client-level max_retries, different
+            # layer: that one is the OpenAI SDK retrying transport, this one is
+            # instructor retrying validation.
+            max_retries=1,
         )
         return response.selected_items
     except Exception as e:

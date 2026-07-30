@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { Info, X } from "lucide-react";
 import { m, AnimatePresence } from "framer-motion";
 import { useLanguage } from "@/components/language-provider";
@@ -20,7 +20,7 @@ export function InfoTooltip({ id, title, description, className = "" }: InfoTool
         <div className={`relative inline-block ${className}`}>
             <button
                 onClick={() => setIsOpen(!isOpen)}
-                className="p-1 rounded-full hover:bg-primary/10 text-muted-foreground hover:text-primary transition-colors"
+                className="p-1 hover:bg-primary/10 text-fg-3 hover:text-primary transition-colors"
                 aria-label={t("aria.more_info")}
             >
                 <Info className="size-4" />
@@ -35,7 +35,7 @@ export function InfoTooltip({ id, title, description, className = "" }: InfoTool
                             animate={{ opacity: 1 }}
                             exit={{ opacity: 0 }}
                             onClick={() => setIsOpen(false)}
-                            className="fixed inset-0 bg-zinc-950/20 backdrop-blur-sm z-40"
+                            className="fixed inset-0 bg-bg/40 backdrop-blur-sm z-40"
                         />
 
                         {/* Tooltip */}
@@ -43,18 +43,18 @@ export function InfoTooltip({ id, title, description, className = "" }: InfoTool
                             initial={{ opacity: 0, scale: 0.95, y: -10 }}
                             animate={{ opacity: 1, scale: 1, y: 0 }}
                             exit={{ opacity: 0, scale: 0.95, y: -10 }}
-                            className="absolute left-0 top-full mt-2 w-80 bg-card border rounded-lg shadow-2xl p-4 z-50 origin-top-left"
+                            className="absolute left-0 top-full mt-2 w-80 bg-bg-2 border border-border-2 shadow-acid p-4 z-50 origin-top-left"
                         >
                             <div className="flex items-start justify-between gap-2 mb-2">
-                                <h4 className="font-bold text-sm">{title}</h4>
+                                <h4 className="font-mono font-bold text-sm text-primary uppercase">{title}</h4>
                                 <button
                                     onClick={() => setIsOpen(false)}
-                                    className="text-muted-foreground hover:text-foreground transition-colors"
+                                    className="text-fg-3 hover:text-primary transition-colors"
                                 >
                                     <X className="size-4" />
                                 </button>
                             </div>
-                            <p className="text-sm text-muted-foreground leading-relaxed">{description}</p>
+                            <p className="text-sm text-fg-2 leading-relaxed font-mono">{description}</p>
                         </m.div>
                     </>
                 )}
@@ -67,11 +67,14 @@ export function InfoTooltip({ id, title, description, className = "" }: InfoTool
 export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
     const [isOpen, setIsOpen] = useState(false);
     const [dismissed, setDismissed] = useState(false);
-    const mountedRef = useRef(false);
+    // useState (not useRef) — mutating a ref does not trigger re-render, so
+    // the `if (!mounted) return null` guard below would stay truthy forever
+    // and the tooltip would never paint. Same trap as Dashboard (fd9122f).
+    const [mounted, setMounted] = useState(false);
     const { t } = useLanguage();
 
     useEffect(() => {
-        mountedRef.current = true;
+        setMounted(true);
         const seen = localStorage.getItem("app_tooltip_seen");
         if (!seen) {
             // Auto-show on first visit after a delay
@@ -93,6 +96,16 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
         setIsOpen(!isOpen);
     };
 
+    // Current sidebar nav (handoff): feed · similars · space · groups · watchlist · magic box.
+    const guideRows: { icon: string; label: string; desc: string }[] = [
+        { icon: "🎬", label: "sidebar.feed", desc: "guide.feed" },
+        { icon: "🎞️", label: "sidebar.more_like_this", desc: "guide.similars" },
+        { icon: "🌌", label: "sidebar.space", desc: "guide.space" },
+        { icon: "👥", label: "sections.group_vibe", desc: "guide.groups" },
+        { icon: "📋", label: "sidebar.watchlist", desc: "guide.watchlist" },
+        { icon: "✨", label: "sidebar.magic_box", desc: "guide.magic_box" },
+    ];
+
     // Portal content
     const modalContent = (
         <AnimatePresence>
@@ -104,7 +117,7 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         onClick={() => setIsOpen(false)}
-                        className="fixed inset-0 bg-zinc-950/50 backdrop-blur-sm z-[49]"
+                        className="fixed inset-0 bg-bg/60 backdrop-blur-sm z-[49]"
                     />
 
                     {/* Tooltip - z-[51] to be above Sidebar */}
@@ -112,7 +125,7 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
                         initial={{ opacity: 0, x: -20 }}
                         animate={{ opacity: 1, x: 0 }}
                         exit={{ opacity: 0, x: -20 }}
-                        className={`fixed w-80 bg-zinc-950 border border-primary shadow-[0_0_30px_rgba(204,255,0,0.1)] p-6 z-[51] ${isCollapsed
+                        className={`fixed w-80 bg-bg-2 border border-primary shadow-acid p-6 z-[51] ${isCollapsed
                             ? "left-[80px] bottom-4"
                             : "left-[320px] bottom-4"
                             }`}
@@ -121,65 +134,32 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
                             <h3 className="font-mono font-bold text-lg text-primary uppercase">{t("guide.title")}</h3>
                             <button
                                 onClick={handleDismiss}
-                                className="text-zinc-500 hover:text-primary transition-colors"
+                                className="text-fg-3 hover:text-primary transition-colors"
                             >
                                 <X className="size-4" />
                             </button>
                         </div>
 
-                        <div className="space-y-4 text-xs text-zinc-400 font-mono">
+                        <div className="space-y-4 text-xs text-fg-2 font-mono">
                             <p>
-                                <strong className="text-white">{t("guide.welcome")}</strong>
+                                <strong className="text-fg">{t("guide.welcome")}</strong>
                             </p>
 
                             <ul className="space-y-3">
-                                <li className="flex gap-2">
-                                    <span className="text-lg">🎬</span>
-                                    <div>
-                                        <strong className="text-white block uppercase tracking-wider">{t("sidebar.feed")}</strong>
-                                        {t("guide.feed")}
-                                    </div>
-                                </li>
-                                <li className="flex gap-2">
-                                    <span className="text-lg">🎨</span>
-                                    <div>
-                                        <strong className="text-white block uppercase tracking-wider">{t("sidebar.grid")}</strong>
-                                        {t("guide.grid")}
-                                    </div>
-                                </li>
-                                <li className="flex gap-2">
-                                    <span className="text-lg">📋</span>
-                                    <div>
-                                        <strong className="text-white block uppercase tracking-wider">{t("sidebar.watchlist")}</strong>
-                                        {t("guide.watchlist")}
-                                    </div>
-                                </li>
-                                <li className="flex gap-2">
-                                    <span className="text-lg">✨</span>
-                                    <div>
-                                        <strong className="text-white block uppercase tracking-wider">{t("sidebar.ai_search")}</strong>
-                                        {t("guide.ai_search")}
-                                    </div>
-                                </li>
-                                <li className="flex gap-2">
-                                    <span className="text-lg">🎯</span>
-                                    <div>
-                                        <strong className="text-white block uppercase tracking-wider">{t("sidebar.more_like_this")}</strong>
-                                        {t("guide.more_like_this")}
-                                    </div>
-                                </li>
-                                <li className="flex gap-2">
-                                    <span className="text-lg">👥</span>
-                                    <div>
-                                        <strong className="text-white block uppercase tracking-wider">{t("group_vibe.title")}</strong>
-                                        {t("group_vibe.desc")}
-                                    </div>
-                                </li>
+                                {guideRows.map((row) => (
+                                    <li key={row.label} className="flex gap-2">
+                                        <span className="text-lg">{row.icon}</span>
+                                        <div>
+                                            <strong className="text-fg block uppercase tracking-wider">{t(row.label)}</strong>
+                                            {t(row.desc)}
+                                        </div>
+                                    </li>
+                                ))}
                             </ul>
 
                             <button
                                 onClick={handleDismiss}
-                                className="mt-2 w-full px-4 py-2 bg-primary text-black rounded-none hover:bg-primary/90 transition-colors text-xs font-bold uppercase tracking-widest"
+                                className="mt-2 w-full px-4 py-2 bg-primary text-primary-ink hover:bg-primary/90 transition-colors text-xs font-bold uppercase tracking-widest"
                             >
                                 {t("guide.got_it")}
                             </button>
@@ -190,7 +170,7 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
         </AnimatePresence>
     );
 
-    if (!mountedRef.current) return null;
+    if (!mounted) return null;
 
     // If we are rendering the button
     return (
@@ -198,8 +178,8 @@ export function AppTooltip({ isCollapsed }: { isCollapsed?: boolean }) {
             <button
                 onClick={toggleOpen}
                 className={`
-                    w-full flex items-center gap-4 px-3 py-2 transition-all group
-                    text-zinc-500 hover:text-white hover:bg-zinc-900/50
+                    w-full flex items-center gap-4 px-3 py-2 transition-colors group
+                    text-fg-3 hover:text-fg hover:bg-bg-2
                     ${isCollapsed ? "justify-center" : ""}
                 `}
                 title={t("app.guide")}

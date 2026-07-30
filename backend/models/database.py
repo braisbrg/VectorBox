@@ -71,7 +71,6 @@ class Movie(Base):
     original_language = Column(String(10))  # New: For language filtering
     keywords = Column(ARRAY(String))  # New: For vibe filtering
     letterboxd_uri = Column(String(500))  # From CSV
-    letterboxd_rating = Column(Float)  # Scraped from Popular Chart
     directors = Column(ARRAY(String))  # Signal B: Auteur Expert
     cast = Column(ARRAY(String))  # Top 3 Cast Members
     
@@ -88,13 +87,36 @@ class Movie(Base):
     has_enriched_embedding = Column(Boolean, default=False, server_default="false")  # LLM-enriched vector
     enriched_by_model = Column(String, nullable=True)  # Stores the Groq model ID used to generate the cinematic embedding description
     cinematic_description = Column(Text, nullable=True)  # LLM-generated cinematic description used for embedding
-    embedding_quality_score = Column(Float, nullable=True)  # Cosine sim of stored Qdrant vector vs MiniLM reference (0-1). NULL = unchecked.
+    embedding_quality_score = Column(Float, nullable=True)  # Cosine sim of stored Qdrant vector vs embeddinggemma name-free reference (0-1). NULL = unchecked.
 
     # Release tracking
     release_date_us = Column(Date, nullable=True)
     release_date_es = Column(Date, nullable=True)
     release_date_ww = Column(Date, nullable=True)
     is_upcoming = Column(Boolean, nullable=False, server_default="false")
+
+    # Extended metadata (added 2026-05-15 — see migration o3p4q5r6s7t8)
+    mpaa_rating = Column(String(10), nullable=True)            # OMDb Rated (G/PG/PG-13/R/NC-17/NR/TV-14)
+    awards_text = Column(Text, nullable=True)                  # OMDb Awards raw string
+    oscar_wins = Column(Integer, nullable=False, server_default="0")
+    omdb_countries = Column(ARRAY(String), nullable=True)      # OMDb Country split (e.g. ["USA", "UK"])
+    omdb_languages = Column(ARRAY(String), nullable=True)      # OMDb Language split (e.g. ["English", "Spanish"])
+    # DATA-1: `collection_id` is declared once above (line ~85, with index=True).
+    # The duplicate definition that used to sit here silently shadowed it and
+    # dropped the index attr from the model. The DB already has the physical
+    # index (ix_movies_collection_id), so no migration is needed — this just
+    # realigns the ORM with the live schema.
+    collection_name = Column(String(200), nullable=True)
+    is_adult = Column(Boolean, nullable=False, server_default="false")
+    # Soft-delete flag for non-films (UFC/AEW events, wrestling PPVs, multi-hour
+    # cartoon vaults, etc.). Honoured by MOVIE_QUALITY_GATE so they never appear
+    # in recommendations — but NOT consulted by watchlist / history / direct
+    # lookup paths, so user-chosen entries remain visible.
+    is_excluded = Column(Boolean, nullable=False, server_default="false")
+    tagline = Column(Text, nullable=True)                      # TMDB tagline
+    # DATA-1: `backdrop_path` is already declared above (line ~67). The duplicate
+    # that used to sit here silently shadowed it (no behavioural change, but
+    # confusing) — removed.
 
     # Metadata freshness
     last_metadata_refresh = Column(DateTime, nullable=True)
@@ -186,16 +208,38 @@ class StreamingProvider(Base):
 class MovieAvailability(Base):
     """Cache for movie streaming availability by country"""
     __tablename__ = "movie_availability"
-    
+
     id = Column(Integer, primary_key=True, index=True)
     movie_id = Column(Integer, ForeignKey("movies.id", ondelete="CASCADE"), nullable=False)
     country_code = Column(String(2), nullable=False)  # ISO 3166-1 alpha-2
     providers = Column(JSONB)  # List of provider names/IDs
     last_updated = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
-    
+
     # Relationships
     movie = relationship("Movie", backref="availability")
-    
+
     __table_args__ = (
         Index('idx_movie_country', 'movie_id', 'country_code', unique=True),
+    )
+
+
+class ZipUpload(Base):
+    """Letterboxd ZIP-export idempotency log (F-35).
+
+    Keyed by (user_id, sha256 of the uploaded bytes). If the same user
+    re-uploads the same file, the second request is a no-op. Also stores
+    `max_watched_date` so a later upload with an older max is flagged as
+    a likely stale-backup warning.
+    """
+    __tablename__ = "zip_uploads"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    films_count = Column(Integer, nullable=True)
+    max_watched_date = Column(Date, nullable=True)
+    processed_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        Index("uq_zip_uploads_user_sha", "user_id", "sha256", unique=True),
     )

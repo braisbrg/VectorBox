@@ -1,14 +1,16 @@
 """
 RSS Service for syncing Letterboxd data and calculating group vibes
 """
+import asyncio
 import feedparser
+import httpx
 import logging
 import re
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import delete, cast, select, Date, func, case
+from sqlalchemy import delete, cast, select, Date, func
 import numpy as np
 
 from models.database import User, Movie, UserRating
@@ -20,6 +22,29 @@ from services.embedding_service import EmbeddingService
 from services.movie_service import MovieService
 
 logger = logging.getLogger(__name__)
+
+
+def rss_watch_count_should_bump(rewatch: bool, incoming_date, existing_date) -> bool:
+    """Decide whether an RSS diary entry should increment watch_count.
+
+    Bump ONLY when Letterboxd flags the entry as a rewatch AND the incoming
+    watched_date is strictly later than the one already stored. This is what
+    keeps the sync idempotent: re-processing the same diary entry on every cron
+    tick must NOT inflate watch_count (the historical Wolf Beach / Eterna bug,
+    fixed 2026-05-10). ZIP uploads remain authoritative — they overwrite
+    watch_count via `excluded`.
+
+    Extracted to a module-level function so the regression test exercises the
+    REAL production rule instead of a hand-copied replica.
+    """
+    if not rewatch:
+        return False
+    if existing_date is None:
+        return True
+    if incoming_date is None:
+        return False
+    return incoming_date > existing_date
+
 
 class RSSService:
     def __init__(
@@ -44,11 +69,13 @@ class RSSService:
                     api_key=os.getenv("GROQ_API_KEY"),
                     base_url="https://api.groq.com/openai/v1",
                     max_retries=0,
+                    timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
                 )
             elif os.getenv("GEMINI_API_KEY"):
                 self.groq_client = AsyncOpenAI(
                     api_key=os.getenv("GEMINI_API_KEY"),
                     base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                    timeout=30.0,  # REL-4: bound LLM calls (SDK default is 600s)
                 )
         except ImportError:
             logger.warning("openai package not found, LLM features disabled for RSS")
@@ -61,9 +88,23 @@ class RSSService:
         """
         url = f"https://letterboxd.com/{username}/rss/"
         logger.info(f"Fetching RSS feed for {username}: {url}")
-        
-        feed = feedparser.parse(url)
-        
+
+        # REL-1: fetch the feed via a timed httpx client instead of letting
+        # feedparser.parse(url) do its own *unbounded, blocking* urllib fetch
+        # (global socket timeout None → can hang the worker forever). Parse the
+        # downloaded bytes in an executor so the (CPU-ish) XML parse also stays
+        # off the event loop.
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                resp = await client.get(url, headers={"User-Agent": "VectorBox/1.0 (+rss-sync)"})
+                resp.raise_for_status()
+                raw = resp.content
+        except httpx.HTTPError as e:
+            logger.error(f"Error fetching RSS feed for {username}: {e}")
+            return []
+
+        feed = await asyncio.get_running_loop().run_in_executor(None, feedparser.parse, raw)
+
         if feed.bozo:
             logger.error(f"Error parsing RSS feed for {username}: {feed.bozo_exception}")
             return []
@@ -290,8 +331,8 @@ class RSSService:
                 # remain authoritative — they overwrite watch_count via excluded.
                 incoming_date = item.get('watched_date')
                 existing_date = existing_rating.watched_date if existing_rating else None
-                rewatch_flag = bool(item.get('rewatch')) and (
-                    existing_date is None or (incoming_date is not None and incoming_date > existing_date)
+                rewatch_flag = rss_watch_count_should_bump(
+                    bool(item.get('rewatch')), incoming_date, existing_date
                 )
 
                 stmt = insert(UserRating).values(
@@ -374,7 +415,7 @@ class RSSService:
                 
         return stats
 
-    async def get_group_recommendations_hybrid(self, usernames: List[str]) -> List[Dict]:
+    async def get_group_recommendations_hybrid(self, usernames: List[str], sources: Optional[Dict[str, str]] = None, focus: Optional[str] = None) -> List[Dict]:
         """
         Group Vibe 2.0: Hybrid Watchlist Priority + Discovery
         1. Collect Taste Vectors & Watchlists for all users (DB & Guest).
@@ -390,14 +431,18 @@ class RSSService:
         # 1. Collect Data
         user_data = [] # List of {'username': str, 'vector': np.array}
         watchlist_candidates = set()
+        watchlist_counts: Dict[int, int] = {}  # tmdb_id -> how many members saved it
         excluded_ids = set()
         
         for username in usernames:
-            # Find user in DB
-            stmt = select(User).where(User.username == username)
-            result = await self.db.execute(stmt)
-            user = result.scalar_one_or_none()
-            
+            # Find user in DB — unless B-34 forces the Letterboxd/RSS path for
+            # this handle (then the DB account with the same name is ignored).
+            user = None
+            if (sources or {}).get(username) != "letterboxd":
+                stmt = select(User).where(User.username == username)
+                result = await self.db.execute(stmt)
+                user = result.scalar_one_or_none()
+
             user_vector = None
             
             if user:
@@ -424,6 +469,8 @@ class RSSService:
                 result = await self.db.execute(stmt)
                 watchlist_ids = result.scalars().all()
                 watchlist_candidates.update(watchlist_ids)
+                for wid in watchlist_ids:
+                    watchlist_counts[wid] = watchlist_counts.get(wid, 0) + 1
                 
                 # C. Get Watched (Exclusions)
                 stmt = select(Movie.tmdb_id).join(UserRating).where(
@@ -444,6 +491,17 @@ class RSSService:
                     # A. Get Taste Vector (Avg of top 50 recent items)
                     # RSS items are already sorted by date usually
                     target_items = items[:50]
+                    # When the guest RATES on Letterboxd, mirror the DB-user
+                    # construction (>=4.0 films only) instead of rating-blind
+                    # "everything watched" — verified 2026-07-05 that rating-blind
+                    # centroids still work (likes blend carries preference), but
+                    # rating signal is strictly better when present.
+                    rated = [i for i in target_items if i.get('rating') is not None]
+                    if len(rated) >= 10:
+                        liked = [i for i in rated if i['rating'] >= 3.5]
+                        if len(liked) >= 5:
+                            target_items = liked
+                            logger.info(f"Guest {username}: rating-filtered centroid ({len(liked)} liked of {len(rated)} rated)")
                     tmdb_ids = [i['tmdb_id'] for i in target_items if i.get('tmdb_id')]
                     
                     if tmdb_ids:
@@ -454,7 +512,24 @@ class RSSService:
                             logger.info(f"Guest {username} Vector built from {len(titles)} movies: {', '.join(titles[:5])}...")
                         else:
                             logger.warning(f"Guest {username}: No vectors found for top 15 items.")
-                            
+
+                    # B-38: enrich (or substitute) the RSS centroid with a
+                    # likes-based centroid scraped from /{user}/likes/films/.
+                    # Likes carry all-time preference signal; the 0.6/0.4 blend
+                    # favors recency but lets all-time taste differentiate
+                    # this guest from "someone who watched some films lately".
+                    likes_vector = await self._maybe_fetch_likes_centroid(username)
+                    if likes_vector is not None:
+                        if user_vector is not None and len(likes_vector) == len(user_vector):
+                            blended = 0.6 * user_vector + 0.4 * likes_vector
+                            n = float(np.linalg.norm(blended))
+                            if n > 0:
+                                user_vector = blended / n
+                                logger.info(f"[GroupSync B-38] {username} centroid blended 0.6 RSS / 0.4 likes")
+                        elif user_vector is None:
+                            user_vector = likes_vector
+                            logger.info(f"[GroupSync B-38] {username} centroid from likes only (no RSS signal)")
+
                     # B. Get Watched (Exclusions)
                     # Note: We cannot get watchlist for guests via RSS easily
                     for item in items:
@@ -478,25 +553,22 @@ class RSSService:
         # Remove watched movies from candidates
         final_candidates = list(watchlist_candidates - excluded_ids)
         
-        # Fallback / Discovery Mode
-        # If we have few candidates (e.g. < 50), fill with Discovery items
-        if len(final_candidates) < 50:
-            needed = 50 - len(final_candidates)
-            # Increase fetch limit to 500 to cast a wider net for "good" movies that might be slightly further away
-            fetch_limit = 500 + len(excluded_ids)
-            logger.info(f"Low candidate count ({len(final_candidates)}). Fetching {fetch_limit} discovery items (needed: {needed}).")
-            
+        # Discovery — ALWAYS runs (2026-07-05): it used to fire only when the
+        # watchlist pool was <50 candidates, which made group recs literally
+        # "the registered member's watchlist" for anyone with a full watchlist.
+        # The whole catalogue competes now; the watchlist keeps a small bonus.
+        if True:
             # Discovery Mode: Union of Individual Searches
             # Instead of searching for the "Average User" (which might be nobody),
             # we search for movies similar to EACH user and combine them.
             # This ensures every candidate is strongly liked by at least one person.
-            
+
             discovery_candidates = set()
-            
+
             # We need to fetch enough items to survive filtering
-            per_user_limit = max(50, int(400 / len(user_vectors))) 
-            
-            logger.info(f"Low candidate count ({len(final_candidates)}). Discovery Mode: Union of Individual Searches (Limit {per_user_limit}/user).")
+            per_user_limit = max(50, int(400 / len(user_vectors)))
+
+            logger.info(f"Discovery Mode: Union of Individual Searches (Limit {per_user_limit}/user) on top of {len(final_candidates)} watchlist candidates.")
 
             for i, u_vec in enumerate(user_vectors):
                 try:
@@ -574,24 +646,41 @@ class RSSService:
                 })
             
             # Scoring Logic
-            # CHANGED: Use MAX similarity instead of AVG similarity.
-            # Why? We want to surface movies that at least one person LOVES.
-            # The "Hate Penalty" below will still protect us from polarizing movies.
-            max_sim = np.max(similarities)
             avg_sim = np.mean(similarities)
             min_sim = np.min(similarities)
-            
-            # Base Score = Max Similarity (Reward passion)
-            final_score = max_sim
-            
+
+            # FOCUS ("tonight favours X", 2026-07-05): base the score on the
+            # focused member's similarity instead of the group max, and shrink
+            # the watchlist bonus — DB members' watchlists otherwise dominate
+            # the top (guests' watchlists aren't reachable, so the pool skews
+            # toward the registered user's saved films).
+            focus_sim = None
+            if focus:
+                focus_sim = next((c["score"] for c in contributors if c["username"] == focus), None)
+
+            # WL bonus is a NUDGE, not a lock: 0.15 spanned the whole observed
+            # score band (~0.65-0.85) and pinned watchlist films to the top.
+            # BALANCED = AVG similarity — MUTUAL fit (2026-07-05): max-based
+            # scoring let a film one member loves (84/68) outrank a film both
+            # like (81/81), which read as "the recs are all mine". The
+            # hate-penalty below still vetoes polarizing films.
+            if focus_sim is not None:
+                final_score = focus_sim
+                wl_bonus = 0.03
+            else:
+                final_score = avg_sim
+                wl_bonus = 0.06
+
             # Penalty: If ANY user hates it (similarity < 0.65), penalize heavily
             # This ensures "Group Cohesion" - no movie that one person hates
             if min_sim < 0.65:
                 final_score *= 0.5 # 50% penalty
-            
-            # Bonus: Watchlist
-            if tmdb_id in watchlist_candidates:
-                final_score += 0.15 # Significant boost
+
+            # Bonus: Watchlist — only when 2+ MEMBERS saved it (2026-07-05):
+            # a single-member bonus hard-favours whoever's watchlist is
+            # reachable (usually just the requester — guest watchlists aren't).
+            if watchlist_counts.get(tmdb_id, 0) >= 2:
+                final_score += wl_bonus
                 
             scored_results.append({
                 "tmdb_id": tmdb_id,
@@ -628,3 +717,103 @@ class RSSService:
         except Exception as e:
             logger.error(f"Error fetching vectors: {e}")
         return vectors
+
+    async def _maybe_fetch_likes_centroid(self, username: str) -> Optional[np.ndarray]:
+        """B-38: build a centroid from `/{user}/likes/films/` for the
+        RSS-only guest branch of group-sync.
+
+        Gated by a 6h Redis lock (`groupsync:likes_scraped:{username}`) so
+        a single bad actor cannot trigger repeated scrapes by re-hitting
+        `/api/rss/group/vibe`. The computed centroid itself is cached
+        (`groupsync:likes_vector:{username}`) with the same TTL — within
+        the lock window, subsequent group-sync calls hit Redis only.
+
+        Failures (network, no likes, no resolvable slugs, all films missing
+        from Qdrant) return None — caller treats that as "no enrichment",
+        never as a hard error.
+        """
+        import json as _json
+        import os
+        import redis.asyncio as aioredis
+        from services.scraper_service import ScraperService
+
+        redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
+        r = aioredis.from_url(redis_url, decode_responses=True)
+        cache_key = f"groupsync:likes_vector:{username}"
+        lock_key = f"groupsync:likes_scraped:{username}"
+        ttl_s = 6 * 60 * 60
+
+        try:
+            cached = await r.get(cache_key)
+            if cached:
+                try:
+                    arr = np.array(_json.loads(cached), dtype=np.float32)
+                    if arr.size:
+                        logger.info(f"[GroupSync B-38] likes-centroid cache hit for {username}")
+                        return arr
+                except Exception:
+                    pass  # corrupt cache — fall through to rebuild
+
+            # Lock present but no usable cache → a previous scrape failed,
+            # don't retry until the lock TTL expires.
+            if await r.get(lock_key):
+                logger.info(f"[GroupSync B-38] {username} under cooldown, skipping likes scrape")
+                return None
+
+            # Take the lock first so concurrent group-sync calls don't both
+            # scrape. NX makes the SET atomic.
+            await r.set(lock_key, "1", ex=ttl_s, nx=True)
+
+            scraper = ScraperService()
+            tmdb_ids: List[int] = []
+            try:
+                likes = await scraper.scrape_user_likes(username, max_pages=10)
+                if not likes:
+                    logger.info(f"[GroupSync B-38] no likes scraped for {username}")
+                    return None
+                for it in likes[:50]:
+                    slug = it.get("film_slug")
+                    if not slug:
+                        continue
+                    tid = await scraper.get_tmdb_id(slug)
+                    if tid is not None:
+                        tmdb_ids.append(tid)
+                    if len(tmdb_ids) >= 50:
+                        break
+            finally:
+                await scraper.close()
+
+            if not tmdb_ids:
+                logger.info(f"[GroupSync B-38] no likes resolved to tmdb_ids for {username}")
+                return None
+
+            vectors = await self._fetch_vectors(tmdb_ids)
+            if not vectors:
+                logger.info(f"[GroupSync B-38] no Qdrant vectors for {username}'s likes")
+                return None
+
+            centroid = np.mean(vectors, axis=0)
+            norm = float(np.linalg.norm(centroid))
+            if norm == 0:
+                return None
+            centroid = (centroid / norm).astype(np.float32)
+
+            try:
+                await r.set(cache_key, _json.dumps(centroid.tolist()), ex=ttl_s)
+            except Exception as e:
+                logger.warning(f"[GroupSync B-38] cache write failed for {username}: {e}")
+
+            logger.info(
+                f"[GroupSync B-38] likes centroid built for {username} from {len(tmdb_ids)} films "
+                f"({len(vectors)} vectors hit)"
+            )
+            return centroid
+
+        except Exception as e:
+            logger.warning(f"[GroupSync B-38] likes enrichment failed for {username}: {e}")
+            return None
+        finally:
+            try:
+                await r.close()
+            except Exception:
+                pass
