@@ -15,7 +15,7 @@ It's built for people who care about *what* they watch next, not just that somet
 The "Picked For You" core is a three-signal hybrid. Each signal captures a different dimension of taste, and they're fused through Reciprocal Rank Fusion (RRF) before a final diversity pass. (Other feed rows — Because You Watched, Niche Picks, Hidden Gems — are separate builders described under Feed Sections.)
 
 ### Signal A — Vibe (Semantic Similarity)
-Ranks the whole catalogue against your taste centroid in vector space. Embeddings are generated from LLM-enriched cinematic descriptions — not just plot summaries, but tone, pacing, and visual style — using Groq-hosted open models (qwen3-32b primary; gpt-oss-120b / qwen3.6-27b in the batch chain), then encoded with `google/embeddinggemma-300m` (768 dimensions; gated HuggingFace model — requires `HF_TOKEN`). Descriptions are strictly name-free (no titles, directors, or franchises) so the vector space encodes *theme*, not identity; an anti-vector built from your low-rated and rejected films penalizes candidates that resemble things you disliked.
+Ranks the whole catalogue against your taste centroid in vector space. Embeddings are generated from LLM-enriched cinematic descriptions — not just plot summaries, but tone, pacing, and visual style — using Groq-hosted open models (`services/llm_models.py` holds the chains: qwen3.6-27b then gpt-oss-120b/20b for enrichment, gpt-oss-120b then qwen3.6-27b for parsing), then encoded with `google/embeddinggemma-300m` (768 dimensions; gated HuggingFace model — requires `HF_TOKEN`). Descriptions are strictly name-free (no titles, directors, or franchises) so the vector space encodes *theme*, not identity; an anti-vector built from your low-rated and rejected films penalizes candidates that resemble things you disliked.
 
 ### Signal B — Auteur (Director & Cast Affinity)
 Mines your rating history for directors and actors you consistently rate highly (Bayesian-shrunk so two lucky films don't crown a favorite) and surfaces their filmographies you haven't seen.
@@ -147,10 +147,52 @@ See [SCRIPTS_GUIDE.md](./docs/SCRIPTS_GUIDE.md) for the full catalogue of mainte
 
 ## Development
 
-- **Branch strategy:** `develop` for active work, `feature/*` for significant changes, `main` for tagged releases only.
+- **Branch strategy:** `develop` for active work, `feature/*` for significant changes, `master` for tagged releases only.
 - **Commit format:** `feat:`, `fix:`, `refactor:`, `perf:`, `docs:`
 - **Package manager:** pnpm (frontend), pip with hash-verified lockfile (backend)
-- **Backend commands** run inside Docker: `docker-compose exec backend ...`
+- **Backend commands** run inside Docker: `docker compose exec backend ...`
+
+### Two traps that will cost you an afternoon
+
+**Your edit is probably not running.** Uvicorn auto-reload does not fire on
+host-side edits under Windows — bind-mount file events never reach the container
+watcher. The frontend container serves a production build, so it does not
+hot-reload at all.
+
+```bash
+docker compose restart backend            # after ANY backend change
+docker compose up -d --build frontend     # after ANY frontend change
+```
+
+A change that type-checks is not a change that ran. If feed logic changed, also
+flush the `section:*` Redis keys: the cache-save block refreshes TTLs on
+cache-hit sections, so stale content self-perpetuates.
+
+**Groq's free tier caps at 8000 tokens per MINUTE**, not per day, and one Magic
+Box parse costs ~2000. Four searches in quick succession exhaust it, after which
+the parser returns nothing and every answer degrades. Any burst test needs pacing
+or it measures the rate limiter instead of the engine.
+
+### Tests
+
+```bash
+docker compose exec backend python -m pytest -q                    # hermetic
+docker compose exec backend python scripts/verify_search_branches.py --repeat 3
+```
+
+The default suite touches no external service; the few that do are marked
+`integration` and deselected. `verify_search_branches.py` pins search behaviour
+using `forced_intent`, which bypasses the LLM entirely — so it is deterministic,
+repeatable, and free. Prefer it to anything that measures *through* the parser.
+
+Three tests are contract guards, each closing a class of bug that fails in
+silence — something declared that never gets applied:
+
+| test | what it refuses to let happen |
+|---|---|
+| `test_qdrant_filter_contract` | a filter key written but never handled, so the search silently runs without it |
+| `test_qdrant_payload_writers` | a payload writer that omits a key, which DELETES it from the point |
+| `test_no_dead_parameters` | a parameter accepted and never read, so every caller passing it is ignored |
 
 ## License
 

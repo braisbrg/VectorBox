@@ -1,7 +1,7 @@
 # VectorBox QA Certification Runbook
 
-**Date:** 2026-03-05  
-**Version:** v1.2 Gold Master Candidate  
+**Date:** 2026-07-30  
+**Version:** v3.0.0  
 
 ## 1. Executive Summary
 A full E2E certification pass was executed on the VectorBox application. All systems were wiped, seeded, and tested under strict QA protocols. The build is **CERTIFIED GREEN** for deployment.
