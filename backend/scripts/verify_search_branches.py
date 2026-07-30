@@ -86,6 +86,16 @@ CASES = [
     ("calidad sola (metacritic)", "algo muy aclamado por la critica",
      dict(semantic_query="muy aclamado por la critica", min_metacritic=75),
      "catalogue", 8, 75),
+    # A superlative wants the TOP, not a sample of the acceptable. Sampling above
+    # a floor answered "las mejores peliculas de la historia" with Harry Potter 7
+    # and A Quiet Place Part II — respectable, and the wrong answer. Ranking first
+    # gives GoodFellas, Pulp Fiction, The Good the Bad and the Ugly at a 96.8 mean,
+    # so the floor here is deliberately high: anything under 90 means the ordering
+    # regressed to sampling.
+    ("superlativo -> el techo", "las mejores peliculas de la historia",
+     dict(semantic_query="critically acclaimed iconic classic masterpieces",
+          min_vectorbox_score=75),
+     "catalogue", 10, 90),
 
     ("peticion abierta", "no se que ver",
      dict(semantic_query="no se que ver", open_request=True),

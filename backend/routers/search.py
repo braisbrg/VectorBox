@@ -4,6 +4,7 @@ from typing import List, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import asyncio
+import random
 from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user, get_redis
 from models.schemas import TokenResponse
@@ -134,12 +135,25 @@ CATALOGUE_SELECTION_SIZE = 12
 CATALOGUE_SELECTION_POOL = 40
 
 
-async def _catalogue_selection(db: AsyncSession, floor: float, genres: Optional[List[str]] = None):
+async def _catalogue_selection(
+    db: AsyncSession,
+    floor: float,
+    genres: Optional[List[str]] = None,
+    top_ranked: bool = False,
+):
     """Films straight from the catalogue: a quality bar, and nothing else.
 
-    Shuffled rather than ordered by score, so the same question twice does not
-    return the same twelve films. The bar is what makes it a good answer; the
-    order within it is not information.
+    Two shapes of question end up here and they want opposite orderings.
+
+    "no se que ver" wants VARIETY — the bar is what makes the answer good, the
+    order within it is not information, and returning the same twelve films every
+    time would be a worse answer to the same question. So: sample above the floor.
+
+    "las mejores peliculas de la historia" wants the TOP. Sampling above a floor
+    answered it, on 2026-07-30, with Harry Potter and the Deathly Hallows Part 1,
+    A Quiet Place Part II and How to Train Your Dragon 3 — respectable films, and
+    a wrong answer to a superlative. So: rank first, then sample the head, which
+    keeps some rotation without pretending a random 78 belongs on that list.
     """
     q = (
         select(Movie)
@@ -148,9 +162,12 @@ async def _catalogue_selection(db: AsyncSession, floor: float, genres: Optional[
     )
     if genres:
         q = q.where(Movie.genres.overlap(genres))
-    picks = (await db.execute(
-        q.order_by(func.random()).limit(CATALOGUE_SELECTION_POOL)
-    )).scalars().all()
+    q = q.order_by(Movie.vectorbox_score.desc()) if top_ranked else q.order_by(func.random())
+    picks = (await db.execute(q.limit(CATALOGUE_SELECTION_POOL))).scalars().all()
+    if top_ranked:
+        # The head is already the answer; shuffling inside it only decides which
+        # of the catalogue's very best show up today.
+        picks = random.sample(picks, min(len(picks), CATALOGUE_SELECTION_POOL))
 
     if genres:
         # The genre IS the coherence the user asked for. Spreading across lead
@@ -511,7 +528,11 @@ async def _run_natural_search(
             floor = intent.min_vectorbox_score or OPEN_REQUEST_MIN_VBS
             logger.info("Catalogue selection for %r (floor=%s, open=%s, degraded=%s)",
                         search_req.query, floor, intent.open_request, degraded)
-            picks = await _catalogue_selection(db, floor)
+            # An explicit quality bar is a request for the top, not for a
+            # sample of the acceptable. open_request is the opposite.
+            picks = await _catalogue_selection(
+                db, floor, top_ranked=bool(intent.min_vectorbox_score)
+            )
             return SearchResponse(
                 results=_catalogue_results(picks),
                 intent={**intent.model_dump(), "confidence": round(confidence, 3),
