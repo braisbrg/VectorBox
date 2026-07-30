@@ -186,6 +186,7 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             priority_ids = list(set(medoid_internal_ids + anchor_internal_ids))
 
             flagged = 0
+            flagged_tmdb_ids: list[int] = []
             if priority_ids:
                 movies_to_check_result = await db.execute(
                     select(Movie).where(Movie.id.in_(priority_ids))
@@ -225,12 +226,26 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                     if quality < 0.25:
                         flagged += 1
                         movie.has_enriched_embedding = False
+                        flagged_tmdb_ids.append(movie.tmdb_id)
                         logger.warning(
                             f"[Sanity] Low quality anchor/medoid: {movie.title} "
                             f"({quality:.2f}) — marked for re-enrichment"
                         )
 
                 await db.commit()
+
+                # Mirror the flag flip into the Qdrant payload so the enriched-vector
+                # gate stops recommending these until they are re-enriched (PG and
+                # payload would otherwise drift: point stays True, row goes False).
+                if flagged_tmdb_ids:
+                    try:
+                        await qdrant.client.set_payload(
+                            collection_name=qdrant.COLLECTION_NAME,
+                            payload={"has_enriched_embedding": False},
+                            points=flagged_tmdb_ids,
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Sanity] Qdrant flag sync failed: {e}")
                 logger.info(
                     f"[Sanity] Checked {len(movies_to_check)} priority movies, {flagged} flagged"
                 )
@@ -524,7 +539,9 @@ async def enrich_movies_background(
 
                                         "title_es": m.title_es,
                                         "overview_es": m.overview_es,
-                                        "keywords": m.keywords
+                                        "keywords": m.keywords,
+                                        # legacy-recipe batch vectorize: reflect row flag
+                                        "has_enriched_embedding": bool(m.has_enriched_embedding)
                                     }
                                 ))
 

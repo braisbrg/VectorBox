@@ -83,7 +83,7 @@ if IS_PRODUCTION and (_clerk_publishable.startswith("pk_test_") or _clerk_secret
     )
 
 # Cache versioning — bump to auto-invalidate all section/signal Redis keys on schema changes
-FEED_CACHE_VERSION = "v2"
+FEED_CACHE_VERSION = "v3"  # v3: enriched-vector gate (2026-07-13)
 
 engine = create_async_engine(
     DATABASE_URL,
