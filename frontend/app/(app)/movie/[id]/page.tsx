@@ -231,6 +231,8 @@ export default function MovieDossierPage({ params }: { params: Promise<{ id: str
                         ) : (
                             <p className="font-mono text-[10px] text-fg-3">{t("dossier.not_streaming")}</p>
                         )}
+                        {/* TMDB API ToS: JustWatch credit wherever provider data renders */}
+                        <p className="mt-2 font-mono text-[9px] text-fg-3/70">{t("insp.justwatch")}</p>
                     </div>
 
                     {/* cast */}

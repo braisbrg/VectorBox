@@ -94,6 +94,43 @@ const SECTIONS: LegalSection[] = [
         ),
     },
     {
+        id: "data-sources",
+        title: "Data Sources & Attribution",
+        body: (
+            <>
+                <p className={`${P} mb-4`}>
+                    VectorBox is built on data generously provided by third-party services:
+                </p>
+                <LegalBox>
+                    <p className="mb-2">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src="/tmdb.svg" alt="TMDB" className="mb-2 h-3" />
+                        This product uses the TMDB API but is not endorsed or certified by{" "}
+                        <a href="https://www.themoviedb.org" className="underline hover:text-primary" target="_blank" rel="noreferrer">TMDB</a>.
+                    </p>
+                    <p className="mb-2">
+                        Streaming availability data is provided by{" "}
+                        <a href="https://www.justwatch.com" className="underline hover:text-primary" target="_blank" rel="noreferrer">JustWatch</a>{" "}
+                        via the TMDB API.
+                    </p>
+                    <p className="mb-2">
+                        Ratings data is sourced from the{" "}
+                        <a href="https://www.omdbapi.com" className="underline hover:text-primary" target="_blank" rel="noreferrer">OMDb API</a>,
+                        licensed under{" "}
+                        <a href="https://creativecommons.org/licenses/by-nc/4.0/" className="underline hover:text-primary" target="_blank" rel="noreferrer">CC BY-NC 4.0</a>.
+                    </p>
+                    <p>
+                        We gratefully acknowledge{" "}
+                        <a href="https://letterboxd.com" className="underline hover:text-primary" target="_blank" rel="noreferrer">Letterboxd</a>{" "}
+                        as the source of user-initiated rating imports (see the Letterboxd Data section above).
+                        VectorBox is not affiliated with any of these services, and will remove or adjust any
+                        integration upon request from the respective rights holder.
+                    </p>
+                </LegalBox>
+            </>
+        ),
+    },
+    {
         id: "ip",
         title: "Intellectual Property",
         body: (
@@ -145,7 +182,7 @@ export default function TermsPage() {
     return (
         <LegalShell
             title="Terms of Service"
-            updated="May 4, 2026"
+            updated="July 14, 2026"
             sibling={{ href: "/privacy", label: "Privacy Policy" }}
             sections={SECTIONS}
         />

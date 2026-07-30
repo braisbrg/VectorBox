@@ -293,7 +293,7 @@ export function SettingsView() {
                                                 <button
                                                     onClick={() => unrejectMutation.mutate(movie.tmdb_id)}
                                                     disabled={unrejectMutation.isPending}
-                                                    className="flex items-center gap-1 border border-transparent px-2 py-1 font-mono text-[10px] uppercase text-fg-3 opacity-0 transition-all focus:opacity-100 group-hover:opacity-100 hover:border-primary hover:text-primary"
+                                                    className="flex items-center gap-1 border border-transparent px-2 py-1 font-mono text-[10px] uppercase text-fg-3 opacity-0 transition-[opacity,color,border-color] focus:opacity-100 group-hover:opacity-100 hover:border-primary hover:text-primary"
                                                     title={t("setb.undo_rejection")}
                                                 >
                                                     <Undo2 className="size-3" /> undo
@@ -352,6 +352,17 @@ export function SettingsView() {
                     {tab === "advanced" && (
                         <Section title={t("settings.about.title")} note={t("settings.about.desc")}>
                             <p className="font-mono text-[11px] text-fg-3">{t("settings.about.version")}</p>
+                            <div className="mt-4 space-y-2 border-t border-border-2 pt-4 font-mono text-[10px] text-fg-3">
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img src="/tmdb.svg" alt="TMDB" className="h-2.5" />
+                                <p>{t("settings.about.credits_tmdb")}</p>
+                                <p>{t("settings.about.credits_justwatch")}</p>
+                                <p>
+                                    {t("settings.about.credits_omdb")}{" "}
+                                    <a href="https://creativecommons.org/licenses/by-nc/4.0/" target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-primary">CC BY-NC 4.0</a>
+                                </p>
+                                <p>{t("settings.about.credits_letterboxd")}</p>
+                            </div>
                         </Section>
                     )}
                 </div>

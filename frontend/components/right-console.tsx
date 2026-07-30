@@ -216,6 +216,8 @@ export function RightConsole({
                                         ) : (
                                             <p className="text-[10px] uppercase tracking-wide text-fg-3">not streaming in {countryCode}</p>
                                         )}
+                                        {/* TMDB API ToS: JustWatch credit wherever provider data renders */}
+                                        <p className="text-[9px] normal-case text-fg-3/70">{t("insp.justwatch")}</p>
                                     </div>
 
                                     {/* Why this film — density 1 */}
