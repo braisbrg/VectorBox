@@ -71,6 +71,12 @@ async def compute_anti_vector(
         .join(Movie, UserRating.movie_id == Movie.id)
         .where(UserRating.user_id == user_id)
         .where(or_(UserRating.is_rejected.is_(True), UserRating.rating <= 3.0))
+        # Sin ORDER BY, el LIMIT coge 50 filas ARBITRARIAS y luego el decay las
+        # tira: medido el 2026-08-19, u210 tenía 615 negativas (194 de los ultimos
+        # 3 años) y de las 50 que devolvía Postgres 49 caían bajo
+        # MIN_EFFECTIVE_WEIGHT — el usuario con más datos se quedaba SIN
+        # anti-vector. El decay debe descartar lo viejo, no lo que nadie eligió.
+        .order_by(UserRating.watched_date.desc().nullslast())
         .limit(MAX_NEGATIVE_FILMS)
     )
     rows = rating_result.all()
@@ -97,7 +103,11 @@ async def compute_anti_vector(
         if raw_w is None:
             continue
 
-        ref_date = ur.watched_date or ur.created_at
+        # `created_at` NO sirve de reserva: es la fecha de import, idéntica para
+        # cientos de filas del mismo ZIP y "hoy" tras re-subir, así que mezclaba
+        # dos marcos temporales y daba peso MÁXIMO a lo que no tiene fecha. Y
+        # como nunca es NULL, la rama neutra de abajo era inalcanzable.
+        ref_date = ur.watched_date
         if ref_date is not None:
             if ref_date.tzinfo is None:
                 ref_date = ref_date.replace(tzinfo=timezone.utc)
