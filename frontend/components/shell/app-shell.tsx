@@ -76,6 +76,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // shown when a card's info is pressed, hidden on close (the watchlist owns its
     // own filters, so the SYS_CONSOLE filter panel is redundant there).
     const showRail = pathname === "/feed" || (pathname === "/watch" && !!inspectedMovie);
+    const isImport = pathname === "/import";
     // F8: the rail now returns a SECTIONED filtered feed, not a flat item list.
     const [filteredResults, setFilteredResults] = useState<FeedResponse | null>(null);
     const [isFiltering, setIsFiltering] = useState(false);
@@ -149,6 +150,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // Onboarding jail redirect (ported from dashboard.tsx)
     useEffect(() => {
         if (!currentUserSession) return;
+        // Sin datos manda el jail de RENDER (abajo): monta el ImportWizard, que es
+        // la ÚNICA vía a Letterboxd. Redirigir aquí lo tapaba a los ~200 ms y
+        // dejaba a todo usuario recién registrado en el carrusel, sin import.
+        if (!currentUserSession.has_data) return;
+        // /import ES la otra salida del cold-start: expulsar de ahí al carrusel deja
+        // el ZIP de Letterboxd inalcanzable para todo el que tenga 1-14 valoraciones.
+        if (isImport) return;
         api.get("/api/onboarding/status")
             .then(({ data }) => {
                 const { ratings_count, completed } = data;
@@ -156,11 +164,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 const skipped = typeof window !== "undefined" && localStorage.getItem("vb_skip_onboarding") === "true";
 
                 if (!completed && ratings_count < 15) {
-                    if (ratings_count === 0) {
-                        if (typeof window !== "undefined") localStorage.removeItem("vb_skip_onboarding");
-                        router.replace("/onboarding");
-                        return;
-                    }
+                    // El borrado de vb_skip_onboarding en ratings_count === 0 anulaba
+                    // el propio skip del wizard: fuera.
                     if (!skipped) {
                         router.replace("/onboarding");
                         return;
@@ -170,7 +175,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 }
             })
             .catch(() => {});
-    }, [currentUserSession?.has_data, router]);
+    }, [currentUserSession?.has_data, pathname, router]);
 
     // Clear invalid providers when country changes
     useEffect(() => {
@@ -305,15 +310,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             }}
         >
             <div className="min-h-screen bg-bg text-fg">
-                <Sidebar
-                    collapsed={sidebarCollapsed}
-                    onToggleCollapse={toggleSidebar}
-                    letterboxdUsername={currentUserSession.letterboxd_username}
-                />
+                {/* /import es el wizard de arranque: sin sidebar, como ya se hace en
+                    móvil (va en MOBILE_SUBSCREENS). La salida es el back del
+                    SubScreenHeader + el topbar. */}
+                {!isImport && (
+                    <Sidebar
+                        collapsed={sidebarCollapsed}
+                        onToggleCollapse={toggleSidebar}
+                        letterboxdUsername={currentUserSession.letterboxd_username}
+                    />
+                )}
                 <div
                     className={cn(
                         "flex min-h-screen flex-col transition-[padding] duration-200 ease-out",
-                        sidebarCollapsed ? "lg:pl-[56px]" : "lg:pl-[184px]",
+                        !isImport && (sidebarCollapsed ? "lg:pl-[56px]" : "lg:pl-[184px]"),
                         showRail && "lg:pr-80"
                     )}
                 >

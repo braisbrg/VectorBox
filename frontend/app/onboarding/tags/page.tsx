@@ -60,7 +60,7 @@ export default function OnboardingTagsPage() {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.4 }}
-                className="z-10 w-full max-w-3xl space-y-8"
+                className="z-10 w-full max-w-5xl space-y-8"
             >
                 <div className="space-y-2 text-center">
                     <p className="eyebrow text-primary">{t("wiz.taste_title")}</p>

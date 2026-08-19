@@ -131,12 +131,16 @@ export function TagSelector({ value, onChange, compact = false }: TagSelectorPro
                             onClick={() => cycle(tag)}
                             className={`
                                 group relative px-3 py-2 border font-mono text-xs uppercase tracking-wide
-                                transition-colors duration-150 cursor-pointer select-none min-w-[110px]
+                                transition-colors duration-150 cursor-pointer select-none
                                 ${STATE_STYLES[state]}
                             `}
                         >
-                            <span className="flex items-center justify-between gap-1">
-                                <span className="truncate">{tagLabel(tag, language)}</span>
+                            {/* La etiqueta ENVUELVE, no se trunca: "basadas en hechos reales"
+                                pide ~195px y la celda da ~180, así que con truncate salía
+                                del botón encima de la vecina (min-width:auto de flex). El
+                                grid iguala la altura de la fila, así que envolver no descuadra. */}
+                            <span className="flex min-w-0 items-start justify-between gap-1 text-left">
+                                <span>{tagLabel(tag, language)}</span>
                                 {state !== "neutral" && (
                                     <span className="text-[10px] opacity-80 shrink-0">
                                         {STATE_LABELS[state]}
