@@ -287,10 +287,17 @@ async def process_single_movie(
             try:
                 # --- Step 1: Local DB lookup by letterboxd_uri ---
                 if letterboxd_uri:
+                    # 26 URIs del catálogo apuntan a 2 filas (52 en total, p.ej.
+                    # "The Test"/"The Beta Test"). scalar_one_or_none() LEVANTA
+                    # ahí, y el except de abajo devolvía (None, False): la película
+                    # desaparecía del import del usuario sin más aviso que un log.
                     result = await session.execute(
-                        select(Movie).where(Movie.letterboxd_uri == letterboxd_uri)
+                        select(Movie)
+                        .where(Movie.letterboxd_uri == letterboxd_uri)
+                        .order_by(Movie.id)
+                        .limit(1)
                     )
-                    existing_movie = result.scalar_one_or_none()
+                    existing_movie = result.scalars().first()
 
                     if existing_movie:
                         logger.info(f"Found movie by letterboxd_uri: {existing_movie.title}")
@@ -508,7 +515,8 @@ async def enrich_movies_background(
                                     "title": m.title,
                                     "overview": m.overview,
                                     "genres": m.genres,
-                                    "keywords": m.keywords or []
+                                    "keywords": m.keywords or [],
+                                    "text_override": m.cinematic_description or None,
                                 })
 
                             # Generate Batch Embeddings (non-blocking)

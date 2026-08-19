@@ -256,6 +256,11 @@ class MovieService:
                 changed = True
 
             if changed:
+                # rss_service salta el enriquecido de lo tocado hace <7 días leyendo
+                # esta columna, y NADIE la escribía: 0 de 21.425 filas la tenían, así
+                # que esa guarda no podía dispararse nunca.
+                from datetime import datetime as _dt, timezone as _tz
+                movie.last_enriched = _dt.now(_tz.utc).replace(tzinfo=None)
                 try:
                     await self.db.commit()
                 except Exception as e:
@@ -267,19 +272,22 @@ class MovieService:
                 # cinematic_description when the movie has one, so a metadata
                 # refresh (OMDb/keywords/release_dates) can never silently
                 # replace a Groq-enriched vector with the fallback recipe.
-                text_override = movie.cinematic_description or None
-                loop = asyncio.get_running_loop()
-                vector = await loop.run_in_executor(
-                    None,
-                    lambda: self.embedding.generate_embedding({
-                        "title": movie.title,
-                        "overview": movie.overview,
-                        "genres": movie.genres,
-                        "keywords": movie.keywords or []
-                    }, text_override=text_override)
-                )
-
+                # skip_qdrant=True (la subida del ZIP) vectoriza en LOTE después:
+                # calcularlo aquí eran 442 ms de CPU por película para tirar el
+                # vector sin escribirlo.
                 if not skip_qdrant:
+                    text_override = movie.cinematic_description or None
+                    loop = asyncio.get_running_loop()
+                    vector = await loop.run_in_executor(
+                        None,
+                        lambda: self.embedding.generate_embedding({
+                            "title": movie.title,
+                            "overview": movie.overview,
+                            "genres": movie.genres,
+                            "keywords": movie.keywords or []
+                        }, text_override=text_override)
+                    )
+
                     payload = qdrant_payload(movie)
 
                     await self.qdrant.upsert_movie_vector(
@@ -291,7 +299,11 @@ class MovieService:
 
             if not skip_qdrant:
                 return await self.ensure_vector_exists(movie)
-            return True
+            # Nada que enriquecer. El bulk lee este valor como `needs_vector`, y
+            # devolver True aquí re-embebía la biblioteca ENTERA en cada import
+            # (medido: 59/59 películas intactas) y pisaba su vector enriquecido
+            # con la receta de reserva.
+            return False
 
         except Exception as e:
             logger.error(f"Failed to enrich movie {movie.title}: {e}")

@@ -88,6 +88,13 @@ class EmbeddingService:
         texts = []
 
         for movie in movies_data:
+            # Misma regla que generate_embedding: la cinematic_description manda,
+            # si no el lote reescribe con la receta de reserva lo que el
+            # enriquecido ya había hecho bien.
+            if movie.get("text_override"):
+                texts.append(movie["text_override"])
+                continue
+
             parts = []
 
             if include_title and movie.get("title"):
