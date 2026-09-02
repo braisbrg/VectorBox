@@ -63,6 +63,14 @@ function ContributorFallback({ contributors, sectionId }: { contributors?: Contr
                             {c.release_note && <p className="text-[11px] text-fg-3">{c.release_note}</p>}
                         </div>
                     )}
+                    {/* El inspector es el sitio con espacio para decir de QUÉ servicio
+                        se va: en la carátula sólo cabe el nombre y los días. */}
+                    {c.type === "leaving_soon" && (
+                        <div className="space-y-0.5">
+                            <p className="text-xs text-warn">{c.label}</p>
+                            {c.release_note && <p className="text-[11px] text-fg-3">{c.release_note}</p>}
+                        </div>
+                    )}
                     {WEIGHTED.includes(c.type) && (
                         <div className="flex items-center justify-between gap-2">
                             <p className="text-xs text-primary">{c.label}</p>

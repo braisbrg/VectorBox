@@ -73,7 +73,10 @@ export function ImportWizard({ session, initialStep, onComplete, onSkip }: Impor
     const [step, setStep] = useState<Step>(initialStep ?? (alreadyLinked ? "import" : "identify"));
 
     // ---- step 1 · identify ----
-    const [handle, setHandle] = useState("");
+    // Prerelleno con el handle ya vinculado: si entras por ?step=identify es
+    // porque vienes a RE-vincular, y el campo vacío te obliga a reescribir lo
+    // que ya tenías para cambiar una letra.
+    const [handle, setHandle] = useState(session.letterboxd_username ?? "");
     const [confirming, setConfirming] = useState(false);
     const [linkedHandle, setLinkedHandle] = useState<string | null>(session.letterboxd_username ?? null);
 
@@ -188,7 +191,12 @@ export function ImportWizard({ session, initialStep, onComplete, onSkip }: Impor
 
     return (
         <div className="w-full max-w-2xl space-y-6">
-            <Stepper current={step} />
+            {/* El contador de pasos SÓLO en el alta obligatoria. Quien entra desde
+                ajustes o desde su perfil ya se registró, y ver "01 ✓ 02 03 04 05"
+                le decía que estaba a medio camino de algo que había terminado hace
+                meses. `onSkip` es la señal que ya distingue los dos montajes: sólo
+                el onboarding pasa la salida de escape. */}
+            {onSkip && <Stepper current={step} />}
 
             {/* ============ 1 · IDENTIFY ============ */}
             {step === "identify" && (

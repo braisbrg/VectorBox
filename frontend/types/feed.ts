@@ -1,5 +1,5 @@
 export interface Contributor {
-    type: "anchor" | "cluster" | "vibe" | "auteur" | "crowd" | "cult_actor" | "watchlist" | "upcoming";
+    type: "anchor" | "cluster" | "vibe" | "auteur" | "crowd" | "cult_actor" | "watchlist" | "upcoming" | "leaving_soon";
     label?: string;
     seed_title?: string;
     seed_year?: number;

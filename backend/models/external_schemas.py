@@ -125,6 +125,14 @@ def qdrant_payload(movie, *, enriched: Optional[bool] = None, **overrides) -> di
         "mpaa_rating": movie.mpaa_rating,
         "oscar_wins": movie.oscar_wins or 0,
         "is_adult": bool(movie.is_adult),
+        # Ejes de mood. Se estampan aparte (compute_mood_axes.py proyecta el
+        # vector), pero viven en una COLUMNA, así que tienen que viajar aquí
+        # también: sin esto cada re-upsert los borraba del punto y la película
+        # dejaba de existir para los chips de ánimo, en silencio. Medido
+        # 2026-08-19: 38 puntos sin ejes en Qdrant contra 31 filas sin valor en
+        # Postgres — los 7 de diferencia los había vaciado un re-upsert.
+        "mood_gravedad": movie.mood_gravedad,
+        "mood_humanidad": movie.mood_humanidad,
         # For values a caller holds fresher than the row — enrich_vectors fetches
         # keywords from TMDB and upserts before persisting them.
         **overrides,

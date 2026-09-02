@@ -50,10 +50,20 @@ const byHref = (href: string): NavItem => {
 export const MOBILE_TABS: NavItem[] = [byHref("/feed"), byHref("/mlt"), byHref("/grp"), YOU_NAV];
 
 /** Sub-screens where the bottom tab bar is hidden (handoff: back-rows instead). */
-export const MOBILE_SUBSCREENS = ["/watch", "/set", "/space", "/movie", "/why", "/import"];
+export const MOBILE_SUBSCREENS = ["/watch", "/set", "/space", "/movie", "/why", "/import", "/stats"];
 
 export function navLabel(t: (k: string) => string, item: NavItem): string {
     return t(item.key);
+}
+
+/**
+ * Bottom-tab label. Same key as the sidebar unless the sidebar's name is too
+ * long for a fifth of a phone: "More Like This" at 9px overruns its column,
+ * where "Clones" used to fit. `mobile.*` already exists for exactly this (see
+ * `mobile.magic`).
+ */
+export function tabLabel(t: (k: string) => string, item: NavItem): string {
+    return item.href === "/mlt" ? t("mobile.similars") : navLabel(t, item);
 }
 
 /** Active when the pathname is the route or a child of it. */

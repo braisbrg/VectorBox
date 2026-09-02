@@ -35,9 +35,53 @@ router = APIRouter()
 #   fetch  limit×8 (96)  11.9 of 12 on average · 39 of 40 shelves full · 0 empty
 #
 # So the rail was quietly a third short most of the time. Over-fetching is the
-# whole fix here: score_threshold still decides what is genuinely similar, and a
-# film with few real neighbours correctly returns few.
+# whole fix here.
+#
+# What this comment used to claim — "score_threshold still decides what is
+# genuinely similar, and a film with few real neighbours correctly returns few"
+# — is false, measured 2026-08-03. Two RANDOM films sit at cosine 0.482 in this
+# space, so a 0.45 floor is below chance: it cut 0.0% of real results, and the
+# 400th neighbour of a film is still at 0.677. The thresholds are gone from this
+# router; a real floor would have to be a percentile of the observed
+# distribution, not an absolute.
 QUALITY_GATE_OVERFETCH = 8
+
+# Reciprocal-rank fusion constant for the multi-seed blend. 60 is the standard
+# value and the one the group path already uses (services/group_fusion.py);
+# K=10 measured worse there.
+RRF_K = 60
+
+# A blend's coherence decides how to search it. Measured 2026-08-06 over 720
+# held-out blends (a film the user loves, hidden; its neighbours as the seeds):
+#
+#   coherence   recall@12 centroid/RRF   a seed left unrepresented, centroid/RRF
+#   < 0.52           0% /  0%                        91% / 29%     (k=5)
+#   0.62-0.68       26% / 16%                        19% / 30%
+#
+# The two methods win in OPPOSITE regimes and the crossover is clean, so the
+# answer is neither on its own: average the vectors when the seeds already
+# belong together, fuse per-anchor lists when they do not. Switching keeps the
+# centroid's accuracy (+5.6pt over pure RRF at k=3, +3.6pt at k=5, both REAL on
+# 720 cases that took no part in choosing the cut) at RRF's coverage — 8.1% of
+# blends leave a seed with nothing, against the centroid's 25.0%.
+#
+# The cut is a COHERENCE, not a similarity floor: two random films in this space
+# sit at cosine 0.482 (anisotropy — see the note above on the removed 0.45
+# threshold), so 0.58 means "measurably closer to each other than chance".
+# Re-measure it if the embedding recipe changes; an absolute cosine means
+# nothing on its own here.
+SEED_COHERENCE_CUT = 0.58
+
+
+def blend_queries(vectors: List[np.ndarray]) -> List[list]:
+    """The query vectors to search with: one centroid, or one per seed."""
+    unit = [v / np.linalg.norm(v) for v in vectors]
+    if len(unit) > 1:
+        sims = [float(a @ b) for i, a in enumerate(unit) for b in unit[i + 1:]]
+        if sum(sims) / len(sims) < SEED_COHERENCE_CUT:
+            return [u.tolist() for u in unit]
+    centroid = np.mean(unit, axis=0)
+    return [(centroid / np.linalg.norm(centroid)).tolist()]
 
 # The gate's vote floor was 100, which is not a quality signal — it is a fame
 # signal, and it was deleting the best neighbours. Measured 2026-07-31 on "The 47"
@@ -162,7 +206,8 @@ async def get_similar_movies(
         similar_results = await qdrant.search_similar(
             query_vector=query_vector,
             limit=limit * QUALITY_GATE_OVERFETCH,
-            score_threshold=0.45  # Lowered threshold, but stricter content matching
+            score_threshold=0.0,   # explicit: the helper defaults to 0.5, which
+                                   # would be STRICTER than the 0.45 removed here
         )
         
         recommendations = []
@@ -387,26 +432,29 @@ async def get_similar_multi(
     if not vectors:
         raise HTTPException(status_code=404, detail="No vectors found for provided movies")
 
-    centroid = np.mean(vectors, axis=0).tolist()
-
-    # Over-fetch to absorb seed exclusions and quality-gate filtering. The +20
-    # covered the seeds but not the gate, which drops ~61% of what it sees.
-    raw = await qdrant.search_similar(
-        query_vector=centroid,
-        limit=body.limit * QUALITY_GATE_OVERFETCH + len(seed_ids),
-        score_threshold=0.45,
-    )
-
     seed_set = set(seed_ids)
-    ordered_ids: List[int] = []
-    score_by_id: dict = {}
-    for r in raw:
-        meta = r.get("metadata", {}) or {}
-        rid = int(meta.get("tmdb_id") or r["movie_id"])
-        if rid in seed_set or rid in score_by_id:
-            continue
-        ordered_ids.append(rid)
-        score_by_id[rid] = r["score"]
+    per_anchor = body.limit * QUALITY_GATE_OVERFETCH + len(seed_ids)
+    queries = blend_queries(vectors)
+
+    fused: dict = {}
+    cosines: dict = {}
+    for vec in queries:
+        hits = await qdrant.search_similar(query_vector=vec, limit=per_anchor,
+                                           score_threshold=0.0)
+        for rank, r in enumerate(hits):
+            meta = r.get("metadata", {}) or {}
+            rid = int(meta.get("tmdb_id") or r["movie_id"])
+            if rid in seed_set:
+                continue
+            fused[rid] = fused.get(rid, 0.0) + 1.0 / (RRF_K + rank + 1)
+            cosines.setdefault(rid, []).append(r["score"])
+
+    ordered_ids: List[int] = sorted(fused, key=lambda i: -fused[i])
+    # Displayed score stays a real cosine — the mean over the queries that
+    # actually retrieved this film. The RRF value decides the ORDER; showing it
+    # would put a rank in a slot the UI labels "% match". With one query (single
+    # seed, or the coherent branch) RRF preserves that query's own order.
+    score_by_id = {rid: sum(cs) / len(cs) for rid, cs in cosines.items()}
 
     # Quality-gated DB fetch
     movies_q = await db.execute(

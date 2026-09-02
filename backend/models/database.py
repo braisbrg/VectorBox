@@ -27,6 +27,13 @@ class User(Base):
     clerk_user_id = Column(String(255), unique=True, nullable=True, index=True)
     is_anonymous = Column(Boolean, nullable=False, server_default="false")
 
+    # Descubrimiento: si los cortometrajes (<= SHORT_FILM_MAX_RUNTIME) entran en
+    # el feed. Por defecto NO — un corto de 6 minutos compitiendo con un largo en
+    # la misma fila no es una recomendación comparable, y el Q los puntúa igual de
+    # alto (Paperman 93.4, Piper 94.9). Las superficies que el usuario elige
+    # (watchlist, historial, búsqueda por título) los sirven igualmente.
+    include_shorts = Column(Boolean, nullable=False, server_default="false")
+
     # Onboarding (carousel cold-start flow)
     tag_preferences = Column(JSONB, nullable=True)  # {"avoided": [...]}
     onboarding_completed = Column(Boolean, nullable=False, server_default="false")
@@ -88,6 +95,10 @@ class Movie(Base):
     enriched_by_model = Column(String, nullable=True)  # Stores the Groq model ID used to generate the cinematic embedding description
     cinematic_description = Column(Text, nullable=True)  # LLM-generated cinematic description used for embedding
     embedding_quality_score = Column(Float, nullable=True)  # Cosine sim of stored Qdrant vector vs embeddinggemma name-free reference (0-1). NULL = unchecked.
+    # Mood: percentil 0-100 del catálogo. NULL = sin calcular, nunca 50.
+    # Proyecciones del vector de Qdrant — ver services/mood_axes.py.
+    mood_gravedad = Column(Float, nullable=True)
+    mood_humanidad = Column(Float, nullable=True)
 
     # Release tracking
     release_date_us = Column(Date, nullable=True)
@@ -109,7 +120,7 @@ class Movie(Base):
     collection_name = Column(String(200), nullable=True)
     is_adult = Column(Boolean, nullable=False, server_default="false")
     # Soft-delete flag for non-films (UFC/AEW events, wrestling PPVs, multi-hour
-    # cartoon vaults, etc.). Honoured by MOVIE_QUALITY_GATE so they never appear
+    # cartoon vaults, etc.). Honoured by movie_quality_gate() so they never appear
     # in recommendations — but NOT consulted by watchlist / history / direct
     # lookup paths, so user-chosen entries remain visible.
     is_excluded = Column(Boolean, nullable=False, server_default="false")
@@ -147,6 +158,10 @@ class UserRating(Base):
     is_liked = Column(Boolean, default=False)
     is_watched = Column(Boolean, default=False)
     is_rejected = Column(Boolean, default=False, server_default="false")  # "Not Interested" rejection
+    # Posición en la watchlist de Letterboxd (1 = lo primero de la página 1). La
+    # estampa el scrape; NULL = fila que ningún scrape ha visto (import por ZIP).
+    # `created_at` NO sirve para esto: es la fecha en que escribimos la fila.
+    watchlist_rank = Column(Integer)
     watched_date = Column(DateTime)
     watch_count = Column(Integer, default=1, server_default="1")
     review = Column(Text)  # Optional review text
@@ -220,6 +235,42 @@ class MovieAvailability(Base):
 
     __table_args__ = (
         Index('idx_movie_country', 'movie_id', 'country_code', unique=True),
+    )
+
+
+class StreamingChange(Base):
+    """Altas y bajas de catálogo en los servicios de streaming, por país.
+
+    Se llena en UNA pasada diaria (fase del orquestador) y se lee en local: la API de
+    MovieOfTheNight da **1000 peticiones al mes**, así que una llamada por request de
+    usuario agotaría el mes en horas. La cuota viene en las cabeceras de cada respuesta
+    (`X-Quota-Granted/Used/Reset`), o sea que el consumo se mide, no se estima.
+
+    `tmdb_id` en vez de FK a `movies`: los cambios llegan para todo el catálogo del
+    servicio, incluidas películas que aún no tenemos. Guardarlas igual evita perder el
+    dato mientras la ingesta las alcanza; el cruce con `Movie` se hace al leer.
+    """
+    __tablename__ = "streaming_changes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    tmdb_id = Column(Integer, nullable=False, index=True)
+    country_code = Column(String(2), nullable=False)   # ISO 3166-1 alpha-2, en minúsculas
+    service = Column(String(40), nullable=False)       # id del servicio: netflix, prime...
+    change_type = Column(String(16), nullable=False)   # new | expiring
+    # subscription | rent | buy | addon. Para «llega/se va de TUS servicios» sólo vale
+    # `subscription`: que una película se pueda alquilar no es que esté incluida.
+    option_type = Column(String(16), nullable=True)
+    # Cuándo ocurre. Medido 2026-08-11: los 25 `expiring` de la primera página lo traen,
+    # así que el caso «sin fecha» que se temía no existe en la práctica.
+    effective_at = Column(DateTime(timezone=True), nullable=True)
+    link = Column(Text, nullable=True)                 # deep link al servicio
+    fetched_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        # Un mismo cambio puede volver en varias pasadas: la clave lo hace idempotente.
+        Index("idx_streaming_change_unico", "tmdb_id", "country_code", "service",
+              "change_type", unique=True),
+        Index("idx_streaming_change_lectura", "country_code", "change_type", "effective_at"),
     )
 
 

@@ -41,6 +41,33 @@ export function accentRgba(accent: string, alpha: number): string {
     return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
 }
 
+/** #rrggbb only. This is the trust boundary: the value lands in a CSS declaration. */
+export const HEX_RE = /^#[0-9a-f]{6}$/i;
+
+/**
+ * Custom accent, applied as an inline --primary on <html> so it wins over the
+ * [data-theme] rules without needing a seventh palette in the CSS.
+ *
+ * Text on the accent flips at the WCAG crossover (L=0.179 is where contrast
+ * against white equals contrast against black), otherwise a bright pick gets
+ * white-on-yellow. Same maths is inlined in layout.tsx's pre-paint script.
+ */
+export function applyCustomAccent(hex: string | null): void {
+    const s = document.documentElement.style;
+    if (!hex || !HEX_RE.test(hex)) {
+        s.removeProperty("--primary");
+        s.removeProperty("--primary-ink");
+        return;
+    }
+    const n = parseInt(hex.slice(1), 16);
+    const [r, g, b] = [16, 8, 0].map((sh) => {
+        const x = ((n >> sh) & 255) / 255;
+        return x <= 0.04045 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4;
+    });
+    s.setProperty("--primary", hex);
+    s.setProperty("--primary-ink", 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.179 ? "#000000" : "#ffffff");
+}
+
 /**
  * The display font family, as canvas needs it.
  *

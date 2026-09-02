@@ -26,6 +26,10 @@ export interface ShellContextValue {
     filteredResults: FeedResponse | null;
     isFiltering: boolean;
     clearFilterResults: () => void;
+    /** Mood chip currently applied (null = none). Shares the filtered-feed path. */
+    activeMood: string | null;
+    /** Apply a mood quadrant, or null to go back to the normal feed. */
+    setMood: (mood: string | null) => void;
 }
 
 const ShellContext = createContext<ShellContextValue | null>(null);

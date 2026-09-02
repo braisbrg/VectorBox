@@ -1,6 +1,6 @@
 """El anti-vector leía la fecha equivocada y cogía las filas equivocadas.
 
-Dos defectos distintos medidos el 2026-08-19, los dos invisibles: nada falla, nada
+Dos defectos distintos medidos el 2026-09-01, los dos invisibles: nada falla, nada
 se loguea, el vector sale y es el vector de otra cosa.
 
 1. `.limit(50)` SIN `ORDER BY` — Postgres devuelve 50 filas arbitrarias y luego el

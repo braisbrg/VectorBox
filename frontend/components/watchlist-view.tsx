@@ -8,8 +8,9 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { m } from "framer-motion";
-import { Loader2, SlidersHorizontal, X } from "lucide-react";
-import { getLetterboxdUrl, getWatchlist } from "@/lib/api";
+import { Dices, Loader2, SlidersHorizontal, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { getLetterboxdUrl, getWatchlist, getWatchlistRandom } from "@/lib/api";
 import { getProvidersForCountry } from "@/lib/constants";
 import { SubScreenHeader } from "@/components/shell/sub-screen-header";
 import { useLanguage } from "@/components/language-provider";
@@ -35,6 +36,9 @@ interface WatchlistFilters {
     yearMax?: number;
     genre?: string;
     sortBy: "date_added" | "title" | "rating";
+    /** Ver las que ya viste y siguen en la lista. Apagado por defecto:
+     *  la watchlist es "lo que quiero ver". */
+    includeWatched?: boolean;
     streaming: number[];
     minRating?: number;
 }
@@ -207,6 +211,7 @@ function ExtraFilters({
 
 export function WatchlistView({ userId, username, countryCode = "ES", streamingProviders = EMPTY_PROVIDERS, onInspect }: WatchlistViewProps) {
     const { t } = useLanguage();
+    const router = useRouter();
     const [showFilters, setShowFilters] = useState(false);
     const [sheetOpen, setSheetOpen] = useState(false);
     const [page, setPage] = useState(1);
@@ -250,6 +255,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                 sort_by: debouncedFilters.sortBy,
                 runtime_min: debouncedFilters.runtimeMin,
                 runtime_max: debouncedFilters.runtimeMax,
+                include_watched: debouncedFilters.includeWatched,
                 year_min: debouncedFilters.yearMin,
                 year_max: debouncedFilters.yearMax,
                 genres: debouncedFilters.genre,
@@ -258,6 +264,31 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                     debouncedFilters.streaming.length > 0 ? debouncedFilters.streaming.join(",") : undefined,
             }),
     });
+
+    // La ruleta pide SIEMPRE al servidor, no sortea sobre `data.items`: la página
+    // tiene 20 de 589, así que elegir en cliente sería sortear la primera página.
+    const [rolling, setRolling] = useState(false);
+    const [rollError, setRollError] = useState(false);
+    const pickRandom = async () => {
+        setRolling(true);
+        setRollError(false);
+        try {
+            // A la ficha completa, no al inspector: la ruleta es "decide por mí",
+            // así que la respuesta tiene que ser la película, no un panel al lado
+            // de la lista que acabas de renunciar a mirar.
+            const film = await getWatchlistRandom(countryCode);
+            router.push(`/movie/${film.id}`);
+        } catch {
+            // Sólo pasa con la watchlist vacía (404). Un aviso en línea y no una
+            // librería de toasts: es un mensaje, no un sistema de notificaciones.
+            setRollError(true);
+        } finally {
+            // Sólo se apaga en el camino de error. En el bueno, la navegación
+            // desmonta el componente y apagarlo antes deja el dado quieto medio
+            // segundo mientras la página cambia.
+            setRolling(false);
+        }
+    };
 
     const stats = data?.stats;
     const totalMin = stats?.total_runtime_min ?? 0;
@@ -286,7 +317,7 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
 
             {/* HERO STAT STRIP — tappable summary on mobile opens the filter sheet (handoff) */}
             <div
-                className="grid grid-cols-3 gap-4 border border-border-2 bg-bg-2 p-4"
+                className="grid grid-cols-2 gap-4 border border-border-2 bg-bg-2 p-4 sm:grid-cols-4"
                 role="button"
                 tabIndex={0}
                 onClick={() => {
@@ -312,6 +343,44 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                     <div className="font-display text-[26px] leading-none text-accent-purple">{stats?.upcoming ?? 0}</div>
                     <div className="mt-1 font-mono text-[10px] text-fg-3">{t("wl.release_pending")}</div>
                 </div>
+                {/* Cuarta celda: la ruleta. Va en la caja y no entre los filtros
+                    porque no filtra nada — es la salida cuando ninguno de esos
+                    números te ayuda a decidir. `stopPropagation` porque la caja
+                    entera abre el panel de filtros en móvil. */}
+                <div onClick={(e) => e.stopPropagation()}>
+                    {/* Las otras tres celdas son `eyebrow` + un número grande. Aquí
+                        el número no existe, así que el glifo grande ES el dado y el
+                        estado va al eyebrow — el mismo hueco de texto que ya tienen
+                        todas. Con un rótulo propio al lado del dado, esta celda
+                        pesaba distinto que las demás y se notaba. */}
+                    <div className="eyebrow mb-1">
+                        {rolling ? t("wl.wish_me_luck_rolling") : t("wl.wish_me_luck")}
+                    </div>
+                    <button
+                        onClick={pickRandom}
+                        disabled={rolling}
+                        aria-label={t("wl.wish_me_luck")}
+                        className="text-primary transition-colors hover:text-fg disabled:opacity-60"
+                    >
+                        {/* Gira mientras sortea y se para al abrir la ficha: la espera
+                            es real (una consulta y una navegación), así que el
+                            movimiento dice "estoy eligiendo" en vez de dejar el botón
+                            muerto medio segundo. */}
+                        <m.span
+                            animate={rolling ? { rotate: 360 } : { rotate: 0 }}
+                            transition={rolling
+                                ? { repeat: Infinity, duration: 0.6, ease: "linear" }
+                                : { duration: 0.2 }}
+                            className="block"
+                        >
+                            {/* 26px, la misma altura que los números de al lado. */}
+                            <Dices className="size-[26px]" strokeWidth={1.75} />
+                        </m.span>
+                    </button>
+                    {rollError && (
+                        <div className="mt-1 font-mono text-[10px] text-danger">{t("wl.wish_me_luck_empty")}</div>
+                    )}
+                </div>
             </div>
 
             {/* FILTER BAR — provider segs · sort · filters toggle (desktop; mobile uses the FAB sheet) */}
@@ -321,6 +390,23 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                 <div className="flex-1" />
 
                 <SortRow sortBy={filters.sortBy} onUpdate={updateFilters} />
+
+                {/* Ya vistas que siguen en la lista. Estaban invisibles y sin forma
+                    de llegar a ellas: `mark_watched` no limpia `is_watchlist`, así
+                    que "la vi y quiero revisitarla" se crea solo y la pantalla lo
+                    escondía. Apagado por defecto — la watchlist es lo pendiente. */}
+                <button
+                    onClick={() => updateFilters({ includeWatched: !filters.includeWatched })}
+                    aria-pressed={!!filters.includeWatched}
+                    className={cn(
+                        "px-1.5 py-1 font-mono text-[11px] transition-colors",
+                        filters.includeWatched
+                            ? "text-primary underline underline-offset-4"
+                            : "text-fg-3 hover:text-fg"
+                    )}
+                >
+                    {t("wl.include_watched")}
+                </button>
 
                 <button
                     onClick={() => setShowFilters((v) => !v)}
@@ -386,7 +472,6 @@ export function WatchlistView({ userId, username, countryCode = "ES", streamingP
                                 year={item.year}
                                 runtime={item.runtime}
                                 href={getLetterboxdUrl(item.id)}
-                                overview={item.overview}
                                 vectorbox_score={item.vectorbox_score}
                                 contributors={item.contributors}
                                 hudRight={(item.streaming_providers?.[0] || "—").toLowerCase()}

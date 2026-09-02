@@ -18,6 +18,7 @@ from models.schemas import (
     FilteredSearchRequest
 )
 from services.clustering_service import ClusteringService
+from services.mood_axes import QUADRANTS
 from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
 from services.feed_service import FeedService
@@ -91,6 +92,13 @@ async def filtered_feed(
         qf["include_genres"] = payload.genres
     if payload.min_score:
         qf["min_vectorbox_score"] = payload.min_score
+    if payload.mood:
+        if payload.mood not in QUADRANTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown mood: {payload.mood}. one of {sorted(QUADRANTS)}",
+            )
+        qf.update(QUADRANTS[payload.mood])
 
     try:
         feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
@@ -104,6 +112,7 @@ async def filtered_feed(
             redis_client=redis,
             filters=qf or None,
             provider_filter=payload.providers or None,
+            only_watchlist=payload.watchlist,
         )
     except Exception as e:
         import traceback
@@ -551,9 +560,11 @@ async def get_feed(
         # Services are now injected
         feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
         
-        if scope == "watchlist":
-            return await feed_service.get_watchlist_feed(user_id, db, tmdb, country_code, provider_ids)
-        
+        # `scope=watchlist` ya no monta un feed aparte: es un FILTRO sobre el feed de
+        # siempre (2026-08-17). El de antes eran tres ORDER BY sueltos, así que se
+        # perdía el motor entero — y "Top Rated in Your Watchlist" ordenaba por una
+        # columna nullable sin `.nullslast()`, o sea que abría con las 17 películas SIN
+        # puntuar de u212. Ahora "joyas ocultas" o "tus directores" salen de tu lista.
         # Delegate parallel execution to the service
         return await feed_service.get_main_feed(
             user_id=user_id,
@@ -563,6 +574,7 @@ async def get_feed(
             qdrant=qdrant,
             background_tasks=background_tasks,
             redis_client=redis,
+            only_watchlist=(scope == "watchlist"),
         )
             
     except Exception as e:
@@ -570,6 +582,55 @@ async def get_feed(
         traceback.print_exc()
         logger.error(f"Feed generation failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate feed")
+
+
+@router.get("/watchlist/random")
+@limiter.limit("30/minute")
+async def watchlist_roulette(
+    request: Request,
+    current_user: TokenResponse = Depends(get_current_user),
+    country_code: str = "ES",
+    db: AsyncSession = Depends(get_db),
+    tmdb: TMDBClient = Depends(get_tmdb_client),
+    qdrant: QdrantService = Depends(get_qdrant_service),
+    embedding: EmbeddingService = Depends(get_embedding_service),
+):
+    """Una película al azar de la watchlist. La respuesta a "tengo 200 pendientes".
+
+    Sin filtros a propósito: si hubiera que elegir género, década y plataforma antes
+    de pulsar, sería la pantalla que ya existe. Lo que resuelve esto es justamente no
+    tener que decidir, así que la única condición es la de la pantalla por defecto —
+    en la watchlist y sin ver.
+
+    `ORDER BY random()` sobre cientos de filas ya filtradas por el índice de
+    `(user_id, movie_id)`: no hay nada que optimizar aquí, y contar primero para
+    sortear un OFFSET son dos viajes en vez de uno.
+
+    Devuelve un FeedItem, la misma forma que sirve `/watchlist`, para que el
+    inspector lo abra sin un camino aparte — dos formas para lo mismo es como se
+    pierde un campo.
+    """
+    stmt = (
+        select(Movie)
+        .join(UserRating, Movie.id == UserRating.movie_id)
+        .where(
+            UserRating.user_id == current_user.user_id,
+            UserRating.is_watchlist.is_(True),
+            UserRating.is_watched.is_(False),
+        )
+        .order_by(func.random())
+        .limit(1)
+    )
+    movie = (await db.execute(stmt)).scalars().first()
+    if not movie:
+        raise HTTPException(status_code=404, detail="Watchlist is empty")
+
+    feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
+    provider_service = ProviderService(db, tmdb)
+    providers = [p["provider_name"] for p in await provider_service.get_providers(movie.id, country_code)]
+    return await feed_service.engine.create_feed_item(
+        movie, None, country_code, tmdb, streaming_providers=providers
+    )
 
 
 @router.get("/watchlist")
@@ -588,6 +649,14 @@ async def get_watchlist(
     genres: Optional[str] = None,
     min_rating: Optional[float] = None,
     streaming_providers: Optional[str] = None,
+    # Ver ya vistas que siguen en la lista. Por defecto NO: la watchlist es "lo
+    # que quiero ver", y una película ya vista ahí necesita explicación.
+    #
+    # Pero el estado es legítimo —"ya la vi, quiero revisitarla"— y el modelo lo
+    # soporta: `mark_watched` hace `set_={"is_watched": True}` y NO limpia
+    # `is_watchlist`, así que la combinación se crea sola. Hoy hay 8 filas así de
+    # 1.114 en watchlists; estaban invisibles y no había forma de llegar a ellas.
+    include_watched: bool = False,
     db: AsyncSession = Depends(get_db),
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
@@ -600,15 +669,14 @@ async def get_watchlist(
     
     feed_service = FeedService(qdrant=qdrant, embedding_service=embedding)
 
-    stmt = (
-        select(Movie)
-        .join(UserRating, Movie.id == UserRating.movie_id)
-        .where(
-            UserRating.user_id == user_id,
-            UserRating.is_watchlist.is_(True),
-            UserRating.is_watched.is_(False)
-        )
-    )
+    watch_filters = [
+        UserRating.user_id == user_id,
+        UserRating.is_watchlist.is_(True),
+    ]
+    if not include_watched:
+        watch_filters.append(UserRating.is_watched.is_(False))
+
+    stmt = select(Movie).join(UserRating, Movie.id == UserRating.movie_id).where(*watch_filters)
 
     # Push scalar filters to DB
     if runtime_min: stmt = stmt.where(Movie.runtime >= runtime_min)
@@ -624,7 +692,17 @@ async def get_watchlist(
 
     # Push sort to DB
     if sort_by == "date_added":
-        stmt = stmt.order_by(Movie.id.desc())
+        # La posición que Letterboxd le da en su propia lista, que es lo único que
+        # publica sobre el orden en que el usuario añadió las cosas. Antes esto era
+        # `Movie.id DESC` — el orden en que la PELICULA entró en nuestro catálogo,
+        # sin relación con el usuario: `White Men Can't Jump` es el 4º de la página
+        # 1 en Letterboxd y salía en el puesto 56 de 589 (medido en el 212).
+        #
+        # NULLS LAST + el desempate viejo: una fila que ningún scrape ha visto
+        # (import por ZIP) no tiene posición, y no se le inventa una.
+        stmt = stmt.order_by(
+            UserRating.watchlist_rank.asc().nulls_last(), Movie.id.desc()
+        )
     elif sort_by == "title":
         stmt = stmt.order_by(Movie.title)
     elif sort_by == "rating":
@@ -656,7 +734,7 @@ async def get_watchlist(
         paginated = available_movies[start:start + limit]
 
         for movie, providers in paginated:
-            item = await feed_service.engine.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=providers)
+            item = await feed_service.engine.create_feed_item(movie, None, country_code, tmdb, streaming_providers=providers)
             final_items.append(item)
 
     else:
@@ -674,7 +752,7 @@ async def get_watchlist(
         for movie in paginated_movies:
             movie_providers = providers_map.get(movie.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await feed_service.engine.create_feed_item(movie, 1.0, country_code, tmdb, streaming_providers=flat_providers)
+            item = await feed_service.engine.create_feed_item(movie, None, country_code, tmdb, streaming_providers=flat_providers)
             final_items.append(item)
 
     # Whole-queue aggregates for the ACID hero strip (independent of filters).
@@ -687,11 +765,10 @@ async def get_watchlist(
             )
             .select_from(Movie)
             .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(
-                UserRating.user_id == user_id,
-                UserRating.is_watchlist.is_(True),
-                UserRating.is_watched.is_(False),
-            )
+            # Los MISMOS filtros que la consulta de arriba: duplicar la condición
+            # a mano es cómo las estadísticas acaban contando una lista distinta
+            # de la que se enseña.
+            .where(*watch_filters)
         )
     ).first()
     stats = {
@@ -756,7 +833,7 @@ async def get_random_row(
                  
                  item = await feed_service.engine.create_feed_item(
                      movie=movie, 
-                     score=0.85, 
+                     score=None, 
                      country=country_code, 
                      tmdb=tmdb,
                      streaming_providers=provider_names
@@ -798,7 +875,7 @@ async def get_hidden_gems_row(
     try:
         from sqlalchemy import or_
         from services.feed_service import get_cached_feed_tmdb_ids
-        from services.recommendation_engine import MOVIE_QUALITY_GATE, _get_signal_c_thresholds
+        from services.recommendation_engine import movie_quality_gate, _get_signal_c_thresholds
 
         # 1. Same dynamic quality bar as the feed's hidden_gems row (rich
         #    profiles => VBS >= 70) — a reroll must never LOWER the bar.
@@ -823,7 +900,7 @@ async def get_hidden_gems_row(
 
         pool_stmt = (
             select(Movie)
-            .where(*MOVIE_QUALITY_GATE)
+            .where(*movie_quality_gate())
             .where(Movie.has_enriched_embedding.is_(True))
             .where(Movie.vectorbox_score >= thresholds["min_score"])
             .where(Movie.popularity <= thresholds["max_popularity"])
@@ -853,7 +930,7 @@ async def get_hidden_gems_row(
 
             item = await feed_service.engine.create_feed_item(
                 movie=movie,
-                score=(movie.vectorbox_score or 0) / 100.0,
+                score=None,
                 country=country_code,
                 tmdb=tmdb,
                 streaming_providers=provider_names

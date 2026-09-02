@@ -17,12 +17,13 @@ from types import SimpleNamespace
 from services.magic_search_ranking import (
     DEEP_ANALYSIS_COMPLEXITY_THRESHOLD,
     TITLE_BOOST_MIN_SIM,
-    compute_blended_score,
+    compute_relevance,
     has_descriptive_filters,
     intent_complexity,
     movie_passes_post_filter,
     quality_gate_weight,
     should_run_deep_analysis,
+    trim_to_relevant,
     title_boost_eligible,
     title_sim_score,
 )
@@ -40,7 +41,7 @@ def _movie(**overrides):
     """Lightweight Movie stand-in — SimpleNamespace avoids the SQLAlchemy
     instantiation cost while still satisfying attribute access."""
     base = dict(
-        is_adult=False, mpaa_rating=None, oscar_wins=0,
+        is_adult=False, is_upcoming=False, mpaa_rating=None, oscar_wins=0,
         omdb_countries=None, omdb_languages=None, awards_text=None,
         vectorbox_score=None,
     )
@@ -167,29 +168,29 @@ def test_quality_gate_bypass_softens_midpoint():
 
 
 # ============================================================================
-# compute_blended_score
+# compute_relevance
 # ============================================================================
 
 
-def test_blended_score_applies_title_boost_when_eligible():
+def test_relevance_applies_title_boost_when_eligible():
     """Short query + matching title + no filters → boost fires."""
-    final_with, ts, _ = compute_blended_score(
+    rel_with, ts, _ = compute_relevance(
         raw_cosine=0.55, query="Inception", intent=_intent(),
         title="Inception", vbs=80,
     )
-    final_without, ts2, _ = compute_blended_score(
+    rel_without, ts2, _ = compute_relevance(
         raw_cosine=0.55, query="Inception", intent=_intent(),
         title="Some Other Movie", vbs=80,
     )
     assert ts == 1.0
     assert ts2 is not None and ts2 < TITLE_BOOST_MIN_SIM
-    assert final_with > final_without
+    assert rel_with > rel_without
 
 
-def test_blended_score_no_title_boost_when_reference_movie_set():
+def test_relevance_no_title_boost_when_reference_movie_set():
     """`reference_movie=X` means "like X" — title-boost must NOT fire even
     if a candidate's title happens to match the query."""
-    final, ts, _ = compute_blended_score(
+    _rel, ts, _ = compute_relevance(
         raw_cosine=0.55, query="Inception",
         intent=_intent(reference_movie="Inception"),
         title="Inception", vbs=80,
@@ -197,22 +198,30 @@ def test_blended_score_no_title_boost_when_reference_movie_set():
     assert ts is None  # gate refused to compute → confirms not eligible
 
 
-def test_blended_score_null_vbs_films_get_floor_penalty():
-    """The exact pattern that hit user 212's 'Deprisa, deprisa' search:
-    NULL-VBS films must not outrank VBS-populated ones."""
-    score_null, _, w_null = compute_blended_score(
+def test_quality_decides_the_order_and_nothing_else():
+    """Two facts that have to hold together, on identical inputs.
+
+    Ordering: the pattern that hit user 212's 'Deprisa, deprisa' search —
+    NULL-VBS films must not outrank VBS-populated ones.
+
+    Display: relevance must NOT move with VBS. The route used to receive
+    relevance × weight and divide the weight back out to show it; if the
+    product ever comes back into the return value, the first assert fails.
+    """
+    rel_null, _, w_null = compute_relevance(
         raw_cosine=0.55, query="cine social",
         intent=_intent(include_genres=["Drama"]),  # descriptive → no title boost
         title="Random Film", vbs=None,
     )
-    score_hi, _, w_hi = compute_blended_score(
+    rel_hi, _, w_hi = compute_relevance(
         raw_cosine=0.55, query="cine social",
         intent=_intent(include_genres=["Drama"]),
         title="Random Film", vbs=85,
     )
+    assert rel_null == rel_hi          # same match → same number on screen
     assert w_null < 0.25
     assert w_hi > 0.90
-    assert score_hi > score_null
+    assert rel_hi * w_hi > rel_null * w_null   # …but quality still ranks
 
 
 # ============================================================================
@@ -228,6 +237,13 @@ def test_post_filter_rejects_adult_when_safe_mode_default():
     """`safe_mode=True` (default) drops `is_adult=True` rows."""
     assert movie_passes_post_filter(_movie(is_adult=True), _intent()) is False
     assert movie_passes_post_filter(_movie(is_adult=True), _intent(safe_mode=False)) is True
+
+
+def test_post_filter_rejects_unreleased():
+    """An unreleased film is not a recommendation, whatever the intent says."""
+    assert movie_passes_post_filter(_movie(is_upcoming=True), _intent()) is False
+    assert movie_passes_post_filter(_movie(is_upcoming=True),
+                                    _intent(safe_mode=False)) is False
 
 
 def test_post_filter_enforces_mpaa_allowlist():
@@ -355,3 +371,50 @@ def test_rail_filters_reach_the_query_not_just_the_backstop():
                        ("year_max", 2010), ("max_runtime", 100),
                        ("include_genres", ["Drama"])):
         assert apply_rail_filters(base, {key: value}) is not base, key
+
+
+# ── relevance cliff ──────────────────────────────────────────────────────────
+#
+# The rule that stops a filtered search padding its row with the least-bad
+# content of a small box. Not a judgement about the query — three candidate
+# query-level detectors were measured and all three misclassified a good case
+# (see the comment on RELEVANCE_CLIFF), so this only ever trims the tail.
+
+def _hit(score):
+    return {"score": score, "metadata": {}}
+
+
+def test_cliff_keeps_everything_when_the_row_is_flat():
+    """A query the catalogue answers well has no cliff to cut at."""
+    rows = [_hit(s) for s in (0.74, 0.73, 0.72, 0.70, 0.68, 0.65)]
+    assert len(trim_to_relevant(rows)) == 6
+
+
+def test_cliff_drops_the_padded_tail():
+    """0.30 is 41% of 0.72 — not an answer to the same question."""
+    rows = [_hit(s) for s in (0.72, 0.70, 0.68, 0.35, 0.32, 0.30)]
+    kept = [r["score"] for r in trim_to_relevant(rows)]
+    assert kept == [0.72, 0.70, 0.68]
+
+
+def test_cliff_never_empties_a_non_empty_row():
+    """The head always survives — the worst case is a SHORT row, never a blank
+    page. This is the whole reason the cliff is relative and not a threshold."""
+    for scores in ([0.9], [0.31, 0.30], [0.9, 0.1, 0.1], [0.4] * 20):
+        rows = [_hit(s) for s in scores]
+        assert len(trim_to_relevant(rows)) >= 1
+
+
+def test_cliff_is_relative_not_absolute():
+    """Same SHAPE at two different scales must keep the same films: a query
+    whose best neighbour is 0.45 is not worse than one peaking at 0.90, it is
+    phrased differently. An absolute floor was measured and it put kung fu 70s
+    (0.477, a correct answer) below found footage 60s (0.557, padding)."""
+    high = trim_to_relevant([_hit(s) for s in (0.90, 0.80, 0.60)])
+    low = trim_to_relevant([_hit(s) for s in (0.45, 0.40, 0.30)])
+    assert len(high) == len(low) == 2
+
+
+def test_cliff_tolerates_empty_and_zero():
+    assert trim_to_relevant([]) == []
+    assert len(trim_to_relevant([_hit(0.0), _hit(0.0)])) == 2

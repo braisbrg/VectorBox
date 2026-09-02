@@ -90,7 +90,7 @@ export default async function RootLayout({
                 {/* Apply the persisted accent palette before first paint (no flash). */}
                 <script
                     dangerouslySetInnerHTML={{
-                        __html: `try{var t=localStorage.getItem("vb_theme");if(t)document.documentElement.dataset.theme=t;}catch(e){}`,
+                        __html: `try{var t=localStorage.getItem("vb_theme");if(t)document.documentElement.dataset.theme=t;var c=localStorage.getItem("vb_accent");if(c&&/^#[0-9a-f]{6}$/i.test(c)){var n=parseInt(c.slice(1),16),L=[16,8,0].map(function(h){var x=(n>>h&255)/255;return x<=0.04045?x/12.92:Math.pow((x+0.055)/1.055,2.4)}),s=document.documentElement.style;s.setProperty("--primary",c);s.setProperty("--primary-ink",0.2126*L[0]+0.7152*L[1]+0.0722*L[2]>0.179?"#000000":"#ffffff")}}catch(e){}`,
                     }}
                 />
             </head>

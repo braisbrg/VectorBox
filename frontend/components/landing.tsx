@@ -143,9 +143,8 @@ export function Landing() {
                     <Wordmark />
                 </Link>
                 <nav className="flex items-center gap-3 font-display text-[10px] uppercase tracking-[0.1em] text-fg-3">
-                    <Link href="/try/mlt" className="hidden transition-colors hover:text-primary sm:inline">
-                        {t("land.how")}
-                    </Link>
+                    {/* "How it works" pointed at /try/mlt — a second demo, not an
+                        explanation. Removed until there is a page to explain on. */}
                     <LanguageToggle />
                     <Link
                         href="/login"
@@ -359,9 +358,7 @@ export function Landing() {
                                         posterPath={f.poster_path}
                                         year={f.year}
                                         runtime={f.runtime}
-                                        genres={f.genres}
                                         vectorbox_score={f.vectorbox_score}
-                                        forceVectorBoxScore
                                     />
                                 </div>
                             ))}
@@ -380,8 +377,11 @@ export function Landing() {
                         <b className="font-normal text-fg">{t("land.conv_lead")}</b> {t("land.conv_sub")}
                     </p>
                     <div className="flex flex-wrap items-center gap-2.5">
+                        {/* Guest tier → the guest flow (tags → 15 films → fork), not
+                            a signup form. The account ask already lives at the end
+                            of that flow; asking for it here is the old order back. */}
                         <Link
-                            href="/register"
+                            href="/onboarding/tags"
                             className="border border-primary bg-primary px-4 py-2.5 font-display text-[10.5px] font-bold uppercase tracking-[0.1em] text-primary-ink transition-colors hover:bg-transparent hover:text-primary"
                         >
                             {t("land.cta_profile")}

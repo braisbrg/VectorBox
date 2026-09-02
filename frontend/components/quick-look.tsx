@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import Image from "next/image";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
@@ -78,7 +79,12 @@ export function QuickLook({ film, context, onClose }: QuickLookProps) {
     const displayOverview =
         language === "es" && detail?.overview_es ? detail.overview_es : (film?.overview ?? detail?.overview);
 
-    return (
+    // Portal a <body>: los anfitriones lo montan dentro de un `space-y-6`, que
+    // le clava margin-block-end al overlay `fixed inset-0` y deja 1.5rem de
+    // pantalla sin oscurecer por abajo. Fuera del árbol no le llega nada.
+    if (typeof document === "undefined") return null;
+
+    return createPortal(
         <AnimatePresence>
             {film && (
                 <>
@@ -87,7 +93,10 @@ export function QuickLook({ film, context, onClose }: QuickLookProps) {
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                         onClick={onClose}
-                        className="fixed inset-0 z-[60] bg-black/70"
+                        // Por encima del modal de búsqueda (z-70). Estaba en z-60, así que al
+                        // abrir una película desde la barra el quick-look salía DETRÁS y
+                        // parecía que no pasaba nada.
+                        className="fixed inset-0 z-[80] bg-black/70"
                     />
                     <m.div
                         initial={{ opacity: 0, y: 24 }}
@@ -97,7 +106,7 @@ export function QuickLook({ film, context, onClose }: QuickLookProps) {
                         role="dialog"
                         aria-modal="true"
                         className={cn(
-                            "fixed z-[60] border border-border-2 bg-bg-2 font-mono shadow-acid",
+                            "fixed z-[80] border border-border-2 bg-bg-2 font-mono shadow-acid",
                             // mobile: bottom sheet · desktop: centered modal
                             "inset-x-0 bottom-0 max-h-[85vh] overflow-y-auto",
                             "lg:inset-auto lg:left-1/2 lg:top-1/2 lg:w-[560px] lg:max-w-[92vw] lg:-translate-x-1/2 lg:-translate-y-1/2"
@@ -217,6 +226,7 @@ export function QuickLook({ film, context, onClose }: QuickLookProps) {
                     </m.div>
                 </>
             )}
-        </AnimatePresence>
+        </AnimatePresence>,
+        document.body
     );
 }

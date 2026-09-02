@@ -1,7 +1,15 @@
 """
 Maintenance Orchestrator — runs all DB maintenance phases respecting API budgets.
 
-Phases (run in order, can be filtered with --phases):
+Phases (run in the order given to --phases; the default puts 10 FIRST):
+   10. seed_new           — ingests new films from TMDB (`upcoming` + `recent`,
+                            ~15/day each). Runs FIRST so the rest of the run treats
+                            them as ordinary catalogue: 3 enriches, 6 scores, 9 adds
+                            them to the neighbour table. Last instead, they would be
+                            invisible to gated recommendations until tomorrow. The
+                            wide strategies (popular/classic/by_language) are NOT
+                            here on purpose — they return their cap every call and
+                            are expansion decisions, not maintenance.
     1. refresh_metadata    — OMDb refetch + recalc vectorbox_score with new formula.
                              Targets movies with NULL imdb_vote_count OR stale
                              last_metadata_refresh. Hits OMDb budget.
@@ -22,10 +30,20 @@ Phases (run in order, can be filtered with --phases):
                              fallback). No external APIs. Replaces the legacy
                              heal_vectors.py time-window script.
     8. popular_refresh     — refreshes the "Popular on Letterboxd" Redis
-                             cache. Letterboxd first (curl_cffi + slug cache);
-                             falls back to Trakt /movies/trending if the
-                             scrape returns < threshold IDs. Replaces the
-                             legacy popular_scraper.py cron script.
+                             cache (curl_cffi scrape + slug cache). Letterboxd
+                             is the only source; a Cloudflare 403 is retried,
+                             and a run that still comes back empty leaves the
+                             previous cache in place. Replaces the legacy
+                             popular_scraper.py cron script.
+   11. streaming_changes   — altas y bajas de catálogo de las plataformas
+                             (MovieOfTheNight, 1000 peticiones AL MES). 4 al día.
+    9. neighbor_table      — precomputes every film's nearest neighbours for
+                             group sync. No external API, ~16s for 20k films.
+                             MUST run after anything that changes the vectors
+                             (phases 3, 4, 7) — group sync falls back to the
+                             old centroid path while the table is stale/absent,
+                             which still answers but returns the hub films the
+                             fusion path exists to avoid.
 
 OMDb budget is tracked in the `api_budget` table (100k/day default — Patron tier).
 Groq budget is implicit: phases stop gracefully on DailyLimitExhausted.
@@ -146,6 +164,8 @@ async def increment_omdb_used(db, n: int) -> None:
 
 REFRESH_STALE_DAYS = 7   # OMDb Patron tier (100k/day) makes weekly sweeps cheap.
 NO_OMDB_RETRY_DAYS = 30  # Aligns with OMDb negative-cache TTL.
+REFRESH_DAILY_DAYS = 1   # cadencia de lo que cambia a diario (upcoming + recién estrenadas)
+RECENT_RELEASE_DAYS = 90 # cuánto dura el estatus de «recién estrenada»
 # TMDB transport errors deliberately do NOT trip the circuit breaker (they were
 # causing false trips on HTTP/2 hiccups), so a total outage — container DNS
 # dying, for instance — looks like an endless stream of "transient" warnings and
@@ -179,6 +199,8 @@ async def phase_refresh_metadata(omdb_budget: int, dry_run: bool) -> dict:
 
         stale_cutoff = datetime.utcnow() - timedelta(days=REFRESH_STALE_DAYS)
         no_omdb_cutoff = datetime.utcnow() - timedelta(days=NO_OMDB_RETRY_DAYS)
+        daily_cutoff = datetime.utcnow() - timedelta(days=REFRESH_DAILY_DAYS)
+        recent_release_cutoff = date.today() - timedelta(days=RECENT_RELEASE_DAYS)
         query = (
             select(Movie)
             .where(Movie.imdb_id.isnot(None))
@@ -198,6 +220,27 @@ async def phase_refresh_metadata(omdb_budget: int, dry_run: bool) -> dict:
                     and_(
                         Movie.imdb_vote_count.is_(None),
                         Movie.last_metadata_refresh < no_omdb_cutoff,
+                    ),
+                    # PRIORIDAD DIARIA para lo que cambia a diario. Hasta 2026-08-13 todo
+                    # compartía el TTL de 7 días: un clásico de 1954 y un estreno de la
+                    # semana que viene se refrescaban igual. Consecuencias medidas ese día:
+                    # 46 de las 170 `is_upcoming` tenían el flag PODRIDO (fecha de estreno
+                    # pasada y seguían marcadas), porque `mark_released_upcoming` sólo puede
+                    # limpiarlas cuando la película pasa por el refresco.
+                    #   - `is_upcoming`: la fecha se mueve sola y el flag hay que bajarlo
+                    #     el día del estreno, no una semana después.
+                    #   - recién estrenadas: votos, nota y disponibilidad en streaming
+                    #     cambian rápido justo después de salir; un clásico no cambia nunca.
+                    # Coste medido: 170 + 239 = 409 llamadas/día contra un presupuesto de
+                    # 100k/día de OMDb. Es ruido.
+                    and_(
+                        Movie.is_upcoming.is_(True),
+                        Movie.last_metadata_refresh < daily_cutoff,
+                    ),
+                    and_(
+                        Movie.release_date_es.isnot(None),
+                        Movie.release_date_es >= recent_release_cutoff,
+                        Movie.last_metadata_refresh < daily_cutoff,
                     ),
                 )
             )
@@ -395,6 +438,8 @@ async def phase_embedding_repair(limit: int, dry_run: bool) -> dict:
 
     stats = {"queued": 0, "repaired": 0, "failed": 0, "stopped_early": False}
 
+    from services.cinematic_enricher import MIN_OVERVIEW_CHARS
+
     async with AsyncSessionLocal() as db:
         query = (
             select(Movie)
@@ -404,6 +449,16 @@ async def phase_embedding_repair(limit: int, dry_run: bool) -> dict:
                     Movie.embedding_quality_score < 0.35,
                 )
             )
+            # An overview under MIN_OVERVIEW_CHARS is refused by the enricher's
+            # anti-hallucination guard BEFORE any API call, so such a film can
+            # only ever count as `failed` — and, never being fixed, it comes
+            # back every single run. Measured 2026-08-18: 26 of the 31 candidates
+            # (84%) were these — "Untitled Saw Film", "Trolls 4", WWE preshows,
+            # TMDB stubs with a 0-char overview. Excluding them here is the same
+            # lesson enrich_vectors.py learned: an impossible candidate left in
+            # the query lies forever, and inflates the failure count that other
+            # guards read.
+            .where(func.length(func.trim(func.coalesce(Movie.overview, ""))) >= MIN_OVERVIEW_CHARS)
             .order_by(Movie.popularity.desc().nullslast())
             .limit(limit)
         )
@@ -589,9 +644,21 @@ async def phase_reset_profiles(dry_run: bool) -> dict:
             logger.info("[Phase 5] No users to re-cluster, skipping cluster wipe.")
             return stats
 
-        # Safe to wipe — at least one rebuild will follow.
-        await db.execute(delete(UserCluster))
+        # Only ORPHANS — users who hold clusters but no longer have a single
+        # rating. Everyone in `user_ids` is left alone because
+        # `create_user_clusters` already deletes that user's rows itself, in the
+        # SAME transaction as the insert (clustering_service.py:500 / commit at
+        # :618), so a per-user failure rolls back and the old clusters survive.
+        # Wiping the whole table up front and committing did the opposite: an
+        # interrupted run — a crash, a Ctrl-C, one raising user — left everyone
+        # not yet rebuilt with no clusters at all until the next night. Measured
+        # 2026-08-19: the global wipe cleaned 0 rows the per-user delete wouldn't.
+        wiped = (await db.execute(
+            delete(UserCluster).where(UserCluster.user_id.notin_(user_ids))
+        )).rowcount
         await db.commit()
+        if wiped:
+            logger.info(f"[Phase 5] removed {wiped} orphan cluster rows (users with no ratings left)")
 
         prog = _Progress("[Phase 5]", len(user_ids))
         for i, uid in enumerate(user_ids, 1):
@@ -626,7 +693,7 @@ async def phase_recalc_vbs(dry_run: bool) -> dict:
         with NULL imdb_vote_count or stale >30d last_metadata_refresh),
       - VBS-formula changes that need to propagate to the whole catalog.
     """
-    stats = {"total": 0, "updated": 0, "cleared": 0, "unchanged": 0}
+    stats = {"total": 0, "updated": 0, "cleared": 0, "unchanged": 0, "payload_synced": 0}
 
     def _synthetic_omdb(m: Movie) -> OMDbResponse:
         return OMDbResponse(
@@ -637,6 +704,7 @@ async def phase_recalc_vbs(dry_run: bool) -> dict:
         )
 
     omdb = OMDbClient.__new__(OMDbClient)  # bypass __init__ — no API calls
+    pg_scores: dict[int, Optional[float]] = {}
 
     async with AsyncSessionLocal() as db:
         movies = (await db.execute(select(Movie).order_by(Movie.id))).scalars().all()
@@ -671,12 +739,62 @@ async def phase_recalc_vbs(dry_run: bool) -> dict:
             else:
                 stats["unchanged"] += 1
 
+            if m.tmdb_id is not None:
+                pg_scores[m.tmdb_id] = m.vectorbox_score
+
             if i % 500 == 0:
                 await db.commit()
 
         await db.commit()
 
-    logger.info(f"[Phase 6] Done: updated={stats['updated']} cleared={stats['cleared']} unchanged={stats['unchanged']}")
+    # The Q-slider and the filtered feed read `vectorbox_score` from the QDRANT
+    # PAYLOAD, not from Postgres, so writing PG alone leaves the two disagreeing
+    # — the rule CLAUDE.md states as "never recalc PG without it". Measured
+    # 2026-08-18 before this existed: 66 points drifted, max delta 33.0, and two
+    # films sat on opposite sides of MIN_QUALITY_SCORE=55 (tmdb 1339175: PG 57.9
+    # passes, Qdrant 49.1 fails), plus 2 points with no vectorbox_score at all.
+    #
+    # This DIFFS against the payload instead of pushing only what changed this
+    # run, on purpose: pushing the delta would stop new drift but never repair
+    # the drift already there — a guard is not a repair. So a normal night is one
+    # scroll and a handful of writes, and any past divergence heals itself.
+    qdrant = QdrantService()
+    qd_scores: dict[int, Optional[float]] = {}
+    next_offset = None
+    while True:
+        points, next_offset = await qdrant.client.scroll(
+            collection_name=QdrantService.COLLECTION_NAME,
+            limit=10_000, offset=next_offset,
+            with_payload=["vectorbox_score"], with_vectors=False,
+        )
+        for pt in points:
+            qd_scores[pt.id] = (pt.payload or {}).get("vectorbox_score")
+        if next_offset is None:
+            break
+
+    for tmdb_id, pg_score in pg_scores.items():
+        if tmdb_id not in qd_scores:
+            continue  # not in Qdrant at all — that is Phase 7's job, not this one
+        qd_score = qd_scores[tmdb_id]
+        same = (pg_score is None and qd_score is None) or (
+            pg_score is not None and qd_score is not None and abs(pg_score - qd_score) <= 0.05
+        )
+        if same:
+            continue
+        try:
+            await qdrant.client.set_payload(
+                collection_name=QdrantService.COLLECTION_NAME,
+                payload={"vectorbox_score": pg_score},
+                points=[tmdb_id], wait=False,
+            )
+            stats["payload_synced"] += 1
+        except Exception as e:
+            logger.warning(f"[Phase 6] payload sync failed for tmdb={tmdb_id}: {e}")
+
+    logger.info(
+        f"[Phase 6] Done: updated={stats['updated']} cleared={stats['cleared']} "
+        f"unchanged={stats['unchanged']} payload_synced={stats['payload_synced']}"
+    )
     return stats
 
 
@@ -755,7 +873,16 @@ async def phase_vector_presence(dry_run: bool) -> dict:
             if not texts:
                 continue
 
-            vectors = model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
+            # CPU-bound → executor, per the repo invariant. It changes nothing
+            # while this phase only runs from the CLI, but scheduler.py already
+            # imports phase_popular_refresh from this module, so the day someone
+            # schedules phase 7 in-process a bare .encode() would stall the loop
+            # for the whole batch.
+            loop = asyncio.get_running_loop()
+            vectors = await loop.run_in_executor(
+                None,
+                lambda: model.encode(texts, convert_to_numpy=True, show_progress_bar=False),
+            )
             for m, v in zip(ready, vectors):
                 try:
                     await qdrant.upsert_movie_vector(
@@ -780,18 +907,18 @@ async def phase_vector_presence(dry_run: bool) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Phase 8 — popular_refresh (Letterboxd scrape with Trakt fallback)
+# Phase 8 — popular_refresh (Letterboxd scrape)
 # ---------------------------------------------------------------------------
 
 async def phase_popular_refresh(dry_run: bool) -> dict:
     """Refresh the 'Popular on Letterboxd' Redis cache.
 
-    Uses the consolidated `ScraperService.get_popular_with_fallback()` —
-    Letterboxd first (curl_cffi Chrome impersonation + slug cache), Trakt
-    `/movies/trending` if the Letterboxd scrape returns < threshold IDs.
+    Uses `ScraperService.scrape_popular_this_week_resolved()` — curl_cffi
+    Chrome impersonation + the 30d slug→tmdb_id Redis cache. Trakt was the
+    fallback until 2026-08-18; its API has answered 403 to every key since
+    2026-08-06, so it contributed nothing but a misleading `source=trakt`.
     Writes a JSON array to `cache:{FEED_CACHE_VERSION}:popular_letterboxd:ids`
-    with 24h TTL. Same key/value/TTL as the legacy `popular_scraper.py`
-    cron script — `TrendingService.get_popular_movie_ids` reads it.
+    with 7d TTL — `TrendingService.get_popular_movie_ids` reads it.
 
     No DB writes, no OMDb/Groq quota. Safe to run daily.
     """
@@ -801,7 +928,7 @@ async def phase_popular_refresh(dry_run: bool) -> dict:
     from services.scraper_service import ScraperService
     from services.trending_service import POPULAR_IDS_KEY
 
-    stats = {"slugs_resolved": 0, "with_rating": 0, "source": None, "cached": False}
+    stats = {"slugs_resolved": 0, "with_rating": 0, "cached": False}
 
     scraper = ScraperService()
     try:
@@ -809,13 +936,12 @@ async def phase_popular_refresh(dry_run: bool) -> dict:
             logger.info(f"[Phase 8] DRY-RUN would scrape popular + write to Redis key={POPULAR_IDS_KEY}")
             return stats
 
-        items, source = await scraper.get_popular_with_fallback(min_items=20)
+        items = await scraper.scrape_popular_this_week_resolved()
         stats["slugs_resolved"] = len(items)
         stats["with_rating"] = sum(1 for it in items if it.get("letterboxd_rating") is not None)
-        stats["source"] = source
 
         if not items:
-            logger.warning("[Phase 8] both Letterboxd and Trakt produced 0 items — leaving Redis cache untouched")
+            logger.warning("[Phase 8] Letterboxd produced 0 items — leaving Redis cache untouched")
             return stats
 
         redis_url = os.getenv("REDIS_URL", "redis://redis:6379")
@@ -824,11 +950,15 @@ async def phase_popular_refresh(dry_run: bool) -> dict:
             # Schema: [{"tmdb_id": int, "letterboxd_rating": float|None}, ...]
             # TrendingService normalizes back to List[int] for legacy callers
             # AND exposes the full items via get_popular_movie_items().
-            await r.set(POPULAR_IDS_KEY, _json.dumps(items), ex=24 * 60 * 60)
+            # 7d, not 24h: the phase runs daily and Letterboxd 403s some runs
+            # (Cloudflare, measured 2026-08-18). With a 24h TTL one blocked run
+            # empties the section; with 7d it takes a week of them. "Popular
+            # this week" is a weekly list, so stale-by-a-day costs nothing.
+            await r.set(POPULAR_IDS_KEY, _json.dumps(items), ex=7 * 24 * 60 * 60)
             stats["cached"] = True
             logger.info(
                 f"[Phase 8] cached {len(items)} items at {POPULAR_IDS_KEY} "
-                f"(source={source}, with_rating={stats['with_rating']}, TTL 24h)"
+                f"(with_rating={stats['with_rating']}, TTL 7d)"
             )
         finally:
             await r.close()
@@ -839,8 +969,186 @@ async def phase_popular_refresh(dry_run: bool) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase 9 — neighbor_table (no external API)
+# ---------------------------------------------------------------------------
+
+async def phase_neighbor_table(dry_run: bool) -> dict:
+    """Rebuild the precomputed nearest-neighbour table group sync reads.
+
+    Runs LAST on purpose: phases 3, 4 and 7 change vectors, and neighbours
+    computed before them would describe a catalogue that no longer exists.
+    Staleness degrades quietly rather than breaking — `_fused_group_recommendations`
+    falls back to the centroid path — so this phase failing is not fatal, but it
+    does mean groups go back to seeing the same hub films as each other.
+    """
+    import json as _json
+
+    stats = {"films": 0, "skipped_dry_run": False}
+    if dry_run:
+        logger.info("[Phase 9] dry-run — would rebuild the neighbour table (~16s)")
+        stats["skipped_dry_run"] = True
+        return stats
+
+    from scripts.build_neighbor_table import main as build_neighbor_table
+    rc = await build_neighbor_table()
+    if rc != 0:
+        logger.error("[Phase 9] neighbour table build failed (rc=%s) — group sync will "
+                     "fall back to the centroid path", rc)
+        stats["error"] = rc
+        return stats
+
+    import os as _os
+    import redis.asyncio as aioredis
+    r = aioredis.from_url(_os.getenv("REDIS_URL", "redis://redis:6379"), decode_responses=True)
+    try:
+        meta = await r.get("knn:v1:meta")
+        if meta:
+            stats.update(_json.loads(meta))
+    finally:
+        await r.close()
+    logger.info(f"[Phase 9] neighbour table rebuilt: {stats}")
+    return stats
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 — seed_new (TMDB discover)
+# ---------------------------------------------------------------------------
+
+async def phase_seed_new(limit: int, dry_run: bool) -> dict:
+    """Ingest films released or announced since the last run.
+
+    Runs FIRST (see the default --phases order) so everything downstream treats the
+    new arrivals as ordinary catalogue: phase 3 enriches them, 6 scores them, 9 puts
+    them in the neighbour table. Appended at the end instead, they would sit
+    unenriched and invisible to gated recommendations until the NEXT day's run.
+
+    Only `upcoming` and `recent`: both are naturally bounded (~15 films/day each,
+    measured 2026-08-06) because they ask TMDB for a moving window. The wide
+    strategies — popular, classic, by_language — return their cap on every single
+    call; those are catalogue EXPANSION, a decision to take deliberately, never
+    something to leave running on a cron.
+    """
+    from seed_db import DatabaseSeeder
+
+    stats = {"before": 0, "after": 0, "ingested": 0}
+
+    async with AsyncSessionLocal() as db:
+        stats["before"] = await db.scalar(select(func.count()).select_from(Movie))
+
+    for strategy in ("upcoming", "recent"):
+        logger.info(f"[Phase 10] seeding strategy={strategy} limit={limit} dry_run={dry_run}")
+        try:
+            await DatabaseSeeder(limit=limit, strategy=strategy, dry_run=dry_run).run()
+        except Exception as e:
+            # One dead strategy must not take the whole nightly run with it.
+            logger.error(f"[Phase 10] strategy {strategy} failed: {e}")
+
+    async with AsyncSessionLocal() as db:
+        stats["after"] = await db.scalar(select(func.count()).select_from(Movie))
+    stats["ingested"] = stats["after"] - stats["before"]
+    logger.info(f"[Phase 10] catalogue {stats['before']} → {stats['after']} (+{stats['ingested']})")
+    return stats
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+async def phase_streaming_changes(dry_run: bool) -> dict:
+    """Altas y bajas de catálogo de los servicios de streaming, a `streaming_changes`.
+
+    ÚNICA puerta a la API de MovieOfTheNight, que da **1000 peticiones al mes**. Por eso
+    vive aquí y no en el camino de un request: una llamada por usuario agotaría el mes en
+    horas. Con 2 páginas por tipo y país son 4 peticiones diarias ≈ 120 al mes, menos del
+    15% de la cuota, dejando margen para reintentos y para más países.
+
+    Idempotente: el índice único (tmdb_id, país, servicio, tipo) hace que repetir la pasada
+    actualice en vez de duplicar. Se guardan también las películas que aún no tenemos en
+    catálogo — el cruce con `Movie` se hace al leer, así que no se pierde el dato mientras
+    la ingesta las alcanza.
+    """
+    from sqlalchemy.dialects.postgresql import insert as _pg_insert
+    from models.database import StreamingChange
+    from services.streaming_availability_client import (
+        StreamingAvailabilityClient, SERVICE_TO_TMDB_PROVIDER,
+    )
+
+    stats = {"paises": 0, "new": 0, "expiring": 0, "guardados": 0,
+             "peticiones": 0, "errores": 0, "cuota_usada": None, "cuota_total": None}
+
+    cliente = StreamingAvailabilityClient()
+    if not cliente.enabled:
+        logger.warning("[Phase 11] MOVIEOFTHENIGHT_API_KEY no configurada — fase omitida")
+        await cliente.aclose()
+        return stats
+
+    try:
+        # UNA petición POR SERVICIO, no una común para todos. Medido el 2026-08-19: con
+        # el montón común, las 50 bajas que caben por pasada se las llevaban los tres
+        # servicios con más rotación (Netflix 9, SkyShowtime 9, HBO Max 8) y **Prime y
+        # Disney+ salían a CERO**, pese a tener 1.992 y 1.101 películas nuestras. El
+        # síntoma para el usuario era una fila "Se va pronto" que aparecía o no según qué
+        # servicios tuviera marcados, sin regla visible.
+        #
+        # Coste: 11 servicios × 2 tipos = 22 peticiones/día ≈ 660/mes de las 1000. Cabe,
+        # pero ya no sobra tanto, así que `STREAMING_PAGES_PER_TYPE` baja a 1: una página
+        # (25 cambios) POR SERVICIO es más de lo que antes se repartían entre todos.
+        for pais in STREAMING_COUNTRIES:
+            stats["paises"] += 1
+            for tipo in ("new", "expiring"):
+                if dry_run:
+                    logger.info(f"[Phase 11] DRY-RUN pediría {tipo} de {pais} "
+                                f"× {len(SERVICE_TO_TMDB_PROVIDER)} servicios")
+                    continue
+                cambios = []
+                for servicio in SERVICE_TO_TMDB_PROVIDER:
+                    cambios += await cliente.fetch_changes(pais, tipo, [servicio],
+                                                           max_pages=STREAMING_PAGES_PER_TYPE)
+                stats[tipo] += len(cambios)
+                if not cambios:
+                    continue
+                async with AsyncSessionLocal() as db:
+                    for c in cambios:
+                        if not c.get("service"):
+                            continue
+                        stmt = _pg_insert(StreamingChange).values(
+                            tmdb_id=c["tmdb_id"], country_code=pais, service=c["service"],
+                            change_type=c["change_type"], option_type=c["option_type"],
+                            effective_at=c["effective_at"], link=c["link"],
+                            fetched_at=datetime.utcnow(),
+                        ).on_conflict_do_update(
+                            index_elements=["tmdb_id", "country_code", "service", "change_type"],
+                            set_={"option_type": c["option_type"], "effective_at": c["effective_at"],
+                                  "link": c["link"], "fetched_at": datetime.utcnow()},
+                        )
+                        await db.execute(stmt)
+                        stats["guardados"] += 1
+                    await db.commit()
+        stats["peticiones"] = cliente.requests_made
+        stats["errores"] = cliente.errors
+        stats["cuota_usada"] = cliente.quota_used
+        stats["cuota_total"] = cliente.quota_granted
+        logger.info(
+            f"[Phase 11] new={stats['new']} expiring={stats['expiring']} "
+            f"guardados={stats['guardados']} · {stats['peticiones']} peticiones · "
+            f"cuota {stats['cuota_usada']}/{stats['cuota_total']}"
+        )
+        # Sin esto, "hoy no hubo altas ni bajas" y "la API está caída" imprimen la
+        # misma línea de stats y el resumen del orquestador las da por buenas.
+        if stats["errores"]:
+            logger.error(
+                f"[Phase 11] {stats['errores']} petición(es) fallaron — new/expiring "
+                f"están INCOMPLETOS, no vacíos"
+            )
+    finally:
+        await cliente.aclose()
+    return stats
+
+
+# Países cuyos cambios de catálogo se siguen, y páginas por tipo. Cada página es UNA
+# petición de las 1000 mensuales: 2 países × 2 tipos × 2 páginas = 8/día ≈ 240/mes.
+STREAMING_COUNTRIES = ["es"]
+STREAMING_PAGES_PER_TYPE = 1  # por SERVICIO desde 2026-08-19, no por país
 
 PHASE_FNS = {
     1: ("refresh_metadata", phase_refresh_metadata),
@@ -851,10 +1159,13 @@ PHASE_FNS = {
     6: ("recalc_vbs", phase_recalc_vbs),
     7: ("vector_presence_check", phase_vector_presence),
     8: ("popular_refresh", phase_popular_refresh),
+    9: ("neighbor_table", phase_neighbor_table),
+    11: ("streaming_changes", phase_streaming_changes),
+    10: ("seed_new", phase_seed_new),
 }
 
 
-async def run(phases: List[int], omdb_budget: int, embed_limit: int, audit_limit: int, dry_run: bool) -> None:
+async def run(phases: List[int], omdb_budget: int, embed_limit: int, audit_limit: int, seed_limit: int, dry_run: bool) -> None:
     started = datetime.utcnow()
     logger.info(f"=== Maintenance Orchestrator started at {started.isoformat()}Z ===")
     logger.info(f"Phases: {phases}  omdb_budget={omdb_budget}  embed_limit={embed_limit}  audit_limit={audit_limit}  dry_run={dry_run}")
@@ -871,7 +1182,9 @@ async def run(phases: List[int], omdb_budget: int, embed_limit: int, audit_limit
                 summary[name] = await fn(limit=audit_limit, dry_run=dry_run)
             elif ph in (3, 4):
                 summary[name] = await fn(limit=embed_limit, dry_run=dry_run)
-            else:  # 5, 6, 7, 8 — only dry_run
+            elif ph == 10:
+                summary[name] = await fn(limit=seed_limit, dry_run=dry_run)
+            else:  # 5, 6, 7, 8, 11 — only dry_run
                 summary[name] = await fn(dry_run=dry_run)
         except Exception as e:
             logger.error(f"Phase {ph} ({name}) crashed: {e}")
@@ -888,7 +1201,7 @@ def main():
     parser.add_argument(
         "--phases",
         type=str,
-        default="1,2,3,4,5,6,7,8",
+        default="10,1,2,3,4,5,6,7,8,9,11",
         help="Comma-separated phase numbers to run (default: all)",
     )
     parser.add_argument(
@@ -910,15 +1223,22 @@ def main():
         help="Max movies per Phase 2 embedding audit (no API — only local CPU). "
              "Default 20000 ≈ 2x current catalog, raise if seed grows past that. ~15ms/film.",
     )
+    parser.add_argument(
+        "--seed-limit",
+        type=int,
+        default=200,
+        help="Max NEW films per strategy in Phase 10 (upcoming, recent). Default: 200 — "
+             "both strategies return ~15/day, so this is a runaway guard, not a target.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen without writing")
 
     args = parser.parse_args()
     phases = [int(p.strip()) for p in args.phases.split(",") if p.strip()]
     invalid = [p for p in phases if p not in PHASE_FNS]
     if invalid:
-        parser.error(f"Invalid phase numbers: {invalid}. Valid: 1-8")
+        parser.error(f"Invalid phase numbers: {invalid}. Valid: {sorted(PHASE_FNS)}")
 
-    asyncio.run(run(phases, args.omdb_budget, args.embed_limit, args.audit_limit, args.dry_run))
+    asyncio.run(run(phases, args.omdb_budget, args.embed_limit, args.audit_limit, args.seed_limit, args.dry_run))
 
 
 if __name__ == "__main__":

@@ -33,6 +33,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# País cuyos estrenos en CINE lee la estrategia `recent` en su segunda pasada.
+# Es el mercado del producto, no una preferencia de usuario: el seed llena el
+# catálogo, no personaliza. Ver fetch_recent_movies.
+RECENT_REGION = "ES"
+
 # Suppress other loggers
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
@@ -572,35 +577,60 @@ class DatabaseSeeder:
         return candidates[:self.limit]
 
     async def fetch_recent_movies(self, existing_ids: set) -> list:
-        """Fetch movies released in the last 90 days."""
+        """Estrenos de los últimos 90 días, por DOS caminos que no se solapan.
+
+        1. Mundial por `primary_release_date` — lo de siempre, con suelo de 20 votos.
+        2. **Estrenos en cine en `RECENT_REGION`** (`region` + `with_release_type=3` +
+           `release_date.*`), sin suelo de votos.
+
+        El segundo existe porque el primero es CIEGO a las películas extranjeras que
+        llegan tarde: `primary_release_date` es la fecha MUNDIAL, así que cuando una
+        película se estrena en cines españoles su fecha primaria puede tener 8-16 meses
+        y cae fuera de la ventana. Medido 2026-08-11 — de 18 títulos en cartelera ES que
+        faltaban en catálogo:
+
+            Jumbo     primaria 2025-03-31 → cines ES 2026-07-24
+            Kangaroo  primaria 2025-08-21 → cines ES 2026-08-12
+            Omaha     primaria 2025-11-22 → cines ES 2026-07-17
+
+        El camino 1 devolvía **0 nuevas** y el 2 devuelve **15** sobre la misma ventana
+        (La ventana abierta, Tres de más, Wham! 10 Days in...). Y sin suelo de votos a
+        propósito: un estreno de esta semana no ha tenido tiempo de acumular 20, que es
+        justo lo que tumbaba a 14 de esas 18. El filtro de calidad aquí es haber llegado
+        a una sala, no el recuento de votos.
+        """
         from datetime import date, timedelta
         today = date.today().isoformat()
         past_90 = (date.today() - timedelta(days=90)).isoformat()
 
-        candidates = []
-        page = 1
+        pasadas = [
+            dict(sort_by="primary_release_date.desc", primary_release_date_gte=past_90,
+                 primary_release_date_lte=today, vote_count_min=20),
+            dict(sort_by="primary_release_date.desc", region=RECENT_REGION,
+                 with_release_type="3", release_date_gte=past_90,
+                 release_date_lte=today, vote_count_min=0),
+        ]
 
+        candidates = []
         pbar = tqdm(total=self.limit, desc="Finding NEW recent movies")
-        while len(candidates) < self.limit and page <= 50:
-            try:
-                results = await self.tmdb.discover_movies(
-                    sort_by="primary_release_date.desc",
-                    primary_release_date_gte=past_90,
-                    primary_release_date_lte=today,
-                    vote_count_min=20,
-                    page=page,
-                )
-                for movie in (results or []):
-                    if movie["id"] not in existing_ids:
-                        candidates.append(movie)
-                        existing_ids.add(movie["id"])
-                        pbar.update(1)
-                        if len(candidates) >= self.limit:
-                            break
-                page += 1
-            except Exception as e:
-                logger.error(f"Error fetching recent page {page}: {e}")
-                break
+        for kwargs in pasadas:
+            page = 1
+            while len(candidates) < self.limit and page <= 50:
+                try:
+                    results = await self.tmdb.discover_movies(page=page, **kwargs)
+                    if not results:
+                        break
+                    for movie in results:
+                        if movie["id"] not in existing_ids:
+                            candidates.append(movie)
+                            existing_ids.add(movie["id"])
+                            pbar.update(1)
+                            if len(candidates) >= self.limit:
+                                break
+                    page += 1
+                except Exception as e:
+                    logger.error(f"Error fetching recent page {page}: {e}")
+                    break
         pbar.close()
         return candidates[:self.limit]
 

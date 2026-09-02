@@ -28,6 +28,10 @@ FILTERED = [
     "vote_count", "vote_average", "imdb_rating", "metacritic_rating",
     "has_enriched_embedding", "countries", "spoken_languages", "mpaa_rating",
     "oscar_wins", "is_adult",
+    # 2026-08-19: no estaban, y por eso nada gritó cuando cada re-upsert los
+    # borraba. Phase 7 curó un punto y salió sin ejes de mood; 7 puntos tenían
+    # el valor en Postgres y no en el payload.
+    "mood_gravedad", "mood_humanidad",
 ]
 
 
@@ -40,7 +44,8 @@ def _fake_movie():
         setattr(m, f, "x")
     for f in ("genres", "keywords", "directors", "cast", "omdb_countries", "omdb_languages"):
         setattr(m, f, [])
-    for f in ("vote_average", "vectorbox_score", "imdb_rating", "metacritic_rating"):
+    for f in ("vote_average", "vectorbox_score", "imdb_rating", "metacritic_rating",
+              "mood_gravedad", "mood_humanidad"):
         setattr(m, f, 1.0)
     m.has_enriched_embedding = True
     m.is_adult = False

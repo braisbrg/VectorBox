@@ -218,4 +218,9 @@ async def main():
         print(f"  Δ:  G2 vs A = {delta_pct:+.1f}%")
 
 
-asyncio.run(main())
+# Guarded 2026-08-06: sin esto, IMPORTAR este módulo ejecutaba el experimento entero
+# y dejaba el pool de asyncpg atado a un event loop ya cerrado ("attached to a different
+# loop") para quien importase sus funciones. El comportamiento al ejecutarlo directo es
+# idéntico. Ver experiment_signal_a_heldout_anchored.py, que reutiliza estas estrategias.
+if __name__ == "__main__":
+    asyncio.run(main())

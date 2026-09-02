@@ -826,8 +826,10 @@ export default function SpacePage() {
                 {/* calibration (desktop prototype .sp-cal — real actions only, no fake drift stats) */}
                 <div className="space-y-2 border border-border-2 bg-bg-2 p-3">
                     <div className="eyebrow">{t("space2.calibration")}</div>
+                    {/* Igual que en /you: "recalibrar" es re-subir el export, no
+                        rehacer el alta — ?step=import salta al paso que importa. */}
                     <Link
-                        href="/import"
+                        href="/import?step=import"
                         className="block border border-border-2 px-2.5 py-2 font-mono text-[10px] uppercase tracking-[0.08em] text-fg-2 transition-colors hover:border-primary hover:text-primary"
                     >
                         {t("space2.recal")}

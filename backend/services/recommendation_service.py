@@ -15,12 +15,12 @@ import redis.asyncio as redis
 from models.database import UserRating, Movie, UserCluster, User
 from models.schemas import FeedSection, FeedItem
 from services.tmdb_client import TMDBClient
-from services.trakt_client import TraktClient, get_trakt_client
 from services.qdrant_service import QdrantService
 from services.clustering_service import ClusteringService
 from services.movie_service import MovieService
 from services.provider_service import ProviderService
 
+from utils.anti_vector import most_anti_similar
 from utils.decorators import safe_execution
 
 logger = logging.getLogger(__name__)
@@ -32,12 +32,47 @@ MIN_QUALITY_SCORE = 55  # floor for Picked For You; pre-filtered into Signal A a
 MIN_SIGNAL_C_SCORE = 62  # sweet spot between 55 (too permissive) and 68 (too strict)
 MIN_EMBED_QUALITY_SCORE = 0.35  # below this is low-quality/fallback-embedding noise; produces false centroid matches
 
-# Signal C source: Trakt /related (replaced TMDB /recommendations on 2026-05-10
-# after experiment_signal_c.py vs experiment_trakt.py showed Trakt's collab
-# filter is dramatically cleaner — vec_sim≥0.45 pass rate jumped 10.8% → 27.5%).
-# The cross-validation gate is now a safety net rather than the main filter,
-# so we relax the threshold from 0.50 → 0.40. Set to 0.0 to disable entirely.
-SIGNAL_C_VEC_SIM_THRESHOLD = 0.40  # min cosine between seed and candidate
+# Signal C source: TMDB /movie/{id}/recommendations  (2026-08-11 → hoy)
+#
+# HISTORIA (se conserva a propósito: es el porqué de las decisiones):
+#   2026-05-10 — Trakt /related sustituyó a TMDB /recommendations después de que
+#   experiment_signal_c.py vs experiment_trakt.py midieran el filtro colaborativo de
+#   Trakt mucho más limpio: la tasa de paso a vec_sim≥0.45 saltó del 10.8% al 27.5%.
+#   La puerta de cross-validation pasó a ser red de seguridad y se relajó 0.50 → 0.40.
+#
+# ⚠️ ESO QUEDÓ DESFASADO (2026-08-06/11), y por eso hemos vuelto a TMDB:
+#   1. Trakt está CAÍDO: 403 a cualquier clave y crear una app nueva exige VIP de
+#      pago. La cuenta no tiene ninguna app registrada, así que el TRAKT_CLIENT_ID
+#      es huérfano. La señal estuvo devolviendo [] hasta el cambio de fuente.
+#      Decisión 2026-08-11: NO se paga el VIP — la ventaja de Trakt se midió en otro
+#      espacio de embeddings y ya no es verificable.
+#   2. El 10.8% vs 27.5% se midió en OTRO espacio de embeddings (pre-embeddinggemma
+#      768). No es comparable con nada de hoy, y ya no se puede re-medir. La
+#      superioridad de Trakt no está ni confirmada ni refutada en el espacio actual.
+#   3. Las dos puertas de abajo NO FILTRAN NADA. Medido sobre las semillas reales
+#      de los users 210 y 212: de 118 y 88 candidatos de TMDB, el gate de coseno
+#      descarta 0 y el de género descarta 0. El coseno medio entre dos películas
+#      cualesquiera del catálogo es 0.490, así que un umbral de 0.40 deja pasar el
+#      81% de los pares AL AZAR — es un no-op, igual que los score_threshold que ya
+#      se retiraron de routers/similar.py. Lo que filtra de verdad es
+#      MIN_SIGNAL_C_SCORE (VBS), que se lleva el 46-65%.
+#   4. TMDB medido antes de volver a él: 38 y 26 candidatos únicos tras los filtros
+#      (sin inanición) y **95-96% no están en la Señal A** — sigue siendo tercera pata.
+#      Ojo: propaga con fuerza el género de la semilla, así que la ELECCIÓN DE SEMILLAS
+#      pesa más que la fuente. Semillas de franquicia rinden ~0 (Mad Max: 2 candidatos,
+#      ambos secuelas suyas); las de autor dan 8-11.
+# Ver BACKLOG para el estudio completo.
+# SIGNAL_C_VEC_SIM_THRESHOLD: RETIRADO 2026-08-06 (medido: descartaba 0 de 118 y 0 de 88),
+# y NO se debe reponer. El porqué, corregido el 2026-08-11:
+#   - Hay DOS poblaciones de coseno: ruido (media 0.490, p95 0.658) y vecinas reales
+#     (p05 0.702, mediana 0.774). El 0.40 estaba dentro del ruido; por eso no filtraba.
+#   - Pero subirlo a 0.70 sería PEOR, no mejor: las recomendaciones de TMDB están en
+#     coseno medio 0.664 — POR DEBAJO de la población de vecinas. No son vecinas
+#     temáticas, son señal de comportamiento, y ese es justo su valor (95% de ellas no
+#     están en la Señal A). Un gate en 0.70 tiraría el 62% de la señal.
+#   - Regla que sale de aquí: **no se filtra una señal de comportamiento con un umbral
+#     temático.** Si algún día hace falta una puerta vectorial en una señal TEMÁTICA,
+#     el número es ~0.70 (p05 de vecinas), no 0.40. Ver [[two-cosine-populations]].
 SIGNAL_C_REQUIRE_GENRE_OVERLAP = True  # candidate must share ≥1 genre with the seed that recommended it
 SIGNAL_C_MAX_SEEDS = 8  # number of high-quality user films to query for related (was 5; broader pool)
 SIGNAL_C_PER_SEED_TAKE = 5  # candidates kept per seed
@@ -51,13 +86,37 @@ SIGNAL_C_PER_SEED_TAKE = 5  # candidates kept per seed
 # Lower it toward 0.5 for a harder cut; raise toward 1.0 to restore the flood.
 SIGNAL_C_RRF_WEIGHT = 0.7
 
+# Señal B (Auteur): puntos mínimos para que un director "active". Era un 3.0 literal
+# dentro de la función; extraído a constante y bajado a 2.5 el 2026-08-11 porque con 3.0
+# la señal se moría de hambre: **activaba UN solo director** de los 191 puntuados de user
+# 212 y de los 823 de user 210 (Miyazaki 4.2 y Kobayashi 3.0; el resto se quedaba en
+# 2.5-2.8). Con Kobayashi teniendo 1 sola película sin ver en catálogo, user 210 recibía
+# DOS películas de una señal de cinco directores.
+#
+# Medido sobre producción, 3.0 → 2.5:
+#   user 212:  8 → 18 películas · coherencia 0.941 → 0.929 · ILD 0.379 → 0.458 · 5 → 6 décadas
+#   user 210:  2 →  6 películas · coherencia 0.917 → 0.904 · ILD 0.527 → 0.448 · 1 → 5 décadas
+# 2-3× de volumen por 0.013 de coherencia, y sigue siendo con diferencia la señal más
+# precisa del tridente (0.90+ contra 0.82 de la Señal A y 0.80 de la C).
+# Bajar de 2.5 no cambia nada: manda el tope de 5 directores.
+AUTEUR_MIN_SCORE = 2.5
+
 # Generic genres co-occur across most films and don't tell us anything about user taste.
 # Removed before computing the user's "distinctive" genre set for Signal A coherence.
 GENERIC_GENRES = {"Action", "Drama", "Comedy", "Adventure", "Thriller"}
 
-# Anti-vector penalty thresholds — same as Because You Watched (recommendation_engine.py:544-557).
-ANTI_VECTOR_DROP_THRESHOLD = 0.80
-ANTI_VECTOR_DEMOTE_THRESHOLD = 0.65
+# Penalización por anti-vector — misma regla que Because You Watched
+# (`recommendation_engine`), que comparte el helper `most_anti_similar`.
+#
+# Los dos umbrales ABSOLUTOS que había aquí (0.80 para tirar, 0.65 para demotar)
+# se retiraron el 2026-09-01 y NO se reponen. Medidos sobre los heads reales de
+# los 10 usuarios con anti-vector: el de 0.80 no disparó **ni una vez** (el
+# coseno más alto de cualquier head fue 0.781), y el de 0.65 tocaba del 0% al
+# 73% según el usuario, porque un coseno absoluto en un espacio anisótropo mide
+# lo apretado que es el conjunto negativo del usuario, no cuánto se parece un
+# candidato. Es la misma trampa que ya retiró `SIGNAL_C_VEC_SIM_THRESHOLD` y los
+# `score_threshold` de `routers/similar.py`. Quién se penaliza sale ahora de la
+# distribución de la propia lista; cuánto, de la constante de abajo.
 ANTI_VECTOR_DEMOTE_FACTOR = 0.5
 ANTI_VECTOR_BATCH_LIMIT = 30  # bound batch fetch cost; tail of raw_recs left untouched
 
@@ -87,7 +146,7 @@ class RecommendationService:
     Merges 3 distinct signals:
     - Signal A: Vibe (Vector Embeddings)
     - Signal Auteur: Director Analysis
-    - Signal C: Crowd (Trakt /related — user-behaviour collab filter)
+    - Signal C: Crowd (TMDB /recommendations — collab filter de TMDB)
     """
 
     def __init__(
@@ -96,16 +155,10 @@ class RecommendationService:
         tmdb: TMDBClient = None,
         qdrant: QdrantService = None,
         redis_client: redis.Redis = None,
-        trakt: TraktClient = None,
     ):
         self.db = db
         self.tmdb = tmdb
         self.qdrant = qdrant
-        # Module singleton — RecommendationService is built several times per
-        # feed request (hybrid + auteur + cult_actor tasks); a fresh
-        # TraktClient() each time leaked an unclosed httpx.AsyncClient + Redis
-        # connection per instance. Falls back gracefully if no TRAKT_CLIENT_ID.
-        self.trakt = trakt or get_trakt_client()
         self.redis = redis_client
         self.clustering = ClusteringService(qdrant=qdrant)
         self.movie_service = MovieService(db, tmdb=tmdb)
@@ -136,7 +189,7 @@ class RecommendationService:
             from config import AsyncSessionLocal
             async with AsyncSessionLocal() as session:
                 # Create an isolated service instance for this task to avoid concurrent session errors
-                isolated_service = RecommendationService(db=session, tmdb=self.tmdb, qdrant=self.qdrant, redis_client=self.redis, trakt=self.trakt)
+                isolated_service = RecommendationService(db=session, tmdb=self.tmdb, qdrant=self.qdrant, redis_client=self.redis)
                 method = getattr(isolated_service, method_name)
                 res = await method(*args, **kwargs)
             duration = (time.time() - t0) * 1000
@@ -398,7 +451,7 @@ class RecommendationService:
         # slipped in regardless of how strongly the user disliked similar films.
         # Bounded to top-30 to keep the extra Qdrant batch fetch cheap.
         anti_vector = await self._get_anti_vector(user_id)
-        anti_dropped = anti_demoted = 0
+        anti_demoted = 0
         if anti_vector and raw_recs:
             anti_np = np.array(anti_vector)
             anti_norm = float(np.linalg.norm(anti_np))
@@ -408,26 +461,29 @@ class RecommendationService:
                 head_ids = [r["movie_id"] for r in head]
                 cand_vec_map = await self.qdrant.get_vectors_batch(head_ids)
 
-                adjusted_head: List[Dict] = []
+                cos_by_id: Dict[int, float] = {}
                 for r in head:
                     vec = cand_vec_map.get(r["movie_id"])
                     if vec is None:
-                        adjusted_head.append(r)
                         continue
                     cand_np = np.array(vec)
                     cand_norm = float(np.linalg.norm(cand_np))
                     if cand_norm == 0:
-                        adjusted_head.append(r)
                         continue
-                    cos_sim = float(np.dot(cand_np, anti_np) / (cand_norm * anti_norm))
-                    if cos_sim > ANTI_VECTOR_DROP_THRESHOLD:
-                        anti_dropped += 1
-                        continue
-                    if cos_sim > ANTI_VECTOR_DEMOTE_THRESHOLD:
+                    cos_by_id[r["movie_id"]] = float(
+                        np.dot(cand_np, anti_np) / (cand_norm * anti_norm)
+                    )
+                # El decil de ESTA lista, no un coseno fijo. Sin película sin
+                # vector: las que no lo tienen no se juzgan, como antes.
+                penalizados = most_anti_similar(cos_by_id)
+
+                adjusted_head: List[Dict] = []
+                for r in head:
+                    if r["movie_id"] in penalizados:
                         adjusted_head.append({**r, "score": r.get("score", 1.0) * ANTI_VECTOR_DEMOTE_FACTOR})
                         anti_demoted += 1
-                        continue
-                    adjusted_head.append(r)
+                    else:
+                        adjusted_head.append(r)
 
                 adjusted_head.sort(key=lambda x: x.get("score", 0.0), reverse=True)
                 raw_recs = adjusted_head + tail
@@ -498,7 +554,7 @@ class RecommendationService:
             f"after_exclude={len(tmdb_ids)} db_matches={db_match_count} "
             f"after_quality={before_genre} after_genre={after_genre_count} "
             f"after_embed_quality={len(ordered)} "
-            f"anti_dropped={anti_dropped} anti_demoted={anti_demoted} "
+            f"anti_demoted={anti_demoted}/{ANTI_VECTOR_BATCH_LIMIT} "
             f"distinctive_genres={sorted(distinctive)}"
         )
         return ordered
@@ -592,8 +648,8 @@ class RecommendationService:
         if not director_scores:
             return []
 
-        # Imp 8: Director activates at >= 3.0 points
-        top_directors = [name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True) if score >= 3.0][:5]
+        # Imp 8: Director activates at >= AUTEUR_MIN_SCORE points
+        top_directors = [name for name, score in sorted(director_scores.items(), key=lambda x: x[1], reverse=True) if score >= AUTEUR_MIN_SCORE][:5]
 
         logger.info(
             f"[Signal Auteur] user={user_id} "
@@ -603,9 +659,9 @@ class RecommendationService:
             return []
             
         # 2. Query DB for matches
-        from services.recommendation_engine import MOVIE_QUALITY_GATE
+        from services.recommendation_engine import movie_quality_gate
         stmt = select(Movie).where(
-            *MOVIE_QUALITY_GATE,
+            *movie_quality_gate(),
             # Enriched-vector gate: Signal B feeds picked_for_you (the flagship
             # personalization row) — keep it as clean as the vector signals.
             # The explicit "From Your Favorite Directors" ROW stays ungated.
@@ -660,14 +716,18 @@ class RecommendationService:
     async def _compute_crowd_signal_raw(self, user_id: int, exclude_ids: Set[int], background_tasks = None) -> List[Movie]:
         """
         Raw computation for Signal C: The Crowd Expert.
-        Source: Trakt /movies/{id}/related (real user-behaviour collab filter).
-        Replaced TMDB /recommendations on 2026-05-10 — Trakt's signal/noise ratio
-        was 2.5× better in side-by-side experiments (see scripts/experiment_trakt.py).
-        Falls back gracefully when TRAKT_CLIENT_ID is unset (returns empty pool;
-        Picked For You then relies on Vibe + Auteur only).
+        Source: TMDB /movie/{id}/recommendations.
+
+        Historia: Trakt /related la sustituyó el 2026-05-10 y volvió a TMDB el 2026-08-11
+        porque **Trakt está caído** (403 a cualquier clave, y registrar una app nueva exige
+        VIP de pago). La ventaja de Trakt se midió en otro espacio de embeddings y ya no es
+        verificable, así que no se paga por ella. Medido antes de volver, sobre las semillas
+        reales de users 210/212: 38 y 26 candidatos únicos tras los filtros (sin inanición),
+        y **95-96% de ellos NO están en la Señal A** — sigue siendo una tercera pata real y
+        no un eco. Ver BACKLOG (estudio del 2026-08-06).
         """
-        if not self.trakt or not self.trakt.enabled:
-            logger.info("[Signal C] Trakt not configured (TRAKT_CLIENT_ID missing) — skipping crowd signal.")
+        if not self.tmdb:
+            logger.info("[Signal C] no TMDB client — skipping crowd signal.")
             return []
 
         # 1. Get up to N high-quality seed movies — only EXPLICIT endorsement.
@@ -687,7 +747,10 @@ class RecommendationService:
                     UserRating.is_liked.is_(True),
                 )
             )
-            .order_by(desc(UserRating.rating), desc(UserRating.watched_date))
+            # nullslast: `DESC` en Postgres pone los NULL PRIMERO, así que las
+            # películas sin fecha de diario se colaban como las más recientes y
+            # copaban las semillas (The Dark Knight, Inception, Fight Club…).
+            .order_by(desc(UserRating.rating), desc(UserRating.watched_date).nullslast())
             .limit(SIGNAL_C_MAX_SEEDS)
         )
 
@@ -697,20 +760,20 @@ class RecommendationService:
         if not seeds:
             return []
 
-        # 2. Collect candidate tmdb_ids from Trakt /related (parallel).
+        # 2. Collect candidate tmdb_ids from TMDB /movie/{id}/recommendations (parallel).
         # Track candidate → set of seed_tmdb_ids that recommended it (for cross-validation).
         all_tmdb_ids: List[int] = []
         candidate_to_seeds: Dict[int, Set[int]] = {}
-        tasks = [self.trakt.related_by_tmdb(seed.tmdb_id) for seed in seeds]
+        tasks = [self.tmdb.get_movie_recommendations(seed.tmdb_id) for seed in seeds]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for i, related in enumerate(results):
             seed_tmdb_id = seeds[i].tmdb_id
             if isinstance(related, Exception):
-                logger.warning(f"[Signal C] Trakt /related failed for seed {seed_tmdb_id}: {related}")
+                logger.warning(f"[Signal C] TMDB recommendations failed for seed {seed_tmdb_id}: {related}")
                 continue
             kept_for_seed = 0
-            for r in related:
-                tid = (r.get("ids") or {}).get("tmdb")
+            for r in related or []:
+                tid = r.get("id")
                 if not tid or tid in exclude_ids:
                     continue
                 all_tmdb_ids.append(tid)
@@ -754,48 +817,26 @@ class RecommendationService:
         seed_by_tmdb = {s.tmdb_id: s for s in seeds}
         cross_val_pass: Optional[Set[int]] = None
         dropped_cross_val = 0
-        if self.qdrant and SIGNAL_C_VEC_SIM_THRESHOLD > 0.0:
-            seed_tmdb_ids = [s.tmdb_id for s in seeds]
-            cand_tmdb_ids_in_db = [m.tmdb_id for m in existing_movies]
-            seed_vecs_map = await self.qdrant.get_vectors_batch(seed_tmdb_ids)
-            cand_vecs_map = await self.qdrant.get_vectors_batch(cand_tmdb_ids_in_db)
-
+        # Cross-validation: genre overlap ONLY. The cosine gate that used to live here
+        # was removed 2026-08-06 after measuring it on the real seeds of users 210/212:
+        # it dropped 0 of 118 and 0 of 88 candidates. In this embedding space two random
+        # films sit at cosine 0.490, so a 0.40 floor passes 81% of RANDOM pairs — it was
+        # not a loose filter, it was no filter, and it cost two get_vectors_batch round
+        # trips per request. Genre overlap is free (the rows are already loaded) and does
+        # discriminate: 35% of random pairs pass it vs 100% of TMDB's own suggestions.
+        if SIGNAL_C_REQUIRE_GENRE_OVERLAP:
             cross_val_pass = set()
             for m in existing_movies:
-                cand_vec_raw = cand_vecs_map.get(m.tmdb_id)
-                if not cand_vec_raw:
-                    # No vector in Qdrant — let it through (will be auto-ingested);
-                    # better to keep than drop a possibly-good rec we can't validate.
-                    cross_val_pass.add(m.tmdb_id)
-                    continue
-                cand_vec = np.array(cand_vec_raw)
-                cand_norm = float(np.linalg.norm(cand_vec))
-                if cand_norm == 0:
-                    continue
                 cand_genres = set(m.genres or [])
-
-                # Compare against each seed that recommended this candidate; pass if ANY seed clears the gate.
-                passed = False
                 for seed_tid in candidate_to_seeds.get(m.tmdb_id, set()):
                     seed_obj = seed_by_tmdb.get(seed_tid)
-                    seed_vec_raw = seed_vecs_map.get(seed_tid)
-                    if not seed_obj or not seed_vec_raw:
+                    if not seed_obj:
                         continue
-                    seed_vec = np.array(seed_vec_raw)
-                    seed_norm = float(np.linalg.norm(seed_vec))
-                    if seed_norm == 0:
-                        continue
-                    cos_sim = float(np.dot(seed_vec, cand_vec) / (seed_norm * cand_norm))
-                    if cos_sim < SIGNAL_C_VEC_SIM_THRESHOLD:
-                        continue
-                    if SIGNAL_C_REQUIRE_GENRE_OVERLAP:
-                        seed_genres = set(seed_obj.genres or [])
-                        if seed_genres and cand_genres and not (seed_genres & cand_genres):
-                            continue
-                    passed = True
-                    break
-                if passed:
-                    cross_val_pass.add(m.tmdb_id)
+                    seed_genres = set(seed_obj.genres or [])
+                    # Unknown genres on either side → keep. Never drop on missing data.
+                    if not seed_genres or not cand_genres or (seed_genres & cand_genres):
+                        cross_val_pass.add(m.tmdb_id)
+                        break
 
         # 6. Quality threshold — sweet spot between 55 (too permissive, lets in The
         # Shack/Restless/The Number 23) and 68 (too strict, blocks artsy profiles
@@ -832,7 +873,7 @@ class RecommendationService:
         logger.info(
             f"[Signal C] user={user_id} tmdb_recs={len(all_tmdb_ids)} "
             f"in_db={len(existing_movies)} queued_ingest={len(missing_ids)} "
-            f"vec_threshold={SIGNAL_C_VEC_SIM_THRESHOLD} dropped_cross_val={dropped_cross_val} "
+            f"genre_gate={SIGNAL_C_REQUIRE_GENRE_OVERLAP} dropped_cross_val={dropped_cross_val} "
             f"min_score={signal_c_min_score} dropped_excluded={dropped_excluded} "
             f"dropped_quality={dropped_quality} kept={len(unique)}"
         )
@@ -1011,7 +1052,7 @@ class RecommendationService:
                 id=movie.tmdb_id,
                 title=movie.title,
                 poster_url=movie.poster_path,
-                match_score=98,
+                match_score=None,
                 streaming_providers=list(set(providers)),
                 year=movie.year,
                 runtime=movie.runtime,
@@ -1174,7 +1215,7 @@ class RecommendationService:
                 id=m.tmdb_id,
                 title=m.title,
                 poster_url=m.poster_path,
-                match_score=90,
+                match_score=None,
                 streaming_providers=flat_providers,
                 year=m.year,
                 runtime=m.runtime,
@@ -1386,7 +1427,7 @@ class RecommendationService:
                 id=m.tmdb_id,
                 title=m.title,
                 poster_url=m.poster_path,
-                match_score=88,
+                match_score=None,
                 streaming_providers=flat_providers,
                 year=m.year,
                 runtime=m.runtime,

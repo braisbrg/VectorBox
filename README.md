@@ -2,13 +2,17 @@
 
 > Personalized film recommendation engine powered by semantic embeddings and hybrid signal fusion.
 
+![VectorBox runtime architecture](docs/architecture/vectorbox-architecture.svg)
+
+<sub>Six containers behind one `docker compose up`. FastAPI also hosts the APScheduler jobs and the sentence-transformers encoder in-process — there is nothing extra to deploy for either. Interactive version, with per-node detail: `docs/architecture/vectorbox-architecture.html` — clone and open it, GitHub serves HTML as source rather than rendering it.</sub>
+
 ## What It Does
 
 VectorBox ingests your film history — via Letterboxd export, RSS feed, or an onboarding carousel — and builds a personal taste model using vector embeddings, director/actor affinity graphs, and collaborative filtering. The result is a multi-section recommendation feed that surfaces films you'd actually want to watch, not just what's trending.
 
 It's built for people who care about *what* they watch next, not just that something is on.
 
-> **Note:** the frontend is mid-migration to a brutalist "ACID" design on `feature/acid-ui-migration` (functionally complete — file cleanup and a pre-release audit remain). CI/CD has a dedicated sprint planned; the Playwright e2e harness predates the Clerk migration and will be rewritten there. The backend, data pipeline, and recommendation internals described below are current.
+> **Note:** v3.0.0 (the brutalist "ACID" UI) is tagged and merged to `master`. CI/CD has a dedicated sprint planned; the Playwright e2e harness predates the Clerk migration and will be rewritten there.
 
 ## How It Works — The Trident Engine
 
@@ -20,8 +24,8 @@ Ranks the whole catalogue against your taste centroid in vector space. Embedding
 ### Signal B — Auteur (Director & Cast Affinity)
 Mines your rating history for directors and actors you consistently rate highly (Bayesian-shrunk so two lucky films don't crown a favorite) and surfaces their filmographies you haven't seen.
 
-### Signal C — Crowd (Trakt-Sourced Gems)
-Pulls "users also loved" candidates from Trakt for your top films, gated by vector similarity and genre overlap so crowd noise can't drift off-taste. Down-weighted in fusion (`SIGNAL_C_RRF_WEIGHT = 0.7`) so crowd-only films season the row rather than flood it.
+### Signal C — Crowd (Collaborative Gems)
+Pulls "users also loved" candidates from TMDB `/movie/{id}/recommendations` for up to 8 high-quality films in your history. Gated by genre overlap with the seed and a VectorBox Score floor (`MIN_SIGNAL_C_SCORE = 62`), which drops 46-65% of the pool. Deliberately *not* gated by vector similarity: these candidates sit at cosine ~0.66, below the real-neighbour population, because they are a behavioural signal rather than a thematic one — and that is exactly their value (~95% of them never appear in Signal A). Down-weighted in fusion (`SIGNAL_C_RRF_WEIGHT = 0.7`) so crowd-only films season the row rather than flood it.
 
 ### Fusion & Post-Processing
 All signals merge through RRF, then pass through a sigmoid quality weighting on VectorBox Score (0–100), director diversity caps (max 2 per director), and MMR reranking for vector-space diversity.
@@ -33,9 +37,8 @@ All signals merge through RRF, then pass through a sigmoid quality weighting on 
 - **PostgreSQL 15** + SQLAlchemy 2.0 (async) — film catalog, ratings, clusters
 - **Qdrant** — vector database for semantic similarity search
 - **Redis 7** — section-level feed caching with per-TTL freshness controls
-- **Groq** (qwen3-32b; gpt-oss-120b / qwen3.6-27b in the batch chain) — cinematic description generation
+- **Groq** — cinematic description generation and Magic Box intent parsing (chains in `services/llm_models.py`: enrichment qwen3.6-27b → gpt-oss-120b → gpt-oss-20b, parsing gpt-oss-120b → qwen3.6-27b)
 - **google/embeddinggemma-300m** — sentence embeddings (768 dimensions; requires `HF_TOKEN` for the gated model)
-- **Trakt API** — Signal C "similar films" source (replaced TMDB recommendations; requires `TRAKT_CLIENT_ID`)
 - **Clerk** — authentication (JWKS-based JWT verification)
 
 ### Frontend
@@ -63,6 +66,7 @@ All signals merge through RRF, then pass through a sigmoid quality weighting on 
 - **Vector space map** — an explorable 2-D projection of your taste clusters
 - **Taste card** — shareable PNG profile card (story + square formats)
 - **Upcoming movies** — personalized upcoming releases filtered by your genre preferences
+- **Mood filter** — five quadrants over two measured axes of the vector space (gravity × humanity); it filters the feed rather than scoring it, so it steers what you feel like tonight without overriding your history
 - **Content preferences** — tag-based content filtering (avoid jumpscares, gore, slow pacing, etc.)
 - **Auteur & Cast signals** — dedicated feed rows for your favorite directors and recurring actors
 - **Web-watches CSV export** — films marked watched in-app export back to Letterboxd-importable CSV
@@ -80,10 +84,13 @@ All signals merge through RRF, then pass through a sigmoid quality weighting on 
 | Popular on Letterboxd | Scraped trending list with real ★ ratings, filtered against your history |
 | Available Now | Unwatched watchlist items on your streaming providers |
 | On Your Radar | Personalized upcoming releases (country-aware release badges) |
+| Leaving Soon | Films about to leave a streaming service (urgent first, then by quality) |
 | Outside Your Comfort Zone | Films from genres you don't usually watch |
-| Random Top Picks | Serendipity row |
+| Random Picks | Serendipity row |
 
-When console filters are active, the same sections rebuild **filter-aware**: year / runtime / genre / quality apply as output filters (the live ranking with non-matches removed — never re-ranked), providers resolve to an allowed-film set inside the vector search, and rows without enough matches hide.
+When console filters are active, the same sections rebuild **filter-aware**: year / runtime / genre / quality apply as output filters (the live ranking with non-matches removed — never re-ranked), while providers, mood and the watchlist filter **at source** — inside each row's own query or vector search — because they are selective enough that post-filtering would starve the rows. Rows without enough matches hide.
+
+The SOURCE toggle switches the whole feed between the catalogue and your unwatched watchlist, so every row above is also available as "…from my list" — and it composes with mood and providers.
 
 ## Architecture
 
@@ -91,7 +98,31 @@ The recommendation pipeline uses two ID spaces that must not be confused:
 - **`Movie.id`** (internal PK) — used for PostgreSQL joins, `UserRating.movie_id`, watched-set deduplication
 - **`Movie.tmdb_id`** (TMDB API ID) — used for Qdrant vector indexing, feed-level `seen_ids` deduplication
 
-Feed orchestration runs 11 section-generation tasks in parallel via `asyncio.gather()`, each with its own isolated database session. An anti-vector is pre-computed once before parallelization and shared across signals that need it.
+Feed orchestration runs 12 section-generation tasks in parallel via `asyncio.gather()`, each with its own isolated database session. An anti-vector is pre-computed once before parallelization and shared across signals that need it.
+
+### Request path — one feed signal
+
+Every signal goes through the same cache-then-lock path (`_get_signal_with_cache_and_lock`,
+`services/recommendation_service.py`). The lock is what stops N concurrent misses from all
+recomputing the same signal.
+
+![Request path for one feed signal — cache, stampede lock, recompute](docs/diagrams/signal-cache-lock.svg)
+
+<sub>Explorable version: `docs/diagrams/signal-cache-lock.html` — clone and open it, GitHub serves HTML as source rather than rendering it.</sub>
+
+The lock carries a per-worker token and is released through a Lua compare-and-delete, so a
+worker whose compute outran the 30s TTL cannot delete a different worker's fresh lock.
+
+### Ingest path — write order
+
+A single film is written to two stores that share no transaction. The Qdrant point is keyed by
+`tmdb_id`, so `MovieService.ingest_movie` writes it **before** the Postgres commit: a vector failure
+then aborts the whole ingest, whereas the reverse order would persist a film that is invisible to
+search and raises no error. The four failure branches and what each one leaves behind:
+
+![Single-film ingest — write order and failure branches](docs/diagrams/ingest-write-order.svg)
+
+<sub>Explorable version: `docs/diagrams/ingest-write-order.html` — clone and open it, GitHub serves HTML as source rather than rendering it.</sub>
 
 ## Getting Started
 
@@ -101,7 +132,6 @@ Feed orchestration runs 11 section-generation tasks in parallel via `asyncio.gat
 - [TMDB API key](https://www.themoviedb.org/settings/api) + [OMDb API key](https://www.omdbapi.com/apikey.aspx)
 - [Groq API key](https://console.groq.com/) (for cinematic descriptions)
 - [HuggingFace token](https://huggingface.co/settings/tokens) with access granted to `google/embeddinggemma-300m` (gated model; required at first launch to download the embedding model)
-- [Trakt API client ID](https://trakt.tv/oauth/applications) (free; powers Signal C "similar films")
 - [Clerk account](https://clerk.com/) (for authentication)
 - A Letterboxd account (optional — can use the onboarding carousel instead)
 

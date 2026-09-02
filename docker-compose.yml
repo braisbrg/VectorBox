@@ -95,6 +95,11 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OMDB_API_KEY=${OMDB_API_KEY}
       - TRAKT_CLIENT_ID=${TRAKT_CLIENT_ID:-}
+      # Streaming Availability (MovieOfTheNight), vía DIRECTA: base
+      # https://api.movieofthenight.com/v4 y cabecera X-Api-Key. NO es la de
+      # RapidAPI, que usa otra URL y otra cabecera. Ponerla sólo en .env no basta:
+      # este servicio enumera las variables una a una, no usa env_file.
+      - MOVIEOFTHENIGHT_API_KEY=${MOVIEOFTHENIGHT_API_KEY:-}
       # HF_TOKEN at RUNTIME: the BuildKit secret (line 143) only feeds
       # download_model.py at image-build time. The running app also needs
       # it any time HuggingFace Hub is hit (e.g. first-time model warmup
@@ -114,6 +119,11 @@ services:
     volumes:
       - ./backend:/app
       - ./backups:/app/backups
+      # Solo lectura, y solo para `tests/test_no_dead_props.py`: la guardia de props
+      # muertas del frontend corre en el suite del backend, que es donde corre el
+      # suite. Sin este montaje el test no ve un solo fichero y pasa por vacio, que
+      # es exactamente el fallo que persigue.
+      - ./frontend:/frontend:ro
       - models_cache:/models_cache
     depends_on:
       postgres:

@@ -28,6 +28,8 @@ import { useVectorboxLogout } from "@/hooks/useVectorboxLogout";
 import { useShell } from "@/components/shell/shell-context";
 import { BracketToggle } from "@/components/ui/bracket-toggle";
 import { COUNTRIES, getProvidersForCountry } from "@/lib/constants";
+import { HEX_RE, applyCustomAccent, resolveAccent } from "@/lib/accent";
+import { AccentPicker } from "@/components/ui/accent-picker";
 import { cn } from "@/lib/utils";
 
 type Tab = "account" | "import" | "providers" | "taste" | "appearance" | "privacy" | "advanced";
@@ -55,6 +57,7 @@ const THEMES = [
 ];
 
 const THEME_KEY = "vb_theme";
+const ACCENT_KEY = "vb_accent";
 
 function Section({ title, note, children }: { title: string; note?: string; children: React.ReactNode }) {
     return (
@@ -75,6 +78,9 @@ export function SettingsView() {
     const [syncMessage, setSyncMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
     const [showReupload, setShowReupload] = useState(false);
     const [theme, setThemeState] = useState("acid");
+    const [custom, setCustom] = useState<string | null>(null);
+    const [draft, setDraft] = useState(""); // empty until the user picks their own — the chip must not echo the active preset
+    const [seed, setSeed] = useState("#f7e800"); // where the colour well opens from while no custom is set
     const queryClient = useQueryClient();
     const handleLogout = useVectorboxLogout();
 
@@ -94,12 +100,40 @@ export function SettingsView() {
             setLetterboxdUsername(null);
         }
         setThemeState(localStorage.getItem(THEME_KEY) || "acid");
+        const saved = localStorage.getItem(ACCENT_KEY);
+        const valid = saved && HEX_RE.test(saved) ? saved : null;
+        setCustom(valid);
+        setDraft(valid ?? "");
+        setSeed(resolveAccent()); // layout.tsx already applied theme + custom pre-paint
     }, []);
 
     const setTheme = (k: string) => {
         setThemeState(k);
         localStorage.setItem(THEME_KEY, k);
         document.documentElement.dataset.theme = k;
+        // a preset drops the custom accent — otherwise the inline --primary keeps winning
+        clearAccent();
+    };
+
+    const clearAccent = () => {
+        localStorage.removeItem(ACCENT_KEY);
+        applyCustomAccent(null);
+        setCustom(null);
+        setDraft("");
+        setSeed(resolveAccent());
+    };
+
+    // The colour well and the hex field share one draft; only a complete #rrggbb
+    // applies, so half-typed values neither paint nor persist. Emptying the field
+    // hands the accent back to the selected preset.
+    const setAccent = (raw: string) => {
+        const v = raw.startsWith("#") ? raw : `#${raw}`;
+        if (v === "#") return clearAccent();
+        setDraft(v);
+        if (!HEX_RE.test(v)) return;
+        localStorage.setItem(ACCENT_KEY, v);
+        applyCustomAccent(v);
+        setCustom(v);
     };
 
     const syncMutation = useMutation({
@@ -222,11 +256,19 @@ export function SettingsView() {
                                             >
                                                 [ re-upload export ]
                                             </button>
+                                            {/* Antes decía "open import screen →" y hacía LO MISMO
+                                                que el botón de al lado, sólo que llevándote al
+                                                asistente de 5 pasos del onboarding — parecías estar
+                                                a medio registro. Ahora cada puerta tiene su trabajo:
+                                                aquí se re-sube el ZIP, y el asistente queda para lo
+                                                único que la subida en línea no hace, re-vincular la
+                                                cuenta. Entra por ?step=identify, que ya estaba
+                                                soportado y no lo usaba nadie. */}
                                             <Link
-                                                href="/import"
+                                                href="/import?step=identify"
                                                 className="border border-border-2 px-3 py-1.5 font-mono text-[11px] uppercase text-fg-2 transition-colors hover:border-primary hover:text-primary"
                                             >
-                                                open import screen →
+                                                {t("setb.relink")}
                                             </Link>
                                         </div>
                                     ) : (
@@ -258,6 +300,7 @@ export function SettingsView() {
                     {tab === "taste" && (
                         <>
                             <ContentPreferencesSection />
+                            <ShortFilmsSection />
                             <Section
                                 title={t("setb.not_interested")}
                                 note={t("setb.not_interested_note")}
@@ -316,14 +359,44 @@ export function SettingsView() {
                                             onClick={() => setTheme(th.k)}
                                             className={cn(
                                                 "flex items-center gap-2 border px-3 py-2 font-mono text-[11px] lowercase transition-colors",
-                                                theme === th.k ? "border-primary text-fg" : "border-border-2 text-fg-2 hover:border-fg-3"
+                                                !custom && theme === th.k ? "border-primary text-fg" : "border-border-2 text-fg-2 hover:border-fg-3"
                                             )}
                                         >
                                             <span className="size-3.5 border border-black/40" style={{ background: th.primary }} />
                                             {th.k}
-                                            {theme === th.k && <span className="text-primary">●</span>}
+                                            {!custom && theme === th.k && <span className="text-primary">●</span>}
                                         </button>
                                     ))}
+
+                                    {/* seventh chip: the presets are the base, this picks anything else.
+                                        Dashed while unset and labelled "custom" — echoing the active
+                                        preset's hex here made it read as a duplicate swatch. */}
+                                    <div
+                                        className={cn(
+                                            "flex items-center gap-2 border px-3 py-2 font-mono text-[11px] lowercase transition-colors",
+                                            custom ? "border-primary text-fg" : "border-dashed border-border-2 text-fg-3 hover:border-fg-3"
+                                        )}
+                                    >
+                                        <AccentPicker
+                                            label={t("setb.custom_accent")}
+                                            value={HEX_RE.test(draft) ? draft : seed}
+                                            onChange={setAccent}
+                                            className={cn(
+                                                "size-3.5 cursor-pointer border",
+                                                custom ? "border-black/40" : "border-dashed border-fg-3 opacity-60"
+                                            )}
+                                        />
+                                        <input
+                                            type="text"
+                                            value={draft}
+                                            onChange={(e) => setAccent(e.target.value)}
+                                            spellCheck={false}
+                                            maxLength={7}
+                                            placeholder={t("setb.custom_accent_short")}
+                                            className="w-[56px] bg-transparent text-inherit outline-none placeholder:text-fg-3"
+                                        />
+                                        {custom && <span className="text-primary">●</span>}
+                                    </div>
                                 </div>
                             </Section>
                             <Section title={t("setb.language")}>
@@ -432,6 +505,53 @@ function ProvidersSection() {
                 </p>
             </Section>
         </>
+    );
+}
+
+/**
+ * SHORT FILMS — el feed omite los cortos (<= 40 min) salvo que se active aquí.
+ * El PATCH invalida el feed cacheado en el backend, así que el cambio se ve en
+ * la siguiente carga sin esperar al TTL de la fila.
+ */
+function ShortFilmsSection() {
+    const { t } = useLanguage();
+    const [on, setOn] = useState<boolean | null>(null);
+    const [saving, setSaving] = useState(false);
+
+    useEffect(() => {
+        api.get("/api/users")
+            .then((res) => setOn(Boolean(res.data?.[0]?.include_shorts)))
+            .catch(() => setOn(false));
+    }, []);
+
+    const toggle = async (next: boolean) => {
+        const previous = on;
+        setOn(next);          // optimista
+        setSaving(true);
+        try {
+            await api.patch("/api/users/me/preferences", { include_shorts: next });
+        } catch (e) {
+            console.error("Failed to save short-film preference:", e);
+            setOn(previous);  // revertir: el feed no cambió, el interruptor tampoco debe mentir
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    if (on === null) return null;
+
+    return (
+        <Section title={t("setb.shorts")} note={t("setb.shorts_note")}>
+            <div className="flex items-center justify-between gap-4">
+                <span className="font-mono text-xs text-fg-2">{t("setb.shorts_label")}</span>
+                <BracketToggle
+                    checked={on}
+                    onChange={toggle}
+                    disabled={saving}
+                    label={t("setb.shorts_label")}
+                />
+            </div>
+        </Section>
     );
 }
 

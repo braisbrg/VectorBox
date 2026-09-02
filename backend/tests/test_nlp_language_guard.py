@@ -17,6 +17,7 @@ from services.nlp_search import (
     MovieSearchIntent,
     _query_names_a_language,
     guard_language_filter,
+    strip_era_from_semantic_query,
     normalize_language,
 )
 
@@ -192,3 +193,48 @@ def test_stems_still_match_inflected_forms():
 ])
 def test_plural_forms_still_match(query):
     assert _query_names_a_language(query), f"plural not recognised: {query!r}"
+
+
+# ── the era guard ────────────────────────────────────────────────────────────
+#
+# Same shape of bug as the language one: the schema forbids era in
+# `semantic_query`, the model emits it anyway, and the cost is measurable —
+# "…crime, cool, retro, 1970s, slick, gangster, action" answered "atracos de los
+# 70" with Shaft and Sweet Sweetback, while the era-free English parse of the
+# same sentence answered with The Sting and Le Cercle Rouge.
+@pytest.mark.parametrize("dirty,clean", [
+    ("heist, stylish, caper, crime, cool, retro, 1970s, slick",
+     "heist, stylish, caper, crime, cool, retro, slick"),
+    ("comedy, humour, 80s, silly", "comedy, humour, silly"),
+    ("noir, detective, 1974, rain-soaked", "noir, detective, rain-soaked"),
+    ("gritty crime drama of the 70's", "gritty crime drama of the"),
+    ("terror, sustos, años 90", "terror, sustos"),
+])
+def test_era_guard_strips_decade_tokens(dirty, clean):
+    out = strip_era_from_semantic_query(
+        _intent(semantic_query=dirty, year_min=1970, year_max=1979)
+    )
+    assert out.semantic_query == clean
+
+
+def test_era_guard_only_fires_when_the_era_survives_as_a_filter():
+    """No year filter means the era words are the ONLY record of it — stripping
+    them would lose the constraint outright."""
+    out = strip_era_from_semantic_query(_intent(semantic_query="heist, 1970s"))
+    assert out.semantic_query == "heist, 1970s"
+
+
+def test_era_guard_keeps_aesthetic_words():
+    """'retro'/'vintage' describe a look a film description can contain; only
+    decade and year MARKERS are duplicated by year_min/year_max."""
+    out = strip_era_from_semantic_query(
+        _intent(semantic_query="retro, vintage, classic", year_min=1970)
+    )
+    assert out.semantic_query == "retro, vintage, classic"
+
+
+def test_era_guard_never_empties_the_field():
+    """`semantic_query` is required downstream; an all-era expansion must keep
+    its original text rather than reach the embedder blank."""
+    out = strip_era_from_semantic_query(_intent(semantic_query="1970s", year_min=1970))
+    assert out.semantic_query == "1970s"

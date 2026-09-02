@@ -22,6 +22,10 @@ export default function OnboardingTagsPage() {
 
     useEffect(() => {
         setHydrated(true);
+        // Being here IS the rate flow — the landing links straight in, skipping
+        // the start-selection screen that used to set this. Without it /onboarding
+        // bounces the guest back to that screen after Continue.
+        localStorage.setItem("vb_onb_rate", "1");
         // Make sure the guest has an anon session so the POST /tags below
         // can authenticate via cookie. Idempotent — no-op if cookie already set.
         api.post("/api/onboarding/init-session").catch(() => { /* offline ok */ });

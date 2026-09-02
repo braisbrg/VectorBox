@@ -3,15 +3,17 @@ import random
 import asyncio
 import math
 import functools
-from datetime import datetime, timezone, date
+from collections import Counter
+from datetime import datetime, timezone, date, timedelta
 from typing import List, Dict, Set, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, or_
 import numpy as np
 
-from utils.scoring import normalize_similarity_score
+from utils.anti_vector import most_anti_similar
+from utils.scoring import normalize_film_similarity_score
 
-from models.database import UserRating, Movie, UserCluster
+from models.database import UserRating, Movie, UserCluster, MovieAvailability
 from models.schemas import FeedSection, FeedItem
 from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
@@ -51,6 +53,50 @@ async def _ingest_movie_background(tmdb_id: int) -> None:
         finally:
             await movie_service.close()
 
+def available_on(provider_ids, country: str):
+    """EXISTS: the film is on a subscription in `country` on any of `provider_ids`.
+
+    `@>` over the JSONB array, one OR per provider — a user picks 2-5 services, so
+    the OR list is short. No index: 14.589 ES rows scan in ~4 ms, and adding a GIN
+    for that would cost more to maintain than it saves.
+    """
+    return (
+        select(1)
+        .where(MovieAvailability.movie_id == Movie.id)
+        .where(MovieAvailability.country_code == country)
+        # SIN cota de frescura, y es deliberado — se probó y se revirtió el
+        # 2026-09-01. Acotar a CACHE_DURATION_DAYS (7) dejaba el feed de ES en
+        # **7 películas de 6.038**: toda la disponibilidad de ES es UN volcado de
+        # hace ~15-21 días y nadie la refresca, así que la cota no filtraba lo
+        # rancio, lo borraba todo. Coste por TTL, medido: 7d→7, 14d→64, 21d→6.038.
+        # Una cota aquí sólo es segura si algo refresca la tabla con esa cadencia;
+        # mientras no lo haya, vaciaría la fila sola y en silencio según envejece.
+        # El daño que evitaría es 49 filas afirmando de más — mucho menor. Ver
+        # BACKLOG: lo que hay que arreglar es el refresco, no la lectura.
+        .where(or_(*[MovieAvailability.providers.contains([{"provider_id": int(p)}])
+                     for p in provider_ids]))
+        .exists()
+    )
+
+
+def in_watchlist(user_id: int):
+    """EXISTS: la película está en la watchlist del usuario y sin ver.
+
+    El filtro más selectivo del rail (4% del catálogo), y por eso el que peor
+    aguantaría un post-filtro. Aquí decide QUÉ elige cada fila, no qué se le quita
+    después: "joyas ocultas DE MI LISTA" en vez de "joyas ocultas, menos las que no
+    estén en mi lista", que casi siempre se quedaba en cero.
+    """
+    return (
+        select(1)
+        .where(UserRating.movie_id == Movie.id)
+        .where(UserRating.user_id == user_id)
+        .where(UserRating.is_watchlist.is_(True))
+        .where(UserRating.is_watched.is_(False))
+        .exists()
+    )
+
+
 def apply_rail_filters(q, filters: Optional[Dict]):
     """Push the rail's constraints into a row's own query.
 
@@ -67,13 +113,27 @@ def apply_rail_filters(q, filters: Optional[Dict]):
     measured too and gain nothing — they already carry the headroom — so they
     keep post-filtering only.
 
-    Streaming providers are deliberately absent: that is a per-country join
-    computed at request time, not a column any row's query can reach. It stays in
-    _post_filter_sections, which also remains the backstop if a row forgets one
-    of these.
+    Streaming providers were deliberately absent while `movie_availability` only
+    filled up REACTIVELY (whoever opened a film cached it), because a join against
+    a table with holes silently drops films that are on the service but unread.
+    The daily refresh now writes it for the whole catalogue — 14.589 rows in ES,
+    86% of them under a day old (2026-08-17) — so it IS reachable, and providers
+    join here as an EXISTS.
+
+    They needed it more than the other filters, and for a different reason: a
+    filter that keeps ~2/3 of the catalogue selects, one that keeps a third
+    starves. Measured with Netflix+Prime+Disney: niche 20 -> 3 films, wildcard
+    10 -> 3, random 10 -> row dropped. That is why the "niche and wildcard carry
+    enough headroom" note above does not extend to this one.
+
+    _post_filter_sections stays as the backstop if a row forgets one of these.
     """
     if not filters:
         return q
+    if filters.get("provider_ids"):
+        q = q.where(available_on(filters["provider_ids"], filters.get("country") or "ES"))
+    if filters.get("watchlist_user_id"):
+        q = q.where(in_watchlist(filters["watchlist_user_id"]))
     if filters.get("year_min"):
         q = q.where(Movie.year >= filters["year_min"])
     if filters.get("year_max"):
@@ -100,7 +160,7 @@ PERSON_FALLBACK_DEPTH = 7
 # (watchlist, watched history, direct movie lookup, title autocomplete) —
 # so flagged non-films / nicheless films stay accessible if the user added
 # them deliberately.
-MOVIE_QUALITY_GATE = [
+_MOVIE_QUALITY_GATE = [
     Movie.vote_count >= 10,
     Movie.year.isnot(None),
     Movie.vectorbox_score.isnot(None),
@@ -113,16 +173,55 @@ MOVIE_QUALITY_GATE = [
     Movie.is_adult.is_(False),
 ]
 
+# Umbral de cortometraje — definición de la Academia (<= 40 min, créditos
+# incluidos). Deliberadamente NO se filtra por el género `TV Movie` de TMDB:
+# las 211 entradas que lo llevan son cine legítimo (Duel de Spielberg, el
+# Decálogo de Kieślowski, Saraband de Bergman, The Fog of War) y el Q ya las
+# separa solo — van de 12.5 (The Star Wars Holiday Special) a 91.3. El catálogo
+# entero viene de Letterboxd, que ya excluye las series de su universo.
+SHORT_FILM_MAX_RUNTIME = 40
+
+
+def movie_quality_gate(include_shorts: bool = False) -> list:
+    """Cláusulas del gate de calidad para una superficie de descubrimiento.
+
+    `include_shorts` sale de `User.include_shorts` (ajustes). Por defecto los
+    cortos quedan fuera: el Q no distingue formato, así que Paperman (7 min,
+    93.4) y Piper (6 min, 94.9) compiten de tú a tú con un largo en la misma
+    fila. Son 1203 en el catálogo, 800 por encima del gate.
+
+    Duración desconocida NO es un corto: tratarla como tal borraría del feed
+    películas que nadie pidió quitar. Y el centinela de «no se sabe» aquí es el
+    **0**, no el NULL — medido 2026-08-18: 0 filas con `runtime IS NULL` y 505
+    con `runtime = 0`, 21 de ellas por encima del gate de calidad. La primera
+    versión de esta función sólo contemplaba NULL y se las comía en silencio; el
+    test no lo vio porque leía el SQL generado en vez de contar filas. La rama
+    NULL se queda porque la columna es nullable y mañana puede volver a haberlos.
+    """
+    if include_shorts:
+        return list(_MOVIE_QUALITY_GATE)
+    return _MOVIE_QUALITY_GATE + [
+        or_(
+            Movie.runtime.is_(None),
+            Movie.runtime <= 0,
+            Movie.runtime > SHORT_FILM_MAX_RUNTIME,
+        )
+    ]
+
 # Because You Watched quality floor. VBS — NOT a vote-count floor — is the right
 # lever here (measured 2026-07-06). A vote-count floor is a popularity proxy that
 # cuts the BEST obscure matches (Edward Yang's Taipei Story, Rohmer, Ghibli shorts
 # — cos 0.74-0.79, VBS 61-72) while VBS already sorts quality: the real junk in the
-# raw neighbours is VBS=None phantom entries (removed by MOVIE_QUALITY_GATE) and
+# raw neighbours is VBS=None phantom entries (removed by movie_quality_gate) and
 # low-VBS popular films (Twilight VBS 30 < 55). VBS's Bayesian shrinkage means a
 # low-vote film that still scores high has genuinely strong ratings. 55→60 trims
 # the weak tail (El verano 55.0, Mirrored Mind 57.7, Carrie Pilby 57.1) while
 # keeping the obscure-but-excellent matches a vote floor would have killed.
 BYW_MIN_VBS = 60
+# Cuánto se penaliza al decil más parecido al anti-vector. 0.6 era el factor
+# del tramo suave de BYW y se conserva: lo que cambió el 2026-09-01 es QUIÉN
+# entra, no cuánto se le baja.
+BYW_ANTI_VECTOR_DEMOTE_FACTOR = 0.6
 
 # Global evocative themes rotating independently of user clusters
 GLOBAL_THEMES = [
@@ -268,25 +367,54 @@ def _get_signal_c_thresholds(user_movie_count: int) -> dict:
             "min_votes": 300,
         }
 
-def _score_anchor_candidate(rating, watched_date, now, watch_count: int = 1) -> float:
+def _score_anchor_candidate(rating, watched_date, now, watch_count: int = 1,
+                            neutral_decay: float = 0.5) -> float:
     """
     Combine rating quality with recency decay and rewatch boost.
     Half-life: 730 days. No floor — decay is unbounded so recent high-rated films
     correctly beat old liked-only films even when all history is 2-5 years old.
     Handles rating=None (liked-only movies) by defaulting to 3.5.
+
+    `neutral_decay` es lo que vale una fila SIN `watched_date`. Era un `days_ago = 730`
+    fijo, o sea 0.5 clavado, y eso **castiga el dato ausente**: medido el 2026-08-11 sobre
+    user 212, después de que reimportar su ZIP dejara al 51% de su biblioteca sin fecha,
+    Fight Club con un 5.0 puntuaba **0.500** mientras Spider-Man: Brand New Day con un 4.5
+    reciente sacaba **0.895**. BYW anclaba en lo último visto por goleada, y devolvía seis
+    películas de Spider-Man. El llamador pasa ahora la MEDIANA del decay de las filas
+    fechadas del propio usuario, que se calibra sola y baja con el tiempo igual que el
+    resto — misma corrección que en `clustering_service` (ver su bloque de `neutro`).
     """
     from datetime import timezone
     effective_rating = rating if rating is not None else 3.5
-    
+
     if watched_date and watched_date.tzinfo is None:
         watched_date = watched_date.replace(tzinfo=timezone.utc)
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
-    days_ago = max(0, (now - watched_date).days) if watched_date else 730
-    decay = 0.5 ** (days_ago / 730)
+    if watched_date:
+        decay = 0.5 ** (max(0, (now - watched_date).days) / 730)
+    else:
+        decay = neutral_decay
     rewatch_boost = min(1.0 + (watch_count - 1) * 0.15, 1.4)
     return (effective_rating / 5.0) * decay * rewatch_boost
+
+
+# Hidden Gems: how known is too known, and how wide the affinity pool is.
+# 100k IMDb votes measured best of 50k/100k/200k — 50k narrows the universe so
+# hard that different users start sharing the row again (overlap 5.0/10 vs 1.3).
+SIGNAL_C_MAX_VOTES = 100_000
+SIGNAL_C_POOL = 600  # over-fetch: the vote ceiling is applied after this pool
+
+# On Your Radar: how many slots go to "what is coming" before "what is coming
+# for you" takes over. 5 makes the row read like the old popularity-only one;
+# 2 and 3 measure the same, 3 keeps a fuller headline.
+RADAR_HEADLINES = 3
+
+# Prior de década para las filas de mood (niche_picks). Suavizado: cuanto más alto,
+# más suave. 4.0 medido el 2026-08-11 — ver el bloque en get_niche_picks_section.
+NICHE_ERA_ALPHA = 4.0
+
 
 
 def _apply_exoticism_boost(score: float, original_language: str) -> float:
@@ -336,7 +464,8 @@ class RecommendationEngine:
         tmdb: TMDBClient,
         seen_ids: Set[int],
         country: str,
-        provider_service: ProviderService = None
+        provider_service: ProviderService = None,
+        include_shorts: bool = False,
     ) -> FeedSection:
         """
         Cold start fallback: recommend high-scoring films from user's dominant genres.
@@ -362,7 +491,7 @@ class RecommendationEngine:
         # Query DB for high-score unseen films matching genres (array overlap)
         candidates_result = await db.execute(
             select(Movie)
-            .where(*MOVIE_QUALITY_GATE)
+            .where(*movie_quality_gate(include_shorts))
             .where(
                 Movie.vectorbox_score > 70,
                 Movie.genres.overlap(fallback_genres)
@@ -390,7 +519,7 @@ class RecommendationEngine:
             p_data = providers_map.get(movie.id, [])
             s_providers = [p["provider_name"] for p in p_data]
             item = await self.create_feed_item(
-                movie, 0.85, country, tmdb,
+                movie, None, country, tmdb,
                 provider_service=provider_service,
                 streaming_providers=s_providers
             )
@@ -399,8 +528,17 @@ class RecommendationEngine:
 
         return FeedSection(id="genre_fallback", title="Recommended for You", items=items)
 
-    async def create_feed_item(self, movie: Movie, score: float, country: str, tmdb: TMDBClient, contributors: List[dict] = None, provider_service: ProviderService = None, streaming_providers: List[str] = None) -> FeedItem:
-        """Helper to create a FeedItem from a Movie (DB Object)"""
+    async def create_feed_item(self, movie: Movie, score: Optional[float], country: str, tmdb: TMDBClient, contributors: List[dict] = None, provider_service: ProviderService = None, streaming_providers: List[str] = None) -> FeedItem:
+        """Helper to create a FeedItem from a Movie (DB Object).
+
+        `score` es un coseno película→película SIN alterar, o **None**. Hoy los 13
+        productores pasan None: los que pasaban constantes no medían nada, y los dos
+        que pasaban un coseno lo entregaban ya penalizado o mezclado con calidad
+        (ver models/schemas.py para la medición completa).
+
+        La normalización se queda porque es el contrato: quien algún día pase un
+        coseno de verdad obtiene la escala correcta sin tener que descubrir cuál es.
+        """
         if streaming_providers is None:
             streaming_providers = []
             if provider_service:
@@ -413,7 +551,12 @@ class RecommendationEngine:
                         if provider_type in providers_data:
                             streaming_providers.extend([p["provider_name"] for p in providers_data[provider_type]])
         
-        final_score = normalize_similarity_score(score)
+        # Escala película→película: los dos productores que llegan aquí con un
+        # coseno real (BYW, hidden gems) consultan con el vector GUARDADO de una
+        # película o con un centroide de medoides, y ambos viven en la misma
+        # población — 0.776–0.858 medido. Con la escala de consultas el feed del
+        # usuario 210 saturaba 48 de 50. Ver utils/scoring.py.
+        final_score = None if score is None else normalize_film_similarity_score(score)
 
         # Country-aware "coming soon" badge, feed-wide: films trending worldwide
         # (popular row, BYW, …) can be unreleased in the user's country. Only
@@ -439,7 +582,7 @@ class RecommendationEngine:
             id=movie.tmdb_id,
             title=movie.title,
             poster_url=movie.poster_path,
-            match_score=round(final_score, 0),
+            match_score=None if final_score is None else round(final_score, 0),
             streaming_providers=list(set(streaming_providers)),
             year=movie.year,
             runtime=movie.runtime,
@@ -470,6 +613,7 @@ class RecommendationEngine:
         precomputed_anti_vector = None,
         filters: Dict = None,
         pool_limit: int = None,
+        include_shorts: bool = False,
     ) -> FeedSection:
         """Signal A: Because you watched [Movie X] — Item-Item Collaborative Filtering"""
         with _tracer.start_as_current_span("trident.signal_a.because_you_watched") as span:
@@ -514,12 +658,25 @@ class RecommendationEngine:
 
             # Sort entirely in Python — _score_anchor_candidate handles rating=None and NULL dates
             now = datetime.now(timezone.utc)
+            # Neutro de las filas sin fecha: la mediana del decay de las fechadas de ESTE
+            # usuario. Un 0.5 fijo castiga el dato ausente — ver el docstring del scorer.
+            _decays = [
+                0.5 ** (max(0, (now - (ur.watched_date.replace(tzinfo=timezone.utc)
+                                       if ur.watched_date.tzinfo is None else ur.watched_date)).days) / 730)
+                for ur, _ in candidates if ur.watched_date is not None
+            ]
+            neutral_decay = float(np.median(_decays)) if _decays else 0.5
             scored_candidates = []
             for row in candidates:
                 user_rating, movie = row
                 anchor_score = _score_anchor_candidate(
+                    neutral_decay=neutral_decay,
                     rating=user_rating.rating,
-                    watched_date=user_rating.watched_date or user_rating.created_at,
+                    # NO `or created_at`: `created_at` es la fecha de IMPORT, y tras
+                    # una re-subida son todas hoy — 787 filas del user 212 pasaban a
+                    # parecer vistas hoy y se comían la selección de anclas
+                    # (2026-08-11). El scorer ya trata None como neutro (730 días).
+                    watched_date=user_rating.watched_date,
                     now=now,
                     watch_count=getattr(user_rating, 'watch_count', 1) or 1
                 )
@@ -579,7 +736,6 @@ class RecommendationEngine:
                 similar_results = await qdrant.search_similar(
                     query_vector=anchor_vector,
                     limit=500,
-                    score_threshold=0.25,
                     filters=filters,  # F8: rail constraints applied inside the search (no starvation)
                 )
                 
@@ -616,7 +772,7 @@ class RecommendationEngine:
                     movies_result = await db.execute(
                         select(Movie)
                         .where(Movie.tmdb_id.in_(target_ids))
-                        .where(*MOVIE_QUALITY_GATE)
+                        .where(*movie_quality_gate(include_shorts))
                         .where(Movie.vectorbox_score >= BYW_MIN_VBS)
                     )
                     fetched_movies = movies_result.scalars().all()
@@ -638,15 +794,22 @@ class RecommendationEngine:
                     candidate_tmdb_ids = [tid for tid in target_ids if tid in movie_map]
                     if candidate_tmdb_ids:
                         candidate_vectors = await qdrant.get_vectors_batch(candidate_tmdb_ids)
+                        cos_by_id = {}
                         for tid, vec in candidate_vectors.items():
                             vec_np = np.array(vec)
                             norm_product = np.linalg.norm(vec_np) * np.linalg.norm(anti_vector_np)
                             if norm_product > 0:
-                                cos_sim = np.dot(vec_np, anti_vector_np) / norm_product
-                                if cos_sim > 0.80:
-                                    scores_map[tid] = scores_map.get(tid, 0) * 0.3
-                                elif cos_sim > 0.65:
-                                    scores_map[tid] = scores_map.get(tid, 0) * 0.6
+                                cos_by_id[tid] = float(np.dot(vec_np, anti_vector_np) / norm_product)
+                        # Aquí había dos cosenos a pelo, 0.80 (×0.3) y 0.65 (×0.6).
+                        # Medidos el 2026-09-01 sobre los vecinos reales de las
+                        # anclas de 6 usuarios (84-100 candidatos cada uno): el de
+                        # 0.80 **no disparó ni una vez** —máximo observado 0.794— y
+                        # el de 0.65 tocaba del 11,0% al 61,9% según el usuario. Un
+                        # coseno absoluto no significa lo mismo para dos personas en
+                        # este espacio; el decil de la propia lista sí. Ver
+                        # `utils.anti_vector.most_anti_similar`.
+                        for tid in most_anti_similar(cos_by_id):
+                            scores_map[tid] = scores_map.get(tid, 0) * BYW_ANTI_VECTOR_DEMOTE_FACTOR
 
                 # Build intermediate candidate dicts for MMR
                 mmr_candidates = []
@@ -746,7 +909,7 @@ class RecommendationEngine:
                     s_providers = [p["provider_name"] for p in p_data]
 
                     item = await self.create_feed_item(
-                        movie, cand["score"], country, tmdb,
+                        movie, None, country, tmdb,
                         provider_service=provider_service,
                         streaming_providers=s_providers,
                         contributors=[{
@@ -781,6 +944,8 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
+        filters: Dict = None,
+        include_shorts: bool = False,
     ) -> FeedSection:
         """
         Global evocative theme recommendations. Rotates through GLOBAL_THEMES.
@@ -822,14 +987,20 @@ class RecommendationEngine:
         include_array = cast(theme["include_genres"], ARRAY(String))
 
         def _build_theme_query(min_score: int, min_votes: int):
-            q = (
+            q = apply_rail_filters(
                 select(Movie)
+                # El gate va aquí y no a mano: esta fila se escribía sus propios
+                # filtros y por eso se saltaba `is_excluded` y `is_adult` (0 filas
+                # hoy, pero curar no es control de acceso — cualquier usuario puede
+                # empujar una fila al catálogo compartido al puntuar). Los umbrales
+                # del tema son MÁS estrictos que el gate en votos y VBS, así que lo
+                # único que cambia de verdad son los 236 cortos que colaba.
+                .where(*movie_quality_gate(include_shorts))
                 .where(Movie.genres.overlap(include_array))
                 .where(Movie.vectorbox_score >= min_score)
                 .where(Movie.vote_count >= min_votes)
-                .where(Movie.vote_average >= 5.0)
-                .where(Movie.year.isnot(None))
-                .where(Movie.vectorbox_score.isnot(None))
+                .where(Movie.vote_average >= 5.0),
+                filters,
             )
             if excluded_ids:
                 q = q.where(Movie.id.notin_(excluded_ids))
@@ -870,7 +1041,9 @@ class RecommendationEngine:
 
         pool_result = await db.execute(
             _build_theme_query(SCORE_FLOOR, VOTES_FLOOR)
-            .order_by(Movie.vectorbox_score.desc())
+            # `_build_theme_query` ya excluye los NULL, pero el invariante se deja
+            # visible aqui en vez de a dos saltos de distancia.
+            .order_by(Movie.vectorbox_score.desc().nulls_last())
             .limit(200)
         )
         pool = _apply_post_filters(pool_result.scalars().all())
@@ -903,8 +1076,38 @@ class RecommendationEngine:
         if not filtered:
             return FeedSection(id="niche_picks", title=theme["title"], items=[])
 
+        # Prior de década. Esta fila es género + calidad y NO mira al usuario, así que
+        # ordenar por VBS devuelve el canon de ese género — y el cine antiguo del catálogo
+        # está filtrado por supervivencia (VBS medio 66.0 pre-1975 contra 57.2 del moderno).
+        # Resultado medido el 2026-08-11 en `Comfort Watch` de user 212: **45% anterior a
+        # 1975** cuando su biblioteca es el **1%**. Chaplin, Keaton y Wilder para alguien
+        # cuyo gusto empieza en los 2000.
+        #
+        # peso = (cuota del usuario en esa década + ALFA) / (1 + ALFA). Nunca elimina, baja.
+        # ALFA=4.0 medido contra cuatro perfiles de época construidos a propósito: corrige
+        # al de gusto moderno (40%→5% pre-75) y **le da MÁS clásico al que ama el clásico**
+        # (40%→80%). La coherencia con la biblioteca sube en los cuatro. Con ALFA≤1 el prior
+        # domina y borra el cine antiguo del todo, que es cambiar un extremo por otro.
+        decadas = await db.execute(
+            select(Movie.year)
+            .join(UserRating, UserRating.movie_id == Movie.id)
+            .where(UserRating.user_id == user_id)
+            .where(or_(UserRating.rating >= 4.0, UserRating.is_liked.is_(True)))
+            .where(Movie.year.isnot(None))
+        )
+        años = decadas.scalars().all()
+        cuota: dict[int, float] = {}
+        if años:
+            cont = Counter((y // 10) * 10 for y in años)
+            cuota = {d: c / len(años) for d, c in cont.items()}
+
+        def _peso_decada(movie) -> float:
+            if not movie.year or not cuota:
+                return 1.0
+            return (cuota.get((movie.year // 10) * 10, 0.0) + NICHE_ERA_ALPHA) / (1 + NICHE_ERA_ALPHA)
+
         scored = [
-            (movie, (movie.vectorbox_score or 0) * random.uniform(0.7, 1.3))
+            (movie, (movie.vectorbox_score or 0) * _peso_decada(movie) * random.uniform(0.7, 1.3))
             for movie in filtered
         ]
         scored.sort(key=lambda x: x[1], reverse=True)
@@ -922,7 +1125,7 @@ class RecommendationEngine:
             movie_providers = providers_map.get(movie.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
             item = await self.create_feed_item(
-                movie, 1.0, country, tmdb,
+                movie, None, country, tmdb,
                 streaming_providers=flat_providers,
                 contributors=[{
                     "type": "cluster",
@@ -950,6 +1153,7 @@ class RecommendationEngine:
         provider_service: ProviderService = None,
         filters: Dict = None,
         pool_limit: int = None,
+        include_shorts: bool = False,
     ) -> FeedSection:
         """Signal C: Hidden Gems — Score-to-Hype Filtering"""
         with _tracer.start_as_current_span("trident.signal_c.hidden_gems") as span:
@@ -973,46 +1177,97 @@ class RecommendationEngine:
             )
             excluded_internal_ids = set(excluded_result.scalars().all())
 
+            # Step 2a: the user's taste center, needed BEFORE the candidate query
+            # so the pool can be ordered by affinity instead of by score. Mean of
+            # their cluster medoids — medoids are real films, so this centre is
+            # far less hub-prone than the mean of a whole library.
+            global_center = await self._user_center_vector(user_id, db)
+
+            # Affinity-ordered pool. The old pool was `ORDER BY vectorbox_score
+            # DESC LIMIT 200` over ~1.4-3.8k eligible films: the top 200 by score
+            # are almost the same 200 for everyone, so three different users
+            # shared 2.7 of their 10 gems and the row read as a canon list.
+            # Ordering the pool by proximity to the user's centre instead drops
+            # that overlap to 1.3/10 (measured 2026-08-04, MMR included) at a
+            # cost of ~3 VBS points. Quality still decides the RANKING (0.7/0.3);
+            # it just no longer decides who is allowed in the room.
+            affinity_ids: List[int] = []
+            if global_center is not None:
+                try:
+                    hits = await self.qdrant.search_similar(
+                        query_vector=(global_center.tolist() if hasattr(global_center, "tolist")
+                                      else list(global_center)),
+                        limit=SIGNAL_C_POOL,
+                        filters={
+                            "min_vectorbox_score": thresholds["min_score"],
+                            "min_vote_count": thresholds["min_votes"],
+                            **({"exclude_tmdb_ids": list(seen_ids)} if seen_ids else {}),
+                        },
+                    )
+                    affinity_ids = [int((h.get("metadata") or {}).get("tmdb_id") or h["movie_id"])
+                                    for h in hits]
+                except Exception as e:
+                    logger.warning(f"[Signal C] affinity pool failed, falling back to score order: {e}")
+
             # F8: rail constraints applied in-query (wide 200-pool, no starvation).
             _flt = _movie_filter_clauses(filters)
 
             result = await db.execute(
                 select(Movie)
-                .where(*MOVIE_QUALITY_GATE)
+                .where(*movie_quality_gate(include_shorts))
                 # Enriched-vector gate: hidden gems is a "trust us" quality claim —
                 # never surface films whose vector/description is still legacy-recipe
                 .where(Movie.has_enriched_embedding.is_(True))
                 .where(Movie.vectorbox_score >= thresholds["min_score"])
-                .where(Movie.popularity <= thresholds["max_popularity"])
+                # Fame ceiling on IMDb votes, NOT the old `popularity <= 30-40`.
+                # TMDB popularity decays with time: only 150 of 20.339 catalogue
+                # films exceed 30 and the p99 is 25.5, so that cap excluded ~0.7%
+                # and let Rear Window (568k votes, popularity 11) sit in a row
+                # called Hidden Gems. Vote count is what "how known is this"
+                # actually means. Measured: median of the row drops from ~137-196k
+                # votes to ~35-54k, VBS 94.9 -> ~90.
+                .where(Movie.imdb_vote_count <= SIGNAL_C_MAX_VOTES)
                 .where(Movie.vote_count >= thresholds["min_votes"])
                 .where(Movie.id.notin_(excluded_internal_ids) if excluded_internal_ids else True)
                 .where(*_flt)
+                .where(Movie.tmdb_id.in_(affinity_ids) if affinity_ids else True)
                 .order_by(desc(Movie.vectorbox_score))
-                .limit(200)
+                .limit(200 if not affinity_ids else SIGNAL_C_POOL)
             )
             candidates = result.scalars().all()
+            if affinity_ids:
+                # Keep the AFFINITY order, not the score order — sorting the pool
+                # by score again would put the same canon back at the front and
+                # undo the whole change (measured: overlap stayed at 2.3/10
+                # instead of dropping to 1.3 until this line was fixed).
+                rank_of = {tid: i for i, tid in enumerate(affinity_ids)}
+                candidates = sorted(candidates, key=lambda m: rank_of.get(m.tmdb_id, 10**6))[:200]
+                # Post-filter survival: the vote ceiling and the rail filters are
+                # applied AFTER the affinity pool, so log what got through. A pool
+                # that starves here silently is the failure this note exists for.
+                logger.info(f"[Signal C] affinity pool {len(affinity_ids)} -> {len(candidates)} "
+                            f"survived the vote ceiling and rail filters")
+                if len(candidates) < 20:
+                    logger.warning("[Signal C] affinity pool starved; widening to score order")
+                    candidates = (await db.execute(
+                        select(Movie)
+                        .where(*movie_quality_gate(include_shorts))
+                        .where(Movie.has_enriched_embedding.is_(True))
+                        .where(Movie.vectorbox_score >= thresholds["min_score"])
+                        .where(Movie.imdb_vote_count <= SIGNAL_C_MAX_VOTES)
+                        .where(Movie.vote_count >= thresholds["min_votes"])
+                        .where(Movie.id.notin_(excluded_internal_ids) if excluded_internal_ids else True)
+                        .where(*_flt)
+                        .order_by(desc(Movie.vectorbox_score))
+                        .limit(200)
+                    )).scalars().all()
             
             if not candidates:
                 span.set_attribute("result_count", 0)
                 return FeedSection(id="hidden_gems", title="Hidden Gems", items=[])
 
-            # Step 3: Get user's global center vector (from cluster medoids)
-            clusters_result = await db.execute(
-                select(UserCluster).where(UserCluster.user_id == user_id)
-            )
-            clusters = clusters_result.scalars().all()
-            
-            global_center = None
-            if clusters:
-                # Use mean of medoid vectors
-                medoid_ids = [c.medoid_movie_id for c in clusters if c.medoid_movie_id]
-                if medoid_ids:
-                    medoid_movies = await db.execute(select(Movie.tmdb_id).where(Movie.id.in_(medoid_ids)))
-                    medoid_tmdb_ids = medoid_movies.scalars().all()
-                    vectors_map = await self.qdrant.get_vectors_batch(medoid_tmdb_ids)
-                    if vectors_map:
-                        global_center = np.mean(list(vectors_map.values()), axis=0)
-            
+            # Step 3 moved up to 2a — the centre now also orders the pool.
+
             # Step 4: Fetch candidate vectors in batch and score
             candidate_tmdb_ids = [m.tmdb_id for m in candidates]
             candidate_vectors_map = await self.qdrant.get_vectors_batch(candidate_tmdb_ids)
@@ -1086,7 +1341,7 @@ class RecommendationEngine:
                 s_providers = [p["provider_name"] for p in p_data]
                 
                 item = await self.create_feed_item(
-                    movie, cand["score"], country, tmdb,
+                    movie, None, country, tmdb,
                     provider_service=provider_service,
                     streaming_providers=s_providers,
                     contributors=[{"type": "crowd", "label": "Critically acclaimed, under the radar"}]
@@ -1112,6 +1367,7 @@ class RecommendationEngine:
     ) -> FeedSection:
         """Available on Your Services"""
         items = []
+        orden: List[float] = []   # calidad por item, en paralelo a `items`
         watchlist_result = await db.execute(
             select(Movie)
             .join(UserRating, Movie.id == UserRating.movie_id)
@@ -1144,16 +1400,23 @@ class RecommendationEngine:
                     # Skip movies with no real score data — no inflated defaults
                     if not vb and not va:
                         continue
+                    # Esta fila ordena por CALIDAD, que es lo único que mide: lo
+                    # mejor valorado de tu watchlist que está en tus plataformas.
+                    # El número vivía en `match_score` — un campo de similitud — y
+                    # esto era el ÚNICO sitio del backend que lo leía. Ahora es una
+                    # variable local con su nombre, y el campo va a None como en el
+                    # resto de filas que no comparan con nada.
                     if vb and vb > 0:
-                        match_score = min(99, vb)
+                        calidad = min(99, vb)
                     else:
-                        match_score = 55 + min(30, max(0, (va - 5.0) * 7.5))
+                        calidad = 55 + min(30, max(0, (va - 5.0) * 7.5))
 
+                    orden.append(calidad)
                     items.append(FeedItem(
                         id=movie.tmdb_id,
                         title=movie.title,
                         poster_url=movie.poster_path,
-                        match_score=round(match_score, 0),
+                        match_score=None,
                         streaming_providers=list(set(available_providers)),
                         year=movie.year,
                         runtime=movie.runtime,
@@ -1174,8 +1437,7 @@ class RecommendationEngine:
                     ))
                     seen_ids.add(movie.tmdb_id)
 
-        items.sort(key=lambda x: x.match_score, reverse=True)
-        items = items[:20]
+        items = [it for _, it in sorted(zip(orden, items), key=lambda p: -p[0])][:20]
 
         return FeedSection(
             id="available_now",
@@ -1190,7 +1452,9 @@ class RecommendationEngine:
         tmdb: TMDBClient,
         seen_ids: Set[int],
         country: str,
-        provider_service: ProviderService = None
+        provider_service: ProviderService = None,
+        filters: Dict = None,
+        include_shorts: bool = False,
     ) -> Optional[FeedSection]:
         """Wildcard Section: Outside Your Comfort Zone.
 
@@ -1215,13 +1479,14 @@ class RecommendationEngine:
         excluded_internal_ids = set(excluded_result.scalars().all())
 
         excluded_array = list(excluded_genres)
-        q = (
+        q = apply_rail_filters(
             select(Movie)
-            .where(*MOVIE_QUALITY_GATE)
+            .where(*movie_quality_gate(include_shorts))
             .where(Movie.vectorbox_score >= 45)
             .where(Movie.vote_average > 7.0)
             .where(Movie.vote_count > 100)
-            .where(~Movie.genres.overlap(excluded_array))
+            .where(~Movie.genres.overlap(excluded_array)),
+            filters,
         )
         if excluded_internal_ids:
             q = q.where(Movie.id.notin_(excluded_internal_ids))
@@ -1244,7 +1509,7 @@ class RecommendationEngine:
         for m in sample:
             movie_providers = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.create_feed_item(m, 0.85, country, tmdb, streaming_providers=flat_providers,
+            item = await self.create_feed_item(m, None, country, tmdb, streaming_providers=flat_providers,
                 contributors=[{"type": "vibe", "label": "Outside your comfort zone"}])
             items.append(item)
             seen_ids.add(m.tmdb_id)
@@ -1263,7 +1528,8 @@ class RecommendationEngine:
         seen_ids: Set[int],
         country: str,
         provider_service: ProviderService = None,
-        filters: Dict = None
+        filters: Dict = None,
+        include_shorts: bool = False,
     ) -> Optional[FeedSection]:
         """Random Picks"""
         # FIX 5: Push seen filter to DB and use func.random() — avoids 500-row scan
@@ -1278,7 +1544,7 @@ class RecommendationEngine:
         # it showed: 2.2 of 12 survived a min_vectorbox_score=80 post-filter.
         q = apply_rail_filters(
             select(Movie)
-            .where(*MOVIE_QUALITY_GATE)
+            .where(*movie_quality_gate(include_shorts))
             .where(Movie.vectorbox_score.between(1, 99)),
             filters,
         )
@@ -1305,14 +1571,17 @@ class RecommendationEngine:
         for m in sample:
             movie_providers = providers_map.get(m.id, [])
             flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.create_feed_item(m, 0.9, country, tmdb, streaming_providers=flat_providers,
+            item = await self.create_feed_item(m, None, country, tmdb, streaming_providers=flat_providers,
                 contributors=[{"type": "crowd", "label": "High quality discovery"}])
             items.append(item)
             seen_ids.add(m.tmdb_id)
 
         return FeedSection(
             id="random_picks", 
-            title="Random Top Picks", 
+            # "Top" no: la fila tira de todo el catálogo sobre la puerta de calidad
+            # (VBS 1-99 medido: media 61, mínimo 46). Prometer "top" y servir el
+            # montón entero desgasta la marca a cambio de una palabra.
+            title="Random Picks",
             items=items
         )
 
@@ -1322,7 +1591,8 @@ class RecommendationEngine:
         db: AsyncSession,
         tmdb: TMDBClient,
         country: str,
-        provider_service: ProviderService = None
+        provider_service: ProviderService = None,
+        include_shorts: bool = False,
     ) -> Optional[FeedSection]:
         """Popular on Letterboxd"""
         trending_service = TrendingService(db)
@@ -1335,9 +1605,9 @@ class RecommendationEngine:
             return None
 
         # Soft curation: drop films with an explicitly-low Letterboxd rating
-        # (< 2.5). When `letterboxd_rating` is None (Trakt-sourced or legacy
-        # cache shape) we keep the film — Trakt fallback shouldn't be
-        # penalized for lacking a Letterboxd-specific signal.
+        # (< 2.5). When `letterboxd_rating` is None (legacy cache shape — the
+        # Trakt fallback that also produced None was deleted 2026-08-18) we keep
+        # the film: absent is not low.
         LB_RATING_FLOOR = 2.5
         filtered_items = [
             it for it in popular_items
@@ -1355,7 +1625,7 @@ class RecommendationEngine:
         result = await db.execute(
             select(Movie)
             .where(Movie.tmdb_id.in_(popular_ids))
-            .where(*MOVIE_QUALITY_GATE)
+            .where(*movie_quality_gate(include_shorts))
         )
         fetched_movies = result.scalars().all()
         movies_map = {m.tmdb_id: m for m in fetched_movies}
@@ -1392,7 +1662,7 @@ class RecommendationEngine:
                 p_data = providers_map.get(movie.id, [])
                 flat_providers = [p["provider_name"] for p in p_data]
                 item = await self.create_feed_item(
-                    movie, 0.95, country, tmdb,
+                    movie, None, country, tmdb,
                     streaming_providers=flat_providers
                 )
                 scraped_lb = rating_by_tmdb.get(tmdb_id)
@@ -1409,53 +1679,170 @@ class RecommendationEngine:
             items=items
         )
 
-    async def get_random_watchlist_section(
+    async def _user_center_vector(self, user_id: int, db: AsyncSession):
+        """Mean of the user's cluster medoids — their taste centre.
+
+        Medoids are real films, so this centre sits far from the catalogue mean
+        and does not drag the neighbourhood into hub territory the way a mean of
+        a whole library does. Returns None for a user with no clusters yet.
+        """
+        clusters = (await db.execute(
+            select(UserCluster).where(UserCluster.user_id == user_id)
+        )).scalars().all()
+        medoid_ids = [c.medoid_movie_id for c in clusters if c.medoid_movie_id]
+        if not medoid_ids:
+            return None
+        medoid_tmdb_ids = (await db.execute(
+            select(Movie.tmdb_id).where(Movie.id.in_(medoid_ids))
+        )).scalars().all()
+        vectors_map = await self.qdrant.get_vectors_batch(medoid_tmdb_ids)
+        if not vectors_map:
+            return None
+        return np.mean([np.asarray(v) for v in vectors_map.values() if v is not None], axis=0)
+
+    async def get_leaving_soon_section(
         self,
-        user_id: int,
         db: AsyncSession,
         tmdb: TMDBClient,
+        seen_ids: Set[int],
         country: str,
-        provider_service: ProviderService = None
+        provider_service: ProviderService = None,
+        filters: Dict = None,
+        include_shorts: bool = False,
     ) -> Optional[FeedSection]:
-        """Get random movies from the user's watchlist."""
-        result = await db.execute(
-            select(Movie)
-            .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(
-                UserRating.user_id == user_id,
-                UserRating.is_watchlist.is_(True),
-                UserRating.is_watched.is_(False)
-            )
-            .order_by(func.random())
-            .limit(20)
-        )
-        selected_movies = result.scalars().all()
+        """Lo que se va del streaming en los próximos días.
 
-        if not selected_movies:
+        Es la única fila del feed con caducidad real: el resto recomienda algo que
+        seguirá ahí mañana, ésta dice "te quedan cuatro días".
+
+        **Sólo aparece si el usuario tiene servicios elegidos**, y no es una preferencia
+        de interfaz: es la única forma de que la fila no mienta. Medido el 2026-08-17,
+        de las 21 películas que se iban, **CERO estaban en un solo servicio** — 11 en
+        dos, y Space Jam en SIETE. Sin saber qué tienes contratado, "se va" significa
+        "se va de uno de los varios sitios donde vive", que no es urgente para nadie.
+        Con tu selección sí se puede responder: se va **de los tuyos** y no te queda en
+        ningún otro de los tuyos. Que siga en Prime es irrelevante si no tienes Prime.
+
+        **Ordenar sólo por fecha no valía**, y se vio al mirar la salida: de 12 huecos
+        sólo 3 eran urgentes de verdad (hoy, mañana, 2 días) y los otros 9 se iban en
+        películas a 18-28 días, dejando fuera del corte a Riders of Justice (VBS 81) y
+        Elena (75) que se iban en la misma ventana. La urgencia manda mientras es
+        urgente; pasada una semana, "se va" es sólo una etiqueta y decide la calidad.
+        De ahí cabeza por FECHA (≤ URGENTE_DIAS) y cola por VBS — el mismo reparto
+        cabeza/cola que usa `get_upcoming_section`, allí con afinidad. Si la cola sale
+        genérica, el siguiente paso es afinidad como allí; VBS es lo que ya está
+        cargado y no cuesta una lectura más.
+
+        Los datos los ingiere la fase 11 del orquestador desde MovieOfTheNight. Su
+        ventana es corta: medido el 2026-08-17, con la ingesta parada cinco días las
+        candidatas con calidad habían caído de 41 a 3 — no se rompió nada, es que
+        habían caducado. Si la fase 11 no corre a diario, esta fila se apaga sola,
+        que es el comportamiento correcto: mejor sin fila que con fechas mentirosas.
+        """
+        from models.database import StreamingChange
+        from services.streaming_availability_client import nombre_servicio, SERVICE_TO_TMDB_PROVIDER
+        # Diferido: `recommendation_service` importa de este módulo, así que arriba
+        # sería circular. El umbral vive allí y sólo allí (CLAUDE.md).
+        from services.recommendation_service import MIN_QUALITY_SCORE
+
+        pedidos = set((filters or {}).get("provider_ids") or [])
+        if not pedidos:
             return None
 
-        # Batch-fetch providers (no N+1 / no per-movie TMDB calls)
-        if provider_service and selected_movies:
-            sample_ids = [m.id for m in selected_movies]
-            providers_map = await provider_service.get_providers_batch(sample_ids, country)
-        else:
-            providers_map = {}
-        
-        items = []
-        for movie in selected_movies:
-            p_data = providers_map.get(movie.id, [])
-            flat_providers = [p["provider_name"] for p in p_data]
-            item = await self.create_feed_item(
-                movie, 1.0, country, tmdb,
-                streaming_providers=flat_providers
-            )
-            items.append(item)
-            
-        return FeedSection(
-            id="random_watchlist",
-            title="Shuffle: From Your Watchlist",
-            items=items
+        ahora = datetime.now(timezone.utc)
+        proximas = (
+            select(Movie, StreamingChange.service, StreamingChange.effective_at,
+                   MovieAvailability.providers)
+            .join(StreamingChange, StreamingChange.tmdb_id == Movie.tmdb_id)
+            .outerjoin(MovieAvailability,
+                       (MovieAvailability.movie_id == Movie.id)
+                       & (MovieAvailability.country_code == (country or "ES").upper()))
+            .where(StreamingChange.change_type == "expiring")
+            .where(StreamingChange.country_code == (country or "ES").lower())
+            .where(StreamingChange.effective_at > ahora)
+            .where(*movie_quality_gate(include_shorts))
+            .where(Movie.vectorbox_score >= MIN_QUALITY_SCORE)
+            .where(Movie.tmdb_id.notin_(seen_ids) if seen_ids else True)
+            .order_by(StreamingChange.effective_at.asc())
         )
+        # Se va de UNO DE LOS TUYOS: mirar de qué servicio sale, no en cuál está.
+        # Si eliges un servicio del que no tenemos datos (Movistar), la lista sale
+        # vacía y la fila se oculta — es la respuesta honesta, no un fallo.
+        proximas = proximas.where(StreamingChange.service.in_(
+            [s for s, pid in SERVICE_TO_TMDB_PROVIDER.items() if pid in pedidos]
+        ))
+        # `provider_ids` NO se le pasa a apply_rail_filters aquí. Dos motivos, y el
+        # segundo rompía: (1) sobra — el criterio de esta fila no es "está en tus
+        # servicios" sino "se va de uno tuyo y no te queda en otro", que se resuelve
+        # abajo; (2) su EXISTS va contra `movie_availability`, que esta consulta ya
+        # une, y SQLAlchemy auto-correlaciona la subconsulta contra la unión externa
+        # dejándola sin FROM ("returned no FROM clauses due to auto-correlation").
+        otros_filtros = {k: v for k, v in (filters or {}).items() if k != "provider_ids"}
+        filas = (await db.execute(apply_rail_filters(proximas, otros_filtros or None))).all()
+
+        # Una película puede salir de dos servicios el mismo mes: se queda la fecha
+        # más próxima, que es la que aprieta.
+        vistas: Set[int] = set()
+        unicas = []
+        for movie, service, effective_at, provs in filas:
+            if movie.tmdb_id in vistas:
+                continue
+            # ...y si TE queda en otro servicio TUYO, no se va: se muda. `provs` es la
+            # disponibilidad actual, o sea que incluye el que abandona — se descuenta.
+            que_deja = SERVICE_TO_TMDB_PROVIDER.get(service)
+            en_tmdb = {p.get("provider_id") for p in (provs or [])}
+            # El catálogo `prime` de MovieOfTheNight INCLUYE los Amazon Channels (AMC,
+            # MGM, Lionsgate...), que son suscripciones de pago aparte dentro de Prime.
+            # TMDB los cuenta como proveedores distintos, y tiene razón: con Prime a
+            # secas no puedes verlas. Sin este cruce, "se va de Prime" se anunciaba
+            # sobre películas que el usuario no podía ver — medido 2026-08-19 con
+            # Frantic y Payback, que MotN daba como Prime y sólo están en AMC Channels
+            # y Tivify. Se exige que TMDB confirme el servicio que la abandona.
+            if que_deja not in en_tmdb:
+                continue
+            # ...y si TE queda en otro servicio TUYO, no se va: se muda.
+            if (en_tmdb & pedidos) - {que_deja}:
+                continue
+            vistas.add(movie.tmdb_id)
+            unicas.append((movie, service, effective_at))
+
+        URGENTE_DIAS = 7
+        limite = ahora.date() + timedelta(days=URGENTE_DIAS)
+        urgentes = [c for c in unicas if c[2].date() <= limite]
+        resto = sorted((c for c in unicas if c[2].date() > limite),
+                       key=lambda c: c[0].vectorbox_score or 0, reverse=True)
+        candidatas = (urgentes + resto)[:12]
+
+        if not candidatas:
+            return None
+
+        providers_map = {}
+        if provider_service:
+            providers_map = await provider_service.get_providers_batch(
+                [m.id for m, _, _ in candidatas], country
+            )
+
+        items = []
+        for movie, service, effective_at in candidatas:
+            dias = (effective_at.date() - ahora.date()).days
+            cuando = "Leaves today" if dias <= 0 else ("Leaves tomorrow" if dias == 1 else f"{dias} days left")
+            items.append(await self.create_feed_item(
+                movie, None, country, tmdb,
+                contributors=[{
+                    "type": "leaving_soon",
+                    "label": f"Leaving {nombre_servicio(service)}",
+                    # La chapa de la carátula lleva SERVICIO y días juntos: sin el
+                    # servicio la fila no dice de dónde se va (que es lo único que la
+                    # hace accionable) y sin los días no se distingue lo de mañana de
+                    # lo de dentro de tres semanas, porque la fila mezcla ambos.
+                    "release_badge": f"{nombre_servicio(service).upper()} · "
+                                     + ("TODAY" if dias <= 0 else f"{dias}D"),
+                    "release_note": f"{cuando} · {effective_at.strftime('%d %b')}",
+                }],
+                streaming_providers=[p["provider_name"] for p in providers_map.get(movie.id, [])],
+            ))
+
+        return FeedSection(id="leaving_soon", title="Leaving Your Services", items=items)
 
     async def get_upcoming_section(
         self,
@@ -1489,17 +1876,67 @@ class RecommendationEngine:
             .where(Movie.is_upcoming.is_(True))
             .where(Movie.tmdb_id.notin_(seen_ids))
             .where(Movie.year.isnot(None))
-            .where(Movie.popularity > 5.0)
+            # `popularity > 5.0` used to be here. It cut the pool from ~150 to
+            # ~40 of the 186 upcoming films and changed nothing on its own —
+            # ordering by popularity kept the same top 20 either way (measured).
+            # Dropping it is what gives the affinity tail something to pick from.
         )
 
         if user_genres:
             genre_array = cast(user_genres, ARRAY(String))
             query = query.where(Movie.genres.overlap(genre_array))
 
-        query = query.order_by(desc(Movie.popularity)).limit(20)
+        candidates = (await db.execute(query.order_by(desc(Movie.popularity)))).scalars().all()
 
-        result = await db.execute(query)
-        candidates = result.scalars().all()
+        # Drop the ones that already came out. `is_upcoming` is cleared by
+        # phase 1 of the orchestrator (mark_released_upcoming); when that has not
+        # run in a while the flag rots — measured 2026-08-04: 13 of 186 flagged
+        # films were already released, the newest metadata refresh was 9 days old
+        # and the oldest 5 weeks.
+        def _release(m):
+            return m.release_date_es or m.release_date_ww
+        candidates = [m for m in candidates if not (_release(m) and _release(m) < today)]
+
+        # A radar is two things at once: what is COMING (news, even if it isn't
+        # for you) and what is coming FOR YOU. The head used to be the 3 highest
+        # TMDB popularity, which is neither: that metric decays daily and ours
+        # was 5 weeks stale, one outlier sat 8x above the rest (762.7 vs 95.1),
+        # and the three winners had NO announced release date while Spider-Man,
+        # out in days, ranked fourth. Sort the head by how SOON it lands — the
+        # only thing that puts a film on a radar — and rank the rest by affinity.
+        # Undated films (126 of 186) can't be imminent, so they wait in the tail.
+        # ...y "más próxima" tiene que significar más próxima AQUÍ. Medido 2026-08-11:
+        # ordenando por `_release` (que cae a la fecha mundial) los dos usuarios reales
+        # veían la MISMA cabecera — OK! Madam: Bon Voyage, Batwara 1947, Vishwanath &
+        # Sons: estrenos regionales indios. El filtro de géneros no los para porque van
+        # etiquetados con géneros amplios que solapan con el gusto de cualquiera.
+        # De 199 upcoming, 37 tienen fecha española: de sobra para 3 huecos.
+        dated = sorted([m for m in candidates if _release(m)], key=_release)
+        con_fecha_local = sorted([m for m in candidates if m.release_date_es], key=lambda m: m.release_date_es)
+        headlines = con_fecha_local[:RADAR_HEADLINES]
+        if len(headlines) < RADAR_HEADLINES:
+            # Sin suficientes estrenos locales, se rellena con el orden mundial de antes
+            # en vez de dejar huecos: una cabecera corta es peor que una imperfecta.
+            ya = {m.tmdb_id for m in headlines}
+            headlines += [m for m in dated if m.tmdb_id not in ya][: RADAR_HEADLINES - len(headlines)]
+        headline_ids = {m.tmdb_id for m in headlines}
+        tail = [m for m in candidates if m.tmdb_id not in headline_ids]
+        if tail:
+            center = await self._user_center_vector(user_id, db)
+            if center is not None:
+                vecs = await self.qdrant.get_vectors_batch([m.tmdb_id for m in tail])
+                if vecs:
+                    cn = center / (np.linalg.norm(center) or 1.0)
+
+                    def affinity(movie):
+                        v = vecs.get(movie.tmdb_id)
+                        if v is None:
+                            return -1.0
+                        v = np.asarray(v, dtype=np.float32)
+                        return float(np.dot(v, cn) / (np.linalg.norm(v) or 1.0))
+
+                    tail = sorted(tail, key=affinity, reverse=True)
+        candidates = (headlines + tail)[:20]
 
         if provider_service and candidates:
             movie_ids = [m.id for m in candidates]
@@ -1534,7 +1971,7 @@ class RecommendationEngine:
             flat_providers = [p["provider_name"] for p in p_data]
 
             item = await self.create_feed_item(
-                movie, 1.0, country, tmdb,
+                movie, None, country, tmdb,
                 contributors=[{
                     "type": "upcoming",
                     "label": "Coming soon",

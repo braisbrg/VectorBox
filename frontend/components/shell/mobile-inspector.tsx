@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { X, Check, Loader2 } from "lucide-react";
+import { X, Check, Loader2, Plus } from "lucide-react";
 import { FeedItem, getTMDBImageUrl } from "@/lib/api";
 import { WhyThisFilm } from "@/components/why-this-film";
 import { BottomSheet } from "@/components/shell/bottom-sheet";
@@ -13,12 +13,13 @@ interface MobileInspectorProps {
     sectionId?: string;
     onClose: () => void;
     onMarkWatched?: (tmdbId: number) => void;
+    onWatchlist?: (tmdbId: number) => void;
     onReject?: (tmdbId: number) => void;
-    actionLoading?: "watched" | "rejected" | null;
+    actionLoading?: "watched" | "rejected" | "watchlist" | null;
 }
 
 /** Mobile inspector — bottom sheet mirroring the desktop right-console DATA_INSPECTOR. */
-export function MobileInspector({ movie, sectionId, onClose, onMarkWatched, onReject, actionLoading }: MobileInspectorProps) {
+export function MobileInspector({ movie, sectionId, onClose, onMarkWatched, onWatchlist, onReject, actionLoading }: MobileInspectorProps) {
     const { language, t } = useLanguage();
     const displayTitle = language === "es" && movie?.title_es ? movie.title_es : movie?.title;
     const displayOverview = language === "es" && movie?.overview_es ? movie.overview_es : movie?.overview;
@@ -50,7 +51,11 @@ export function MobileInspector({ movie, sectionId, onClose, onMarkWatched, onRe
                                         <span>{movie.runtime ? `${movie.runtime} MIN` : "?? MIN"}</span>
                                     </div>
                                     <div className="mt-3 flex items-baseline gap-3">
-                                        <span className="font-display text-2xl text-primary">Q{Math.round(movie.vectorbox_score || movie.match_score || 0)}</span>
+                                        {/* Q is quality (VBS). match_score is a similarity —
+                                            never show one wearing the other's badge. */}
+                                        {movie.vectorbox_score != null && (
+                                            <span className="font-display text-2xl text-primary">Q{Math.round(movie.vectorbox_score)}</span>
+                                        )}
                                         {movie.letterboxd_rating != null && <span className="text-xs text-fg-2">★ {movie.letterboxd_rating.toFixed(1)}</span>}
                                     </div>
                                 </div>
@@ -90,6 +95,19 @@ export function MobileInspector({ movie, sectionId, onClose, onMarkWatched, onRe
                             </Link>
 
                             <div className="space-y-2 pt-2">
+                                {/* Misma acción que en el rail de escritorio: al
+                                    inspeccionar algo sin ver, lo más probable es
+                                    querer verla luego, no marcarla ya como vista. */}
+                                {onWatchlist && (
+                                    <button
+                                        onClick={() => onWatchlist(movie.id)}
+                                        disabled={actionLoading !== null && actionLoading !== undefined}
+                                        className="flex w-full items-center justify-center gap-2 border border-border-2 py-3 text-fg-2 transition-colors hover:border-primary hover:text-primary disabled:opacity-50"
+                                    >
+                                        {actionLoading === "watchlist" ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                                        <span className="text-[10px] font-bold uppercase tracking-widest">{">"} {t("insp.watchlist")}</span>
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => onMarkWatched?.(movie.id)}
                                     disabled={actionLoading !== null && actionLoading !== undefined}

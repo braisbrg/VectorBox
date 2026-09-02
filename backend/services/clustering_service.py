@@ -8,7 +8,7 @@ import numpy as np
 import math
 from typing import List, Dict, Tuple, Optional, Set
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, desc, func
 import asyncio
@@ -37,6 +37,43 @@ async def _enrich_movie_background(tmdb_id: int):
                 await session.commit()
         except Exception as e:
             logger.error(f"Background enrichment failed for tmdb_id={tmdb_id}: {e}")
+
+# Signal A anchor freshness: how many of the 7 anchor slots are reserved for the
+# newest anchor-eligible watches, and how far back "newest" reaches. Nothing watched
+# in the window → both fall back to the all-time ranking (no regression).
+RECENT_ANCHORS = 2
+RECENT_ANCHOR_DAYS = 90
+
+# The two jobs are split: the reserved slots above carry freshness, so the remaining
+# five carry the taste core and want a LONG half-life. Measured by time-travelling
+# the real profiles of users 210/212 (anchor set at D vs D+30, 12 windows), the
+# 30-day turnover of those five slots and their mean age:
+#   180d → 32% / 30d   365d → 24% / 70d   540d → 20% / 70d   1095d → 14% / 220d
+# At 540d the core is already 4/5 films from the last two months — In the Mood for
+# Love and Past Lives fall out of a profile they define. 1095d keeps them and still
+# follows a taste that shifts over years.
+ANCHOR_HALF_LIFE_DAYS = 1095.0
+
+
+def select_anchors(scored, recent, n_anchors: int):
+    """Anchor set for Signal A: best-of-all-time, minus RECENT_ANCHORS slots given
+    to the newest anchor-eligible watches.
+
+    Without the reserved slots the anchor set is FROZEN: `base` tops out at 1.5
+    (5★ + liked) while a fresh 4.5★ scores 0.8, and the decay term reads
+    `created_at` — the IMPORT date for bulk-synced history, identical for hundreds
+    of rows. Measured on user 212 (939 ratings): five new watches moved nothing.
+    The ≥4.0-or-liked filter upstream is the quality gate; here recency orders.
+    ponytail: newest-first, not best-of-window — responsiveness is the point.
+
+    `scored` is [(score, Movie)] sorted desc, `recent` is [(watched_date, Movie)]
+    within the window. Empty `recent` → pure all-time ranking, as before.
+    """
+    fresh = [m for _, m in sorted(recent, key=lambda x: -x[0].timestamp())[:RECENT_ANCHORS]]
+    fresh_ids = {m.tmdb_id for m in fresh}
+    top = [m for _, m in scored if m.tmdb_id not in fresh_ids][: n_anchors - len(fresh)]
+    return top + fresh
+
 
 class ClusteringService:
     """Create and manage user taste clusters"""
@@ -114,17 +151,31 @@ class ClusteringService:
         )
         weights: Dict[str, float] = {}
         now = datetime.now(timezone.utc)
-        for ur, m in result.all():
+        rows = result.all()
+
+        def _decay(ref):
+            if ref.tzinfo is None:
+                ref = ref.replace(tzinfo=timezone.utc)
+            return 0.5 ** (max(0.0, (now - ref).total_seconds() / 86400.0) / 730.0)
+
+        # Neutro relativo, no un 0.5 fijo: el fijo no decae mientras todo lo demás sí, así
+        # que en un perfil mixto las filas sin fecha acaban decidiendo los géneros solas.
+        # Medido 2026-08-11 en user 212 (46% sin fecha tras reimportar): la cuota del peso
+        # que aportan pasa de 38.7% hoy a **78.1% a los 5 años y 95.3% a los 10** con el
+        # 0.5 fijo, y se queda clavada en 44.0% con la mediana. Misma corrección que en el
+        # scorer de anchors y en `_score_anchor_candidate` de recommendation_engine.
+        _fechados = [_decay(ur.watched_date) for ur, _ in rows if ur.watched_date is not None]
+        neutro = float(np.median(_fechados)) if _fechados else 0.5
+
+        for ur, m in rows:
             if not m.genres:
                 continue
             base = max(0.0, ((ur.rating or 0) - 2.5) / 2.5) + (0.5 if ur.is_liked else 0.0)
             base += float(np.log1p(max(0, (ur.watch_count or 1) - 1))) * 0.3
             if base <= 0:
                 continue
-            ref = ur.created_at or ur.watched_date
-            if ref is not None and ref.tzinfo is None:
-                ref = ref.replace(tzinfo=timezone.utc)
-            decay = 0.5 if ref is None else 0.5 ** (max(0.0, (now - ref).total_seconds() / 86400.0) / 730.0)
+            # watched_date ONLY: `created_at` es la fecha de import.
+            decay = neutro if ur.watched_date is None else _decay(ur.watched_date)
             w = base * decay
             for g in m.genres:
                 weights[g] = weights.get(g, 0.0) + w
@@ -393,7 +444,11 @@ class ClusteringService:
             rating_obj = ratings_movies[i][0]
 
             if use_recency_bias:
-                date = rating_obj.watched_date or rating_obj.created_at
+                # Sólo `watched_date`. Caer a `created_at` mezcla dos marcos
+                # temporales: es la fecha de import, idéntica para cientos de filas
+                # y "hoy" después de re-subir el ZIP, así que hundía lo fechado por
+                # debajo de lo no fechado. Sin fecha → sin decay (peso neutro).
+                date = rating_obj.watched_date
 
                 if date:
                     if date.tzinfo is None:
@@ -677,8 +732,13 @@ class ClusteringService:
         """Multi-anchor consensus (G2 strategy) — Signal A backbone.
 
         Picks top-N anchor films from the user's loved films, runs per-anchor
-        Qdrant similarity search, merges results with Reciprocal Rank Fusion,
-        and keeps films that appear as a neighbour of ≥2 anchors (consensus).
+        Qdrant similarity search, and merges results with Reciprocal Rank Fusion.
+        Films that are a neighbour of ≥2 anchors are RANKED FIRST — `CONSENSUS_MIN`
+        sorts, it does not filter: single-anchor films follow, none are dropped.
+        Measured 2026-08-06 at PER_ANCHOR_LIMIT=20: 19 of the 21 anchor pairs share
+        no film at all, so that consensus head is only 3-5 films and the list is in
+        practice a round-robin of the 7 neighbourhoods. Turning this into a real
+        filter would leave 3-5 candidates.
 
         Rationale: for users with diverse tastes, a single geometric mean of
         all rated vectors lands in a "nowhereland" of vector space. Multi-anchor
@@ -722,20 +782,56 @@ class ClusteringService:
 
         # Score each candidate as a potential anchor.
         # base = rating_part + liked_bonus + rewatch_signal; decayed by recency.
-        def _recency_decay(ref_date, half_life_days: float = 540.0) -> float:
+        def _recency_decay(ref_date, half_life_days: float = ANCHOR_HALF_LIFE_DAYS) -> float:
             if ref_date is None:
+                # A CONSTANT neutral does not decay while everything else does, so on a
+                # MIXED profile (part diary, part undated) it becomes a floor that ends up
+                # above the whole profile — measured 2026-08-06: at +5 years it takes all 7
+                # anchor slots. Safe today only because eligible rows are all-or-nothing on
+                # dates (ratings.csv always carries one). If a mixed profile ever shows up,
+                # make this relative to the user (median of their own decays), not a constant.
                 return 0.5
             if ref_date.tzinfo is None:
                 ref_date = ref_date.replace(tzinfo=timezone.utc)
             days = max(0.0, (datetime.now(timezone.utc) - ref_date).total_seconds() / 86400.0)
             return 0.5 ** (days / half_life_days)
 
+        cutoff = datetime.now(timezone.utc) - timedelta(days=RECENT_ANCHOR_DAYS)
+        # Neutro para las filas SIN fecha: la MEDIANA del decay de las filas fechadas de
+        # ESTE usuario, no una constante. Un 0.5 fijo no decae mientras todo lo demás sí,
+        # así que en un perfil mixto acaba siendo un suelo por encima del perfil entero.
+        # Medido el 2026-08-11 sobre user 212 (51% de sus elegibles sin fecha tras
+        # reimportar el ZIP, que le quitó las fechas de log del backfill):
+        #     horizonte      0.5 fijo      mediana
+        #     hoy                   0            0     anchors sin fecha en el top-7
+        #     +2 años               0            0
+        #     +5 años           **7/7**          0
+        #     +10 años          **7/7**          0
+        # Hoy los anchors salen IDÉNTICOS con las dos, así que esto no cambia nada ahora
+        # y evita que la señal se coma a sí misma dentro de unos años.
+        # Descartado usar el decay de la fila fechada más antigua: también es estable, pero
+        # penaliza sistemáticamente el dato ausente — y eso son 84 de las 164 películas
+        # queridas de user 212, por un hueco de datos, no por una preferencia.
+        fechados = [
+            _recency_decay(ur.watched_date) for ur, _ in all_ratings if ur.watched_date is not None
+        ]
+        neutro = float(np.median(fechados)) if fechados else 0.5
+
         scored: List[Tuple[float, Movie]] = []
+        recent: List[Tuple[datetime, Movie]] = []
         for ur, m in all_ratings:
             base = max(0.0, ((ur.rating or 0) - 2.5) / 2.5) + (0.5 if ur.is_liked else 0.0)
             base += float(np.log1p(max(0, (ur.watch_count or 1) - 1))) * 0.3
-            ref = ur.created_at or ur.watched_date
-            scored.append((base * _recency_decay(ref), m))
+            # watched_date ONLY: `created_at` is the import timestamp, identical for
+            # every bulk-synced row, which made the decay a constant.
+            decay = neutro if ur.watched_date is None else _recency_decay(ur.watched_date)
+            scored.append((base * decay, m))
+            wd = ur.watched_date
+            if wd is not None:
+                if wd.tzinfo is None:
+                    wd = wd.replace(tzinfo=timezone.utc)
+                if wd >= cutoff:
+                    recent.append((wd, m))
         scored.sort(key=lambda x: -x[0])
 
         N_ANCHORS = 7
@@ -743,15 +839,15 @@ class ClusteringService:
         K_RRF = 60
         CONSENSUS_MIN = 2
 
-        anchors = scored[:N_ANCHORS]
-        anchor_tmdb_ids = [m.tmdb_id for _, m in anchors]
+        anchors = select_anchors(scored, recent, N_ANCHORS)
+        anchor_tmdb_ids = [m.tmdb_id for m in anchors]
         anchor_vecs_map = await self.qdrant.get_vectors_batch(anchor_tmdb_ids)
 
         # Per-anchor search + RRF aggregation
         rrf_scores: Dict[int, float] = {}
         anchor_count: Dict[int, int] = {}
         anchors_used = 0
-        for _, m in anchors:
+        for m in anchors:
             vec = anchor_vecs_map.get(m.tmdb_id)
             if not vec:
                 continue
@@ -759,7 +855,6 @@ class ClusteringService:
             hits = await self.qdrant.search_similar(
                 query_vector=list(vec),
                 limit=PER_ANCHOR_LIMIT + 5,
-                score_threshold=0.30,
                 filters=search_filters,
             )
             # Drop the anchor itself and already-watched films
@@ -838,18 +933,43 @@ class ClusteringService:
             query_vector=global_center,
             limit=limit * 5,
             offset=offset,
-            score_threshold=0.15,
             filters=search_filters,
         )
         return [r for r in results if r["movie_id"] not in watched_tmdb_ids][:limit * 5]
 
     def calculate_quality_weight(self, score: float) -> float:
+        """Peso de calidad (0-1) del tridente a partir del VectorBox Score.
+
+        ⚠️ Sigmoide PROPIA a propósito, distinta de la de Magic Search. Se probó
+        unificarlas el 2026-08-11 (REV-5) y se REVIRTIÓ el mismo día. El porqué, porque
+        el impulso de volver a unificarlas va a repetirse:
+
+        Esta curva (`k=0.15, x0=65`) da un rango de **5.4×** entre VBS 55 y 90. La
+        canónica de Magic Search (midpoint 55, steepness 0.10, suelo 0.20) da **1.6×**.
+        Unificar parecía obviamente correcto —una curva para un trabajo— hasta que se
+        midió qué ordena de verdad el tridente:
+
+          - El score RRF tiene un rango de **1.32×**, y encima el 100% de los candidatos
+            los vota UN solo anchor, así que el RRF es un round-robin con empates.
+          - Medido con hold-out: ordenar por coseno en vez de por rank NO mejora
+            (+0.10 / +0.05, ruido). Pesar los anchors por cuánto los amas da signos
+            OPUESTOS en los dos usuarios (+0.25 / −0.45).
+          - O sea: **el orden RRF no lleva información**. La calidad es lo único que
+            ordena con criterio.
+
+        Bajarla a 1.6× le daba voz a un componente mudo. Con la métrica actual no se puede
+        demostrar cuál da mejores recomendaciones (el hold-out premia canonicidad), así que
+        se conserva la que domina, que es la que estaba en producción.
+
+        **Defectos conocidos de esta curva, aceptados hasta tener métrica:** `x0=65` cae en
+        el p68 del catálogo (mediana real 58.3), así que la película mediana se multiplica
+        por 0.23; y sin suelo, el cine de culto se anula del todo (VBS 40 → 0.023) en vez
+        de sólo bajar. Si algún día se toca, la opción medida es mover x0 a ~58 SIN cambiar
+        k=0.15: corrige el anclaje conservando la dominancia. Ver BACKLOG 2026-08-11.
         """
-        Applies a Sigmoid curve to the VectorBox Score (0-100) to get a quality weight (0.0 - 1.0).
-        """
-        if score is None: 
+        if score is None:
             return 0.5
-            
+
         k = 0.15
         x0 = 65
         return 1 / (1 + math.exp(-k * (score - x0)))
@@ -874,7 +994,10 @@ class ClusteringService:
             .join(Movie, UserRating.movie_id == Movie.id)
             .where(UserRating.user_id == user_id)
             .where(or_(UserRating.rating >= 3.5, UserRating.is_liked.is_(True)))
-            .order_by(desc(UserRating.rating), desc(func.coalesce(UserRating.watched_date, UserRating.created_at)))
+            # nullslast y sin coalesce a created_at: en Postgres `DESC` pone los
+            # NULL PRIMERO, así que sin esto las películas sin fecha encabezaban la
+            # lista como si fueran las más recientes.
+            .order_by(desc(UserRating.rating), desc(UserRating.watched_date).nullslast())
         )
         raw_seeds = result.all()
         
@@ -955,7 +1078,6 @@ class ClusteringService:
                 query_vector=vector,
                 limit=int(limit * 5),
                 offset=offset,
-                score_threshold=0.15,
                 filters=filters
             )
             return seed, similar
@@ -1104,8 +1226,9 @@ class ClusteringService:
                 )
                 for p in points:
                     internal_id = next((iid for iid, tid in id_map.items() if tid == p.id), None)
-                    if internal_id:
-                        vectors_map[internal_id] = np.array(p.vector)
+                    dense = self.qdrant._dense_of(p.vector)
+                    if internal_id and dense is not None:
+                        vectors_map[internal_id] = np.array(dense)
                 
                 loop = asyncio.get_running_loop()
                 start_time = time.perf_counter()

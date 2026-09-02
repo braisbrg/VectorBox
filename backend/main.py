@@ -1,6 +1,7 @@
 """
 CineMatch AI - FastAPI Backend (Refactored to VectorBox)
 """
+import asyncio
 import logging
 import os
 import httpx
@@ -22,7 +23,7 @@ from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
 from opentelemetry.instrumentation.redis import RedisInstrumentor
 
 from database import init_db
-from routers import upload, recommendations, users, search, rss, auth, tasks, movies, onboarding
+from routers import upload, recommendations, users, search, rss, auth, tasks, movies, onboarding, directors
 from routers.similar import router as similar_router
 from services.qdrant_service import QdrantService
 from models.schemas import HealthResponse, RootResponse
@@ -73,6 +74,35 @@ async def lifespan(app: FastAPI):
         logger.info("Database connection established.")
     except Exception as e:
         logger.error(f"Database connection failed: {e}")
+
+    # El modelo de embeddings tarda ~5,3 s en cargar y hasta ahora lo pagaba el
+    # primer usuario: medido, `/api/search/try` tras un reinicio tardaba 8,3 s
+    # frente a 1,55 s la siguiente. Se carga aquí, en un hilo del executor para
+    # no bloquear el loop, y FUERA del try de la base de datos — si Postgres no
+    # responde, el buscador semántico sigue siendo lo que mejor puede hacer.
+    try:
+        from services.embedding_service import warmup as warm_embeddings
+        await asyncio.get_running_loop().run_in_executor(None, warm_embeddings)
+        logger.info("Embedding model warm.")
+    except Exception as e:
+        logger.error(f"Embedding model warmup failed: {e}")
+
+    # Los otros dos costes de una sola vez que pagaba el primer usuario, medidos
+    # 2026-08-04: el vocabulario léxico 208 ms (una agregación sobre 20k filas) y
+    # construir el cliente de Groq 186 ms. Con el modelo ya calentado eran la
+    # mayor parte del segundo y medio que quedaba sin explicar en la primera
+    # petición. La tercera pata —la primera llamada a TMDB de proveedores, 459
+    # ms— no se calienta: depende de qué película pida el usuario.
+    try:
+        from config import AsyncSessionLocal
+        from services.lexical_channel import load_vocabulary
+        from services.nlp_search import get_llm_client
+        async with AsyncSessionLocal() as _db:
+            await load_vocabulary(_db)
+        await asyncio.get_running_loop().run_in_executor(None, get_llm_client)
+        logger.info("Lexical vocabulary and LLM client warm.")
+    except Exception as e:
+        logger.error(f"Secondary warmup failed: {e}")
         
     # Initialize Redis — store as singleton on app.state so all request handlers
     # share the connection pool rather than creating new clients per request.
@@ -320,6 +350,7 @@ app.include_router(similar_router, prefix="/api/recommendations", tags=["Recomme
 app.include_router(rss.router, prefix="/api/rss", tags=["RSS"])
 app.include_router(tasks.router, prefix="/api/tasks", tags=["Tasks"])
 app.include_router(movies.router, prefix="/api/movies", tags=["Movies"])
+app.include_router(directors.router, prefix="/api/directors", tags=["Directors"])
 app.include_router(onboarding.router, prefix="/api/onboarding", tags=["Onboarding"])
 
 @app.get("/api/health", tags=["System"], include_in_schema=False)

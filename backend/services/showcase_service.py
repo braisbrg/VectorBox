@@ -42,9 +42,27 @@ SHOWCASE_QUERIES: list[dict[str, str]] = [
         "en": "something slow and sad about grief, no jump scares",
     },
     {
+        # "europeo" was the whole problem, and the vector was never at fault.
+        # Measured 2026-07-30 on the same embedding, one constraint at a time:
+        #
+        #   ninguno          0.595   Ocean's Eleven, Thomas Crown, Danger: Diabolik
+        #   solo 1970-79     0.533   The Sting, The Hot Rock, Family Plot
+        #   solo Europa      0.583   Danger: Diabolik, The Heist of the Century
+        #   ambos            0.495   Diamonds Are Forever, Pink Panther, Moonraker
+        #
+        # Each constraint alone is answered well; their AND is answered by
+        # nothing. The catalogue holds 5 European 1970s films with any theft
+        # keyword at all, so the twenty nearest neighbours inside that box are
+        # simply the most 70s-Euro-crime-ish things in it — a giallo, an Omen, a
+        # Buñuel — and the row shipped 2 real heists out of 20.
+        #
+        # The lesson is not "name a subject" (this one did) but: a showcase query
+        # must not AND two narrow constraints. Every filter multiplies into the
+        # same small catalogue, and a filtered search always returns its nearest
+        # neighbours however far away they are.
         "slug": "heist70",
-        "es": "atracos con mucho estilo, cine europeo de los 70",
-        "en": "stylish heists, European cinema of the 70s",
+        "es": "atracos con mucho estilo, cine de los 70",
+        "en": "stylish heists, cinema of the 70s",
     },
     {
         # Replaced twice, and the second time taught us the rule. Both earlier
@@ -74,12 +92,29 @@ SHOWCASE_QUERIES: list[dict[str, str]] = [
 # scroll, which is fine; a row of 2 looks broken, which is not.
 MIN_RESULTS = 6
 
-# Mean similarity below this means the catalogue cannot answer the question, not
-# that the answer is merely narrow. Calibrated on two measured queries: "grief"
-# answers at a 67.5 mean (Ordinary People, Petite Maman) and "parents and kids
-# will both enjoy" at 44.7 (Boss Baby, a Charlotte's Web sequel, YES DAY at VBS
-# 44). The gap is the whole signal, and nothing in the pipeline was reading it.
-MIN_MEAN_SCORE = 55
+# NO reads raw confidence, and the obvious fix does not work — measured
+# 2026-07-30 before writing it. The score below is the BLENDED one (cosine ×
+# the VBS sigmoid), so a shelf of acclaimed non-answers passes it: heist70's
+# broken row averaged 69.5 against a floor of 55. Swapping it for the engine's
+# honest signal (search_confidence, mean raw cosine of the top ten) does not
+# separate the cases either:
+#
+#   giallo italiano      0.643      loneliness (fila buena)  0.524
+#   grief (fila buena)   0.614      heist70 (fila MALA)      0.478
+#   audiencia INRESPONDIBLE 0.551   <- above a row we ship
+#
+# The unanswerable audience query outscores a good row, exactly as
+# nlp_search.py:423 documents ("not weakly right, confidently wrong"). No
+# threshold orders these correctly, so none is added: the checks below catch
+# gross breakage (too few films, a failed parse) and a human still has to look
+# at the row. A real bar needs a labelled panel, not another constant.
+#
+# `MIN_MEAN_SCORE = 55` used to live here and warm_showcase.py enforced it. It
+# could never fire: the mean it read is `normalize_similarity_score`, which
+# FLOORS AT 60, so the check was `mean >= 60 < 55`. The 44.7 that calibrated it
+# was measured when that field still carried the VBS value. Deleted 2026-08-11 —
+# a gate that can only say "fine" is worse than no gate, because it reads like
+# one is watching.
 
 _BY_SLUG = {q["slug"]: q for q in SHOWCASE_QUERIES}
 _LANGS = ("es", "en")

@@ -16,7 +16,7 @@ interface FeedItem {
     id: number;
     title: string;
     poster_url?: string;
-    match_score: number;
+    match_score: number | null;
     streaming_providers: string[];
     year?: number;
     runtime?: number;
@@ -48,6 +48,11 @@ interface MovieCarouselProps {
 }
 
 export function MovieCarousel({ title, items, userId, sectionId, type, titlePrefix, forceVectorBoxScore, priority = false, onInspect, onReject, heroId }: MovieCarouselProps) {
+    // "En tu radar" son estrenos futuros: marcarlas como vistas es imposible y
+    // descartarlas no dice nada, así que su barra se queda solo con info.
+    // MovieCard decide qué acciones pinta según los callbacks que recibe, así que
+    // basta con no pasarlos.
+    const isUpcomingRow = sectionId === "upcoming";
     const scrollContainerRef = useRef<HTMLDivElement>(null);
     const isMounted = useRef(true);
     const [localItems, setLocalItems] = useState<FeedItem[]>(items);
@@ -291,20 +296,14 @@ export function MovieCarousel({ title, items, userId, sectionId, type, titlePref
                                 rating={movie.rating}
                                 year={movie.year}
                                 runtime={movie.runtime}
-                                overview={movie.overview}
-                                variant="overlay"
-                                badgeType={badgeType}
                                 contributors={movie.contributors}
                                 href={getLetterboxdUrl(movie.id)}
                                 vectorbox_score={movie.vectorbox_score}
-                                imdb_rating={movie.imdb_rating}
-                                metacritic_rating={movie.metacritic_rating}
                                 letterboxd_rating={movie.letterboxd_rating}
                                 hudRight={sectionId === "popular_letterboxd" && movie.letterboxd_rating != null ? `★ ${movie.letterboxd_rating.toFixed(1)}` : undefined}
-                                providers={movie.streaming_providers}
                                 onInspect={() => onInspect?.(movie, sectionId)}
-                                onReject={handleReject}
-                                onMarkWatched={handleMarkWatched}
+                                onReject={isUpcomingRow ? undefined : handleReject}
+                                onMarkWatched={isUpcomingRow ? undefined : handleMarkWatched}
                                 isRejecting={rejectingIds.has(movie.id)}
                                 isMarkingWatched={watchedIds.has(movie.id)}
                             />

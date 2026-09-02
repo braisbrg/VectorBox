@@ -35,6 +35,51 @@ MAX_NEGATIVE_FILMS = 50      # cap query cost; older entries drop off via decay
 MIN_EFFECTIVE_WEIGHT = 0.05  # films whose decayed weight falls below this are skipped
 
 
+# Qué fracción de una lista se considera "lo más parecido a lo que no te gusta".
+# Es una FRACCIÓN y no un coseno porque un coseno absoluto no significa nada en
+# este espacio: medido el 2026-09-01 sobre los heads reales de 10 usuarios, el
+# umbral fijo de 0.65 tocaba entre 0 y 22 de 30 según el usuario — a u210 le
+# demotaba 22, que al ser `×0.5` uniforme sobre 22 de 30 no penalizaba nada: sólo
+# SUBÍA a los 8 que escapaban, elegidos por dónde caía la raya en una
+# distribución sin hueco (los 8 entre 0.552 y 0.644, los 22 justo por encima).
+ANTI_SIMILARITY_DEMOTE_FRACTION = 0.10
+
+
+def most_anti_similar(cos_by_id: dict, fraction: float = ANTI_SIMILARITY_DEMOTE_FRACTION) -> set:
+    """Los ids del decil más cercano al anti-vector DENTRO de esta lista.
+
+    Relativo a la lista que se juzga, así que se auto-calibra por usuario y por
+    fila: "penalizado" vuelve a ser la excepción (2-3 de 30 en los diez usuarios
+    medidos) en vez de oscilar del 0% al 73%.
+
+    Nunca devuelve la lista entera: con `fraction` pequeña y listas cortas, `k`
+    baja a 1. Los empates entran los dos — pasa poco con flotantes y es preferible
+    a partir un empate por orden de diccionario.
+
+    ⚠ **LA TASA ES CONSTANTE POR CONSTRUCCIÓN, y eso es el precio del arreglo.**
+    Esto penaliza SIEMPRE el 10%, tenga el usuario aversiones fuertes o ninguna:
+    no sabe decir «en esta lista no hay nada que se parezca a lo que odias». Se
+    cambió una varianza sin control (0%-73% según a quién) por un sesgo conocido,
+    que es mejor trato pero sigue siendo un trato.
+
+    El caso que lo enseña, medido el 2026-09-01: el head entero de u280 vive entre
+    coseno 0.300 y 0.437 —el umbral viejo pedía >0.65, o sea que NADA de esa lista
+    se parecía a sus negativas, y sobre el catálogo completo sólo 3 películas de
+    21.405 le pasaban de 0.65— y aun así aquí se le penalizan 2 de 20. Antes: 0.
+
+    Camino a v2 si molesta, sin volver al umbral fijo: comparar contra la
+    distribución de coseno de ESE usuario sobre el catálogo entero, en vez de
+    contra la de la lista. Es un percentil igual —así que sigue sin depender de
+    un absoluto— pero con un referente que sí puede quedarse a cero cuando la
+    fila no trae nada destacable. Requiere cachear un percentil por usuario.
+    """
+    if not cos_by_id:
+        return set()
+    k = max(1, round(fraction * len(cos_by_id)))
+    corte = sorted(cos_by_id.values(), reverse=True)[k - 1]
+    return {i for i, c in cos_by_id.items() if c >= corte}
+
+
 def _rating_weight(is_rejected: bool, rating: Optional[float]) -> Optional[float]:
     """Map a negative rating to its raw (pre-decay) anti-vector weight.
 
@@ -72,7 +117,7 @@ async def compute_anti_vector(
         .where(UserRating.user_id == user_id)
         .where(or_(UserRating.is_rejected.is_(True), UserRating.rating <= 3.0))
         # Sin ORDER BY, el LIMIT coge 50 filas ARBITRARIAS y luego el decay las
-        # tira: medido el 2026-08-19, u210 tenía 615 negativas (194 de los ultimos
+        # tira: medido el 2026-09-01, u210 tenía 615 negativas (194 de los ultimos
         # 3 años) y de las 50 que devolvía Postgres 49 caían bajo
         # MIN_EFFECTIVE_WEIGHT — el usuario con más datos se quedaba SIN
         # anti-vector. El decay debe descartar lo viejo, no lo que nadie eligió.

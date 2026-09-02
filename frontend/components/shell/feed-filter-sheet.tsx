@@ -18,9 +18,13 @@ interface FeedFilterSheetProps {
     onClearFilters: () => void;
     onFilterSearch: (params: FilterSearchParams) => void;
     filteredCount: number | null;
+    scope?: "global" | "watchlist";
+    onScopeChange?: (scope: "global" | "watchlist") => void;
 }
 
 export function FeedFilterSheet({
+    scope,
+    onScopeChange,
     countryCode,
     onCountryChange,
     streamingProviders,
@@ -42,6 +46,8 @@ export function FeedFilterSheet({
                 </div>
                 <div className="overflow-y-auto px-5 py-5 pb-[calc(env(safe-area-inset-bottom)+24px)] text-xs">
                     <FilterForm
+                        scope={scope}
+                        onScopeChange={onScopeChange}
                         countryCode={countryCode}
                         onCountryChange={onCountryChange}
                         streamingProviders={streamingProviders}

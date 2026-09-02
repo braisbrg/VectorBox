@@ -21,7 +21,7 @@ from config import AsyncSessionLocal
 from models.database import Movie
 from services.embedding_service import EmbeddingService
 from services.magic_search_ranking import (
-    compute_blended_score,
+    compute_relevance,
     intent_complexity,
     movie_passes_post_filter,
 )
@@ -93,11 +93,11 @@ async def main():
             m = db_movies.get(tid)
             if m is None or not movie_passes_post_filter(m, intent):
                 continue
-            final, ts, weight = compute_blended_score(
+            relevance, ts, weight = compute_relevance(
                 raw_cosine=h.score, query=query, intent=intent,
                 title=m.title or "", vbs=m.vectorbox_score,
             )
-            results.append((final, h.score, ts, weight, m))
+            results.append((relevance * weight, h.score, ts, weight, m))
 
         print(f"  top 5 by RAW Qdrant cosine (pre-Sprint-3):")
         for h in hits.points[:5]:

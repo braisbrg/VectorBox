@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timedelta, timezone
 import asyncio
 import redis.asyncio as aioredis
 from typing import List, Dict, Set, Optional
@@ -6,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, or_
 
 from config import AsyncSessionLocal, REDIS_URL, FEED_CACHE_VERSION
-from models.database import UserRating, Movie, MovieAvailability
+from models.database import User, UserRating, Movie, MovieAvailability
 from models.schemas import FeedSection, FeedItem, FeedResponse
 from services.tmdb_client import TMDBClient
 from services.qdrant_service import QdrantService
@@ -31,6 +32,8 @@ SECTION_CACHE_TTLS: dict[str, int] = {
     "cult_actor":          7200,   # 2h
     "auteur":              7200,   # 2h
     "upcoming":            86400,  # 24h — changes daily with seed/refresh runs
+    # 6h y no 24h: la fila dice "te quedan N días" y ese número cambia a medianoche.
+    "leaving_soon":        21600,
 }
 DEFAULT_SECTION_TTL = 3600
 
@@ -150,18 +153,34 @@ async def _provider_allowed_tmdb_ids(provider_ids, country):
             select(MovieAvailability.providers, Movie.tmdb_id)
             .join(Movie, Movie.id == MovieAvailability.movie_id)
             .where(MovieAvailability.country_code == country)
+            # Sin cota de frescura, igual que `available_on` — ver el porqué allí:
+            # con la tabla sin refrescar, acotar deja el feed de ES en 7 de 6.038.
         )).all()
     return [tmdb_id for provs, tmdb_id in rows
             if provs and any(p.get("provider_id") in wanted for p in provs)]
 
 
-async def _post_filter_sections(sections, filters, provider_filter, country, tmdb):
+async def _watchlist_tmdb_ids(user_id: int) -> List[int]:
+    """tmdb_ids de la watchlist SIN ver. Lo de "sin ver" no es cosmético: al importar
+    un ZIP, una película vista que siguiera en la lista de Letterboxd conserva las dos
+    marcas, y sin el `is_watched` esta lista propondría cosas ya vistas."""
+    async with AsyncSessionLocal() as session:
+        return list((await session.execute(
+            select(Movie.tmdb_id)
+            .join(UserRating, UserRating.movie_id == Movie.id)
+            .where(UserRating.user_id == user_id)
+            .where(UserRating.is_watchlist.is_(True))
+            .where(UserRating.is_watched.is_(False))
+        )).scalars().all())
+
+
+async def _post_filter_sections(sections, filters, provider_filter, country, tmdb, wl_ids=None):
     """F8 backstop: enforce the rail constraints on every item of the built sections.
     The 3 wide rows filter AT SOURCE (robustness); every other row builds normally and
     is filtered here — provider availability too (not a Qdrant payload field). Rows left
     with < MIN_FILTERED_SECTION_ITEMS matches are dropped, so the feed keeps exactly the
     rows that still have enough films. No-op when unfiltered (normal feed untouched)."""
-    if not filters and not provider_filter:
+    if not filters and not provider_filter and wl_ids is None:
         return sections
     all_tmdb = {it.id for s in sections for it in s.items}
     if not all_tmdb:
@@ -172,6 +191,13 @@ async def _post_filter_sections(sections, filters, provider_filter, country, tmd
     maxrt, minvbs = f.get("max_runtime"), f.get("min_vectorbox_score")
     genres = set(f.get("include_genres") or [])
     wanted = set(provider_filter or [])
+    # Mood: las filas anchas ya vienen filtradas de origen, pero las estrechas
+    # (auteur/actor/niche/popular/wildcard) se construyen sin filtros y sin esto
+    # colarían películas de otro ánimo en un feed que el usuario pidió de uno.
+    grav_min, grav_max = f.get("mood_gravedad_min"), f.get("mood_gravedad_max")
+    hum_min, hum_max = f.get("mood_humanidad_min"), f.get("mood_humanidad_max")
+    mood_votes, mood_vbs = f.get("mood_min_votes"), f.get("mood_min_vbs")
+    mood_votes_max = f.get("mood_max_votes")
 
     async with AsyncSessionLocal() as session:
         rows = (await session.execute(select(Movie).where(Movie.tmdb_id.in_(all_tmdb)))).scalars().all()
@@ -183,6 +209,11 @@ async def _post_filter_sections(sections, filters, provider_filter, country, tmd
             prov_of = {m.tmdb_id: {p["provider_id"] for p in pmap.get(m.id, [])} for m in rows}
 
     def ok(it) -> bool:
+        # Tres filas se construyen sin filtro ninguno (popular_letterboxd, available_now
+        # y upcoming), así que la watchlist las corta aquí o se colarían películas que
+        # no están en la lista dentro de un feed que el usuario pidió de su lista.
+        if wl_ids is not None and it.id not in wl_ids:
+            return False
         m = meta.get(it.id)
         if m is None:
             return False  # can't verify an unknown film under active filters → drop
@@ -191,6 +222,15 @@ async def _post_filter_sections(sections, filters, provider_filter, country, tmd
         if maxrt and (m.runtime is None or m.runtime > maxrt): return False
         if minvbs and (m.vectorbox_score is None or m.vectorbox_score < minvbs): return False
         if genres and not (set(m.genres or []) & genres): return False
+        # `is not None` en el umbral: un mínimo de 0 es válido. Y una película sin
+        # mood calculado se cae bajo filtro activo, igual que una sin año.
+        if grav_min is not None and (m.mood_gravedad is None or m.mood_gravedad < grav_min): return False
+        if grav_max is not None and (m.mood_gravedad is None or m.mood_gravedad > grav_max): return False
+        if hum_min is not None and (m.mood_humanidad is None or m.mood_humanidad < hum_min): return False
+        if hum_max is not None and (m.mood_humanidad is None or m.mood_humanidad > hum_max): return False
+        if mood_votes is not None and (m.vote_count or 0) < mood_votes: return False
+        if mood_votes_max is not None and (m.vote_count or 0) >= mood_votes_max: return False
+        if mood_vbs is not None and (m.vectorbox_score is None or m.vectorbox_score < mood_vbs): return False
         if wanted and not (wanted & prov_of.get(it.id, set())): return False
         return True
 
@@ -210,21 +250,21 @@ class FeedService:
 
     @safe_execution(fallback_return=FeedSection(id="because_you_watched", title="Recommended for You", items=[]))
     async def get_because_you_watched_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, qdrant: QdrantService, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, precomputed_anti_vector = None, filters: Dict = None, pool_limit: int = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, qdrant: QdrantService, seen_ids: Set[int], country: str, provider_service: ProviderService = None, background_tasks = None, precomputed_anti_vector = None, filters: Dict = None, pool_limit: int = None, include_shorts: bool = False
     ) -> FeedSection:
-        return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector, filters=filters, pool_limit=pool_limit)
+        return await self.engine.get_because_you_watched_section(user_id, db, tmdb, qdrant, seen_ids, country, provider_service, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector, filters=filters, pool_limit=pool_limit, include_shorts=include_shorts)
 
     @safe_execution(fallback_return=FeedSection(id="niche_picks", title="Niche Picks", items=[]))
     async def get_niche_picks_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, filters: Dict = None, include_shorts: bool = False
     ) -> FeedSection:
-        return await self.engine.get_niche_picks_section(user_id, db, tmdb, seen_ids, country, provider_service)
+        return await self.engine.get_niche_picks_section(user_id, db, tmdb, seen_ids, country, provider_service, filters=filters, include_shorts=include_shorts)
 
     @safe_execution(fallback_return=FeedSection(id="hidden_gems", title="Hidden Gems", items=[]))
     async def get_hidden_gems_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, filters: Dict = None, pool_limit: int = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, filters: Dict = None, pool_limit: int = None, include_shorts: bool = False
     ) -> FeedSection:
-        return await self.engine.get_hidden_gems_section(user_id, db, tmdb, seen_ids, country, provider_service, filters=filters, pool_limit=pool_limit)
+        return await self.engine.get_hidden_gems_section(user_id, db, tmdb, seen_ids, country, provider_service, filters=filters, pool_limit=pool_limit, include_shorts=include_shorts)
 
     @safe_execution(fallback_return=FeedSection(id="available_now", title="Available on Your Services", items=[]))
     async def get_available_now_section(
@@ -236,106 +276,21 @@ class FeedService:
 
     @safe_execution(fallback_return=None)
     async def get_wildcard_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, filters: Dict = None, include_shorts: bool = False
     ) -> Optional[FeedSection]:
-        return await self.engine.get_wildcard_section(user_id, db, tmdb, seen_ids, country, provider_service)
+        return await self.engine.get_wildcard_section(user_id, db, tmdb, seen_ids, country, provider_service, filters=filters, include_shorts=include_shorts)
 
     @safe_execution(fallback_return=None)
     async def get_random_recommendations_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, filters: Dict = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, seen_ids: Set[int], country: str, provider_service: ProviderService = None, filters: Dict = None, include_shorts: bool = False
     ) -> Optional[FeedSection]:
-        return await self.engine.get_random_recommendations_section(user_id, db, tmdb, seen_ids, country, provider_service, filters=filters)
+        return await self.engine.get_random_recommendations_section(user_id, db, tmdb, seen_ids, country, provider_service, filters=filters, include_shorts=include_shorts)
 
     async def get_popular_on_letterboxd_section(
-        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, country: str, provider_service: ProviderService = None
+        self, user_id: int, db: AsyncSession, tmdb: TMDBClient, country: str, provider_service: ProviderService = None, include_shorts: bool = False
     ) -> Optional[FeedSection]:
-        return await self.engine.get_popular_on_letterboxd_section(user_id, db, tmdb, country, provider_service)
+        return await self.engine.get_popular_on_letterboxd_section(user_id, db, tmdb, country, provider_service, include_shorts=include_shorts)
         
-    async def get_random_watchlist_section(self, user_id: int, db: AsyncSession, tmdb: TMDBClient, country: str, provider_service: ProviderService = None) -> Optional[FeedSection]:
-        return await self.engine.get_random_watchlist_section(user_id, db, tmdb, country, provider_service)
-
-    async def get_watchlist_feed(
-        self,
-        user_id: int,
-        db: AsyncSession,
-        tmdb: TMDBClient,
-        country: str,
-        streaming_providers: List[int],
-    ) -> FeedResponse:
-        """
-        Generate a feed based ONLY on the user's watchlist.
-        """
-        available_section = await self.get_available_now_section(user_id, db, tmdb, set(), country, streaming_providers)
-        
-        top_rated_result = await db.execute(
-            select(Movie)
-            .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(
-                UserRating.user_id == user_id,
-                UserRating.is_watchlist.is_(True),
-                UserRating.is_watched.is_(False)
-            )
-            .order_by(desc(Movie.vectorbox_score))
-            .limit(20)
-        )
-        top_rated_movies = top_rated_result.scalars().all()
-        
-        start_provider = ProviderService(db, tmdb)
-        tr_ids =[m.id for m in top_rated_movies]
-        tr_providers_map = await start_provider.get_providers_batch(tr_ids, country)
-        
-        top_rated_items =[]
-        for movie in top_rated_movies:
-            movie_providers = tr_providers_map.get(movie.id,[])
-            flat_providers = [p["provider_name"] for p in movie_providers]
-            item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, streaming_providers=flat_providers)
-            top_rated_items.append(item)
-            
-        top_rated_section = FeedSection(
-            id="watchlist_top_rated",
-            title="Top Rated in Your Watchlist",
-            items=top_rated_items
-        )
-        
-        short_result = await db.execute(
-            select(Movie)
-            .join(UserRating, Movie.id == UserRating.movie_id)
-            .where(
-                UserRating.user_id == user_id,
-                UserRating.is_watchlist.is_(True),
-                UserRating.is_watched.is_(False),
-                Movie.runtime < 100
-            )
-            .order_by(desc(Movie.vote_average))
-            .limit(20)
-        )
-        short_movies = short_result.scalars().all()
-        short_items = []
-        if short_movies:
-            short_ids =[m.id for m in short_movies]
-            short_providers_map = await start_provider.get_providers_batch(short_ids, country)
-        else:
-            short_providers_map = {}
-        for movie in short_movies:
-            p_data = short_providers_map.get(movie.id, [])
-            flat_providers = [p["provider_name"] for p in p_data]
-            item = await self.engine.create_feed_item(movie, 1.0, country, tmdb, streaming_providers=flat_providers)
-            short_items.append(item)
-
-        short_section = FeedSection(
-            id="watchlist_short",
-            title="Short & Sweet (Watchlist)",
-            items=short_items
-        )
-
-        local_provider_for_watchlist = ProviderService(db, tmdb)
-        random_section = await self.get_random_watchlist_section(user_id, db, tmdb, country, local_provider_for_watchlist)
-
-        sections = [available_section, top_rated_section, short_section, random_section]
-        feed = [s for s in sections if s and s.items]
-        
-        return FeedResponse(feed=feed)
-
     async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None, redis_client = None, filters: Dict = None, pool_limit: int = None) -> Optional[FeedSection]:
         tmdb = provider_service.tmdb if provider_service else None
         recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
@@ -352,6 +307,7 @@ class FeedService:
         redis_client = None,
         filters: Optional[Dict] = None,
         provider_filter: Optional[List[int]] = None,
+        only_watchlist: bool = False,
     ) -> FeedResponse:
         """
         Generate the main feed using FULLY PARALLEL EXECUTION.
@@ -373,10 +329,10 @@ class FeedService:
         prov_str = ",".join(map(str, sorted(streaming_providers)))
         # F8: filtered feeds get their own cache namespace so they never collide with
         # the normal feed. Invalidation SCANs section:* so these are still cleared.
-        if filters or provider_filter:
+        if filters or provider_filter or only_watchlist:
             import hashlib, json as _json
             _sig = hashlib.md5(
-                _json.dumps({"f": filters or {}, "p": sorted(provider_filter or [])}, sort_keys=True).encode()
+                _json.dumps({"f": filters or {}, "p": sorted(provider_filter or []), "w": only_watchlist}, sort_keys=True).encode()
             ).hexdigest()[:10]
             prov_str = f"{prov_str}|flt:{_sig}"
         if r is None:
@@ -387,6 +343,19 @@ class FeedService:
                 logger.warning(f"Redis connection failed: {e}")
                 r = None
         # --- END CACHE INTERCEPT ---
+
+        # Preferencia de cortos: se resuelve UNA vez aquí y viaja como argumento a
+        # las filas. Cada sección abre su propia sesión, así que leerla dentro
+        # costaría una consulta por fila para un booleano que no cambia durante
+        # la construcción del feed. Si falla, el valor seguro es el por defecto.
+        include_shorts = False
+        try:
+            async with AsyncSessionLocal() as session:
+                include_shorts = bool(await session.scalar(
+                    select(User.include_shorts).where(User.id == user_id)
+                ))
+        except Exception as e:
+            logger.warning(f"include_shorts lookup failed for user_id={user_id}: {e}")
 
         # --- FIX 4: Pre-compute anti_vector once — Signal A and Signal B both need it ---
         precomputed_anti_vector = None
@@ -434,13 +403,57 @@ class FeedService:
         # is PROVIDERS: their catalogue is too sparse to post-filter (would starve the rows),
         # so they ride into the search as an allowed film-id set (provider-first).
         search_filters = None
+        # Las filas DE BASE DE DATOS (niche/wildcard/random) no pueden usar el id-set:
+        # ese existe porque Qdrant no tiene los proveedores en el payload. Ellas sí
+        # alcanzan `movie_availability` con un EXISTS, así que reciben el filtro en su
+        # propia query. Sólo el proveedor: año/género/VBS siguen post-filtrándose ahí,
+        # que es la semántica de "el mismo feed, filtrado" que se decidió en F8.
+        db_provider_filter = (
+            {"provider_ids": provider_filter, "country": country_code} if provider_filter else None
+        )
+        # WATCHLIST: mismo mecanismo, misma razón. Es el filtro MÁS selectivo de todos
+        # —537 de 12.861 para u212, un 4%— así que post-filtrar no dejaría ni una fila
+        # en pie. Sustituye al `scope=watchlist` viejo, que en vez de filtrar montaba un
+        # feed paralelo de tres ORDER BY y se perdía el motor entero.
+        if only_watchlist:
+            db_provider_filter = {**(db_provider_filter or {}), "watchlist_user_id": user_id}
+        # Las de persona (auteur/actor) SÍ llevan además el resto de filtros del rail —
+        # ya lo hacían — y al ir `filters` no vacío se activa de paso el paseo hondo por
+        # el ranking de afinidad (FILTERED_PERSON_FALLBACK_DEPTH), que es justo lo que
+        # hace falta: baja a un director algo menos afín pero que sí puedes ver.
+        db_filters = {**(filters or {}), **(db_provider_filter or {})} or None
+        # Las 3 filas anchas van por Qdrant, que no conoce ni proveedores ni watchlist,
+        # así que ambos entran como conjunto de ids permitidos. Con los dos activos es
+        # la INTERSECCIÓN: "de mi lista, lo que además está en mis servicios".
+        conjuntos = []
         if provider_filter:
             try:
                 allowed = await _provider_allowed_tmdb_ids(provider_filter, country_code)
-                search_filters = {"include_tmdb_ids": allowed}
+                conjuntos.append(set(allowed))
                 logger.info(f"F8: provider filter → {len(allowed)} allowed films (source-filtered)")
             except Exception as e:
                 logger.warning(f"F8: provider id-set resolve failed ({e}); post-filter only")
+        wl_ids: Optional[Set[int]] = None
+        if only_watchlist:
+            wl_ids = set(await _watchlist_tmdb_ids(user_id))
+            conjuntos.append(wl_ids)
+            logger.info(f"watchlist scope → {len(wl_ids)} films")
+        if conjuntos:
+            search_filters = {"include_tmdb_ids": list(set.intersection(*conjuntos))}
+
+        # MOOD: segunda excepción a la regla de "filtro de salida", por las dos
+        # razones que hacen excepción a los proveedores.
+        #   · Selectividad: cada cuadrante es el ~15-17% del catálogo (medido
+        #     2026-08-06), así que post-filtrar un pool de 60 deja ~9 y las filas
+        #     rozan MIN_FILTERED_SECTION_ITEMS. Es inanición por post-filtro.
+        #   · Semántica: "algo reconfortante" es «dame un feed reconfortante», no
+        #     «mi feed de siempre menos lo que no lo sea». Aquí re-rankear SÍ es lo
+        #     que se pide, al revés que con el slider de Q.
+        # Es barato: es un campo del payload, igual que vectorbox_score.
+        mood_at_source = {k: v for k, v in (filters or {}).items() if k.startswith("mood_")}
+        if mood_at_source:
+            search_filters = {**(search_filters or {}), **mood_at_source}
+            logger.info(f"F8: mood filter at source → {mood_at_source}")
 
         # F8 deep pool: when output filters are active, the 3 wide rows return their
         # normal head PLUS a score-ordered tail (~60 items) so a selective filter still
@@ -454,7 +467,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_popular_on_letterboxd_section(user_id, session, tmdb, country_code, local_provider)
+                    return await self.get_popular_on_letterboxd_section(user_id, session, tmdb, country_code, local_provider, include_shorts=include_shorts)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Popular]: {e}")
                 return None
@@ -466,7 +479,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector, filters=search_filters, pool_limit=deep_pool)
+                    return await self.get_because_you_watched_section(user_id, session, tmdb, qdrant, watched_tmdb_ids.copy(), country_code, local_provider, background_tasks=background_tasks, precomputed_anti_vector=precomputed_anti_vector, filters=search_filters, pool_limit=deep_pool, include_shorts=include_shorts)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Watched]: {e}")
                 return None
@@ -480,7 +493,8 @@ class FeedService:
                     local_provider = ProviderService(session, tmdb)
                     return await self.get_niche_picks_section(
                         user_id, session, tmdb, watched_tmdb_ids.copy(),
-                        country_code, local_provider,
+                        country_code, local_provider, filters=db_provider_filter,
+                        include_shorts=include_shorts,
                     )
             except Exception as e:
                 logger.error(f"Feed Task Failed [Niche]: {e}")
@@ -493,7 +507,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_wildcard_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider)
+                    return await self.get_wildcard_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, filters=db_provider_filter, include_shorts=include_shorts)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Wildcard]: {e}")
                 return None
@@ -505,7 +519,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_random_recommendations_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, filters=filters)
+                    return await self.get_random_recommendations_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, filters=db_filters, include_shorts=include_shorts)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Random]: {e}")
                 return None
@@ -517,7 +531,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_hidden_gems_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, filters=search_filters, pool_limit=deep_pool)
+                    return await self.get_hidden_gems_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, filters=search_filters, pool_limit=deep_pool, include_shorts=include_shorts)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hidden]: {e}")
                 return None
@@ -528,7 +542,12 @@ class FeedService:
                 return cached
             try:
                 async with AsyncSessionLocal() as session:
-                    return await self.get_available_now_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, streaming_providers)
+                    # Igual que `leaving_soon`: los servicios salen del rail si hay filtro
+                    # y si no de los ajustes. Esta fila es ANTERIOR a la API de streaming
+                    # y no tiene nada que ver con ella — sólo enseña buenas películas que
+                    # estén en tus servicios — pero leía únicamente `streaming_providers`,
+                    # así que desaparecía para quien los elegía en el rail (2026-08-19).
+                    return await self.get_available_now_section(user_id, session, tmdb, watched_tmdb_ids.copy(), country_code, provider_filter or streaming_providers)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Available]: {e}")
                 return None
@@ -553,7 +572,7 @@ class FeedService:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
                     recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
-                    return await recommender.get_auteur_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=filters)
+                    return await recommender.get_auteur_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=db_filters)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Auteur]: {e}")
                 return None
@@ -566,7 +585,7 @@ class FeedService:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
                     recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
-                    return await recommender.get_cult_actor_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=filters)
+                    return await recommender.get_cult_actor_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=db_filters)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Cult Actor]: {e}")
                 return None
@@ -583,6 +602,28 @@ class FeedService:
                 logger.error(f"Feed Task Failed [Upcoming]: {e}")
                 return None
 
+        async def task_leaving():
+            cached = await _get_cached_section(r, user_id, "leaving_soon", country_code, prov_str)
+            if cached:
+                return cached
+            try:
+                async with AsyncSessionLocal() as session:
+                    local_provider = ProviderService(session, tmdb)
+                    # Los servicios salen del rail SI hay filtro activo, y si no de los
+                    # ajustes. La fila se condiciono solo al rail y por eso era invisible
+                    # para quien los elige en settings, que es donde los elige todo el
+                    # mundo (reportado 2026-08-19). Ojo: esto NO convierte los ajustes en
+                    # un filtro del feed — settings significa "ensename una fila", el rail
+                    # significa "filtra todo", y esa distincion se mantiene.
+                    servicios = provider_filter or streaming_providers
+                    if not servicios:
+                        return None
+                    f = {**(db_filters or {}), "provider_ids": servicios, "country": country_code}
+                    return await self.engine.get_leaving_soon_section(session, tmdb, watched_tmdb_ids.copy(), country_code, local_provider, filters=f)
+            except Exception as e:
+                logger.error(f"Feed Task Failed [Leaving Soon]: {e}")
+                return None
+
         tasks = [
             task_popular(),
             task_hybrid(),
@@ -595,6 +636,7 @@ class FeedService:
             task_cult_actor(),
             task_available(),
             task_upcoming(),
+            task_leaving(),
         ]
 
         results = await asyncio.gather(*tasks)
@@ -611,6 +653,7 @@ class FeedService:
             section_cult_actor,
             section_d,
             section_upcoming,
+            section_leaving,
         ) = results
 
         # Deduplicate and assemble in display order
@@ -621,6 +664,14 @@ class FeedService:
             section_popular,
             section_hybrid,
             section_a,
+            # ARRIBA del todo entre las de descubrimiento, no a mitad: el dedup entre
+            # filas lo gana la de más arriba, y ésta es la única que CADUCA. Estuvo la
+            # quinta y bajo filtro del rail desaparecía — las filas de arriba, acotadas
+            # al mismo puñado de proveedores, se comían sus 4 películas y el mínimo de 3
+            # la tiraba (reportado 2026-08-19 con Prime+Disney+Filmin). Perder una
+            # película suya por una fila que seguirá ahí dentro de un mes es el reparto
+            # equivocado.
+            section_leaving,
             section_c,
             section_niche,
             section_upcoming,
@@ -633,9 +684,9 @@ class FeedService:
 
         # F8: filter + cap rows BEFORE the cross-row dedup — a deepened row's
         # never-displayed tail must not eat films out of the later rows.
-        if filters or provider_filter:
+        if filters or provider_filter or only_watchlist:
             ordered_results = await _post_filter_sections(
-                [s for s in ordered_results if s], filters, provider_filter, country_code, tmdb
+                [s for s in ordered_results if s], filters, provider_filter, country_code, tmdb, wl_ids
             )
 
         for section in ordered_results:
@@ -685,7 +736,7 @@ class FeedService:
             # min_vectorbox_score=80, where "Because You Watched" cleared with 4
             # and shipped with 2. Re-check here, under filters only — an
             # unfiltered row is built to size and a short one is legitimate.
-            if filters or provider_filter:
+            if filters or provider_filter or only_watchlist:
                 keep = len(unique_items) >= MIN_FILTERED_SECTION_ITEMS
             else:
                 keep = bool(unique_items)

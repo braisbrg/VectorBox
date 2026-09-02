@@ -6,7 +6,7 @@ puesta, no añade dependencias y **no pone cookies**, así que no arrastra banne
 consentimiento.
 
 Este documento cubre las dos mitades: los **trazas** (ya funcionando, infrautilizadas) y los
-**contadores de embudo** (por hacer, Fase 4 del plan).
+**contadores de embudo** (4 de 7 construidos, 2026-08-11 — ver §4).
 
 ---
 
@@ -136,7 +136,32 @@ Por orden de utilidad, dado lo que ya nos ha mordido:
 
 ---
 
-## 4. Contadores de embudo en Redis *(por hacer)*
+## 4. Contadores de embudo en Redis *(construido 2026-08-11, 4 de 7)*
+
+> **Estado.** `services/metrics.py` existe con `bump()` tal como está diseñada abajo,
+> más `read_today()`. Contando ya: `search.degraded`, `landing.query.chip` (con
+> idioma), `landing.query.free` y `landing.cta.profile`.
+>
+> **Y el `POST /api/metrics/{evento}` público NO se ha abierto, a propósito.** Al ir
+> a construirlo se comprobó que cinco de los seis eventos de frontend ya tienen una
+> puerta de servidor **limpia**, o sea consumida por un solo sitio:
+>
+> | evento | puerta que ya existía |
+> |---|---|
+> | `landing.query.chip` | `GET /search/showcase` — sólo lo consumen los chips |
+> | `landing.query.free` | `POST /search/try` — anónima por diseño |
+> | `landing.cta.profile` | `POST /onboarding/init-session`, y sólo cuando se crea un invitado NUEVO (contar la llamada sería contar montajes de página) |
+> | `landing.view` | no está en la API: sale del log de acceso del frontend |
+> | `landing.mode.title` | **sin medida limpia** — el modo título llama a `autocomplete`, que la app con sesión también usa |
+>
+> Así que el endpoint compraría un evento limpio (`landing.mode.title`) y un
+> `landing.view` más cómodo, a cambio de una **escritura sin autenticar a Redis desde
+> internet** que hay que limitar, validar y vigilar. No paga. El ratio chip/free —el
+> que este documento llama decisivo— ya se puede leer.
+>
+> El conjunto cerrado de los siete nombres vive en `services/metrics.py`, no en un
+> endpoint, para que la validación no dependa de que el endpoint se acuerde de
+> validar el día que se abra.
 
 Las trazas responden *"¿por qué esta petición fue lenta?"*. No responden *"¿cuánta gente pulsa
 crear perfil?"*. Para eso, contadores planos.

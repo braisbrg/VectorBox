@@ -5,15 +5,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import logging
 import asyncio
 import random
+import re
+import unicodedata
 from config import get_db
 from dependencies import get_tmdb_client, get_qdrant_service, get_embedding_service, get_current_user, get_optional_current_user, get_redis
 from models.schemas import TokenResponse
-from services.nlp_search import parse_user_intent, parse_failed, finalize_intent, search_with_reasoning, MovieSearchIntent
+from services.nlp_search import parse_user_intent, parse_user_intent_cached, parse_failed, finalize_intent, search_with_reasoning, MovieSearchIntent, detectar_watchlist
 from services.magic_search_ranking import (
     CONFIDENCE_SAMPLE,
     LOW_CONFIDENCE_MEAN,
     OPEN_REQUEST_MIN_VBS,
-    compute_blended_score,
+    RELAXED_MIN_ROW,
+    relaxable_dimension,
+    relaxed_filters,
+    compute_relevance,
     has_descriptive_filters,
     intent_complexity,
     is_low_confidence,
@@ -23,16 +28,21 @@ from services.magic_search_ranking import (
     movie_passes_post_filter,
     search_confidence,
     should_run_deep_analysis,
+    trim_to_relevant,
     title_sim_score,
 )
+from services import lexical_channel
+from services import bm25
+from services import metrics
+from services.lexical_channel import load_vocabulary, terms_in
 from services import showcase_service
 from services.qdrant_service import QdrantService
 from services.embedding_service import EmbeddingService
 from services.tmdb_client import TMDBClient
 from services.provider_service import ProviderService
 from models.database import UserRating, Movie
-from sqlalchemy import func, nulls_last, select, or_
-from utils.scoring import normalize_similarity_score
+from sqlalchemy import case, func, nulls_last, select, or_, text
+from utils.scoring import normalize_film_similarity_score, normalize_similarity_score
 from utils.input_validation import validate_user_query
 
 logger = logging.getLogger(__name__)
@@ -43,6 +53,9 @@ class SearchRequest(BaseModel):
     use_deep_analysis: Optional[bool] = False
     country_code: Optional[str] = "ES"
     forced_intent: Optional[MovieSearchIntent] = None
+    # Conmutador explícito. Se SUMA a la detección de frase: pedirlo por escrito y
+    # pedirlo con el botón son la misma intención, y basta con una de las dos.
+    watchlist: Optional[bool] = False
 
 class SearchResponse(BaseModel):
     results: List[dict]
@@ -57,6 +70,16 @@ class SearchResponse(BaseModel):
     # what is missing is every constraint the user expressed. The UI owes them
     # that fact — silently serving a worse answer is the one option we ruled out.
     degraded: bool = False
+    # Which filter was dropped to fill a short row ("era" / "countries"), or None.
+    # The rows it produced carry `outside_filters` with the same value: they
+    # answer the SUBJECT but not the whole request, and the UI has to say so.
+    # Appending them silently would be a worse lie than the padding this replaces.
+    relaxed_filter: Optional[str] = None
+    # True cuando la búsqueda se acotó a la watchlist. Lo necesita la UI porque el
+    # ámbito puede venir de la FRASE y no del botón: sin esto el conmutador se
+    # quedaría apagado mientras los resultados sí están filtrados, y el usuario
+    # leería como catálogo entero algo que es su lista.
+    watchlist_applied: bool = False
 
 def filter_es_providers(all_providers: List[str]) -> List[str]:
     """Pure function to filter provider names against the ES whitelist."""
@@ -68,6 +91,7 @@ async def _item_to_item_search(
     movie_id: int,
     movie_title: str,
     qdrant: QdrantService,
+    watchlist_ids: Optional[List[int]] = None,
 ) -> Optional[SearchResponse]:
     """Shared helper for Item-to-Item recommendation (deduplicated)."""
     vector = await qdrant.get_vector(movie_id)
@@ -77,12 +101,20 @@ async def _item_to_item_search(
         query_vector=vector,
         limit=20,
         score_threshold=0.4,
-        filters={"exclude_tmdb_ids": [movie_id]}
+        # "como Memento, de mi lista" entra por aquí: este camino corta antes del
+        # parser, así que si el ámbito no se aplicase también aquí la frase se
+        # ignoraría en silencio justo en las consultas más concretas.
+        filters={"exclude_tmdb_ids": [movie_id],
+                 **({"include_tmdb_ids": watchlist_ids} if watchlist_ids else {})}
     )
     results = []
     for r in raw_results:
         metadata = r.get("metadata", {})
-        final_score = normalize_similarity_score(r["score"])
+        # Escala película→película: aquí se compara el vector GUARDADO de una
+        # película contra el catálogo, no un texto embebido. Con la escala de
+        # consultas, 15 de los 20 vecinos de The Matrix salían 99 — y Blade Runner
+        # y Come and See, 20 de 20. Ver utils/scoring.py para las dos poblaciones.
+        final_score = normalize_film_similarity_score(r["score"])
         results.append({
             "movie_id": metadata.get("tmdb_id") or r["movie_id"],
             "title": metadata.get("title", "Unknown"),
@@ -99,7 +131,8 @@ async def _item_to_item_search(
         intent={
             "semantic_query": f"Movies like {movie_title}",
             "reasoning": f"Showing movies similar to '{movie_title}'."
-        }
+        },
+        watchlist_applied=bool(watchlist_ids),
     )
 
 
@@ -162,7 +195,7 @@ async def _catalogue_selection(
     )
     if genres:
         q = q.where(Movie.genres.overlap(genres))
-    q = q.order_by(Movie.vectorbox_score.desc()) if top_ranked else q.order_by(func.random())
+    q = q.order_by(Movie.vectorbox_score.desc().nulls_last()) if top_ranked else q.order_by(func.random())
     picks = (await db.execute(q.limit(CATALOGUE_SELECTION_POOL))).scalars().all()
     if top_ranked:
         # The head is already the answer; shuffling inside it only decides which
@@ -190,11 +223,177 @@ async def _catalogue_selection(
 def _catalogue_results(movies) -> List[dict]:
     return [{
         "movie_id": m.tmdb_id, "title": m.title, "overview": m.overview,
-        "poster_path": m.poster_path, "score": round(m.vectorbox_score or 0),
+        "poster_path": m.poster_path,
+        # No query vector reached this branch, so there is no distance to report.
+        # It used to send `vectorbox_score`, which the UI printed as closeness to
+        # the search: "no se que ver" came back at 99 while a precise, correctly
+        # answered query showed 83.
+        "score": None,
         "year": m.year, "runtime": m.runtime, "genres": m.genres or [],
         "vote_average": m.vote_average, "vectorbox_score": m.vectorbox_score,
         "title_es": m.title_es, "overview_es": m.overview_es,
     } for m in movies]
+
+
+def _normalize_needle(s: str) -> str:
+    """Canonical form of a title for matching: no accents, no punctuation.
+
+    Mirrors `_match_expression` below in Python so both sides of the comparison
+    are folded the same way. NFKD splits "á" into "a" + combining accent and the
+    Mn filter drops the accent, which is what `unaccent()` does server-side.
+    """
+    stripped = "".join(
+        c for c in unicodedata.normalize("NFKD", s or "")
+        if not unicodedata.combining(c)
+    )
+    return re.sub(r"[^a-z0-9]+", " ", stripped.lower()).strip()
+
+
+def _match_expression(column):
+    """The same folding as `_normalize_needle`, server-side.
+
+    No functional index behind it: `unaccent()` is STABLE, not IMMUTABLE, so it
+    cannot be indexed without a wrapper, and this runs once per search. Measured
+    on the 20k-row catalogue before shipping — see the integration panel.
+    """
+    return func.trim(func.regexp_replace(
+        func.unaccent(func.lower(column)), r"[^a-z0-9]+", " ", "g"
+    ))
+
+
+async def _pick_reference_movie(db: AsyncSession, needle: str, *, substring: bool):
+    """The BEST film matching `needle`, never an arbitrary one.
+
+    Both title lookups used `.first()` on an unordered SELECT, which returns
+    whatever Postgres happens to yield — physical order, in practice. 811
+    catalogue titles are shared by two or more films (measured 2026-07-31), so
+    that was a coin flip on every one of them:
+
+        "Mother"    Bong Joon-ho (VBS 86) / 1926 Pudovkin (65) / 2019 (65)
+        "The Hunt"  Vinterberg (91) / Blumhouse 2020 (54)
+        "Dracula"   Lugosi 1931 (74) / 2025 (51)
+
+    `collection_name` joins the substring search because a FRANCHISE is the
+    commonest thing a person names when they mean "something in this vein", and
+    it was the one column not being read. "james bond" matches no title in the
+    catalogue — the 27 Bond films are called Dr. No, Goldfinger, Skyfall — so the
+    only title hits were `Being James Bond` (a Daniel Craig documentary) and
+    `Untitled James Bond Film`, an unreleased placeholder with no year and no
+    score. That is what "Movies like Being James Bond" came from.
+
+    Ordering: an exact title beats a substring, then the catalogue's own score.
+    `nulls_last` is what keeps the `Untitled …` placeholder rows — 5+ of them
+    carry `is_upcoming=False`, so the release filter does not catch them — from
+    ever winning on a NULL score.
+
+    `title_es` joins them because the product is Spanish-first and it was the
+    other column nobody read: "el padrino" found nothing at all, while the row
+    for The Godfather carries `title_es='El padrino'`.
+
+    Matching is accent- and punctuation-insensitive on both sides (see
+    `_normalize_needle`), which is what finally makes "deprisa deprisa" reach
+    `original_title='Deprisa, deprisa'` and "la naranja mecanica" reach
+    `title_es='La naranja mecánica'`. The docstring this replaces claimed the
+    comma case already worked; it never did.
+    """
+    hit = await _lookup(db, needle, substring=substring, folded=False)
+    if hit is not None:
+        return hit
+    # Only now pay for the fold. Measured on the 20k-row catalogue: plain ILIKE
+    # 52 ms, folded 101 ms (the fold roughly doubles it), and this runs on every
+    # search — so the second pass is reserved for the queries the first one
+    # MISSES, which today return nothing at all. Both are sequential scans; a
+    # pg_trgm GIN index would fix the 52 ms too, and is not worth a migration
+    # while an LLM parse on the same request costs 1-2 s.
+    #
+    # ponytail: a folded-only match that scores higher than a plain hit loses,
+    # because the plain pass returns first. Merge the two passes only if a real
+    # query is ever shown to pick the wrong film because of it.
+    return await _lookup(db, needle, substring=substring, folded=True)
+
+
+# Umbral MEDIDO, no elegido (2026-08-10, 12 consultas sobre el catálogo de 20k):
+# el acierto más flojo es "parasyte" → Parasite a 0.500, y el mejor falso positivo
+# es una consulta sin sentido a 0.370. 0.45 cae entre las dos poblaciones. Subirlo
+# pierde las erratas gordas; bajarlo empieza a contestar a cualquier cosa, que es
+# peor que no contestar: una sugerencia inventada manda al usuario a otra película.
+FUZZY_MIN_SIMILARITY = 0.45
+
+
+async def _fuzzy_title_rows(db: AsyncSession, needle: str, limit: int = 8):
+    """Títulos del catálogo por parecido de trigramas, con la FORMA de una fila TMDB.
+
+    Devuelve dicts con las mismas claves que `/search/movie` para que el resto del
+    autocompletado no tenga que saber de dónde vino cada fila. `year` se sirve como
+    `release_date` por eso mismo — la alternativa era un segundo camino paralelo en
+    el armado de la respuesta, y dos caminos es como se pierde un campo.
+
+    Se ordena por parecido y luego por VBS: entre varias "Dracula" idénticas a 1.000
+    de similitud, la mejor valorada es la que alguien que escribe "dracula" quiere.
+    """
+    rows = await db.execute(text(
+        """
+        SELECT tmdb_id, title, year, poster_path, overview,
+               GREATEST(
+                   similarity(lower(title), :q),
+                   similarity(lower(COALESCE(title_es, '')), :q),
+                   similarity(lower(COALESCE(original_title, '')), :q)
+               ) AS sim
+        FROM movies
+        WHERE is_excluded IS FALSE AND poster_path IS NOT NULL
+        ORDER BY sim DESC, vectorbox_score DESC NULLS LAST
+        LIMIT :lim
+        """
+    ), {"q": needle.lower(), "lim": limit})
+    out = []
+    for r in rows.mappings():
+        if r["sim"] < FUZZY_MIN_SIMILARITY:
+            break  # ya vienen ordenadas: la primera por debajo del umbral cierra
+        out.append({
+            "id": r["tmdb_id"],
+            "title": r["title"],
+            "release_date": str(r["year"]) if r["year"] else None,
+            "poster_path": r["poster_path"],
+            "overview": r["overview"] or "",
+            "vote_count": 0,
+            "popularity": 0,
+        })
+    if out:
+        logger.info("[autocomplete] fuzzy fallback for %r -> %d filas", needle, len(out))
+    return out
+
+
+async def _lookup(db: AsyncSession, needle: str, *, substring: bool, folded: bool):
+    """One pass of the title lookup, plain or accent/punctuation-folded."""
+    columns = [Movie.title, Movie.original_title, Movie.title_es]
+    if substring:
+        columns.append(Movie.collection_name)
+
+    if folded:
+        target = _normalize_needle(needle)
+        if not target:
+            return None
+        expr = _match_expression
+        conditions = [
+            expr(c).like(f"%{target}%") if substring else expr(c) == target
+            for c in columns
+        ]
+        exact_clause = expr(Movie.title) == target
+    else:
+        pattern = f"%{needle}%" if substring else needle
+        conditions = [c.ilike(pattern) for c in columns]
+        exact_clause = Movie.title.ilike(needle)
+
+    result = await db.execute(
+        select(Movie)
+        .where(or_(*conditions))
+        .order_by(
+            case((exact_clause, 0), else_=1),
+            nulls_last(Movie.vectorbox_score.desc()),
+        )
+        .limit(1)
+    )
+    return result.scalars().first()
 
 
 async def _run_natural_search(
@@ -204,6 +403,7 @@ async def _run_natural_search(
     tmdb: TMDBClient,
     qdrant: QdrantService,
     embedding_service: EmbeddingService,
+    redis=None,
 ):
     """Shared body. Advanced natural-language search with semantic expansion.
 
@@ -217,16 +417,41 @@ async def _run_natural_search(
         # Validate input for LLM injection
         search_req.query = validate_user_query(search_req.query)
 
+        # Ámbito watchlist: el botón O la frase, indistintamente. Sólo con sesión —
+        # `/try` pasa `current_user=None` a propósito para que la puerta pública
+        # responda igual a todo el mundo, y un invitado no tiene lista que acotar.
+        watchlist_ids: List[int] = []
+        pide_lista = False
+        if current_user is not None:
+            search_req.query, detectada = detectar_watchlist(search_req.query)
+            pide_lista = bool(search_req.watchlist or detectada)
+        if pide_lista:
+            watchlist_ids = list((await db.execute(
+                select(Movie.tmdb_id)
+                .join(UserRating, UserRating.movie_id == Movie.id)
+                .where(UserRating.user_id == current_user.user_id)
+                .where(UserRating.is_watchlist.is_(True))
+                .where(UserRating.is_watched.is_(False))
+            )).scalars().all())
+            # Lista vacía ≠ sin filtro. `search_similar` descarta `include_tmdb_ids`
+            # cuando viene vacío (`... and filters[...]`), así que dejarlo pasar
+            # devolvería el catálogo ENTERO fingiendo que se filtró. Se corta aquí,
+            # que además ahorra la llamada al LLM.
+            if not watchlist_ids:
+                return SearchResponse(
+                    results=[],
+                    intent={"semantic_query": search_req.query,
+                            "reasoning": "Your watchlist is empty."},
+                    watchlist_applied=True,
+                )
+
         # 0. Check if query is a specific movie title (Item-to-Item Search)
         potential_movie_id = None
         potential_movie_title = None
         
         # Search local DB first for exact match
-        exact_match = await db.execute(
-            select(Movie).where(Movie.title.ilike(search_req.query))
-        )
-        local_movie = exact_match.scalars().first()
-        
+        local_movie = await _pick_reference_movie(db, search_req.query, substring=False)
+
         if local_movie:
             potential_movie_id = local_movie.tmdb_id
             potential_movie_title = local_movie.title
@@ -246,7 +471,7 @@ async def _run_natural_search(
         if potential_movie_id:
             logger.info(f"Switching to Item-to-Item search based on movie: {potential_movie_title}")
             result = await _item_to_item_search(
-                potential_movie_id, potential_movie_title, qdrant
+                potential_movie_id, potential_movie_title, qdrant, watchlist_ids
             )
             if result:
                 return result
@@ -256,7 +481,7 @@ async def _run_natural_search(
             intent = search_req.forced_intent
         else:
             try:
-                intent = await parse_user_intent(search_req.query)
+                intent = await parse_user_intent_cached(redis, search_req.query)
             except Exception as e:
                 logger.warning(f"Groq intent parsing failed, falling back to pure vector search: {e}")
                 # Same wording parse_user_intent uses for its own give-ups, so
@@ -271,19 +496,13 @@ async def _run_natural_search(
         # Check for Reference Movie (e.g. "movies like Inception")
         if intent.reference_movie:
             logger.info(f"Detected reference movie in intent: {intent.reference_movie}")
-            # Local DB search: substring match against title OR original_title.
-            # Substring (with %…%) lets "deprisa deprisa" match "Deprisa, deprisa"
-            # and original_title catches Spanish/foreign titles localised in `title`.
-            ref_pattern = f"%{intent.reference_movie}%"
-            ref_movie_match = await db.execute(
-                select(Movie).where(
-                    or_(
-                        Movie.title.ilike(ref_pattern),
-                        Movie.original_title.ilike(ref_pattern),
-                    )
-                )
-            )
-            ref_movie = ref_movie_match.scalars().first()
+            # Local DB search: substring match against title, original_title or
+            # collection. Substring (with %…%) lets "deprisa deprisa" match
+            # "Deprisa, deprisa" and original_title catches Spanish/foreign titles
+            # localised in `title`. See _pick_reference_movie for the ordering —
+            # picking the FIRST of several matches was how "james bond" answered
+            # with a documentary.
+            ref_movie = await _pick_reference_movie(db, intent.reference_movie, substring=True)
 
             if ref_movie:
                 potential_movie_id = ref_movie.tmdb_id
@@ -298,7 +517,7 @@ async def _run_natural_search(
             if potential_movie_id:
                 logger.info(f"Performing Item-to-Item search for reference: {potential_movie_title}")
                 result = await _item_to_item_search(
-                    potential_movie_id, potential_movie_title, qdrant
+                    potential_movie_id, potential_movie_title, qdrant, watchlist_ids
                 )
                 if result:
                     return result
@@ -333,6 +552,13 @@ async def _run_natural_search(
         # degraded run answers from it instead of apologising.
         degraded = parse_failed(intent)
 
+        # El único contador de backend de los siete del embudo. Aquí y no en cada
+        # `return degraded=...`: todas las ramas de abajo leen ESTA variable, así que
+        # un solo sitio los cubre todos y no puede desincronizarse con ninguno.
+        # `bump` nunca levanta ni bloquea la respuesta (services/metrics.py).
+        if degraded:
+            await metrics.bump(redis, "search.degraded")
+
         # Genres are required, not optional. Without them this branch selects on
         # nothing but the quality bar and hands back whatever the catalogue's top
         # scorers happen to be — measured, "a movie parents and kids will both
@@ -351,6 +577,7 @@ async def _run_natural_search(
                 results=_catalogue_results(picks),
                 intent={**intent.model_dump(), "reasoning": AUDIENCE_SELECTION_REASONING},
                 degraded=degraded,
+                watchlist_applied=bool(watchlist_ids),
             )
 
         # 2. Generate Embedding for the EXPANDED semantic query
@@ -367,6 +594,8 @@ async def _run_natural_search(
         
         # 3. Construct Advanced Qdrant Filters
         qdrant_filters = {}
+        if watchlist_ids:
+            qdrant_filters["include_tmdb_ids"] = watchlist_ids
         
         # Include genres (any of these)
         if intent.include_genres:
@@ -447,12 +676,62 @@ async def _run_natural_search(
         # 4. Search Qdrant with Advanced Filters
         # Wider when a Postgres-side post-filter has to survive the fetch — see
         # services.magic_search_ranking.search_fetch_limit for the measurement.
+        # Canal léxico — Fase 2. Antes era un OR de keywords del catálogo fusionado
+        # en Python; ahora es un vector sparse BM25 y la fusión RRF la hace Qdrant
+        # en el servidor, con el IDF calculado sobre el corpus real. Esa es la
+        # pieza que faltaba: el OR daba a `giallo` (6 películas) y a `baroque` (3)
+        # el mismo peso, y por eso `baroque` metía a Bach en una consulta de
+        # giallo. BM25 pondera por rareza en vez de admitir o no.
+        # FASE 2, RESULTADO NEGATIVO — 2026-08-04.
+        #
+        # El plan decía sustituir este OR de keywords por BM25 sparse con IDF de
+        # servidor. Se implementó entero y se midió contra el golden set en tres
+        # variantes. Las tres pierden:
+        #
+        #   sólo denso                             0.826 / 0.689
+        #   OR de keywords + fusión cliente (esto) 0.861 / 0.724
+        #   BM25 + fusión RRF en servidor          0.796 / 0.681
+        #   BM25 + acantilado por canal            0.744 / 0.682
+        #   BM25 restringido al vocabulario        0.740 / 0.669
+        #
+        # El porqué, en una frase: `include_keywords` FILTRA a las películas que
+        # llevan literalmente esa keyword, mientras BM25 PUNTÚA todo el texto
+        # indexado — sinopsis, reparto, director — así que cualquier película con
+        # "crime" en algún sitio entra. Con 20k documentos de prosa corta escrita
+        # por un LLM y unas keywords curadas de TMDB, el campo curado ya ES la
+        # señal léxica de alta precisión: casarla exacta le gana a puntuar la
+        # prosa. El consejo estándar de la industria (híbrido BM25+denso) asume
+        # texto largo y heterogéneo, que no es este corpus.
+        #
+        # El vector sparse se queda en la colección: no estorba, está cubierto por
+        # tests, y para la barra de búsqueda (Fase 4) sí es la herramienta
+        # correcta — ahí se busca un título o un director exacto, no un tema.
+        lexical_terms = (
+            terms_in(intent.semantic_query, await load_vocabulary(db))
+            if lexical_channel.ENABLED else []
+        )
+
         raw_results = await qdrant.search_similar(
             query_vector=query_vector,
             limit=search_fetch_limit(intent),
             score_threshold=0.3, # Semantic search standard
-            filters=qdrant_filters
+            filters=qdrant_filters,
         )
+        if lexical_terms:
+            lexical_hits = await qdrant.search_similar(
+                query_vector=query_vector,
+                limit=search_fetch_limit(intent),
+                score_threshold=0.3,
+                filters={**qdrant_filters, "include_keywords": lexical_terms},
+            )
+            if lexical_hits:
+                seen = {r["movie_id"] for r in raw_results}
+                for r in lexical_hits:
+                    if r["movie_id"] not in seen:
+                        r["lexical_match"] = True
+                        raw_results.append(r)
+                logger.info("Lexical channel %s: +%d candidatos",
+                            lexical_terms, len(raw_results) - len(seen))
         
         logger.info(f"Qdrant returned {len(raw_results)} results")
 
@@ -498,6 +777,7 @@ async def _run_natural_search(
                 intent={**intent.model_dump(), "confidence": round(confidence, 3)},
                 low_confidence=True,
                 degraded=degraded,
+                watchlist_applied=bool(watchlist_ids),
             )
 
         # "I don't know what to watch". The vector is meaningless here — it was
@@ -538,9 +818,82 @@ async def _run_natural_search(
                 intent={**intent.model_dump(), "confidence": round(confidence, 3),
                         "reasoning": CATALOGUE_SELECTION_REASONING},
                 degraded=degraded,
+                watchlist_applied=bool(watchlist_ids),
             )
 
+        # Relevance cliff — see services.magic_search_ranking.trim_to_relevant.
+        # Placed BEFORE the quality gate and the DB fetch so the films it drops
+        # cost neither a Postgres row nor a TMDB detail call nor a provider
+        # lookup, and AFTER the confidence branches so it never turns a query
+        # that was going to be answered from the catalogue into a short vector row.
+        # The cliff measures COSINE, and a lexical hit is here because it carries
+        # the term — its cosine is low by construction, since the query is phrased
+        # in today's words and the film's description is not. Trimming it on
+        # cosine undoes the rescue: `I Walked with a Zombie` came back at 0.34
+        # against a top of 0.44, so 0.77 of the best fell under the 0.85 floor and
+        # the channel's whole contribution vanished. The floor is therefore
+        # computed from the vector channel and applied only to it.
+        # El acantilado se aplica a CADA CANAL contra su propio mejor, no una vez
+        # sobre la mezcla. Los dos motivos, ambos medidos:
+        #
+        #   · Cortar la mezcla con el mejor coseno borra los rescates léxicos,
+        #     que tienen coseno bajo por construcción (0.796/0.681, peor que no
+        #     hacer nada).
+        #   · Eximir al canal léxico entero es peor todavía: BM25 devuelve veinte
+        #     coincidencias débiles para CUALQUIER consulta, y sin recorte entran
+        #     las veinte — 0.434 de nDCG y 64 irrelevantes en los top-10.
+        #
+        # Un canal propone lo que está cerca de su propio mejor. Las escalas no
+        # se comparan entre sí en ningún momento, que es de donde venían los dos
+        # fallos.
+        before_cliff = len(raw_results)
+        dense_hits = [r for r in raw_results if not r.get("lexical_match")]
+        lexical_hits = [r for r in raw_results if r.get("lexical_match")]
+        raw_results = trim_to_relevant(dense_hits) + trim_to_relevant(lexical_hits)
+        if len(raw_results) != before_cliff:
+            logger.info("Relevance cliff: %d -> %d results", before_cliff, len(raw_results))
+
+        # Safety net — see services.magic_search_ranking.RELAXED_MIN_ROW. A short
+        # row means the box had little to offer; the subject is still answerable
+        # outside it, so ask again without the era (or the country) and append
+        # what comes back. `outside_filters` travels with every one of those rows
+        # so the UI can say which constraint was dropped — appending them
+        # unmarked would be worse than the padding this replaces.
+        relaxed_dimension = None
+        if len(raw_results) < RELAXED_MIN_ROW:
+            dimension = relaxable_dimension(intent)
+            if dimension:
+                seen_ids = {
+                    int(r.get("metadata", {}).get("tmdb_id") or r["movie_id"])
+                    for r in raw_results
+                }
+                extra = await qdrant.search_similar(
+                    query_vector=query_vector,
+                    limit=search_fetch_limit(intent),
+                    score_threshold=0.3,
+                    filters={
+                        **relaxed_filters(qdrant_filters, dimension),
+                        "exclude_tmdb_ids": list(seen_ids | set(watched_tmdb_ids)),
+                    },
+                )
+                extra = trim_to_relevant(extra)
+                if extra:
+                    for r in extra:
+                        r["outside_filters"] = dimension
+                    relaxed_dimension = dimension
+                    raw_results = raw_results + extra
+                    logger.info(
+                        "Relaxed %s: row was %d, now %d",
+                        dimension, len(seen_ids), len(raw_results),
+                    )
+
         # Minimum quality gate — drop movies with no TMDB signal (e.g. vote_count=0)
+        #
+        # Lee `vote_average` a secas otra vez: el 2026-08-17 hubo aquí una lectura
+        # doble (`vote_average` o el nombre viejo `rating`) porque 931 puntos se
+        # habían quedado en un esquema anterior y esta puerta los tiraba enteros.
+        # El 2026-08-18 se reparó el DATO —`sync_qdrant_payload.py --fill-missing`,
+        # 0 puntos sin `vote_average`— y el remiendo pasó a ser rama muerta.
         raw_results = [
             r for r in raw_results
             if (r.get("metadata", {}).get("vote_count") or 0) >= 10
@@ -617,11 +970,12 @@ async def _run_natural_search(
                     if not metadata.get("overview"):
                         metadata["overview"] = details.get("overview", "")
 
-            # Compound score: cosine → optional title boost → VBS sigmoid gate.
-            # See services.magic_search_ranking.compute_blended_score for the
-            # full decision tree + thresholds. Pulled out so the pipeline is
-            # testable without the FastAPI / Qdrant / DB stack.
-            final_score, title_sim, _quality_weight = compute_blended_score(
+            # Two numbers, not one: `relevance` (cosine → optional title boost)
+            # is what the user sees, `relevance * weight` (VBS sigmoid gate) is
+            # what orders the row. See services.magic_search_ranking.
+            # compute_relevance for the full decision tree + thresholds. Pulled
+            # out so the pipeline is testable without the FastAPI/Qdrant/DB stack.
+            relevance, title_sim, quality_weight = compute_relevance(
                 raw_cosine=r["score"],
                 query=search_req.query,
                 intent=intent,
@@ -631,7 +985,7 @@ async def _run_natural_search(
             if title_sim is not None and title_sim >= 0.85:
                 logger.info(
                     f"Title-match boost for {metadata.get('title')} "
-                    f"(sim={title_sim:.2f}): {final_score:.1f}"
+                    f"(sim={title_sim:.2f}): {relevance:.1f}"
                 )
 
             result = {
@@ -639,8 +993,17 @@ async def _run_natural_search(
                 "title": metadata.get("title", "Unknown"),
                 "overview": metadata.get("overview", ""),
                 "poster_path": poster_path,
-                "score": round(final_score, 0),
-                "_final_score": final_score,  # precise float kept for sorting
+                # RELEVANCE. The quality gate still ORDERS the row (`_rank`
+                # below) but never reaches the UI, which renders this as distance
+                # to the query — see compute_relevance for what showing the
+                # gated value did to "muy bien valoradas".
+                "score": round(relevance, 0),
+                "_rank": relevance * quality_weight,  # precise float for sorting
+                "outside_filters": r.get("outside_filters"),
+                # True when the keyword channel is why this film is here. Not
+                # rendered anywhere; it is what makes a surprising row debuggable
+                # from the response alone instead of from the logs.
+                "lexical_match": bool(r.get("lexical_match")),
                 "year": metadata.get("year"),
                 "runtime": metadata.get("runtime"),
                 "genres": metadata.get("genres", []),
@@ -655,20 +1018,22 @@ async def _run_natural_search(
             }
             results.append(result)
 
-        # Sprint 3 (2026-05-15): re-sort by the BLENDED final_score so that
+        # Sprint 3 (2026-05-15): re-sort by relevance × quality weight so that
         # title-match boost and the VBS sigmoid gate actually affect ordering.
-        # Before this, results came back in raw Qdrant cosine order — the
-        # `score` field on each row was the blended value but the FRONTEND
-        # only got to see the ordering the API returned. Now Qdrant is the
-        # initial filter / coarse rank, and our compound score is the final
-        # order. Strip the internal `_final_score` key before returning.
-        results.sort(key=lambda r: r.get("_final_score", 0.0), reverse=True)
+        # Before this, results came back in raw Qdrant cosine order — Qdrant is
+        # now the initial filter / coarse rank and this is the final order.
+        # Strip the internal `_rank` key before returning.
+        # In-box films first, THEN the relaxed ones. Without the first key a
+        # high-scoring out-of-era film outranks the films that met every
+        # constraint, which is the opposite of what was asked for.
+        results.sort(key=lambda r: (r.get("outside_filters") is not None,
+                                    -r.get("_rank", 0.0)))
         # Truncate BEFORE the provider fan-out below: a post-filtered query now
         # fetches up to 150 candidates, and every survivor would otherwise cost a
         # provider lookup and a row in the response.
         del results[SEARCH_RESULT_LIMIT:]
         for r in results:
-            r.pop("_final_score", None)
+            r.pop("_rank", None)
 
         # 6. Fetch Streaming Providers
         try:
@@ -701,7 +1066,19 @@ async def _run_natural_search(
         # Deep Analysis (Tier 2 LLM re-rank) — auto-trigger on complexity ≥ 3
         # via services.magic_search_ranking.should_run_deep_analysis. Explicit
         # `use_deep_analysis=True` still wins as an override.
-        if should_run_deep_analysis(intent, user_requested=search_req.use_deep_analysis) and results:
+        #
+        # Signed-in only, as of 2026-07-30. `/try` has promised "no Tier-2 deep
+        # analysis" in its docstring since it was written, and the promise was
+        # never enforced anywhere: the trigger reads complexity and the request
+        # flag, never the route, so any guest sentence with three filters —
+        # "atracos con estilo, cine europeo de los 70" is exactly three — spent a
+        # 120B call. That is the one cost `/try` is bounded on every other axis
+        # to avoid. Caught by the Groq error surfacing inside
+        # verify_search_branches.py, whose own docstring claims it never calls
+        # Groq; it passes current_user=None, so this makes that true too.
+        if (current_user is not None
+                and should_run_deep_analysis(intent, user_requested=search_req.use_deep_analysis)
+                and results):
             logger.info(
                 f"Deep Analysis triggered (explicit={search_req.use_deep_analysis} "
                 f"complexity={intent_complexity(intent)}). Calling Tier 2..."
@@ -719,7 +1096,10 @@ async def _run_natural_search(
                         mid = r["movie_id"]
                         if mid in reasoned_map:
                             r["ai_reason"] = reasoned_map[mid]
-                            r["score"] = 100 # Boost score for AI selected
+                            # `score` is relevance and stays relevance. Pinning it
+                            # to 100 here rendered every LLM-picked film as
+                            # "d 0.00" — a perfect match by decree. `ai_reason`
+                            # already carries the model's verdict.
                             new_results.append(r)
                             
                     # If we have picks, return them. If LLM returned 0, fallback to original list.
@@ -734,6 +1114,8 @@ async def _run_natural_search(
             results=results,
             intent=intent.model_dump(),
             degraded=degraded,
+            relaxed_filter=relaxed_dimension,
+            watchlist_applied=bool(watchlist_ids),
         )
         
     except HTTPException:
@@ -758,6 +1140,7 @@ async def natural_language_search(
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
     embedding_service: EmbeddingService = Depends(get_embedding_service),
+    redis=Depends(get_redis),
 ):
     """Magic Box for signed-in users. Full budget.
 
@@ -765,7 +1148,7 @@ async def natural_language_search(
     the signature said `get_optional_current_user`. Guests get `/try` below.
     """
     return await _run_natural_search(
-        search_req, current_user, db, tmdb, qdrant, embedding_service
+        search_req, current_user, db, tmdb, qdrant, embedding_service, redis
     )
 
 
@@ -798,6 +1181,7 @@ async def try_search(
     tmdb: TMDBClient = Depends(get_tmdb_client),
     qdrant: QdrantService = Depends(get_qdrant_service),
     embedding_service: EmbeddingService = Depends(get_embedding_service),
+    redis=Depends(get_redis),
 ):
     """The public door: type your own sentence without an account.
 
@@ -809,10 +1193,14 @@ async def try_search(
     must behave identically for everyone, and reading a session here would make
     a signed-in user's results differ from a guest's on the same URL.
     """
+    # `landing.query.free` del embudo, medido SIN endpoint público de métricas: esta
+    # puerta es anónima por diseño y sólo la usa quien escribe su propia frase en la
+    # landing, así que contar aquí es contar exactamente ese evento.
+    await metrics.bump(redis, "landing.query.free")
     return await _run_natural_search(
         SearchRequest(query=try_req.query, country_code=try_req.country_code,
                       use_deep_analysis=False, forced_intent=None),
-        None, db, tmdb, qdrant, embedding_service,
+        None, db, tmdb, qdrant, embedding_service, redis,
     )
 
 
@@ -839,6 +1227,12 @@ async def showcase_search(
         # 404 before any I/O: an unknown slug costs a dict lookup.
         raise HTTPException(status_code=404, detail="Unknown showcase slug")
 
+    # `landing.query.chip` del embudo. Se cuenta el CLIC, antes de leer el caché: si
+    # la fila estaba fría el visitante usó el chip igual, y el 503 ya se registra por
+    # su lado. Los chips son el único consumidor de este endpoint, así que no hay
+    # nada más que se confunda con ellos.
+    await metrics.bump(redis, "landing.query.chip", lang=lang)
+
     if redis is None:
         raise HTTPException(status_code=503, detail="Showcase cache unavailable")
 
@@ -850,6 +1244,19 @@ async def showcase_search(
         raise HTTPException(status_code=503, detail="Showcase not warmed yet")
 
     return payload
+
+
+def _names_one_director(director_lists, lower: str) -> bool:
+    """
+    True when the term unambiguously names a single director: every catalogue row
+    matched the same person, and a token of their name starts with the term.
+    Both halves are load-bearing — the term is a substring match, so "man" matches
+    Polanski, Mankiewicz and Forman, and "eve" matches St-eve-n Spielberg alone.
+    """
+    matched = {n for names in director_lists for n in (names or []) if lower in n.lower()}
+    return len(matched) == 1 and any(
+        part.lower().startswith(lower) for part in next(iter(matched)).split()
+    )
 
 
 @router.get("/autocomplete")
@@ -876,9 +1283,13 @@ async def autocomplete_search(
     # director's name, so "kurosawa" returned junk or nothing. 99% of the
     # catalogue has `directors` populated; ordering by VBS puts the canon first.
     async def by_director():
+        # `icontains(autoescape=True)` y no un f-string: interpolando el término, un
+        # `%` del usuario entra como COMODIN. `%%%` se convertía en `%%%%%`, casaba
+        # con todos los directores del catálogo y el desplegable contestaba con las
+        # 8 películas de mejor VBS a una consulta que no pregunta nada.
         stmt = (
             select(Movie)
-            .where(func.array_to_string(Movie.directors, "|").ilike(f"%{term}%"))
+            .where(func.array_to_string(Movie.directors, "|").icontains(term, autoescape=True))
             .where(Movie.poster_path.isnot(None))
             .order_by(nulls_last(Movie.vectorbox_score.desc()))
             .limit(8)
@@ -887,11 +1298,60 @@ async def autocomplete_search(
 
     tmdb_rows, director_rows = await asyncio.gather(by_title(), by_director())
 
+    # Erratas. TMDB no tiene búsqueda difusa y no la disimula: devuelve CERO, así
+    # que una letra de más dejaba la searchbar vacía sin decir por qué
+    # ("intersteller", "shawshenk redemption" → 0 resultados, medido 2026-08-10).
+    #
+    # Sólo cuando TMDB no ha traído NADA: en la ruta normal esto no se ejecuta, así
+    # que no le cuesta latencia a quien escribe bien. Y sólo puede devolver
+    # películas de nuestro catálogo, que es lo que sabemos describir de todas formas.
+    fuzzy = False
+    if not tmdb_rows:
+        tmdb_rows = await _fuzzy_title_rows(db, term)
+        fuzzy = bool(tmdb_rows)
+
     # A poster-less TMDB row is almost always a duplicate stub or a stray short
     # ranking above the real film on popularity alone. Drop them — but only while
     # something else survives, so a legitimately poster-less film is still findable.
+    #
+    # "something else" incluye la filmografía del director, y ahí estaba el fallo:
+    # `lanthimos` devuelve UNA fila de TMDB, el stub sin estrenar ni póster
+    # "Untitled Yorgos Lanthimos/Efthymis Filippou Project". El rescate lo
+    # resucitaba y, como los títulos van antes que la filmografía, salía en el
+    # puesto 1 por encima de Poor Things. Las prioridades de `_rank` no podían
+    # arreglarlo: con una sola fila, ordenar no hace nada.
     posterful = [m for m in tmdb_rows if m.get("poster_path")]
-    tmdb_rows = posterful or tmdb_rows
+    tmdb_rows = posterful or ([] if director_rows else tmdb_rows)
+
+    # TMDB's order is lexical relevance, not popularity: "seven sa" put a 1-vote
+    # 1966 Tagalog film above Seven Samurai. The candidate set is already
+    # title-matched, so popularity alone is the right tiebreak — a title-prefix
+    # bonus was tried and is worse ("GodFather" outranked The Godfather).
+    lower = term.lower()
+    # Por NIVELES: primero las que se llaman exactamente así, y dentro de cada
+    # nivel por votos y luego popularidad.
+    #
+    # Ordenar todo por popularidad a secas se puso para arreglar "seven sa", donde
+    # el orden de TMDB colaba un film tagalo de un voto por encima de Seven
+    # Samurai. Pero rompía el caso contrario: "barrio" devuelve `Barrio` (1998,
+    # León de Aranoa) en la POSICIÓN 3 del ranking de TMDB y con popularidad 1.0,
+    # así que reordenar la hundía al puesto 14 y fuera del corte de ocho. La
+    # película existía, TMDB la encontraba, y la escondíamos nosotros.
+    #
+    # Un bonus sumado a la popularidad ya se probó y era peor ("GodFather" ganaba
+    # a The Godfather). Un nivel no es un bonus: no compite con la popularidad,
+    # la precede. Y los votos van antes que la popularidad porque la popularidad
+    # de TMDB decae con el tiempo y un clásico siempre pierde contra un estreno.
+    def _rank(m):
+        exact = (m.get("title") or "").strip().lower() == lower
+        return (not exact, -(m.get("vote_count") or 0), -(m.get("popularity") or 0))
+
+    # Las filas difusas vienen ya ordenadas por parecido, que es la única señal que
+    # tiene sentido ahí: para "intersteller" no hay coincidencia exacta que premiar
+    # y reordenar por votos pondría delante cualquier taquillazo que comparta
+    # trigramas. `_rank` sólo manda cuando el título coincide de verdad.
+    if not fuzzy:
+        tmdb_rows.sort(key=_rank)
 
     # Reserve slots when the term is a director's name. "kurosawa" fills all 8
     # TMDB slots with documentaries *about* Kurosawa, so the films themselves
@@ -907,10 +1367,55 @@ async def autocomplete_search(
         rows = await db.execute(select(Movie.tmdb_id, Movie.directors).where(Movie.tmdb_id.in_(tmdb_ids)))
         directors_by_id = {tid: (d[0] if d else None) for tid, d in rows.all()}
 
-    results, seen = [], set()
+    # El director se devuelve como ENTIDAD APARTE, no compitiendo en la lista.
+    #
+    # Antes, cuando el término nombraba a un director, sus películas se colaban
+    # por delante de las coincidencias de título para que no se perdieran bajo el
+    # tope de doce filas. Eso mezclaba dos cosas distintas en una sola ordenación
+    # y obligaba a inventar cuánto "pesa" un director frente a una película —
+    # pregunta sin buena respuesta. Con una tarjeta propia y una ficha a la que ir,
+    # las películas vuelven a ordenarse sólo por relevancia y el reordenamiento
+    # desaparece.
+    lead_director = _names_one_director([mv.directors for mv in director_rows], lower)
+    director_card = None
+    if lead_director and director_rows:
+        person_name = next(
+            n for names in (mv.directors for mv in director_rows) for n in (names or [])
+            if lower in n.lower()
+        )
+        total = await db.scalar(
+            select(func.count()).select_from(
+                select(Movie.id)
+                .where(Movie.directors.any(person_name))
+                .where(Movie.is_excluded.is_(False))
+                .subquery()
+            )
+        )
+        # La foto se pide aquí aunque esto sea la ruta de teclear-y-esperar.
+        # Medido: `get_person` cuesta 374 ms en frío y 0 ms cacheado (30 días,
+        # caché compartida), así que el sobrecoste se paga UNA vez por director
+        # entre todos los usuarios. Y no se tira: quien ve la tarjeta suele abrir
+        # la ficha a continuación, que ya encuentra foto y biografía calientes.
+        # Es prefetch, no desperdicio.
+        #
+        # Si TMDB tarda o cae, la tarjeta sale sin foto: el cliente ya trae su
+        # propio circuit breaker y el nombre es lo que identifica al director.
+        profile_path = None
+        try:
+            person = await tmdb.get_person(person_name)
+            profile_path = (person or {}).get("profile_path")
+        except Exception as e:
+            logger.warning("TMDB person lookup failed for %r: %s", person_name, e)
+        director_card = {
+            "name": person_name,
+            "film_count": total or 0,
+            "profile_path": profile_path,
+        }
+
+    tmdb_out, director_out, seen = [], [], set()
     for m in tmdb_rows:
         seen.add(m["id"])
-        results.append({
+        tmdb_out.append({
             "tmdb_id": m["id"],
             "title": m["title"],
             "year": int(m["release_date"][:4]) if m.get("release_date") else None,
@@ -919,10 +1424,10 @@ async def autocomplete_search(
             "director": directors_by_id.get(m["id"]),
         })
     for mv in director_rows:
-        if mv.tmdb_id in seen or len(results) >= 12:
+        if mv.tmdb_id in seen or len(tmdb_out) + len(director_out) >= 12:
             continue
         seen.add(mv.tmdb_id)
-        results.append({
+        director_out.append({
             "tmdb_id": mv.tmdb_id,
             "title": mv.title,
             "year": mv.year,
@@ -930,5 +1435,21 @@ async def autocomplete_search(
             "overview": mv.overview or "",
             "director": mv.directors[0] if mv.directors else None,
         })
-    return results
+    # Cuando el término nombra a UN director sin ambigüedad, su filmografía va
+    # primera. No son dos coincidencias del mismo tipo compitiendo por relevancia:
+    # una contesta "una película que se LLAMA así" y la otra "películas DE quien se
+    # llama así", y ordenarlas juntas obliga a inventar cuánto vale un título frente
+    # a un autor — pregunta sin buena respuesta.
+    #
+    # Con "kurosawa" la respuesta por título son cinco documentales SOBRE él (uno es
+    # `Hitomi Kurosawa: Clumsy Love Story`) y Seven Samurai caía al sexto puesto.
+    # Nadie escribe "kurosawa" buscando eso. La reserva de huecos ya evitaba que la
+    # filmografía se cayera del desplegable; lo que faltaba era el orden.
+    #
+    # `director_card` sólo existe si `_names_one_director` confirmó que el término
+    # apunta a una sola persona, así que esto no se dispara con un apellido
+    # compartido: ahí siguen mandando los títulos.
+    if director_card:
+        return {"director": director_card, "films": director_out + tmdb_out}
+    return {"director": director_card, "films": tmdb_out + director_out}
 

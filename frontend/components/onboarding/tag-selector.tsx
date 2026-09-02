@@ -84,11 +84,6 @@ const STATE_STYLES: Record<TagState, string> = {
         "border-danger/60 text-danger bg-danger/10 line-through decoration-danger/40",
 };
 
-const STATE_LABELS: Record<TagState, string> = {
-    neutral: "",
-    avoided: "✕",
-};
-
 export function TagSelector({ value, onChange, compact = false }: TagSelectorProps) {
     const { language, t } = useLanguage();
     const cycle = useCallback(
@@ -139,14 +134,7 @@ export function TagSelector({ value, onChange, compact = false }: TagSelectorPro
                                 pide ~195px y la celda da ~180, así que con truncate salía
                                 del botón encima de la vecina (min-width:auto de flex). El
                                 grid iguala la altura de la fila, así que envolver no descuadra. */}
-                            <span className="flex min-w-0 items-start justify-between gap-1 text-left">
-                                <span>{tagLabel(tag, language)}</span>
-                                {state !== "neutral" && (
-                                    <span className="text-[10px] opacity-80 shrink-0">
-                                        {STATE_LABELS[state]}
-                                    </span>
-                                )}
-                            </span>
+                            <span className="block text-left">{tagLabel(tag, language)}</span>
                         </button>
                     );
                 })}

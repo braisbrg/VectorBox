@@ -21,6 +21,9 @@ export interface FilterFormProps {
     filteredCount?: number | null;
     /** Submit button label — mobile sheet overrides with "apply". */
     submitLabel?: string;
+    /** Feed source: the whole catalogue or only the user's watchlist. */
+    scope?: "global" | "watchlist";
+    onScopeChange?: (scope: "global" | "watchlist") => void;
 }
 
 // Rail range slider with a live value label (handoff provider-rail sliders).
@@ -78,6 +81,8 @@ export function FilterForm({
     onFilterSearch,
     filteredCount,
     submitLabel = "> EXECUTE_QUERY",
+    scope = "global",
+    onScopeChange,
 }: FilterFormProps) {
     const { t } = useLanguage();
     const [yearMin, setYearMin] = useState(YEAR_MIN_FLOOR);
@@ -124,8 +129,9 @@ export function FilterForm({
             maxRuntime: maxRuntime < RUNTIME_CEIL ? maxRuntime : null,
             minScore: minScore > 0 ? minScore : null,
             genres: genres.length ? genres : undefined,
+            watchlist: scope === "watchlist",
         });
-    }, [yearMin, yearMax, maxRuntime, minScore, genres, onFilterSearch]);
+    }, [yearMin, yearMax, maxRuntime, minScore, genres, scope, onFilterSearch]);
 
     const toggleGenre = (g: string) =>
         setGenres((prev) => (prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]));
@@ -154,6 +160,33 @@ export function FilterForm({
 
     return (
         <div className="space-y-8">
+            {/* SOURCE — de dónde salen las recomendaciones. Va el primero porque no es
+                un filtro más: cambia el universo del que eligen todas las filas, y los
+                de abajo se aplican DENTRO de lo que elijas aquí. */}
+            {onScopeChange && (
+                <div className="space-y-4">
+                    <span className="block border-b border-border pb-2 text-[10px] uppercase tracking-widest text-fg-3">
+                        {">"} SOURCE
+                    </span>
+                    <div className="flex gap-1">
+                        {(["global", "watchlist"] as const).map((s) => (
+                            <button
+                                key={s}
+                                onClick={() => onScopeChange(s)}
+                                className={cn(
+                                    "flex-1 border px-2.5 py-1.5 text-[10px] uppercase tracking-wide transition-colors",
+                                    scope === s
+                                        ? "border-primary bg-primary font-bold text-primary-ink"
+                                        : "border-border-2 text-fg-3 hover:border-fg-3"
+                                )}
+                            >
+                                {t(`filters.scope_${s}`)}
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
+
             {/* Providers + region (handoff provider-rail) */}
             <div className="space-y-4">
                 <div className="flex items-center justify-between border-b border-border pb-2">

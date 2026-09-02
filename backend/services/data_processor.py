@@ -156,7 +156,10 @@ class DataProcessor:
                 "year": DataProcessor._year(row),
                 "letterboxd_uri": DataProcessor._normalize_uri(row.get('Letterboxd URI')),
                 "rating": DataProcessor._rating(row),
-                "watched_date": DataProcessor._parse_date(row.get('Date')),
+                # ratings.csv 'Date' es la fecha de PUNTUACIÓN, no de visionado.
+                # No se escribe: `watched_date` significa una sola cosa, y si no
+                # hay entrada de diario la respuesta honesta es NULL.
+                "watched_date": None,
                 "review": None,
                 "is_watchlist": False,
                 "is_liked": False,
@@ -166,7 +169,14 @@ class DataProcessor:
 
     @staticmethod
     def _process_watchlist(df: pd.DataFrame, movies_map: Dict):
-        for _, row in df.iterrows():
+        # El 'Date' de watchlist.csv es la fecha REAL en que se añadió — el único
+        # sitio donde Letterboxd la publica (la web sólo da el orden de la página).
+        # Se guarda como POSICION, no como fecha, para hablar el mismo idioma que el
+        # scrape: una sola columna, un solo orden, y quien importe por ZIP y luego
+        # vincule su perfil ve lo mismo antes y después.
+        ranks = DataProcessor._watchlist_ranks(df)
+
+        for idx, row in df.iterrows():
             key = DataProcessor._get_key(row)
             if not key: continue
 
@@ -182,9 +192,34 @@ class DataProcessor:
                     "is_liked": False,
                     "is_watched": False,
                     "watch_count": 1,
+                    "watchlist_rank": ranks.get(idx),
                 }
             else:
                 movies_map[key]["is_watchlist"] = True
+                movies_map[key]["watchlist_rank"] = ranks.get(idx)
+
+    @staticmethod
+    def _watchlist_ranks(df: pd.DataFrame) -> Dict:
+        """Posición de cada fila del CSV en la watchlist: 1 = lo añadido más tarde.
+
+        Empates (el 'Date' de Letterboxd es sólo el día, así que abundan) se rompen
+        por posición en el fichero, del final al principio: el export va de más
+        antiguo a más nuevo, así que dentro de un mismo día lo último del fichero es
+        lo último añadido.
+
+        Sin columna 'Date' (exports viejos) el orden del fichero es lo único que hay:
+        se invierte igual, que es mejor que no ordenar nada.
+        """
+        pos = list(range(len(df)))
+        if 'Date' in df.columns:
+            dates = pd.to_datetime(df['Date'], errors='coerce')
+        else:
+            dates = pd.Series([pd.NaT] * len(df), index=df.index)
+        tmp = pd.DataFrame({"d": dates, "i": pos}, index=df.index)
+        order = tmp.sort_values(
+            ["d", "i"], ascending=[False, False], na_position="last"
+        ).index
+        return {idx: rank for rank, idx in enumerate(order, 1)}
 
     @staticmethod
     def _process_likes(df: pd.DataFrame, movies_map: Dict):
@@ -225,15 +260,15 @@ class DataProcessor:
 
             if key in movies_map:
                 movies_map[key]["is_watched"] = True
-                if not movies_map[key].get("watched_date"):
-                    movies_map[key]["watched_date"] = DataProcessor._parse_date(row.get('Date'))
             else:
                 movies_map[key] = {
                     "title": DataProcessor._title(row),
                     "year": DataProcessor._year(row),
                     "letterboxd_uri": DataProcessor._normalize_uri(row.get('Letterboxd URI')),
                     "rating": None,
-                    "watched_date": DataProcessor._parse_date(row.get('Date')),
+                    # watched.csv 'Date' es cuándo se MARCÓ como vista: marcar 900
+                    # películas de golpe sellaba las 900 con ese día. No se escribe.
+                    "watched_date": None,
                     "review": None,
                     "is_watchlist": False,
                     "is_liked": False,
@@ -251,8 +286,10 @@ class DataProcessor:
             key = DataProcessor._get_key(row)
             if not key: continue
 
-            # Diary has 'Watched Date' which is the actual date watched, vs 'Date' which is log date
-            watched_date = DataProcessor._parse_date(row.get('Watched Date')) or DataProcessor._parse_date(row.get('Date'))
+            # SÓLO 'Watched Date'. El 'Date' del diario es cuándo lo registraste, y
+            # usarlo de reserva reintroduce por la puerta de atrás justo la fecha
+            # falsa que este módulo dejó de escribir.
+            watched_date = DataProcessor._parse_date(row.get('Watched Date'))
 
             if key in movies_map:
                 movies_map[key]["is_watched"] = True
@@ -262,8 +299,10 @@ class DataProcessor:
                     movies_map[key]["watch_count"] = movies_map[key].get("watch_count", 1) + 1
                 else:
                     movies_map[key]["diary_seen"] = True
-                # Use the most recent diary date
-                if watched_date and (not movies_map[key].get("watched_date") or watched_date > movies_map[key]["watched_date"]):
+                # Ya sólo hay una clase de fecha aquí, así que entre dos entradas de
+                # diario (revisionado) gana la más reciente y punto.
+                existing = movies_map[key].get("watched_date")
+                if watched_date and (not existing or watched_date > existing):
                     movies_map[key]["watched_date"] = watched_date
                 # Fill rating if diary has it and it's missing
                 diary_rating = DataProcessor._rating(row)
@@ -302,7 +341,7 @@ class DataProcessor:
                     "year": DataProcessor._year(row),
                     "letterboxd_uri": DataProcessor._normalize_uri(row.get('Letterboxd URI')),
                     "rating": DataProcessor._rating(row),
-                    "watched_date": DataProcessor._parse_date(row.get('Watched Date')) or DataProcessor._parse_date(row.get('Date')),
+                    "watched_date": DataProcessor._parse_date(row.get('Watched Date')),
                     "review": DataProcessor._review(review_text),
                     "is_watchlist": False,
                     "is_liked": False,
