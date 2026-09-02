@@ -68,7 +68,6 @@
         "about": {
             "title": "About VectorBox",
             "desc": "Vector-based recommendation system powered by your Letterboxd data.",
-            "version": "v3.0.0",
             "credits_tmdb": "This product uses the TMDB API but is not endorsed or certified by TMDB.",
             "credits_justwatch": "Streaming availability data provided by JustWatch via the TMDB API.",
             "credits_omdb": "Ratings data from the OMDb API, licensed under",

@@ -2,6 +2,7 @@
 CineMatch AI - FastAPI Backend (Refactored to VectorBox)
 """
 import asyncio
+from config import APP_VERSION
 import logging
 import os
 import httpx
@@ -140,7 +141,7 @@ IS_PRODUCTION = os.getenv("ENVIRONMENT", "development") == "production"
 app = FastAPI(
     title="VectorBox",
     description="Advanced movie recommendation system with semantic search",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
     docs_url=None if IS_PRODUCTION else "/api/docs",  # Restrict docs to /api path
     redoc_url=None if IS_PRODUCTION else "/api/redoc",
@@ -370,6 +371,6 @@ async def root() -> RootResponse:
     """API root endpoint"""
     return RootResponse(
         message="VectorBox API",
-        version="1.0.0",
+        version=APP_VERSION,
         docs="/api/docs"
     )

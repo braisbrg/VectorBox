@@ -15,6 +15,7 @@ import { Loader2, RefreshCw, Undo2 } from "lucide-react";
 import { useLanguage } from "@/components/language-provider";
 import { LanguageToggle } from "@/components/language-toggle";
 import { useSettings } from "@/lib/hooks";
+import { APP_VERSION } from "@/lib/version";
 import { syncRSS, VectorboxUser, getRejectedMovies, unrejectMovie, getTMDBImageUrl, USER_SESSION_KEY, api } from "@/lib/api";
 import { UploadZone } from "@/components/upload-zone";
 import { WebWatchesPanel } from "@/components/web-watches-panel";
@@ -424,7 +425,7 @@ export function SettingsView() {
 
                     {tab === "advanced" && (
                         <Section title={t("settings.about.title")} note={t("settings.about.desc")}>
-                            <p className="font-mono text-[11px] text-fg-3">{t("settings.about.version")}</p>
+                            <p className="font-mono text-[11px] text-fg-3">{`v${APP_VERSION}`}</p>
                             <div className="mt-4 space-y-2 border-t border-border-2 pt-4 font-mono text-[10px] text-fg-3">
                                 {/* eslint-disable-next-line @next/next/no-img-element */}
                                 <img src="/tmdb.svg" alt="TMDB" className="h-2.5" />

@@ -11,6 +11,7 @@ import { FilterForm } from "@/components/filter-form";
 import { MoodChips } from "@/components/mood-chips";
 import { useLanguage } from "@/components/language-provider";
 import { cn } from "@/lib/utils";
+import { APP_VERSION } from "@/lib/version";
 
 interface RightConsoleProps {
     selectedMovie: FeedItem | null;
@@ -100,7 +101,7 @@ export function RightConsole({
                         <div className="border-t border-border-2 bg-bg-2 p-4">
                             <div className="flex items-center justify-between text-[9px] text-fg-3">
                                 <span>STATUS: ONLINE</span>
-                                <span>V2.1.0_PROD</span>
+                                <span>V{APP_VERSION}_PROD</span>
                             </div>
                         </div>
                     </m.div>
