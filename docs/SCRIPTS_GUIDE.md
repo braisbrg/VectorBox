@@ -64,7 +64,12 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 | **`experiment_trakt.py`** | **Alternative Signal C source comparison.** Same 12-seed pool as `experiment_signal_c.py` but pulls related films from **Trakt API** (`/movies/{id}/related`) instead of TMDB. Use to evaluate whether Trakt's user-behaviour-based recs are higher quality than TMDB's noisy collab filter, especially for niche/recent/non-English films. Requires `TRAKT_CLIENT_ID` env var (free, sign up at https://trakt.tv/oauth/applications). Reports catalogue-coverage (% of recs already in our DB) and pass-rate per filter strategy. | `docker compose exec backend python scripts/experiment_trakt.py` |
 | **`check_embeddings.py`** | **Embedding Sanity Check.** Compares stored Qdrant vectors against an embeddinggemma reference embedding built from the shared name-free recipe (`overview + genres + keywords` — see `backend/utils/embedding_reference.py`). Flags movies below cosine threshold as likely-corrupt. Flags: `--update-db` persist score, `--fix` re-enrich flagged, `--user-id` scope to one user, `--tmdb-id` check a single movie, `--recheck` re-run on movies that already have a score (default skips them), `--verbose` print reference text + first 5 dims of stored/reference vectors, `--threshold` let's you change the threshold value to flag movies | `docker-compose exec backend python scripts/check_embeddings.py --tmdb-id 129 --verbose --recheck --threshold 0.5` |
 | **`fix_qdrant_ids.py`** | **Qdrant ID Audit (T-04).** Walks every Qdrant point and classifies it as modern (`point.id == Movie.tmdb_id`), legacy (`point.id == Movie.id`, requires migration to tmdb_id), or orphan (no DB record). Migrates legacy points by re-upserting under the correct tmdb_id and deleting the legacy point. Dry-run by default; pass `--execute` to apply. `--delete-orphans` (requires `--execute`) wipes points with no DB record. | `docker-compose exec backend python scripts/fix_qdrant_ids.py [--execute] [--delete-orphans] [--limit 200]` |
-| **`test_guest_feed.py`** | **Recommendation Quality QA.** Tests the `/public/guest-feed` recommendation logic offline. Accepts a JSON ratings dict, a DB user ID, or a named preset (`cinephile`, `blockbuster`). Reports VectorBox score distribution, genre distribution, top-10 results, and genre coverage (% of positive-seed genres represented in recs). | `docker compose exec backend python scripts/test_guest_feed.py --preset cinephile` |
+| **`test_guest_feed.py`** | **Recommendation Quality QA.** Tests the `/public/guest-feed` recommendation logic offline. Accepts a JSON ratings dict, a DB user ID, or a named preset (`cinephile`, `blockbuster`). Reports VectorBox score distribution, genre distribution, top-10 results, and genre coverage (% of positive-seed genres represented in recs). | `docker compose exec backend python scripts/test_guest_feed.py --preset cinephile` || **`sync_qdrant_payload.py`** | **Backfill del payload de Qdrant.** Rellena los campos por los que Qdrant filtra. Una clave AUSENTE hace la película invisible a ese filtro **sin un solo error** — medido el 2026-08-19: 963 puntos (4,4% del catálogo) sin diez claves. `--fill-missing` sólo rellena huecos (no pisa valores) y salta los `None`. La guardia de escritura de 2026-07-30 protegía puntos NUEVOS; no reparaba los viejos, que es por lo que hicieron falta las dos cosas. | `docker compose exec backend python scripts/sync_qdrant_payload.py [--fill-missing]` |
+| **`compute_mood_axes.py`** | **Proyecta y estampa los ejes de mood.** Calcula el percentil 0-100 de `gravedad` y `humanidad` sobre todo el catálogo y lo escribe en Postgres **y** en el payload de Qdrant. Obligatorio tras tocar las anclas de `services/mood_axes.py`. Antes de ejecutarlo conviene medir la deriva: el 2026-08-19 el eje salió idéntico (Spearman 0,993/0,995, sesgo 0) y sólo el 4,17% de las películas cambiaron de banda. ⚠ Su docstring dice "los tres ejes"; son dos desde 2026-08-05. | `docker compose exec backend python scripts/compute_mood_axes.py [--dry-run]` |
+| **`build_neighbor_table.py`** | **Tabla de vecinos precalculada.** Guarda los vecinos más cercanos de cada película una vez, para que la sincronización de grupo no consulte Qdrant por película en tiempo de petición. Re-ejecutar tras cualquier re-embed. | `docker compose exec backend python scripts/build_neighbor_table.py` |
+| **`flag_non_film_catalog_sweep.py`** | **Barrido de no-películas.** Pasa `is_likely_non_film` por el catálogo existente y marca las coincidencias (recopilatorios, conciertos, episodios que TMDB lista como film). | `docker compose exec backend python scripts/flag_non_film_catalog_sweep.py [--dry-run]` |
+| **`purge_hallucinated_enrichment.py`** | **Purga de enriquecimiento alucinado.** Borra las descripciones cinematográficas en las que el LLM se inventó contenido, para que se re-generen. | `docker compose exec backend python scripts/purge_hallucinated_enrichment.py` |
+| **`migrate_add_sparse.py`** | **Fase 1 — vector sparse BM25.** Qdrant NO deja añadir un vector sparse a una colección existente (`update_collection` sólo toca los que ya están), así que **recrea la colección**. Los densos no se recalculan: se leen y se copian, de modo que no toca el embedding. Operación irreversible — leer el docstring entero antes. | `docker compose exec backend python scripts/migrate_add_sparse.py` |
 
 ### seed_db.py — `--strategy` details
 
@@ -140,10 +145,10 @@ docker-compose exec backend python scripts/seed_db.py --strategy by_language --l
 docker-compose exec backend python scripts/seed_db.py --strategy classic --limit 500
 docker-compose exec backend python scripts/seed_db.py --strategy trending --limit 60
 
-# Trakt strategies (require TRAKT_CLIENT_ID)
-docker-compose exec backend python scripts/seed_db.py --strategy trakt_popular --limit 500
-docker-compose exec backend python scripts/seed_db.py --strategy trakt_trending --limit 200
-docker-compose exec backend python scripts/seed_db.py --strategy trakt_anticipated --limit 200
+# Trakt strategies — 🔴 MUERTAS, no las ejecutes (ver la nota de arriba). La API devuelve
+# 403 a cualquier clave, crear una app nueva exige VIP de pago y `TRAKT_CLIENT_ID` es
+# huérfano. Se dejan escritas para que nadie las vuelva a proponer como si fueran nuevas.
+#   seed_db.py --strategy trakt_popular | trakt_trending | trakt_anticipated
 
 # Companies and collections
 docker-compose exec backend python scripts/seed_db.py --strategy by_company --company-id 420 --limit 100      # Marvel Studios
@@ -268,6 +273,30 @@ Commands defined in `frontend/package.json`. Run these from the host machine ins
 | **Security** | `pnpm run security-check` | Runs `pnpm audit` with high severity level. |
 | **Dev** | `pnpm dev` | Starts Next.js dev server (Host only). |
 | **Linting** | `pnpm lint` | Runs ESLint analysis. |
+
+## 📏 Bancos y experimentos — los instrumentos, no los resultados
+
+Ninguno de éstos cambia datos. Existen para **decidir**, y este repo tiene un historial largo de
+decidir con instrumentos rotos (ver `docs/HALLAZGOS_2026-08-19.md` y la sección C de
+`docs/AUDIT_PLAYBOOK.md`), así que antes de creerse un número de aquí: mide el suelo de ruido,
+compara **pareado**, y comprueba que el ancla del azar da lo que debe.
+
+| Script | Qué decide | Comando |
+| :--- | :--- | :--- |
+| **`verify_search_branches.py`** | **Qué rama responde, SIN pasar por el parser.** 12 casos vía `forced_intent`, así que es determinista, repetible y **no gasta presupuesto de Groq**. Es la herramienta preferida frente a cualquier cosa que mida *a través* del parser. | `docker compose exec backend python scripts/verify_search_branches.py --repeat 3` |
+| **`eval_recommendations.py`** | **Banco pareado para cambios de recomendación — el instrumento, no un resultado.** Evalúa las dos variantes sobre exactamente el mismo caso y promedia las *diferencias*, que es lo que cancela el ruido de dificultad. | `docker compose exec backend python scripts/eval_recommendations.py` |
+| **`bench_signal_a_production.py`** | **Hold-out de la Señal A evaluando LA FUNCIÓN DE PRODUCCIÓN**, no una reimplementación. Aporta además `ci95()`, que devuelve **(media, semiancho)** — leerlo como (lo, hi) ya invirtió veredictos enteros. | `docker compose exec backend python scripts/bench_signal_a_production.py` |
+| **`bench_vector_space.py`** | **En qué espacio debe vivir el centroide de gusto.** Compara crudo / centrado α=0.5 / ABTT k=1 / ABTT k=7 contra los controles `VBS` y `azar`. De aquí sale que el centroide crudo está a **0,971 del centro del catálogo** y su d' es **negativo**. | `docker compose exec backend python scripts/bench_vector_space.py` |
+| **`bench_person_discovery.py`** | **¿Te habría llevado a esa persona ANTES de que llegaras solo?** Hold-out TEMPORAL sobre directores y actores. El control que importa: restringir a personas NUNCA vistas, que es donde la mitad de las ganancias se evaporan. | `docker compose exec backend python scripts/bench_person_discovery.py` |
+| **`bench_inter_director.py`** | **¿Sirve una señal INTER-director?** Hold-out dejando fuera un director entero. Resultado que conviene recordar: incluso con centroides centrados, la afinidad inter-director pierde contra la popularidad. | `docker compose exec backend python scripts/bench_inter_director.py` |
+| **`bench_quality_gate.py`** | **¿Debe la Señal A tener un tope duro de calidad?** Cuatro variantes medidas. Sostuvo la decisión de NO quitarlo. | `docker compose exec backend python scripts/bench_quality_gate.py` |
+| **`bench_synthetic_profiles.py`** | **Perfiles sintéticos para evaluar la Señal A sin el sesgo canónico.** Existe porque sólo dos usuarios reales tienen `watched_date` y sus futuros SON el canon. | `docker compose exec backend python scripts/bench_synthetic_profiles.py` |
+| **`bench_cinco_ejes.py`** | **¿Es una lista BUENA Y VARIADA?** Cinco ejes, sin predecir nada. Complementa a los hold-out, que no ven la calidad. | `docker compose exec backend python scripts/bench_cinco_ejes.py` |
+| **`bench_a_vs_g2.py`** | **A (centroide global) vs G2 (multi-anchor), re-decidido.** Rehace una decisión de 2026-05 que se había tomado con una reimplementación cuyo `_strategy_g2_topk` devolvía **1 y 0 películas**. | `docker compose exec backend python scripts/bench_a_vs_g2.py` |
+| **`audit_score_surfaces.py`** | **Qué SIGNIFICA la puntuación en cada superficie, y si cada una rellena.** Pregunta más estrecha que `audit_search.py` y **no necesita Groq**, así que corre con cualquier presupuesto. | `docker compose exec backend python scripts/audit_score_surfaces.py` |
+| **`experiment_centering.py`** | **¿Arregla el centrado las dos poblaciones de coseno?** (2026-08-11). Midió **pares**, no centroides — por eso su "no centrar" sigue siendo correcto y no contradice lo del centroide. | `docker compose exec backend python scripts/experiment_centering.py` |
+| **`experiment_signal_a_heldout.py`** · **`experiment_signal_a_heldout_anchored.py`** | Hold-out de la Señal A, la segunda con ancla y ruido. _(Histórico: su métrica premia la canonicidad, así que no sirve para ordenar recomendadores — usar `bench_signal_a_production.py`.)_ | `docker compose exec backend python scripts/experiment_signal_a_heldout.py` |
+| **`experiment_enricher_models.py`** | **Barrido de modelos para el prompt ganador (V2-nameban).** Es lo que se ejecuta cuando muere un modelo de Groq. ⚠ Su lista interna nombra `qwen3-32b`, `scout` y `70b`, **los tres ya apagados**: actualizarla contra `/v1/models` antes de correrlo. | `docker compose exec backend python scripts/experiment_enricher_models.py` |
 
 ## 🛠️ Host Utility Scripts
 Run these from the root directory of the project on your host machine.

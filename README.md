@@ -19,7 +19,7 @@ It's built for people who care about *what* they watch next, not just that somet
 The "Picked For You" core is a three-signal hybrid. Each signal captures a different dimension of taste, and they're fused through Reciprocal Rank Fusion (RRF) before a final diversity pass. (Other feed rows — Because You Watched, Niche Picks, Hidden Gems — are separate builders described under Feed Sections.)
 
 ### Signal A — Vibe (Semantic Similarity)
-Ranks the whole catalogue against your taste centroid in vector space. Embeddings are generated from LLM-enriched cinematic descriptions — not just plot summaries, but tone, pacing, and visual style — using Groq-hosted open models (`services/llm_models.py` holds the chains: qwen3.6-27b then gpt-oss-120b/20b for enrichment, gpt-oss-120b then qwen3.6-27b for parsing), then encoded with `google/embeddinggemma-300m` (768 dimensions; gated HuggingFace model — requires `HF_TOKEN`). Descriptions are strictly name-free (no titles, directors, or franchises) so the vector space encodes *theme*, not identity; an anti-vector built from your low-rated and rejected films penalizes candidates that resemble things you disliked.
+Ranks the whole catalogue against your taste centroid in vector space. Embeddings are generated from LLM-enriched cinematic descriptions — not just plot summaries, but tone, pacing, and visual style — using Groq-hosted open models (`services/llm_models.py` holds the chains and is the only place a model ID is written down), then encoded with `google/embeddinggemma-300m` (768 dimensions; gated HuggingFace model — requires `HF_TOKEN`). Descriptions are strictly name-free (no titles, directors, or franchises) so the vector space encodes *theme*, not identity. An anti-vector built from your low-rated and rejected films demotes the decile of each row's head that sits closest to it. Honest caveat: measured against a proper control — future dislikes vs future *likes*, disjoint folds — that demotion is currently **indistinguishable from chance** (AUC 0.527 [0.475, 0.579] on the one user with enough dated history). It stays because the measurement has one user behind it, not because it is proven; see `docs/HALLAZGOS_2026-08-19.md`.
 
 ### Signal B — Auteur (Director & Cast Affinity)
 Mines your rating history for directors and actors you consistently rate highly (Bayesian-shrunk so two lucky films don't crown a favorite) and surfaces their filmographies you haven't seen.
@@ -37,7 +37,7 @@ All signals merge through RRF, then pass through a sigmoid quality weighting on 
 - **PostgreSQL 15** + SQLAlchemy 2.0 (async) — film catalog, ratings, clusters
 - **Qdrant** — vector database for semantic similarity search
 - **Redis 7** — section-level feed caching with per-TTL freshness controls
-- **Groq** — cinematic description generation and Magic Box intent parsing (chains in `services/llm_models.py`: enrichment qwen3.6-27b → gpt-oss-120b → gpt-oss-20b, parsing gpt-oss-120b → qwen3.6-27b)
+- **Groq** — cinematic description generation and Magic Box intent parsing (chains in `services/llm_models.py`: enrichment qwen3.8-27b → gpt-oss-120b → gpt-oss-20b, parsing gpt-oss-120b → qwen3.8-27b). The free-tier lineup churns — that file is the single source of truth, and the live list is `GET /v1/models`, never a blog
 - **google/embeddinggemma-300m** — sentence embeddings (768 dimensions; requires `HF_TOKEN` for the gated model)
 - **Clerk** — authentication (JWKS-based JWT verification)
 

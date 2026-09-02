@@ -249,6 +249,26 @@ Anotadas para no volver a perseguirlas: **recall de HNSW** bajo `HasIdCondition`
 `exact=True`: resultados idénticos) y el **`score_threshold`** (el router pasa 0.3 y los
 candidatos estaban en 0.50). La causa real era una clave ausente en el payload.
 
+### C10. El reloj del contenedor no es el tuyo
+Con el proyecto sin abrir dos semanas, el stack quedó suspendido y al reanudarse los contenedores
+arrancaron con el reloj **congelado en 2026-08-19**, saltando al 2026-09-02 real sólo cuando
+Docker los reinició a mitad de sesión. `docker compose ps` lo delata: «creados hace 13 días, Up
+26 minutes».
+
+Todo lo que se compare contra `now()` —cotas de frescura, decay, ventanas de caducidad— cambia
+de veredicto. **Mordió dos veces el mismo día**, y en direcciones opuestas: primero dijo que el
+filtro de frescura de disponibilidad costaba el **0,3%** (inofensivo) y luego el **99,9%** (letal);
+con el reloj bueno y el refresco al día, el número real es **~2%**. El mismo SQL, el mismo dato,
+tres respuestas.
+
+Lo peor del caso: la segunda lectura salió **99,4% visible**, que está cerca del 98,3% correcto
+— acertó por casualidad, con el reloj mal. Un número que resulta ser aproximadamente cierto por
+accidente es más peligroso que uno claramente absurdo, porque no dispara ninguna alarma.
+
+**Cómo cazarlo:** antes de creerte cualquier medición con fechas, `docker compose exec <svc> date`
+contra la del host, **y `select now()` en Postgres**, que es quien evalúa el filtro. Un `max(fecha)`
+sospechosamente redondo o idéntico a una fecha de sesión anterior es la otra señal.
+
 ---
 
 ## D. Forma del código — defectos que las auditorías encontraron
