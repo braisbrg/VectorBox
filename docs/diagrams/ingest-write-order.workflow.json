@@ -1,0 +1,322 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Ingest — write order and failures",
+    "animation": "none",
+    "quality_profile": "showcase",
+    "output": "docs/diagrams/ingest-write-order.html",
+    "viewBox": [
+      1230,
+      786
+    ]
+  },
+  "lanes": [
+    {
+      "id": "caller",
+      "label": "Caller → MovieService.ingest_movie"
+    },
+    {
+      "id": "factory",
+      "label": "MovieFactory (TMDB + OMDb + embedding)"
+    },
+    {
+      "id": "vectors",
+      "label": "Qdrant — point keyed by tmdb_id"
+    },
+    {
+      "id": "records",
+      "label": "Postgres — Movie row, PK Movie.id"
+    },
+    {
+      "id": "failures",
+      "label": "Failure branches + terminal states",
+      "variant": "exception"
+    }
+  ],
+  "phases": [
+    {
+      "id": "build_phase",
+      "label": "Build",
+      "fromCol": 0,
+      "toCol": 1
+    },
+    {
+      "id": "write_phase",
+      "label": "Write order",
+      "fromCol": 2,
+      "toCol": 4,
+      "variant": "emphasis"
+    },
+    {
+      "id": "after_phase",
+      "label": "After commit",
+      "fromCol": 5,
+      "toCol": 5,
+      "variant": "dashed"
+    }
+  ],
+  "groups": [
+    {
+      "id": "outer_except",
+      "label": "outer except — rollback · log exc_info · return None",
+      "lane": "failures",
+      "fromCol": 3,
+      "toCol": 5,
+      "variant": "security"
+    }
+  ],
+  "mainPath": [
+    "entry",
+    "build",
+    "gate",
+    "upsert",
+    "commit",
+    "providers"
+  ],
+  "semanticChecks": {
+    "allowedRoots": [
+      "entry"
+    ],
+    "allowedTerminals": [
+      "providers",
+      "rejected",
+      "no_row",
+      "orphan",
+      "late"
+    ],
+    "requiredEdges": [
+      {
+        "from": "gate",
+        "to": "upsert"
+      },
+      {
+        "from": "upsert",
+        "to": "commit"
+      },
+      {
+        "from": "gate",
+        "to": "zip_only"
+      }
+    ],
+    "requiredPaths": [
+      {
+        "from": "entry",
+        "to": "providers"
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "id": "entry",
+      "lane": "caller",
+      "col": 0,
+      "type": "external",
+      "label": "Ingest Request",
+      "sublabel": "rate · similar · group-vibe",
+      "width": 150,
+      "tag": "rss · ZIP import"
+    },
+    {
+      "id": "build",
+      "lane": "factory",
+      "col": 1,
+      "type": "backend",
+      "label": "A · build_movie",
+      "sublabel": "TMDB + OMDb + embedding",
+      "tag": "movie · point · providers",
+      "width": 150
+    },
+    {
+      "id": "gate",
+      "lane": "caller",
+      "col": 2,
+      "type": "security",
+      "label": "A2 · is_adult gate",
+      "sublabel": "checked before any write",
+      "width": 150
+    },
+    {
+      "id": "upsert",
+      "lane": "vectors",
+      "col": 3,
+      "type": "database",
+      "label": "B · upsert_batch",
+      "sublabel": "PointStruct(id=tmdb_id)",
+      "width": 150
+    },
+    {
+      "id": "zip_only",
+      "lane": "caller",
+      "col": 3,
+      "type": "backend",
+      "label": "ZIP · skip_qdrant=True",
+      "sublabel": "step B skipped entirely",
+      "width": 150
+    },
+    {
+      "id": "commit",
+      "lane": "records",
+      "col": 4,
+      "type": "database",
+      "label": "C · db.add + commit",
+      "sublabel": "refresh → Movie.id exists",
+      "width": 150
+    },
+    {
+      "id": "providers",
+      "lane": "records",
+      "col": 5,
+      "type": "database",
+      "label": "D · save_providers",
+      "sublabel": "returns committed Movie",
+      "width": 150
+    },
+    {
+      "id": "rejected",
+      "lane": "failures",
+      "col": 2,
+      "type": "security",
+      "label": "Adult title rejected",
+      "sublabel": "return None — no vector, no row",
+      "width": 172
+    },
+    {
+      "id": "no_row",
+      "lane": "failures",
+      "col": 3,
+      "type": "security",
+      "label": "Qdrant upsert raised",
+      "sublabel": "ingest aborts — NO PG row",
+      "width": 172
+    },
+    {
+      "id": "orphan",
+      "lane": "failures",
+      "col": 4,
+      "type": "messagebus",
+      "label": "Commit raised → rollback",
+      "sublabel": "orphan vector left — ACCEPTED",
+      "width": 172
+    },
+    {
+      "id": "late",
+      "lane": "failures",
+      "col": 5,
+      "type": "security",
+      "label": "Throw after the commit",
+      "sublabel": "returns None, film IS committed",
+      "width": 172
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_entry_build",
+      "from": "entry",
+      "to": "build",
+      "label": "tmdb_id",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_build_gate",
+      "from": "build",
+      "to": "gate",
+      "label": "movie, point, providers_raw"
+    },
+    {
+      "id": "e_gate_upsert",
+      "from": "gate",
+      "to": "upsert",
+      "label": "writes tmdb_id — first (REL-2)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_upsert_commit",
+      "from": "upsert",
+      "to": "commit",
+      "label": "vector exists → only now commit",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_commit_providers",
+      "from": "commit",
+      "to": "providers",
+      "label": "Movie.id (internal PK)",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e_gate_zip",
+      "from": "gate",
+      "to": "zip_only",
+      "label": "ZIP import lane",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "e_zip_commit",
+      "from": "zip_only",
+      "to": "commit",
+      "label": "PG-only — invisible to vector search until the batch upsert",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "e_gate_rejected",
+      "from": "gate",
+      "to": "rejected",
+      "label": "movie.is_adult",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e_upsert_norow",
+      "from": "upsert",
+      "to": "no_row",
+      "label": "raises",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e_commit_orphan",
+      "from": "commit",
+      "to": "orphan",
+      "label": "raises",
+      "variant": "security",
+      "role": "error"
+    },
+    {
+      "id": "e_providers_late",
+      "from": "providers",
+      "to": "late",
+      "label": "raises",
+      "variant": "security",
+      "role": "error"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Why Qdrant goes first (REL-2)",
+      "items": [
+        "The point is keyed by tmdb_id, not by the PG row",
+        "Reverse order = a film invisible to search, no error"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Why the orphan vector is accepted",
+      "items": [
+        "A point with no PG row is never returned",
+        "Re-ingest overwrites it — upsert is idempotent"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Two ID spaces",
+      "items": [
+        "tmdb_id is the Qdrant point ID (seen_ids too)",
+        "Movie.id is the PG internal PK, never sent to Qdrant"
+      ]
+    }
+  ]
+}

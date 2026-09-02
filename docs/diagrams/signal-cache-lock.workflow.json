@@ -1,0 +1,287 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "Request Path — One Feed Signal",
+    "animation": "none",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "auto",
+      "entries": {
+        "external": {
+          "label": "Client"
+        },
+        "frontend": {
+          "label": "Edge app"
+        },
+        "backend": {
+          "label": "API worker"
+        },
+        "database": {
+          "label": "Data store"
+        }
+      }
+    }
+  },
+  "lanes": [
+    {
+      "id": "client",
+      "label": "Client & edge"
+    },
+    {
+      "id": "api",
+      "label": "FastAPI request path"
+    },
+    {
+      "id": "redis",
+      "label": "Redis stampede lock"
+    },
+    {
+      "id": "compute",
+      "label": "Recompute on the lock"
+    },
+    {
+      "id": "respond",
+      "label": "Hydrate & respond"
+    }
+  ],
+  "mainPath": [
+    "browser",
+    "edgeApp",
+    "fastapi",
+    "cacheGet",
+    "lockSet",
+    "vectorSearch",
+    "pgGate",
+    "rerank",
+    "cacheSet"
+  ],
+  "semanticChecks": {
+    "allowedRoots": [
+      "browser"
+    ],
+    "allowedTerminals": [
+      "response"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "browser",
+      "lane": "client",
+      "col": 0,
+      "type": "external",
+      "label": "Browser",
+      "width": 96
+    },
+    {
+      "id": "edgeApp",
+      "lane": "client",
+      "col": 1,
+      "type": "frontend",
+      "label": "Next.js / Vercel",
+      "sublabel": "AuthBridge attaches the Clerk JWT",
+      "width": 172
+    },
+    {
+      "id": "response",
+      "lane": "respond",
+      "col": 5,
+      "type": "backend",
+      "label": "Feed response",
+      "width": 112
+    },
+    {
+      "id": "fastapi",
+      "lane": "api",
+      "col": 1,
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "get_current_user verifies the JWT",
+      "width": 176
+    },
+    {
+      "id": "cacheGet",
+      "lane": "api",
+      "col": 2,
+      "type": "database",
+      "label": "Redis GET",
+      "sublabel": "signal_cache:user:signal:hash",
+      "width": 156
+    },
+    {
+      "id": "pollWait",
+      "lane": "redis",
+      "col": 1,
+      "type": "backend",
+      "label": "Poll the cache",
+      "sublabel": "every 100ms, up to 3s",
+      "width": 140
+    },
+    {
+      "id": "lockSet",
+      "lane": "redis",
+      "col": 2,
+      "type": "database",
+      "label": "SET NX EX 30s",
+      "sublabel": "lock:signal_cache:...",
+      "brand": "redis",
+      "width": 158
+    },
+    {
+      "id": "vectorSearch",
+      "lane": "compute",
+      "col": 2,
+      "type": "database",
+      "label": "Qdrant vector search",
+      "width": 160
+    },
+    {
+      "id": "pgGate",
+      "lane": "compute",
+      "col": 3,
+      "type": "database",
+      "label": "Hydrate from Postgres",
+      "sublabel": "+ quality gate",
+      "width": 170
+    },
+    {
+      "id": "rerank",
+      "lane": "compute",
+      "col": 4,
+      "type": "backend",
+      "label": "RRF fusion",
+      "sublabel": "+ hybrid rerank",
+      "width": 120
+    },
+    {
+      "id": "cacheSet",
+      "lane": "redis",
+      "col": 5,
+      "type": "database",
+      "label": "SETEX 24h",
+      "sublabel": "+ compare-and-delete the lock (Lua)",
+      "brand": "redis",
+      "width": 206
+    },
+    {
+      "id": "hydrate",
+      "lane": "respond",
+      "col": 4,
+      "type": "database",
+      "label": "Hydrate Movie rows",
+      "sublabel": "from Postgres, re-sorted into the cached order",
+      "width": 232
+    }
+  ],
+  "edges": [
+    {
+      "id": "browser-edge",
+      "from": "browser",
+      "to": "edgeApp",
+      "role": "main"
+    },
+    {
+      "id": "edge-api",
+      "from": "edgeApp",
+      "to": "fastapi",
+      "role": "main"
+    },
+    {
+      "id": "api-cache",
+      "from": "fastapi",
+      "to": "cacheGet",
+      "role": "main"
+    },
+    {
+      "id": "cache-hit",
+      "from": "cacheGet",
+      "to": "hydrate",
+      "label": "hit",
+      "variant": "dashed",
+      "role": "branch",
+      "fromSide": "right",
+      "toSide": "top"
+    },
+    {
+      "id": "cache-miss",
+      "from": "cacheGet",
+      "to": "lockSet",
+      "label": "miss",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "lock-acquired",
+      "from": "lockSet",
+      "to": "vectorSearch",
+      "label": "acquired",
+      "variant": "emphasis",
+      "role": "main"
+    },
+    {
+      "id": "lock-held",
+      "from": "lockSet",
+      "to": "pollWait",
+      "label": "held by another worker",
+      "variant": "dashed",
+      "role": "branch"
+    },
+    {
+      "id": "search-hydrate",
+      "from": "vectorSearch",
+      "to": "pgGate",
+      "role": "main"
+    },
+    {
+      "id": "gate-rerank",
+      "from": "pgGate",
+      "to": "rerank",
+      "role": "main"
+    },
+    {
+      "id": "rerank-cache",
+      "from": "rerank",
+      "to": "cacheSet",
+      "role": "main"
+    },
+    {
+      "id": "cache-hydrate",
+      "from": "cacheSet",
+      "to": "hydrate",
+      "role": "main"
+    },
+    {
+      "id": "poll-hydrate",
+      "from": "pollWait",
+      "to": "hydrate",
+      "variant": "dashed",
+      "role": "branch",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "hydrate-response",
+      "from": "hydrate",
+      "to": "response",
+      "role": "return"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Why the lock is safe",
+      "items": [
+        "Lock value is a per-worker uuid4 token",
+        "Lua compare-and-delete: a slow worker cannot free a fresh lock"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Cache invalidation",
+      "items": [
+        "signal_cache:* is not versioned by FEED_CACHE_VERSION",
+        "Flush those keys by hand when signal logic changes"
+      ]
+    }
+  ]
+}
