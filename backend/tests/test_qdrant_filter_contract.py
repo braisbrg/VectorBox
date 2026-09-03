@@ -120,3 +120,42 @@ async def test_points_keep_their_lexical_vector():
     sin_sparse = [p.id for p in points
                   if not isinstance(p.vector, dict) or "lexical" not in p.vector]
     assert len(sin_sparse) <= 2, f"{len(sin_sparse)} de 100 puntos sin vector léxico"
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_la_busqueda_vectorial_devuelve_vecinos_de_verdad():
+    """Que `search_similar` siga encontrando lo que encontraba.
+
+    Existe porque el 2026-09-03 subió `qdrant-client` de 1.18.0 a 1.19.0 y los 517
+    tests pasaron **sin ejecutar una sola búsqueda vectorial**: la sub-versión que
+    toca el cliente de la base de datos vectorial se validó a mano. Lo que se
+    comprueba a mano una vez no protege nada la próxima.
+
+    Se usa El Padrino (tmdb 238) porque sus vecinos son estables y comprobables a
+    ojo: Parte II sale a 0.773, y detrás caen Gotti y Camino a la perdición.
+
+    ⚠ **La trampa que hay que evitar al escribir esta comprobación:** con un vector
+    ALEATORIO, `search_similar` devuelve 0 resultados, y eso es CORRECTO — la puerta
+    de calidad y el gate de `has_enriched_embedding` lo descartan. Un vector al azar
+    en un espacio anisótropo está a coseno ~0.48 de todo. Si esta prueba se escribe
+    con `np.random.rand(768)` "para no depender de una película concreta", pasa a
+    afirmar 0 == 0 y no puede fallar nunca. Tiene que ir con un vector REAL.
+    """
+    from services.qdrant_service import QdrantService
+
+    q = QdrantService()
+    vector = await q.get_vector(238)
+    assert vector is not None, "El Padrino no está en la colección: el catálogo cambió"
+    assert len(vector) == QdrantService.VECTOR_SIZE
+
+    hits = await q.search_similar(query_vector=vector, limit=5)
+    assert len(hits) >= 3, (
+        f"{len(hits)} vecinos para un vector REAL del catálogo — la búsqueda "
+        f"vectorial está devolviendo vacío sin error"
+    )
+    mejor = max(h.get("score", 0) for h in hits)
+    assert mejor > 0.9, (
+        f"el mejor vecino puntúa {mejor:.3f}: la película debería encontrarse a sí "
+        f"misma cerca de 1.0, así que la métrica o el vector han cambiado"
+    )
