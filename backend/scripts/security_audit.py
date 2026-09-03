@@ -4,6 +4,34 @@ import sys
 import re
 import os
 
+# ── Avisos aceptados a sabiendas ────────────────────────────────────────────
+# Se suprimen POR ID, nunca por paquete: si mañana sale un aviso NUEVO en
+# cualquiera de estos paquetes, la puerta lo ve. Cada uno lleva su motivo, y
+# todos se revisan cuando se haga el trabajo que los desbloquea.
+IGNORED = [
+    "GHSA-w8v5-vhqr-4h9v",   # diskcache — transitivo, no existe 5.6.4
+    "GHSA-mgj5-w798-5c9q",   # torchvision, falso positivo de la build CPU (1/3)
+    "GHSA-p75w-3772-g6p9",   # torchvision, falso positivo de la build CPU (2/3)
+    "GHSA-9wcc-7w4g-g499",   # torchvision, falso positivo de la build CPU (3/3)
+    # Stack de ML — DESBLOQUEA: re-embeber las 21.425 películas + re-clusterizar.
+    # Medido el 2026-09-03: subir `transformers` a 5.x arrastra
+    # `sentence-transformers` 5->6 y `torch` 2.10->2.14, o sea que cambia el
+    # ENCODER. Eso se hace a propósito y con su medición delante, no de rebote
+    # dentro de una tanda de seguridad.
+    "CVE-2026-9856",         # transformers -> 5.10.0
+    "PYSEC-2026-2288",       # transformers -> 5.0.0
+    "PYSEC-2026-2289",       # transformers -> 5.3.0
+    "PYSEC-2026-2290",       # transformers -> 5.5.0
+    "PYSEC-2025-217",        # transformers, sin arreglo publicado
+    "PYSEC-2026-139",        # torch, sin arreglo publicado
+    "PYSEC-2025-194",        # torch -> 2.13.0
+]
+
+
+def _ignore_args():
+    return [a for vid in IGNORED for a in ("--ignore-vuln", vid)]
+
+
 def main():
     print("Starting Custom Security Audit...")
     
@@ -64,16 +92,25 @@ def main():
 
     exit_code = 0
     try:
+        # NO `--strict`. Its documented behaviour is "fail the entire audit if
+        # dependency collection fails", and one package here cannot be collected:
+        # torch is installed as `2.10.0+cpu` from download.pytorch.org, and that
+        # PEP 440 local version does not exist on PyPI. So --strict made pip-audit
+        # ABORT on torch and audit NOTHING — while this wrapper skipped the torch
+        # line as known noise and reported a clean bill of health.
+        #
+        # Measured 2026-09-03: the gate said "No known vulnerabilities found" while
+        # the same lock file audited without --strict reported **85 known
+        # vulnerabilities in 19 packages**, including three HIGH in `cryptography`
+        # that GitHub had been flagging for three months. Two releases were tagged
+        # claiming "pip-audit clean" on the strength of this.
+        #
+        # Torch is not skipped either — it gets its own pass below, by base version.
         audit_cmd = [
             sys.executable, "-m", "pip_audit",
             "-r", target_file,
-            "--strict",
             "--progress-spinner", "off",
-            "--ignore-vuln", "GHSA-w8v5-vhqr-4h9v",   # diskcache — transitive dep, no fix available
-            "--ignore-vuln", "GHSA-mgj5-w798-5c9q",   # torchvision CPU-build false positive (1/3)
-            "--ignore-vuln", "GHSA-p75w-3772-g6p9",   # torchvision CPU-build false positive (2/3)
-            "--ignore-vuln", "GHSA-9wcc-7w4g-g499",   # torchvision CPU-build false positive (3/3)
-        ]
+        ] + _ignore_args()
 
         if target_file.endswith(".lock"):
             # Hashed lockfile: use --require-hashes for cryptographic integrity verification
@@ -88,6 +125,13 @@ def main():
         output_lines = process.stdout.splitlines() + process.stderr.splitlines()
         vuln_found = False
         significant_error = False
+        # A monitor has to prove it looked. pip-audit always ends with an explicit
+        # verdict — either "Found N known vulnerabilities" or "No known
+        # vulnerabilities found" — so the ABSENCE of both means it never got to
+        # audit anything, and that must fail closed. Without this flag the wrapper
+        # read "no findings printed" as "nothing wrong", which is exactly how it
+        # passed for months while auditing zero packages.
+        saw_verdict = False
 
         for line in output_lines:
             low = line.lower()
@@ -101,21 +145,57 @@ def main():
             # (note the word order — the previous "vulnerabilities found" match
             # never fired, silently passing every real finding: fail-open bug).
             m = re.search(r"found\s+(\d+)\s+known\s+vulnerabilit", low)
-            if m and int(m.group(1)) > 0:
-                vuln_found = True
+            if m:
+                saw_verdict = True
+                if int(m.group(1)) > 0:
+                    vuln_found = True
+            if "no known vulnerabilities found" in low:
+                saw_verdict = True
             # Any non-warning error/traceback is treated as a real failure so we
             # never fail-open on resolution/network errors either.
             if ("error" in low or "traceback" in low) and "warning" not in low:
                 significant_error = True
 
+        # torch ships as `2.10.0+cpu` from download.pytorch.org and PyPI has no such
+        # version, so the pass above cannot look it up. It is NOT skipped: PyPI does
+        # have the same upstream release without the local segment (checked live:
+        # /pypi/torch/2.10.0/json -> 200), so it gets audited by base version here.
+        # No hashes — the PyPI artifact is a different file from the CPU wheel; the
+        # advisory data is keyed by version, which is what we need.
+        torch_ver = next((l.split("==", 1)[1].split("+")[0].strip()
+                          for l in installed_packages
+                          if l.lower().startswith("torch==") and "+" in l), None)
+        if torch_ver:
+            print("-" * 50)
+            print(f"Auditing torch {torch_ver} by base version (the +cpu wheel is not on PyPI)...")
+            t = subprocess.run(
+                [sys.executable, "-m", "pip_audit", "--progress-spinner", "off",
+                 "--no-deps", "-r", "/dev/stdin",
+                 # mismas supresiones que la pasada principal: si no, un aviso
+                 # aceptado a sabiendas tumbaría la puerta por la puerta de atrás
+                 *_ignore_args()],
+                input=f"torch=={torch_ver}" + chr(10), capture_output=True, text=True)
+            for line in (t.stdout + t.stderr).splitlines():
+                print(line)
+                low = line.lower()
+                m = re.search(r"found\s+(\d+)\s+known\s+vulnerabilit", low)
+                if m:
+                    saw_verdict = True
+                    if int(m.group(1)) > 0:
+                        vuln_found = True
+                if "no known vulnerabilities found" in low:
+                    saw_verdict = True
+
         if vuln_found or significant_error:
             # Real vulnerabilities or a genuine audit error → fail closed.
             exit_code = 1
-        elif process.returncode != 0:
-            # Non-zero with no vuln line and no error line: the only known cause
-            # is the suppressed torch+cpu "not found on PyPI" noise.
-            print("Note: Suppressed known 'torch+cpu not found on PyPI' error (expected for CPU wheel builds).")
-            exit_code = 0
+        elif not saw_verdict:
+            # pip-audit never reached a verdict: it collected nothing, or died on
+            # the way. "No findings printed" is not "nothing wrong" — that reading
+            # is what let this gate pass for months without auditing a single
+            # package. Fail closed.
+            print("FAIL: pip-audit produced no verdict — it did not audit anything.")
+            exit_code = 1
         else:
             exit_code = 0
 

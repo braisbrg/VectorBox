@@ -9,6 +9,13 @@ on:
   pull_request:
     branches: [master, develop]
 
+# El GITHUB_TOKEN llega con permisos de escritura por defecto salvo que se acoten,
+# y estos tres jobs no escriben NADA: checkout, setup-node/python, cache y
+# upload-artifact (que va por su propio servicio, no por el token). Declararlo a
+# nivel de workflow cubre los tres — CodeQL abría un aviso por job (#1, #2, #3).
+permissions:
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 

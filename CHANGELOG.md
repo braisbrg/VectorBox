@@ -8,6 +8,34 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
+## [3.1.2] — 2026-09-03
+
+PATCH: security only. No API changes.
+
+### Fixed
+- **The security gate had not audited anything for months.** `security_audit.py` ran
+  `pip-audit --strict`, whose documented behaviour is to fail the whole audit when dependency
+  collection fails — and one package cannot be collected: `torch` installs as `2.10.0+cpu`, a
+  PEP 440 local version that does not exist on PyPI. pip-audit aborted there and audited zero
+  packages; the wrapper skipped that ERROR line as known torch noise, saw no findings, and
+  reported a clean bill of health.
+
+  The same lock file audited without `--strict` reports **84 known vulnerabilities across 18
+  packages**, including three HIGH in `cryptography` that GitHub had been flagging for three
+  months.
+
+  **Correction to the record: v3.1.0 and v3.1.1 were both tagged claiming "pip-audit clean".
+  That claim was false in both.**
+
+  The gate now has to prove it looked: pip-audit always ends with an explicit verdict, so the
+  absence of one fails closed. And `torch` is no longer skipped — PyPI carries the same release
+  without the local segment, so it is audited by base version in a second pass, which surfaced
+  two torch advisories nobody could see.
+- CI workflow jobs declared no `permissions`, so `GITHUB_TOKEN` arrived with write scope none of
+  them need. One workflow-level `contents: read` block closes all three CodeQL alerts.
+
+---
+
 ## [3.1.1] — 2026-09-03
 
 PATCH: dependency maintenance and test coverage only. No API changes.
@@ -128,6 +156,7 @@ pre-release audit. MAJOR because public API endpoints were removed alongside the
 Tags `v2.0.0` through `v2.3.1` predate this file. Use `git log` and `git tag` for their history;
 `BACKLOG.md` carries the decision record and bug history in full.
 
+[3.1.2]: https://github.com/braisbrg/VectorBox/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/braisbrg/VectorBox/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/braisbrg/VectorBox/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/braisbrg/VectorBox/compare/v2.3.1...v3.0.0
