@@ -8,6 +8,41 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
+## [3.1.1] — 2026-09-03
+
+PATCH: dependency maintenance and test coverage only. No API changes.
+
+### Added
+- Tests for the two dependency surfaces that the suite never touched: the sklearn contract
+  used by K-Means cluster selection, and a live Qdrant neighbour search. Both upgrades
+  (`scikit-learn` 1.9, `qdrant-client` 1.19) had passed 517 green tests without exercising
+  either, and had to be checked by hand.
+
+### Known issues
+- The Magic Box era-relaxation safety net has stopped firing: it triggers on
+  `results < 8` and the 1950s cyberpunk case now returns exactly 8, all of them padding at
+  flat 73-77 scores. Deterministic, unrelated to this release's dependency work, and tracked
+  in `BACKLOG.md` — a threshold compared against a *count* switches itself off as the
+  catalogue grows.
+
+### Security
+- `pnpm audit` is now at **zero** advisories, down from one moderate: the postcss bump closed
+  the last one left after the 3.1.0 overrides.
+
+### Changed
+- Dependency maintenance, clearing ten Dependabot PRs that had been open since May. Backend:
+  `orjson`, `PyJWT`, `pydantic`, `pydantic-settings`, `openai`; `requirements.lock` regenerated
+  with hashes and verified by installing it under `--require-hashes`. Frontend: `next` 16.2.11 →
+  16.3.4, `react`/`react-dom` 19.2.8, `tailwindcss` 4.3.3, `tailwind-merge` 3.6.0, `postcss`
+  8.5.26, `eslint` 9.39.5. Also the `infrastructure-critical` group: `fastapi` 0.136.1 →
+  0.141.1, `sqlalchemy` 2.0.51, `alembic` 1.19.0, `scikit-learn` 1.9.0, `qdrant-client`
+  1.19.0 and OpenTelemetry 1.44.0 (with the instrumentation packages moved to the matching
+  0.65b0 — they are pinned to the SDK version and only move together). Major bumps the
+  Dependabot groups exclude (`lucide-react` 1.x, `framer-motion` 13.x) and `@clerk/nextjs`
+  were deliberately left out.
+
+---
+
 ## [3.1.0] — 2026-09-02
 
 MINOR, not MAJOR: feed rows, filters and mood axes were added, but **no endpoint was removed** —
@@ -93,5 +128,6 @@ pre-release audit. MAJOR because public API endpoints were removed alongside the
 Tags `v2.0.0` through `v2.3.1` predate this file. Use `git log` and `git tag` for their history;
 `BACKLOG.md` carries the decision record and bug history in full.
 
+[3.1.1]: https://github.com/braisbrg/VectorBox/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/braisbrg/VectorBox/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/braisbrg/VectorBox/compare/v2.3.1...v3.0.0

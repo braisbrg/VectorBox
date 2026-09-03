@@ -269,6 +269,29 @@ accidente es más peligroso que uno claramente absurdo, porque no dispara ningun
 contra la del host, **y `select now()` en Postgres**, que es quien evalúa el filtro. Un `max(fecha)`
 sospechosamente redondo o idéntico a una fecha de sesión anterior es la otra señal.
 
+### C11. Un umbral de red de seguridad que la propia deriva del catálogo desactiva
+`test_impossible_era_still_answers_the_subject` empezó a fallar el 2026-09-03 sin que nadie
+tocara la búsqueda. Es determinista —usa `forced_intent`, no pasa por Groq— así que no era ruido.
+
+La red de seguridad dice: si la fila sale corta, suelta la época y trae el tema de verdad
+(`len(raw_results) < RELAXED_MIN_ROW`, con `RELAXED_MIN_ROW = 8`). Pedir «cyberpunk, neón,
+hackers, megacorporaciones» limitado a **1950-1959** devuelve ahora **exactamente 8**, así que
+`8 < 8` es falso y el rescate no dispara nunca.
+
+Y los 8 son relleno: *Sweet Smell of Success* (noir de periodistas) a 75 y *Separate Tables*
+(drama de hotel) a 73, en una banda plana de 73-77. Es la anisotropía otra vez — dos películas
+cualesquiera están a coseno ~0,5 y el normalizador convierte eso en «relevante».
+
+**La forma del defecto:** un umbral de rescate que se compara contra un CONTADOR se apaga solo
+en cuanto el catálogo crece lo justo, y crece cada vez que se enriquece, se repara un payload o
+se afloja un gate. La reparación de 963 puntos de la v3.1.0 sólo puede AÑADIR películas a una
+fila filtrada, que es la causa más probable aquí.
+
+**Cómo cazarlo:** por cada umbral que dispare una recuperación, preguntar qué lo mueve. Si lo
+mueve el tamaño del catálogo y no la calidad de lo encontrado, envejece hasta desactivarse. El
+arreglo no es subir el 8: es que la condición mire si lo que hay RESPONDE a la pregunta, no
+cuántas filas hay. Ver [[golden-set-drifts-with-enrichment]].
+
 ---
 
 ## D. Forma del código — defectos que las auditorías encontraron
