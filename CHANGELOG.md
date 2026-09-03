@@ -8,7 +8,7 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
-## [3.1.0] — unreleased
+## [3.1.0] — 2026-09-02
 
 MINOR, not MAJOR: feed rows, filters and mood axes were added, but **no endpoint was removed** —
 which is what made 3.0.0 a MAJOR.
@@ -92,3 +92,6 @@ pre-release audit. MAJOR because public API endpoints were removed alongside the
 
 Tags `v2.0.0` through `v2.3.1` predate this file. Use `git log` and `git tag` for their history;
 `BACKLOG.md` carries the decision record and bug history in full.
+
+[3.1.0]: https://github.com/braisbrg/VectorBox/compare/v3.0.0...v3.1.0
+[3.0.0]: https://github.com/braisbrg/VectorBox/compare/v2.3.1...v3.0.0
