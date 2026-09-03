@@ -292,6 +292,41 @@ mueve el tamaño del catálogo y no la calidad de lo encontrado, envejece hasta 
 arreglo no es subir el 8: es que la condición mire si lo que hay RESPONDE a la pregunta, no
 cuántas filas hay. Ver [[golden-set-drifts-with-enrichment]].
 
+### C12. Una puerta de seguridad que llevaba meses sin auditar nada
+El peor de esta clase encontrado hasta la fecha, y el que más tiempo estuvo vivo.
+
+`scripts/security_audit.py` corría `pip-audit --strict`. Su comportamiento documentado es
+**«falla la auditoría entera si falla la recolección de dependencias»**, y aquí hay un paquete
+que no se puede recolectar: `torch` se instala como `2.10.0+cpu` desde download.pytorch.org, y
+ese identificador local de PEP 440 no existe en PyPI. Así que pip-audit abortaba en torch y
+**no auditaba ni un paquete**. Su única salida era esa línea de ERROR — que el wrapper saltaba
+con un `continue` como «ruido conocido de torch», **antes** de llegar a la comprobación de
+errores. Sin hallazgos impresos, exit 0, «Security Audit Passed».
+
+Medido el 2026-09-03: la puerta decía «No known vulnerabilities found» mientras el MISMO
+fichero de lock, auditado sin `--strict`, reportaba **84 vulnerabilidades conocidas en 18
+paquetes**, incluidas **tres HIGH en `cryptography`** que GitHub llevaba tres meses avisando.
+Se tagearon **dos releases** (v3.1.0 y v3.1.1) afirmando «pip-audit limpio» sobre esa base.
+
+**Las tres cosas que fallaron a la vez**, y ninguna sola habría bastado:
+1. `--strict` convirtió un fallo de UN paquete en un apagón total.
+2. La supresión del ruido de torch se colocó **antes** de la detección de errores, así que se
+   comió la única señal de que algo iba mal.
+3. El wrapper leía **«no se imprimieron hallazgos» como «no hay nada»**. Un monitor que no
+   distingue «he mirado y está limpio» de «no he mirado» sólo puede decir que sí.
+
+**El arreglo, y la regla que sale de él:** un monitor tiene que **demostrar que ha mirado**.
+pip-audit siempre termina con un veredicto explícito —«Found N known vulnerabilities» o «No
+known vulnerabilities found»—, así que la ausencia de AMBOS es ahora un fallo en cerrado
+(`saw_verdict`). Y torch ya no se salta: PyPI sí tiene la misma release sin el sufijo local
+(`/pypi/torch/2.10.0/json` -> 200), así que se audita por versión base en una segunda pasada —
+que destapó **2 vulnerabilidades del propio torch** que nadie podía ver.
+
+**Cómo cazarlo en otros sitios:** por cada comprobación automática, preguntar *¿qué imprime
+cuando NO ha podido comprobar nada?* Si la respuesta se parece a lo que imprime cuando todo
+está bien, la comprobación no existe. Es la misma familia que A/B10 y que
+[[audit-blind-spot]], pero aquí la víctima era la puerta de seguridad.
+
 ---
 
 ## D. Forma del código — defectos que las auditorías encontraron
