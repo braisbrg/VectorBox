@@ -226,6 +226,10 @@ silence — something declared that never gets applied:
 | `test_qdrant_payload_writers` | a payload writer that omits a key, which DELETES it from the point |
 | `test_no_dead_parameters` | a parameter accepted and never read, so every caller passing it is ignored |
 
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md).
+
 ## License
 
 [MIT](./LICENSE)
