@@ -16,12 +16,26 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+from telemetry import get_tracer
+_tracer = get_tracer("qdrant")
+
 
 class QdrantService:
     """Qdrant vector database operations"""
     
     COLLECTION_NAME = "movies"
     VECTOR_SIZE = 768  # google/embeddinggemma-300m embedding size
+
+    # Campos de payload que devuelve la búsqueda. Extraído a constante porque el
+    # camino híbrido lo necesita también, y dos listas que deben coincidir acaban
+    # no coincidiendo: excluir `overview` aquí ya provocó una vez 20 llamadas a
+    # TMDB por búsqueda para re-pedir lo que Qdrant ya tenía.
+    SEARCH_PAYLOAD_FIELDS = [
+        "tmdb_id", "title", "year", "vectorbox_score", "vote_count",
+        "popularity", "poster_path", "vote_average", "runtime", "genres",
+        "overview",
+    ]
+
     
     def __init__(self):
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
@@ -38,7 +52,18 @@ class QdrantService:
         try:
             collections = (await self.client.get_collections()).collections
             collection_names = [c.name for c in collections]
-            
+            # `get_collections()` does NOT list aliases, and since the sparse
+            # migration (2026-08-03) `movies` IS an alias pointing at
+            # `movies_v2`. Without this the check said "missing", every boot
+            # attempted a doomed creation, and the 400 it got back happened to
+            # contain "already exists" so it was swallowed as a race condition —
+            # a real error passing for a handled one.
+            try:
+                aliases = (await self.client.get_aliases()).aliases
+                collection_names += [a.alias_name for a in aliases]
+            except Exception as e:
+                logger.warning(f"Could not list Qdrant aliases: {e}")
+
             if self.COLLECTION_NAME not in collection_names:
                 logger.info(f"Creating Qdrant collection: {self.COLLECTION_NAME}")
                 try:
@@ -54,31 +79,43 @@ class QdrantService:
                         )
                     )
                     logger.info("Collection created successfully")
-                    # Initialize payload indexes for filterable fields
-                    await self.init_payload_indexes()
                 except Exception as e:
                     # Handle Race Condition: 409 Conflict means it was created by another process
                     if "409" in str(e) or "already exists" in str(e):
                         logger.warning(f"Collection creation race condition handled: {e}")
                     else:
                         raise e
-            else:
+
+            # Unconditional, not only on creation. `create_payload_index` is
+            # idempotent, and hanging the indexes off the creation branch is how
+            # a collection built by anything OTHER than this function ends up
+            # with none: the sparse migration produced exactly that, and filtered
+            # search went from 6 ms to 160 ms without a single test noticing —
+            # the golden set measures relevance, and relevance was unaffected.
+            await self.init_payload_indexes()
+
+            if self.COLLECTION_NAME in collection_names:
                 logger.info(f"Collection {self.COLLECTION_NAME} already exists")
-                # Warn if pre-existing collection has legacy HNSW m=16 — the new
-                # m=32 config only applies to freshly-created collections, so an
-                # operator needs to rebuild (scripts/reembed_catalog.py) to pick it up.
+                # HNSW m: la colección viva puede tener el m=16 por defecto porque el
+                # m=32 de arriba sólo se aplica al CREARLA. No es motivo de alarma y por
+                # eso esto ya no es un WARNING: medido 2026-08-11 con
+                # `scripts/check_ann_recall.py` sobre 21.222 puntos, **recall@20 y
+                # recall@50 = 1.000** contra KNN exacto en los 7 anchors. A esta escala
+                # m=16 + hnsw_ef=128 no pierde ni un vecino, así que reconstruir para
+                # duplicar el tamaño del índice no compraría nada.
+                # Volver a mirarlo si el catálogo crece un orden de magnitud, o si
+                # check_ann_recall.py baja de 0.95 — ESE es el disparador, no el número m.
                 try:
                     info = await self.client.get_collection(self.COLLECTION_NAME)
                     current_m = info.config.hnsw_config.m
                     if current_m != 32:
-                        logger.warning(
-                            f"Qdrant collection HNSW m={current_m} (expected 32). "
-                            f"The new tuning will not apply until the collection is rebuilt."
+                        logger.info(
+                            f"Qdrant HNSW m={current_m} (el código crea nuevas con 32). "
+                            f"Sin impacto medido: recall@50=1.000 con 21k puntos. "
+                            f"Gatillo real = check_ann_recall.py < 0.95."
                         )
                 except Exception as inspect_err:
                     logger.debug(f"Could not inspect HNSW config: {inspect_err}")
-                # Ensure payload indexes exist (idempotent — no-op if already present)
-                await self.init_payload_indexes()
         except Exception as e:
             logger.error(f"Failed to initialize Qdrant collection: {e}")
             raise
@@ -103,6 +140,11 @@ class QdrantService:
             ("mpaa_rating", PayloadSchemaType.KEYWORD),
             ("oscar_wins", PayloadSchemaType.INTEGER),
             ("is_adult", PayloadSchemaType.BOOL),
+            # Ejes de mood (2026-08-11). Los chips filtran por rango sobre estos
+            # dos, y sin índice era un escaneo completo del payload: medido 27.7 ms
+            # contra 12.3 ms sin filtrar sobre 20.433 puntos.
+            ("mood_gravedad", PayloadSchemaType.FLOAT),
+            ("mood_humanidad", PayloadSchemaType.FLOAT),
         ]
         for field_name, field_schema in indexes:
             try:
@@ -136,12 +178,12 @@ class QdrantService:
         payload = metadata.model_dump(exclude_none=True) if hasattr(metadata, "model_dump") else metadata
         
         try:
-            point = PointStruct(
+            point = self._with_lexical(PointStruct(
                 id=movie_id,
                 vector=vector,
                 payload=payload
-            )
-            
+            ))
+
             await self.client.upsert(
                 collection_name=self.COLLECTION_NAME,
                 points=[point]
@@ -152,6 +194,31 @@ class QdrantService:
         except Exception as e:
             logger.error(f"Failed to upsert vector for movie {movie_id}: {e}")
             raise
+
+    @staticmethod
+    def _with_lexical(point: PointStruct) -> PointStruct:
+        """Re-adjunta el vector sparse a un punto que sólo trae el denso.
+
+        Qdrant reemplaza el CONJUNTO de vectores en cada upsert, así que escribir
+        sólo el denso borra el `lexical` que tuviera — comprobado, no deducido.
+        Sin esto, cada re-enriquecido y cada re-sync de VBS iría vaciando el
+        canal léxico película a película, sin un solo error, y sólo se notaría
+        como "esta película ya no sale" meses después.
+
+        Los llamantes no cambian: el vector se deriva del payload que ya viajaba.
+        """
+        from services import bm25
+
+        if isinstance(point.vector, dict):
+            return point          # ya trae vectores con nombre; no tocar
+        sparse = bm25.sparse_from_payload(point.payload or {})
+        if sparse is None:
+            return point
+        return PointStruct(
+            id=point.id,
+            vector={"": point.vector, "lexical": sparse},
+            payload=point.payload,
+        )
 
     async def upsert_batch(self, points: List[PointStruct], check_exists: bool = False):
         """
@@ -200,7 +267,7 @@ class QdrantService:
         try:
             await self.client.upsert(
                 collection_name=collection_name,
-                points=points
+                points=[self._with_lexical(p) for p in points]
             )
             logger.info(f"Upserted {len(points)} points to {collection_name}")
         except Exception as e:
@@ -218,6 +285,12 @@ class QdrantService:
         # Payload-backed since 2026-07-29 (see scripts/sync_qdrant_payload.py).
         "countries", "spoken_languages", "mpaa_ratings", "min_oscar_wins",
         "exclude_adult",
+        # Mood axes, payload-backed since 2026-08-05 (scripts/compute_mood_axes.py).
+        # Ranges rather than a quadrant name: the quadrant is a product idea and
+        # lives in services/mood_axes.py, not in the vector store.
+        "mood_gravedad_min", "mood_gravedad_max",
+        "mood_humanidad_min", "mood_humanidad_max",
+        "mood_min_votes", "mood_max_votes", "mood_min_vbs",
     })
 
     async def search_similar(
@@ -226,11 +299,27 @@ class QdrantService:
         limit: int = 20,
         offset: int = 0,
         score_threshold: float = 0.5,
-        filters: Optional[Dict] = None
+        filters: Optional[Dict] = None,
     ) -> List[Dict]:
         """
         STEP 3: Advanced hybrid search for movies with popularity vibe filtering
         Supports: year ranges, genre include/exclude, runtime, hidden gems vs blockbusters
+
+        ⚠️ `score_threshold`: en ESTE espacio, cualquier umbral absoluto por debajo de ~0.60
+        es un NO-OP, y por eso se retiraron los de clustering_service y recommendation_engine
+        el 2026-08-11. Medido ese día sobre el catálogo de 21k:
+
+            pares al azar (ruido)          media 0.490 · p95 0.658
+            película → vecina devuelta     MÍNIMO 0.598 · mediana 0.753
+            consulta → película devuelta   MÍNIMO 0.500 · mediana 0.540
+
+        Los umbrales que había (0.15, 0.25, 0.30, 0.40) descartaban **0.00%** de lo devuelto:
+        parecían redes de seguridad y no lo eran. Si alguna vez hace falta una de verdad:
+          - señal TEMÁTICA (película→película): el número es ~0.70, el p05 de las vecinas
+            reales. Por debajo de 0.658 estás dentro del ruido.
+          - señal de COMPORTAMIENTO (las recomendaciones de TMDB están en coseno medio 0.664,
+            por DEBAJO de las vecinas temáticas): **no se filtra con un umbral temático**;
+            un 0.70 ahí tiraría el 62% de la señal. Ver el bloque de la Señal C.
         """
         if len(query_vector) != self.VECTOR_SIZE:
             raise ValueError(f"Query vector size mismatch")
@@ -402,6 +491,39 @@ class QdrantService:
                         )
                     )
 
+                # 7c. Mood — percentiles 0-100 estampados por compute_mood_axes.py.
+                # Cuatro `if` sueltos y no un bucle sobre una tupla: el guard de
+                # test_qdrant_filter_contract lee ESTE fichero buscando
+                # `filters.get("clave")`, y con el bucle las claves quedaban
+                # declaradas en FILTER_KEYS sin que el guard pudiera verlas.
+                # `is not None` y no truthiness: un mínimo de 0 es un filtro válido
+                # (el eje entero) y con `if filters[k]` se caería en silencio.
+                if filters.get("mood_gravedad_min") is not None:
+                    must_conditions.append(FieldCondition(
+                        key="mood_gravedad", range={"gte": filters["mood_gravedad_min"]}))
+                if filters.get("mood_gravedad_max") is not None:
+                    must_conditions.append(FieldCondition(
+                        key="mood_gravedad", range={"lte": filters["mood_gravedad_max"]}))
+                if filters.get("mood_humanidad_min") is not None:
+                    must_conditions.append(FieldCondition(
+                        key="mood_humanidad", range={"gte": filters["mood_humanidad_min"]}))
+                if filters.get("mood_humanidad_max") is not None:
+                    must_conditions.append(FieldCondition(
+                        key="mood_humanidad", range={"lte": filters["mood_humanidad_max"]}))
+                # Suelos propios de un cuadrante, sobre campos que ya existen en el
+                # payload. Escala TMDB en los votos, no IMDb.
+                if filters.get("mood_min_votes") is not None:
+                    must_conditions.append(FieldCondition(
+                        key="vote_count", range={"gte": filters["mood_min_votes"]}))
+                # `lt`, no `lte`: el mismo número corta palomitas y rarezas, y con
+                # `lte` una película con exactamente 2500 votos saldría en las dos.
+                if filters.get("mood_max_votes") is not None:
+                    must_conditions.append(FieldCondition(
+                        key="vote_count", range={"lt": filters["mood_max_votes"]}))
+                if filters.get("mood_min_vbs") is not None:
+                    must_conditions.append(FieldCondition(
+                        key="vectorbox_score", range={"gte": filters["mood_min_vbs"]}))
+
                 # 8. Rating Filter
                 if "min_rating" in filters and filters["min_rating"]:
                     must_conditions.append(
@@ -516,15 +638,29 @@ class QdrantService:
             
             from qdrant_client.http import models
 
-            results = await self.client.query_points(
-                collection_name=self.COLLECTION_NAME,
-                query=query_vector,
+            with _tracer.start_as_current_span("qdrant.search") as _span:
+                _span.set_attribute("qdrant.limit", limit)
+                _span.set_attribute("qdrant.filters", ",".join(sorted(filters)) or "none")
+                _span.set_attribute("qdrant.threshold", effective_threshold)
+                results = await self.client.query_points(
+                    collection_name=self.COLLECTION_NAME,
+                    query=query_vector,
                 limit=limit,
                 offset=offset,
                 score_threshold=effective_threshold,
                 query_filter=qdrant_filter,
                 # Search-time HNSW ef: higher = better recall at cost of latency.
                 # ef=128 is the recommended production baseline for 768-dim embeddinggemma.
+                #
+                # NO hace falta `exact=True` con `include_tmdb_ids`, y se comprobó
+                # (2026-08-17) porque lo parecía: pidiendo 20 sobre el conjunto de
+                # proveedores salían 6, y sobre una watchlist de 588, cero. Con
+                # `exact=True` salían exactamente los mismos, así que no era recall del
+                # grafo: era el `score_threshold`. El mejor parecido de esa watchlist con
+                # la consulta era 0,460 — por debajo del suelo, y con razón, porque dos
+                # películas al azar están a 0,48 (ver utils/scoring.py). Un subconjunto
+                # pequeño tiene menos candidatos POR ENCIMA del umbral; eso no es un
+                # filtro roto, es la respuesta correcta a que no hay nada parecido.
                 search_params=SearchParams(hnsw_ef=128, exact=False),
                 # [OPTIMIZATION] Payload Selector
                 # Excludes the genuinely heavy fields: keywords, cast, directors.
@@ -551,13 +687,16 @@ class QdrantService:
                 ]
             )
             
+            # ponytail: se midió el canal léxico por vector sparse BM25 y PERDIÓ
+            # (0.796/0.681 contra 0.826/0.689 de sólo denso, ver routers/search.py).
+            # El camino de consulta se borra en vez de dejarlo dormido: código que
+            # nadie ejecuta invita a encenderlo sin volver a medir. El vector sparse
+            # SIGUE manteniéndose al escribir (`_with_lexical`), así que la Fase 4
+            # —barra de búsqueda por título y director, donde BM25 sí es la
+            # herramienta— no tendrá que repetir la migración de 20k puntos.
             return [
-                {
-                    "movie_id": hit.id,
-                    "score": hit.score,
-                    "metadata": hit.payload
-                }
-                for hit in results.points
+                {"movie_id": h.id, "score": h.score, "metadata": h.payload}
+                for h in results.points
             ]
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
@@ -582,6 +721,22 @@ class QdrantService:
             score_threshold=0.4  # Higher threshold for direct similarity
         )
     
+    @staticmethod
+    def _dense_of(vector):
+        """The dense vector, whatever shape Qdrant hands back.
+
+        Since the collection gained a named sparse vector (`lexical`, migration
+        2026-08-03), `retrieve()` returns a DICT of named vectors instead of a
+        bare list — the dense one keeps the empty-string name it always had.
+        Callers want the dense floats: passing the dict on reaches Qdrant as
+        "Unsupported query type: <class 'dict'>", which is how the golden-set
+        test caught this, and would otherwise have surfaced as a broken
+        "more like this" rail in production.
+        """
+        if isinstance(vector, dict):
+            return vector.get("") or vector.get("dense")
+        return vector
+
     async def get_vector(self, movie_id: int) -> Optional[List[float]]:
         """Retrieve vector for a specific movie"""
         try:
@@ -590,9 +745,9 @@ class QdrantService:
                 ids=[movie_id],
                 with_vectors=True
             )
-            
+
             if points:
-                return points[0].vector
+                return self._dense_of(points[0].vector)
             return None
         except Exception as e:
             logger.error(f"Failed to retrieve vector for movie {movie_id}: {e}")
@@ -612,7 +767,8 @@ class QdrantService:
                 ids=movie_ids,
                 with_vectors=True
             )
-            return {p.id: p.vector for p in points if p.vector is not None}
+            return {p.id: self._dense_of(p.vector) for p in points
+                    if self._dense_of(p.vector) is not None}
         except Exception as e:
             logger.error(f"Failed to batch-retrieve vectors for {len(movie_ids)} movies: {e}")
             return {}

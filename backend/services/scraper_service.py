@@ -185,12 +185,21 @@ class ScraperService:
         username: str,
         path_suffix: str,
         page: int,
-    ) -> tuple[list[dict], bool]:
+    ) -> tuple[list[dict], bool, "int | None"]:
         """Scrape one page of any Letterboxd poster-list (watchlist, likes,
         any other `/{user}/{path_suffix}/page/N/`).
 
-        Returns (films, has_more). has_more=False signals end of pagination
-        (404 or empty page).
+        Returns (films, has_more, total). has_more=False signals end of pagination
+        — and a 429/403/timeout the retries never cleared reaches the caller as the
+        same empty page, so a loop that breaks on it cannot tell "list ended" from
+        "we got cut off" (see `_scrape_was_complete` in routers/rss.py).
+
+        `total` is the list size Letterboxd stamps as `data-num-entries` on the
+        content wrapper. Measured live 2026-08-11 on braisbg/watchlist: present and
+        identical (603) on ALL 23 pages, including page 23 which is past the end and
+        returns zero films. So `total is None` means the FETCH failed, not that the
+        page was the last one. The watchlist sync reads it to detect removals cheaply
+        and to refuse the removal reconcile on a scrape that came back short.
         """
         base = f"https://letterboxd.com/{username}/{path_suffix}/"
         url = base if page == 1 else f"{base}page/{page}/"
@@ -198,7 +207,7 @@ class ScraperService:
 
         html = await self._fetch_with_curl_cffi(url, referer=f"https://letterboxd.com/{username}/")
         if not html:
-            return [], False
+            return [], False, None
 
         soup = BeautifulSoup(html, "html.parser")
         poster_containers = soup.find_all("div", attrs={"data-component-class": "LazyPoster"})
@@ -206,11 +215,14 @@ class ScraperService:
             poster_containers = soup.find_all("li", class_="poster-container")
 
         films = self._parse_poster_containers(poster_containers)
-        return films, bool(films)
-
-    async def _scrape_watchlist_page(self, username: str, page: int) -> tuple[list[dict], bool]:
-        """Back-compat wrapper. New callers should use `_scrape_listing_page`."""
-        return await self._scrape_listing_page(username, "watchlist", page)
+        node = soup.find(attrs={"data-num-entries": True})
+        total = None
+        if node:
+            try:
+                total = int(node["data-num-entries"])
+            except (ValueError, TypeError):
+                total = None
+        return films, bool(films), total
 
     async def scrape_watchlist_all(self, username: str, max_pages: int = 50) -> List[dict]:
         """Scrape every page of a user's watchlist (sequential, jittered)."""
@@ -228,7 +240,7 @@ class ScraperService:
         last_page = 0
         for page in range(1, max_pages + 1):
             last_page = page
-            films, has_more = await self._scrape_listing_page(username, path_suffix, page)
+            films, has_more, _ = await self._scrape_listing_page(username, path_suffix, page)
             for f in films:
                 slug = f.get("film_slug")
                 if slug and slug not in seen:
@@ -246,7 +258,7 @@ class ScraperService:
     async def scrape_watchlist_recent(self, username: str) -> List[dict]:
         """Legacy first-page-only scrape. New callers should prefer
         `scrape_watchlist_all`."""
-        films, _ = await self._scrape_listing_page(username, "watchlist", 1)
+        films, _, _ = await self._scrape_listing_page(username, "watchlist", 1)
         return films
 
     def _parse_poster_containers(self, poster_containers) -> list[dict]:
@@ -389,28 +401,14 @@ class ScraperService:
     # ------------------------------------------------------------------
     # Popular this week
     # ------------------------------------------------------------------
-    async def scrape_popular_this_week(self) -> List[Dict]:
-        """Fetch Letterboxd's 'Popular This Week' CSI fragment. Returns a
-        list of {title, year, letterboxd_slug, letterboxd_rating}.
-
-        Hits the `/csi/films/films-browser-list/popular/this/week/` endpoint
-        — the React app's XHR target — within a single curl_cffi session so
-        the CSRF cookie set by the warm-up GET to `letterboxd.com/` is
-        carried into the CSI request (the endpoint refuses calls that don't
-        present it). Headers mimic what the browser sends as a same-origin
-        CORS XHR (`Sec-Fetch-Mode: cors`, `Accept: */*`).
-        """
-        if not LETTERBOXD_POPULAR_AVAILABLE:
-            logger.info("[scraper] popular-this-week disabled — caller will fall back to Trakt")
-            return []
-
+    async def _fetch_popular_html(self) -> Optional[str]:
+        """One attempt at the CSI fragment. None on any non-200 / error."""
         try:
             from curl_cffi import requests as curl_requests
         except ImportError:
-            logger.warning("[scraper] curl_cffi missing — cannot hit Letterboxd /csi/, falling back to Trakt")
-            return []
+            logger.warning("[scraper] curl_cffi missing — cannot hit Letterboxd /csi/")
+            return None
 
-        html: Optional[str] = None
         try:
             async with curl_requests.AsyncSession() as session:
                 # Warm-up: seeds com.xk72.webparts.csrf in the session jar.
@@ -423,7 +421,7 @@ class ScraperService:
                 )
                 if warmup.status_code != 200:
                     logger.warning(f"[scraper] popular warmup -> {warmup.status_code}")
-                    return []
+                    return None
 
                 csi_headers = dict(self.headers)
                 csi_headers["Accept"] = "*/*"  # CSI returns HTML fragments, not full docs
@@ -440,11 +438,43 @@ class ScraperService:
                 )
                 if resp.status_code != 200:
                     logger.warning(f"[scraper] popular /csi/ -> {resp.status_code}")
-                    return []
-                html = resp.text
+                    return None
+                return resp.text
         except Exception as e:
             logger.warning(f"[scraper] popular fetch failed: {e}")
+            return None
+
+    async def scrape_popular_this_week(self) -> List[Dict]:
+        """Fetch Letterboxd's 'Popular This Week' CSI fragment. Returns a
+        list of {title, year, letterboxd_slug, letterboxd_rating}.
+
+        Hits the `/csi/films/films-browser-list/popular/this/week/` endpoint
+        — the React app's XHR target — within a single curl_cffi session so
+        the CSRF cookie set by the warm-up GET to `letterboxd.com/` is
+        carried into the CSI request (the endpoint refuses calls that don't
+        present it). Headers mimic what the browser sends as a same-origin
+        CORS XHR (`Sec-Fetch-Mode: cors`, `Accept: */*`).
+        """
+        if not LETTERBOXD_POPULAR_AVAILABLE:
+            logger.info("[scraper] popular-this-week disabled")
             return []
+
+        # Cloudflare rate-limits the browse routes, so a 403 here is transient
+        # and route-scoped, not a closed endpoint — measured 2026-08-18: film
+        # pages kept returning 200 while /films/popular/ 403'd for minutes.
+        # The cooldown is NOT fixed and every attempt re-arms it (probes cleared
+        # at 90s once and at 270s another time), so this loop is a cheap second
+        # chance, not a guarantee: what actually protects the section is the 7d
+        # TTL on the cache key, since a failed run leaves the old value in place.
+        # Don't lengthen this — a daily run that isn't preceded by a burst gets
+        # its 200 on the first attempt.
+        html: Optional[str] = None
+        for attempt in range(3):
+            if attempt:
+                await asyncio.sleep(120)
+            html = await self._fetch_popular_html()
+            if html:
+                break
 
         if not html:
             return []
@@ -514,45 +544,3 @@ class ScraperService:
             await asyncio.sleep(random.uniform(0.2, 0.4))
         return resolved
 
-    async def get_popular_with_fallback(self, min_items: int = 20) -> tuple[List[Dict], str]:
-        """Letterboxd-first, Trakt-fallback. Returns (items, source).
-
-        Each item is `{tmdb_id, letterboxd_rating}`. Trakt-sourced items
-        carry `letterboxd_rating=None` because there's no equivalent signal
-        outside Letterboxd — downstream consumers must treat None as
-        "unknown, do not filter on it".
-
-        `source` is "letterboxd" / "trakt" / "letterboxd_degraded" —
-        useful for orchestrator stats and drift alerting.
-        """
-        items = await self.scrape_popular_this_week_resolved()
-        if len(items) >= min_items:
-            return items, "letterboxd"
-
-        logger.warning(
-            f"[scraper] Letterboxd popular returned {len(items)} resolved items "
-            f"< {min_items} threshold — falling back to Trakt /movies/trending"
-        )
-        try:
-            from services.trakt_client import TraktClient
-            trakt = TraktClient()
-            try:
-                movies = await trakt.trending(limit=50)
-            finally:
-                await trakt.aclose()
-        except Exception as e:
-            logger.error(f"[scraper] Trakt fallback failed: {e}")
-            return items, "letterboxd_degraded"
-
-        fallback_items: List[Dict] = []
-        for m in movies:
-            ids_block = m.get("ids") if isinstance(m, dict) else None
-            if isinstance(ids_block, dict):
-                tid = ids_block.get("tmdb")
-                if isinstance(tid, int):
-                    fallback_items.append({
-                        "tmdb_id": tid,
-                        "letterboxd_rating": None,
-                    })
-        logger.info(f"[scraper] Trakt fallback produced {len(fallback_items)} TMDB IDs")
-        return fallback_items, "trakt"

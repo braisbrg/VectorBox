@@ -3,23 +3,48 @@ Embedding generation service using Sentence Transformers
 """
 from sentence_transformers import SentenceTransformer
 from typing import List
-import numpy as np
 import logging
+import threading
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
 
 # Singleton instance
 _model_instance = None
+# El check-then-set de abajo no era atómico: dos peticiones simultáneas contra un
+# proceso recién arrancado veían ambas `None` y cargaban el modelo dos veces —
+# 5,3 s y ~1,2 GB por copia. Nunca dio un error, sólo memoria y latencia de más.
+_model_lock = threading.Lock()
+
 
 def get_model():
     """Lazy load the model only once"""
     global _model_instance
     if _model_instance is None:
-        logger.info(f"Loading AI Model into Memory (Singleton): {EmbeddingService.MODEL_NAME}")
-        _model_instance = SentenceTransformer(EmbeddingService.MODEL_NAME)
-        logger.info("Model loaded successfully")
+        with _model_lock:
+            if _model_instance is None:
+                logger.info(f"Loading AI Model into Memory (Singleton): {EmbeddingService.MODEL_NAME}")
+                _model_instance = SentenceTransformer(EmbeddingService.MODEL_NAME)
+                logger.info("Model loaded successfully")
     return _model_instance
+
+
+def warmup() -> None:
+    """Carga el modelo AHORA, para que no lo pague el primer usuario.
+
+    Medido 2026-08-03 contra `/api/search/try` recién reiniciado el backend:
+    8,3 s la primera petición frente a 1,55 s las siguientes. Los 6,75 s de
+    diferencia son la carga del modelo, y CLAUDE.md obliga a reiniciar el backend
+    tras CUALQUIER cambio, así que ese coste se paga en cada despliegue y en cada
+    iteración de desarrollo.
+
+    Es bloqueante a propósito: el arranque tarda unos segundos más y a cambio
+    "arrancado" significa "puede responder", que es lo que un healthcheck debería
+    poder creerse.
+    """
+    get_model()
 
 class EmbeddingService:
     """Generate embeddings for movie metadata"""
@@ -88,6 +113,13 @@ class EmbeddingService:
         texts = []
 
         for movie in movies_data:
+            # Misma regla que generate_embedding: la cinematic_description manda,
+            # si no el lote reescribe con la receta de reserva lo que el
+            # enriquecido ya había hecho bien.
+            if movie.get("text_override"):
+                texts.append(movie["text_override"])
+                continue
+
             parts = []
 
             if include_title and movie.get("title"):

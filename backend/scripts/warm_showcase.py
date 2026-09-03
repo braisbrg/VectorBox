@@ -66,20 +66,11 @@ async def warm_one(client: httpx.AsyncClient, redis, slug: str, lang: str, dry: 
     #      would quietly downgrade a page that was working.
     degraded = "All models failed" in str(intent.get("reasoning", ""))
 
-    # Confidence. The similarity scores are the engine telling you whether the
-    # catalogue can answer at all, and nothing was reading them: measured
-    # 2026-07-29, "parents and kids will both enjoy" peaked at 64 with a mean of
-    # 44.7, while "loneliness in a big city" peaked at 88 with a mean of 67.5.
-    # The first filled the shelf with Boss Baby and a direct-to-video Charlotte's
-    # Web sequel. A shop window must not show an answer the engine is unsure of.
-    scores = [m.get("score") or 0 for m in results]
-    mean_score = sum(scores) / len(scores) if scores else 0
-    if mean_score < showcase_service.MIN_MEAN_SCORE:
-        print(f"  ! {slug}/{lang}: confianza baja (score medio {mean_score:.1f} < "
-              f"{showcase_service.MIN_MEAN_SCORE}), no se cachea — la consulta pide algo "
-              f"que el catálogo no sabe responder")
-        return False
-
+    # No confidence check here. There was one — mean `score` against a floor of
+    # 55 — and it could never fire, because `score` floors at 60. See
+    # showcase_service.py for why no threshold replaces it: the honest signal
+    # does not separate the good rows from the bad ones either. Gross breakage
+    # is what the checks below catch; the rows still need a human look.
     if len(results) < showcase_service.MIN_RESULTS:
         print(f"  ! {slug}/{lang}: solo {len(results)} resultados "
               f"(mínimo {showcase_service.MIN_RESULTS}), no se cachea")

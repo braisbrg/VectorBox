@@ -1,0 +1,377 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "VectorBox runtime architecture",
+    "output": "vectorbox-architecture.html",
+    "quality_profile": "showcase",
+    "animation": "none",
+    "viewBox": [
+      1290,
+      710
+    ],
+    "repository": {
+      "url": "https://github.com/braisbrg/VectorBox",
+      "revision": "5ff6585d0d62d3aa08d0567906d687b2dff59d13"
+    }
+  },
+  "components": [
+    {
+      "id": "browser",
+      "type": "external",
+      "label": "Browser",
+      "sublabel": "localhost:3000",
+      "pos": [
+        40,
+        120
+      ],
+      "size": [
+        150,
+        66
+      ]
+    },
+    {
+      "id": "clerk",
+      "type": "security",
+      "label": "Clerk",
+      "sublabel": "hosted identity",
+      "tag": "RS256 · JWKS",
+      "pos": [
+        40,
+        300
+      ],
+      "size": [
+        180,
+        66
+      ]
+    },
+    {
+      "id": "frontend",
+      "type": "frontend",
+      "label": "Next.js 16",
+      "sublabel": "App Router · :3000",
+      "pos": [
+        300,
+        110
+      ],
+      "size": [
+        230,
+        86
+      ],
+      "brand": "nextjs",
+      "sources": [
+        {
+          "path": "docker-compose.yml",
+          "label": "frontend service"
+        }
+      ]
+    },
+    {
+      "id": "backend",
+      "type": "backend",
+      "label": "FastAPI",
+      "sublabel": "uvicorn :8000 · 1 worker",
+      "tag": "+ APScheduler + embedder in-process",
+      "pos": [
+        300,
+        290
+      ],
+      "size": [
+        230,
+        136
+      ],
+      "brand": "fastapi",
+      "sources": [
+        {
+          "path": "backend/main.py",
+          "label": "lifespan + routers"
+        }
+      ]
+    },
+    {
+      "id": "redis",
+      "type": "database",
+      "label": "Redis 7",
+      "sublabel": "feed cache · :6379",
+      "pos": [
+        280,
+        560
+      ],
+      "size": [
+        150,
+        76
+      ],
+      "brand": "redis"
+    },
+    {
+      "id": "qdrant",
+      "type": "database",
+      "label": "Qdrant",
+      "sublabel": "768-d vectors · :6333",
+      "pos": [
+        455,
+        560
+      ],
+      "size": [
+        150,
+        76
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL 15",
+      "sublabel": "catalogue · :5432",
+      "pos": [
+        630,
+        560
+      ],
+      "size": [
+        150,
+        76
+      ],
+      "brand": "postgresql"
+    },
+    {
+      "id": "jaeger",
+      "type": "cloud",
+      "label": "Jaeger",
+      "sublabel": "traces · UI :16686",
+      "pos": [
+        840,
+        560
+      ],
+      "size": [
+        170,
+        76
+      ]
+    },
+    {
+      "id": "tmdb",
+      "type": "external",
+      "label": "TMDB",
+      "sublabel": "metadata · providers",
+      "pos": [
+        1070,
+        110
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "omdb",
+      "type": "external",
+      "label": "OMDb",
+      "sublabel": "IMDb votes for VBS",
+      "pos": [
+        1070,
+        214
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "groq",
+      "type": "external",
+      "label": "Groq",
+      "sublabel": "descriptions · intent parse",
+      "pos": [
+        1070,
+        318
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "letterboxd",
+      "type": "external",
+      "label": "Letterboxd",
+      "sublabel": "diary RSS + public profile",
+      "tag": "two clients",
+      "pos": [
+        1070,
+        422
+      ],
+      "size": [
+        160,
+        80
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "docker compose — internal network",
+      "wraps": [
+        "frontend",
+        "backend",
+        "redis",
+        "qdrant",
+        "postgres",
+        "jaeger"
+      ],
+      "pad": 30
+    },
+    {
+      "kind": "security-group",
+      "label": "no published ports in prod — backend only",
+      "wraps": [
+        "redis",
+        "qdrant",
+        "postgres"
+      ],
+      "pad": 18
+    }
+  ],
+  "connections": [
+    {
+      "id": "browser-to-frontend",
+      "from": "browser",
+      "to": "frontend",
+      "label": "HTTPS",
+      "variant": "emphasis"
+    },
+    {
+      "id": "frontend-to-backend",
+      "from": "frontend",
+      "to": "backend",
+      "label": "REST + Bearer JWT",
+      "variant": "emphasis",
+      "labelAt": [
+        415,
+        243
+      ]
+    },
+    {
+      "id": "clerk-verify",
+      "from": "clerk",
+      "to": "backend",
+      "label": "verify JWT",
+      "variant": "security",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "backend-redis",
+      "from": "backend",
+      "to": "redis",
+      "label": "cached feed sections",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        330,
+        468
+      ]
+    },
+    {
+      "id": "backend-qdrant",
+      "from": "backend",
+      "to": "qdrant",
+      "label": "vector search",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        548,
+        510
+      ]
+    },
+    {
+      "id": "backend-postgres",
+      "from": "backend",
+      "to": "postgres",
+      "label": "SQL",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        716,
+        494
+      ]
+    },
+    {
+      "id": "backend-jaeger",
+      "from": "backend",
+      "to": "jaeger",
+      "label": "OTLP :4317",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "top",
+      "labelAt": [
+        940,
+        500
+      ]
+    },
+    {
+      "id": "backend-tmdb",
+      "from": "backend",
+      "to": "tmdb",
+      "label": "REST",
+      "labelAt": [
+        1000,
+        142
+      ]
+    },
+    {
+      "id": "backend-omdb",
+      "from": "backend",
+      "to": "omdb",
+      "label": "REST",
+      "labelAt": [
+        1000,
+        246
+      ]
+    },
+    {
+      "id": "backend-groq",
+      "from": "backend",
+      "to": "groq",
+      "label": "LLM calls",
+      "labelAt": [
+        1000,
+        350
+      ]
+    },
+    {
+      "id": "backend-letterboxd",
+      "from": "backend",
+      "to": "letterboxd",
+      "label": "httpx · curl_cffi",
+      "labelAt": [
+        997,
+        462
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "What runs where",
+      "items": [
+        "frontend :3000 · backend :8000 · jaeger UI :16686",
+        "postgres :5432 · qdrant :6333 · redis :6379",
+        "Volumes: postgres_data · qdrant_data · redis_data · models_cache"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "One process, three jobs",
+      "items": [
+        "The HTTP API; APScheduler (trending 00:00, showcase 6 h);",
+        "and embeddinggemma-300m, 768-d, in memory — not a service."
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Boundaries and quirks",
+      "items": [
+        "Past FastAPI: Depends(get_current_user), a Clerk RS256 JWT.",
+        "Letterboxd needs two clients: RSS httpx, profiles curl_cffi."
+      ]
+    }
+  ]
+}

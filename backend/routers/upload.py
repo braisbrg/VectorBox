@@ -177,7 +177,10 @@ async def _enrich_user_movies_background(user_id: int) -> None:
                 .where(UserRating.user_id == user_id)
                 .where(UserRating.rating >= 4.0)
                 .where(Movie.embedding_quality_score.is_(None))
-                .order_by(desc(UserRating.watched_date))
+                # nullslast: sin esto las películas sin fecha de diario salían
+                # primero (Postgres ordena NULL antes en DESC) y estas 5 anclas
+                # dejaban de ser "lo último que viste".
+                .order_by(desc(UserRating.watched_date).nullslast())
                 .limit(5)
             )
             anchor_movies = (await db.execute(anchor_stmt)).scalars().all()
@@ -287,10 +290,17 @@ async def process_single_movie(
             try:
                 # --- Step 1: Local DB lookup by letterboxd_uri ---
                 if letterboxd_uri:
+                    # 26 URIs del catálogo apuntan a 2 filas (52 en total, p.ej.
+                    # "The Test"/"The Beta Test"). scalar_one_or_none() LEVANTA
+                    # ahí, y el except de abajo devolvía (None, False): la película
+                    # desaparecía del import del usuario sin más aviso que un log.
                     result = await session.execute(
-                        select(Movie).where(Movie.letterboxd_uri == letterboxd_uri)
+                        select(Movie)
+                        .where(Movie.letterboxd_uri == letterboxd_uri)
+                        .order_by(Movie.id)
+                        .limit(1)
                     )
-                    existing_movie = result.scalar_one_or_none()
+                    existing_movie = result.scalars().first()
 
                     if existing_movie:
                         logger.info(f"Found movie by letterboxd_uri: {existing_movie.title}")
@@ -461,6 +471,7 @@ async def enrich_movies_background(
                                 watched_date=movie_data.get("watched_date"),
                                 review=movie_data.get("review"),
                                 watch_count=movie_data.get("watch_count", 1),
+                                watchlist_rank=movie_data.get("watchlist_rank"),
                             ).on_conflict_do_update(
                                 index_elements=["user_id", "movie_id"],
                                 set_={
@@ -471,6 +482,7 @@ async def enrich_movies_background(
                                     "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
                                     "review": getattr(insert(UserRating).excluded, "review"),
                                     "watch_count": getattr(insert(UserRating).excluded, "watch_count"),
+                                    "watchlist_rank": getattr(insert(UserRating).excluded, "watchlist_rank"),
                                 }
                             )
                             await db.execute(stmt)
@@ -508,7 +520,8 @@ async def enrich_movies_background(
                                     "title": m.title,
                                     "overview": m.overview,
                                     "genres": m.genres,
-                                    "keywords": m.keywords or []
+                                    "keywords": m.keywords or [],
+                                    "text_override": m.cinematic_description or None,
                                 })
 
                             # Generate Batch Embeddings (non-blocking)

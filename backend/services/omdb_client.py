@@ -173,10 +173,16 @@ class OMDbClient:
     TMDB_P05, TMDB_P90, TMDB_P99 = 5.4, 7.7, 8.28
     META_P05, META_P90, META_P99 = 30.0, 84.0, 96.0
 
-    # Coverage factor by number of present sources (1-3). Penalises thin-data
-    # films that lack cross-source validation, e.g. a TMDb-only documentary
-    # used to ride a single high vote_average all the way to the cap.
-    COVERAGE_FACTORS = {1: 0.85, 2: 0.95, 3: 1.00}
+    # Coverage factor. Counts ONLY the sources that carry votes (IMDb, TMDB):
+    # 2 → 1.00, fewer → 0.85. It exists to stop a TMDb-only documentary riding a
+    # single high vote_average to the cap — thin data, not thin criticism.
+    # Metacritic deliberately does NOT count. Its absence means Metacritic never
+    # reviewed the film, and that is an era/geography artifact, not a data gap:
+    # coverage is 22% pre-1960 vs ~60% post-1995, and 19% of the films it covers
+    # are non-English vs 53% of the ones it misses. Counting it taxed old and
+    # foreign cinema — measured 2026-08-17, The Great Dictator (258k IMDb votes)
+    # was losing 5% for "lacking cross-source validation".
+    CROWD_SOURCES = ("imdb", "tmdb")
 
     # Bayesian shrinkage priors. The 'm' parameter is the prior strength
     # (catalog-mean votes equivalent); larger m pulls low-vote movies harder
@@ -228,8 +234,8 @@ class OMDbClient:
              not crowd-sourced, so vote_count doesn't apply.
           2. Two-segment piecewise stretch — p05..p90 → 20..90 (broad),
              p90..p99 → 90..98 (compressed), >p99 → 99 (natural ceiling).
-          3. Coverage factor — multiplies final score by 0.85/0.95/1.00 for
-             1/2/3 sources present, penalising thin-data films.
+          3. Coverage factor — 1.00 with both crowd sources (IMDb + TMDB),
+             0.85 otherwise. Metacritic does not count; see CROWD_SOURCES.
 
         Vote-count gate: TMDB still requires effective_vote_count >= 10 to
         enter at all. IMDb votes act as a cross-source confidence signal.
@@ -297,9 +303,10 @@ class OMDbClient:
             norm * (weights[src] / total_weight) for src, norm in scores.items()
         )
 
-        # 5. Coverage penalty — single-source films can't ride one inflated
+        # 5. Coverage penalty — a single crowd source can't ride one inflated
         # rating to the top without cross-source validation.
-        coverage = self.COVERAGE_FACTORS.get(len(scores), 0.85)
+        crowd = sum(1 for src in scores if src in self.CROWD_SOURCES)
+        coverage = 1.00 if crowd == len(self.CROWD_SOURCES) else 0.85
         final_score = weighted_avg * coverage
 
         return VectorBoxScore(score=round(final_score, 1), breakdown=breakdown)

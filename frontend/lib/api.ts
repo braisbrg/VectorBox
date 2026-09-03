@@ -57,6 +57,7 @@ export interface VectorboxUser {
     created_at?: string;
     has_data?: boolean;
     letterboxd_username?: string;
+    include_shorts?: boolean;
 }
 
 // v1.1: Task progress tracking
@@ -92,7 +93,7 @@ export interface FeedItem {
     id: number;
     title: string;
     poster_url?: string;
-    match_score: number;
+    match_score: number | null;
     streaming_providers: string[];
     year?: number;
     runtime?: number;
@@ -184,6 +185,9 @@ export interface GroupVibeOptions {
     /** Session filters: runtime cap (min) + provider names. */
     maxRuntime?: number | null;
     providers?: string[];
+    /** Los mismos dos del feed y la watchlist: desde qué año, y suelo de VBS. */
+    yearMin?: number | null;
+    minScore?: number | null;
 }
 
 export const getGroupVibe = async (usernames: string[], opts: GroupVibeOptions = {}): Promise<GroupVibeResponse> => {
@@ -193,6 +197,8 @@ export const getGroupVibe = async (usernames: string[], opts: GroupVibeOptions =
         focus: opts.focus || undefined,
         max_runtime: opts.maxRuntime || undefined,
         providers: opts.providers?.length ? opts.providers : undefined,
+        year_min: opts.yearMin || undefined,
+        min_score: opts.minScore || undefined,
     });
     return response.data;
 };
@@ -305,6 +311,8 @@ export const getWatchlist = async (
         genres?: string;
         min_rating?: number;
         streaming_providers?: string;
+        /** Incluir las que ya viste pero siguen en la lista (revisionado). */
+        include_watched?: boolean;
     } = {}
 ): Promise<{
     items: FeedItem[];
@@ -319,6 +327,9 @@ export const getWatchlist = async (
     params.append("country_code", countryCode);
 
     if (filters.sort_by) params.append("sort_by", filters.sort_by);
+    // Sólo cuando es true: el backend ya tiene False por defecto y mandarlo
+    // siempre ensuciaría la clave de caché de react-query sin cambiar nada.
+    if (filters.include_watched) params.append("include_watched", "true");
     if (filters.runtime_min) params.append("runtime_min", filters.runtime_min.toString());
     if (filters.runtime_max) params.append("runtime_max", filters.runtime_max.toString());
     if (filters.year_min) params.append("year_min", filters.year_min.toString());
@@ -328,6 +339,18 @@ export const getWatchlist = async (
     if (filters.streaming_providers) params.append("streaming_providers", filters.streaming_providers);
 
     const response = await api.get("/api/recommendations/watchlist", { params });
+    return response.data;
+};
+
+/**
+ * One random film from the watchlist. Deliberately takes no filters: choosing a
+ * genre and a decade first is the screen that already exists — this is for when
+ * deciding is the problem. 404 when there is nothing pending.
+ */
+export const getWatchlistRandom = async (countryCode: string = "ES"): Promise<FeedItem> => {
+    const response = await api.get("/api/recommendations/watchlist/random", {
+        params: { country_code: countryCode },
+    });
     return response.data;
 };
 
@@ -433,13 +456,29 @@ export interface MovieDetail {
     directors?: string[];
     cast?: string[];
     tagline?: string | null;
-    match_score: number;
+    match_score: number | null;
     vectorbox_score?: number | null;
     imdb_rating?: number;
     metacritic_rating?: number;
+    /** TMDB: la única nota con cobertura del 100%. */
+    vote_average?: number | null;
+    vote_count?: number | null;
+    imdb_vote_count?: number | null;
     title_es?: string;
     overview_es?: string;
     streaming_providers?: string[];
+    /** Decisión previa de este usuario. null sin sesión o fuera de catálogo. */
+    user_state?: MovieUserState | null;
+}
+
+/** Lo que este usuario ya decidió sobre esta película. `null` sin sesión, o
+ *  cuando la película no está en el catálogo (no puede haber decisión previa). */
+export interface MovieUserState {
+    rating: number | null;
+    is_watched: boolean;
+    is_watchlist: boolean;
+    is_liked: boolean;
+    is_rejected: boolean;
 }
 
 export const getMovieDetail = async (tmdbId: number): Promise<MovieDetail> => {
@@ -533,6 +572,60 @@ export const unrateFilm = async (tmdbId: number): Promise<void> => {
     await api.delete(`/api/users/me/ratings/${tmdbId}`);
 };
 
+// ---- Stats (/stats) — distributions only; headline numbers live in ProfileAggregates ----
+/** A film as the stats lists reference it. */
+export interface StatsFilm {
+    tmdb_id: number;
+    title: string;
+    year?: number | null;
+}
+
+export interface StatsResponse {
+    films: number;
+    rated_films: number;
+    /** Films carrying a watched_date of any kind — including bulk-log dates. */
+    dated_films: number;
+    /** Of those, the ones on a plausible viewing day. What per_year/weekday plot. */
+    diary_films: number;
+    runtime: { total_hours: number; avg_minutes: number };
+    rating_histogram: { stars: number; films: number }[];
+    decades: { decade: number; films: number }[];
+    per_year: { year: number; films: number }[];
+    genres: { name: string; films: number }[];
+    languages: { name: string; films: number }[];
+    countries: { name: string; films: number }[];
+    directors: { name: string; films: number }[];
+    /** Top-billed leads only — Movie.cast holds 3 per film. */
+    actors: { name: string; films: number }[];
+    runtime_bands: { name: string; films: number }[];
+    /** Empty when the library has no diary dates at all. */
+    weekday: { day: number; films: number }[];
+    /** Only decades with ≥3 rated films — an average of one is not an average. */
+    decade_ratings: { decade: number; avg: number; films: number }[];
+    obscurity: { median_votes: number | null; obscure_share: number | null; films: number };
+    /** `films` is the count carrying BOTH your rating and IMDb's, not the library. */
+    vs_crowd: {
+        delta: number | null;
+        films: number;
+        above: (StatsFilm & { delta: number })[];
+        below: (StatsFilm & { delta: number })[];
+    };
+    rewatches: { films: number; extra_plays: number; top: (StatsFilm & { plays: number })[] };
+    /** `films` is its own denominator: the quadrants exclude the dead band, so
+     *  they do NOT sum to it, and films without axes are outside both. */
+    mood: {
+        films: number;
+        gravedad: number | null;
+        humanidad: number | null;
+        quadrants: { name: string; films: number }[];
+    };
+}
+
+export const getMyStats = async (): Promise<StatsResponse> => {
+    const response = await api.get("/api/users/me/stats");
+    return response.data;
+};
+
 export interface FilterSearchParams {
     yearMin?: number | null;
     yearMax?: number | null;
@@ -544,6 +637,11 @@ export interface FilterSearchParams {
     countryCode?: string;
     /** TMDB provider IDs to require. */
     providers?: number[];
+    /** Mood: "moving" | "dark" | "comforting" | "popcorn" | "deep_cut".
+     *  Fuente de verdad: QUADRANTS en backend/services/mood_axes.py. */
+    mood?: string | null;
+    /** Restrict every row to the user's unwatched watchlist (SOURCE toggle). */
+    watchlist?: boolean;
 }
 
 // F8 — rail EXECUTE_QUERY as a SECTIONED feed (POST /recommendations/feed/filtered).
@@ -559,6 +657,8 @@ export const getFilteredFeed = async (params: FilterSearchParams): Promise<FeedR
         genres: params.genres && params.genres.length ? params.genres : null,
         providers: params.providers && params.providers.length ? params.providers : null,
         country_code: params.countryCode || "ES",
+        mood: params.mood || null,
+        watchlist: params.watchlist || false,
     });
     return response.data as FeedResponse;
 };
@@ -627,5 +727,69 @@ export const searchTry = async (query: string): Promise<TrySearchResponse> => {
         query: query.slice(0, TRY_MAX_QUERY),
         country_code: "ES",
     });
+    return response.data;
+};
+
+// ── ficha de director ────────────────────────────────────────────────────────
+//
+// La barra de búsqueda no tenía a dónde llevar: "kurosawa" devolvía el
+// documental *Kurosawa* (2000) junto a 8 de sus 30 películas, con un tope duro
+// de 12 filas y sin scroll. El desplegable estaba bien; faltaba el destino.
+export interface DirectorFilm {
+    tmdb_id: number;
+    title: string;
+    title_es?: string | null;
+    year?: number | null;
+    poster_path?: string | null;
+    vectorbox_score?: number | null;
+    popularity?: number | null;
+    genres: string[];
+}
+
+export interface DirectorPage {
+    name: string;
+    total: number;
+    offset: number;
+    sort: string;
+    profile_path?: string | null;
+    biography?: string | null;
+    birthday?: string | null;
+    place_of_birth?: string | null;
+    /** Actors in ≥2 of their films, the director themselves excluded. */
+    recurring_cast: { name: string; films: number }[];
+    genres: { name: string; films: number }[];
+    span?: { from: number; to: number } | null;
+    avg_score?: number | null;
+    /** Null when signed out — the page renders without it. */
+    library?: {
+        seen: number;
+        rated: number;
+        watchlisted: number;
+        avg_rating: number | null;
+        /** Null under the 3-film floor: below that it is noise, not a taste. */
+        vs_your_avg: number | null;
+        best_unseen: {
+            tmdb_id: number;
+            title: string;
+            year?: number | null;
+            poster_path?: string | null;
+            vectorbox_score?: number | null;
+        } | null;
+    } | null;
+    films: DirectorFilm[];
+}
+
+export type DirectorSort = "popularity" | "year" | "score" | "title";
+
+export const getDirector = async (
+    name: string,
+    sort: DirectorSort = "popularity",
+    // TMDB has Spanish bios for most directors, so ask in the reader's language
+    // — the backend falls back to English when TMDB returns an empty one.
+    lang = "en",
+): Promise<DirectorPage> => {
+    const response = await api.get(
+        `/api/directors/${encodeURIComponent(name)}?sort=${sort}&lang=${lang}`
+    );
     return response.data;
 };

@@ -30,13 +30,15 @@ from dependencies import (
     get_optional_current_user,
     get_qdrant_service,
     get_anonymous_user,
+    get_redis,
     sign_anon_session,
     ANON_COOKIE_NAME,
 )
 from limiter import limiter
 from models.database import User, Movie, UserRating
 from models.schemas import TokenResponse
-from services.recommendation_engine import MOVIE_QUALITY_GATE
+from services import metrics
+from services.recommendation_engine import movie_quality_gate
 from services.profile_cache import set_profile_dirty
 from services.qdrant_service import QdrantService
 from services.onboarding_service import ONBOARDING_THRESHOLD
@@ -281,7 +283,7 @@ async def get_onboarding_movies(
 
         pool_query = (
             select(Movie)
-            .where(*MOVIE_QUALITY_GATE)
+            .where(*movie_quality_gate())
             .where(Movie.tmdb_id.notin_(exclude_combined) if exclude_combined else True)
             .where(Movie.vote_count >= 500)
             .where(Movie.vectorbox_score >= 55)
@@ -308,7 +310,7 @@ async def get_onboarding_movies(
     for pole_id, pole_config in GENRE_POLES.items():
         query = (
             select(Movie)
-            .where(*MOVIE_QUALITY_GATE)
+            .where(*movie_quality_gate())
             .where(Movie.vectorbox_score >= 55)
             .where(Movie.poster_path.isnot(None))
         )
@@ -336,7 +338,7 @@ async def get_onboarding_movies(
         if avoided_tags_list:
             query = _apply_tag_exclude_filters(query, avoided_tags_list)
 
-        query = query.order_by(desc(Movie.vectorbox_score)).limit(5)
+        query = query.order_by(desc(Movie.vectorbox_score).nulls_last()).limit(5)
         result = await db.execute(query)
         candidates = result.scalars().all()
 
@@ -350,7 +352,7 @@ async def get_onboarding_movies(
     seen_tmdb_ids = pole_tmdb_ids | rated_movie_ids
     pool_query = (
         select(Movie)
-        .where(*MOVIE_QUALITY_GATE)
+        .where(*movie_quality_gate())
         .where(Movie.vote_count >= 500)
         .where(Movie.vectorbox_score >= 55)
         .where(Movie.poster_path.isnot(None))
@@ -361,7 +363,7 @@ async def get_onboarding_movies(
         pool_query = _apply_tag_exclude_filters(pool_query, avoided_tags_list)
 
     pool_query = pool_query.order_by(
-        desc(Movie.vectorbox_score)
+        desc(Movie.vectorbox_score).nulls_last()
     ).limit(80)
 
     pool_result = await db.execute(pool_query)
@@ -418,6 +420,7 @@ async def init_session(
     db: AsyncSession = Depends(get_db),
     anon_user: Optional[User] = Depends(get_anonymous_user),
     current_user: Optional[TokenResponse] = Depends(get_optional_current_user),
+    redis=Depends(get_redis),
 ):
     """
     Idempotent session initializer for guest users.
@@ -448,6 +451,12 @@ async def init_session(
     db.add(user)
     await db.commit()
     await db.refresh(user)
+
+    # `landing.cta.profile` del embudo, y AQUÍ y no al entrar en la función: este
+    # endpoint lo llaman `/explore` y `/onboarding` al montar, y también quien ya
+    # tiene sesión (hay guarda arriba para eso). Contar cada llamada sería contar
+    # montajes de página. Un invitado NUEVO sí es la conversión.
+    await metrics.bump(redis, "landing.cta.profile")
 
     # Set httponly cookie. SameSite=Strict — this cookie is only ever read
     # by same-site XHRs from the onboarding flow; there's no legitimate

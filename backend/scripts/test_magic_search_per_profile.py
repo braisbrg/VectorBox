@@ -22,7 +22,7 @@ from qdrant_client.models import SearchParams
 from config import AsyncSessionLocal
 from models.database import Movie, User, UserRating
 from services.embedding_service import EmbeddingService
-from services.magic_search_ranking import compute_blended_score, movie_passes_post_filter
+from services.magic_search_ranking import compute_relevance, movie_passes_post_filter
 from services.nlp_search import parse_user_intent
 from services.qdrant_service import QdrantService
 
@@ -101,11 +101,11 @@ async def _run_query(query: str, user_id: int) -> list[tuple[float, Movie]]:
         m = by_tmdb.get(tid)
         if m is None or not movie_passes_post_filter(m, intent):
             continue
-        final, _, _ = compute_blended_score(
+        relevance, _, weight = compute_relevance(
             raw_cosine=h.score, query=query, intent=intent,
             title=m.title or "", vbs=m.vectorbox_score,
         )
-        scored.append((final, m))
+        scored.append((relevance * weight, m))
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored
 

@@ -10,7 +10,8 @@
            (aclose() only exists from redis-py 5.0.1).
   - REV-6  mark_watched / reject_movie use atomic INSERT … ON CONFLICT
            (CONC-1 parity with /onboarding/rate).
-  - REV-7  RecommendationService reuses the TraktClient module singleton.
+  - REV-7  RecommendationService builds no Trakt client at all (was: reuses
+           the singleton — inverted 2026-08-19, see the test).
   - REV-8  Background ingest helpers close their MovieService (releasing the
            lazily-created OMDb/Qdrant clients).
 
@@ -117,15 +118,30 @@ def test_watched_and_reject_routes_use_atomic_upsert():
 # REV-7 — TraktClient singleton reuse
 # ---------------------------------------------------------------------------
 
-def test_recommendation_service_reuses_trakt_singleton():
+def test_recommendation_service_builds_no_trakt_client():
+    """Inverted 2026-08-19. Signal C moved back to TMDB /recommendations on
+    2026-08-11, but the service kept building the Trakt singleton for another
+    eight days: `TraktClient.__init__` opens an `httpx.AsyncClient` eagerly,
+    RecommendationService is constructed several times per feed request, and
+    nothing ever called it — `close()` doesn't touch it and `close_services()`
+    doesn't know about it. Trakt itself has answered 403 to every key since
+    2026-08-06.
+
+    Singleton reuse was the right fix for the wrong problem: the client should
+    not be here at all. Asserted on behaviour, not on a source scan — the module
+    still carries a long comment about why Signal C left Trakt, and that history
+    is worth keeping."""
+    import services.trakt_client as tc
     from services.recommendation_service import RecommendationService
-    from services.trakt_client import get_trakt_client
 
-    a = RecommendationService(db=Mock(), tmdb=Mock(), qdrant=Mock())
-    b = RecommendationService(db=Mock(), tmdb=Mock(), qdrant=Mock())
+    tc._singleton = None
+    svc = RecommendationService(db=Mock(), tmdb=Mock(), qdrant=Mock())
 
-    assert a.trakt is b.trakt
-    assert a.trakt is get_trakt_client()
+    assert not hasattr(svc, "trakt"), "RecommendationService re-grew a Trakt client"
+    assert tc._singleton is None, (
+        "constructing RecommendationService built a TraktClient — an unused, "
+        "never-closed httpx.AsyncClient per instance"
+    )
 
 
 # ---------------------------------------------------------------------------

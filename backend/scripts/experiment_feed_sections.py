@@ -67,7 +67,9 @@ async def get_user_genre_preferences(
         base += float(np.log1p(max(0, (ur.watch_count or 1) - 1))) * 0.3
         if base <= 0:
             continue
-        w = base * _recency_decay(ur.created_at or ur.watched_date)
+        # NUNCA created_at: es la fecha de import — u210 tiene 2.754 filas en 4
+        # días distintos (97,1% en uno solo), así que el decay salía constante.
+        w = base * _recency_decay(ur.watched_date)
         for g in m.genres:
             weights[g] = weights.get(g, 0.0) + w
     return sorted(weights.items(), key=lambda x: -x[1])
@@ -103,7 +105,7 @@ async def quality_weighted_centroid(
         base = max(0.0, ((ur.rating or 0) - 2.5) / 2.5) + (0.5 if ur.is_liked else 0.0)
         if base <= 0:
             continue
-        w = base * _recency_decay(ur.created_at or ur.watched_date, half_life_days=540.0)
+        w = base * _recency_decay(ur.watched_date, half_life_days=540.0)
         weighted.append(np.array(v) * w)
         total_w += w
     if not weighted or total_w == 0:

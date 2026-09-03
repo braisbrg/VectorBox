@@ -118,6 +118,13 @@ class FilteredSearchRequest(BaseModel):
     genres: Optional[List[constr(max_length=50)]] = None
     providers: Optional[List[int]] = None  # TMDB provider IDs to require (match is robust vs names)
     country_code: constr(min_length=2, max_length=2) = "ES"
+    # Mood: nombre de cuadrante, no rangos sueltos. El cliente no debería poder
+    # pedir combinaciones que no hemos mirado — validado contra QUADRANTS.
+    mood: Optional[constr(max_length=20)] = None
+    # Fuente, no filtro: acota el universo del que salen las filas. Viaja aquí porque
+    # el conmutador vive en el mismo panel que los sliders y el ánimo, y sin él una
+    # consulta con ánimo perdería la lista en silencio.
+    watchlist: bool = False
 
 
 class RecommendationResponse(BaseModel):
@@ -137,9 +144,15 @@ class UserResponse(BaseModel):
     created_at: datetime
     has_data: bool = False
     letterboxd_username: Optional[str] = None
-    
+    include_shorts: bool = False
+
     class Config:
         from_attributes = True
+
+
+class UserPreferencesRequest(BaseModel):
+    """Ajustes de descubrimiento. Todo opcional: sólo se aplica lo que llega."""
+    include_shorts: Optional[bool] = None
 
 
 class TokenResponse(BaseModel):
@@ -181,7 +194,29 @@ class FeedItem(BaseModel):
     id: int  # Movie TMDB ID
     title: str
     poster_url: Optional[str] = None
-    match_score: confloat(ge=0, le=100)  # Percentage match
+    # Parecido en escala 60–99. HOY SIEMPRE None, y eso está medido (2026-08-10):
+    # ninguno de los 13 productores del feed puede rellenarlo honestamente.
+    #
+    #   11 pasaban una constante (1.0/0.95/0.9/0.85) que la escala convertía en 99
+    #      → 459 de 459 items servidos valían exactamente 99.0
+    #    1 pasaba `vectorbox_score/100`, o sea CALIDAD por un normalizador de
+    #      SIMILITUD
+    #    2 (BYW, hidden gems) pasaban un coseno ya alterado: BYW lo multiplica por
+    #      0.3/0.6 como penalización anti-vector, y hidden gems entrega
+    #      `calidad*0.7 + similitud*0.3` más un boost de exotismo. Las dos
+    #      operaciones son correctas para ORDENAR, que es para lo que existen,
+    #      pero el resultado ya no está en la escala del coseno: medido, BYW se
+    #      hundía a 60–61 y hidden gems saturaba 10/10 a 99.
+    #
+    # Para "Popular esta semana" o "En tu radar" el concepto además no aplica: no
+    # hay contra qué parecerse. None es el idioma que ya usa el producto para esto
+    # (la rama de catálogo de la Magic Box y `warm_showcase` tratan `score is None`
+    # aparte).
+    #
+    # Rellenarlo exige un productor que pase un coseno SIN alterar. Mientras no
+    # exista, el campo se queda como contrato y no como dato — y si nunca aparece,
+    # bórralo: nada del frontend lo pinta.
+    match_score: Optional[confloat(ge=0, le=100)] = None
     streaming_providers: List[str] = []
     year: Optional[int] = None
     runtime: Optional[int] = None

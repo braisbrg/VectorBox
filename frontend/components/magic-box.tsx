@@ -17,14 +17,22 @@ import { useLanguage } from "@/components/language-provider";
 import { cn } from "@/lib/utils";
 
 const OPEN_EVENT = "vb:magic-box";
-export const openMagicBox = () => window.dispatchEvent(new CustomEvent(OPEN_EVENT));
+// El modo puede venir en el evento para que se pueda elegir ANTES de abrir: el
+// topbar ofrece las dos entradas y quien quiere buscar un título no tiene que
+// abrir en "vibe" y cambiar. Sin argumento se respeta el modo recordado.
+export const openMagicBox = (mode?: "vibe" | "title") =>
+    window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: mode ? { mode } : undefined }));
 
 interface SearchResult {
     movie_id: number;
     title: string;
     overview: string;
     poster_path: string | null;
-    score: number;
+    // null when no query vector reached the branch that answered (the catalogue
+    // selection behind "no sé qué ver" and the quality-only requests). There is
+    // no distance to report there, and printing the quality score in its place
+    // is what made vague requests read as closer matches than exact ones.
+    score: number | null;
     year: number;
     runtime?: number;
     genres: string[];
@@ -32,6 +40,10 @@ interface SearchResult {
     title_es?: string;
     overview_es?: string;
     ai_reason?: string;
+    // "era" | "countries" — this film answers the SUBJECT but sits outside a
+    // filter the user gave, appended because the exact box came back nearly
+    // empty. Never render one of these without saying so.
+    outside_filters?: string | null;
 }
 
 // F10 "find a film" mode — GET /api/search/autocomplete rows (same endpoint as MLT).
@@ -40,6 +52,7 @@ interface TitleResult {
     title: string;
     year: number | null;
     poster_path: string | null;
+    director: string | null;
 }
 
 // Backend MovieSearchIntent fields we surface as chips.
@@ -106,6 +119,9 @@ const TRY_SUGGESTIONS = [
 ];
 
 const RECENTS_KEY = "vb_mb_recents";
+// El modo elegido se recuerda entre aperturas: alguien que busca por título suele
+// volver a buscar por título, y reabrir siempre en "vibe" obliga a un clic cada vez.
+const MODE_KEY = "vb_mb_mode";
 
 function Kbd({ k }: { k: string }) {
     return (
@@ -119,7 +135,11 @@ function Kbd({ k }: { k: string }) {
 // 422 into a slightly shorter search, which is the kinder failure.
 const GUEST_MAX_QUERY = 140;
 
-export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; onClose?: () => void }) {
+export function MagicBox({ embedded = false, onClose, initialMode }: {
+    embedded?: boolean;
+    onClose?: () => void;
+    initialMode?: "vibe" | "title";
+}) {
     const { isSignedIn } = useUser();
     // The engine reports when the catalogue had nothing close enough to be a
     // recommendation (measured threshold, see magic_search_ranking). An empty
@@ -130,6 +150,10 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
     // are still real films matched on the raw words; what is gone is every
     // constraint the user expressed. Saying so beats quietly serving less.
     const [degraded, setDegraded] = useState(false);
+    // Qué filtro se relajó para llenar una fila corta ("era" | "countries").
+    // Marcar cada película por separado no explica POR QUÉ hay dos bloques; el
+    // usuario ve una lista que de pronto se sale de lo que pidió.
+    const [relaxedFilter, setRelaxedFilter] = useState<string | null>(null);
     const { language, t } = useLanguage();
     const router = useRouter();
     const [query, setQuery] = useState("");
@@ -141,14 +165,30 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
     const [quickLook, setQuickLook] = useState<QuickLookFilm | null>(null);
     // F10 mode toggle: "vibe" = NL semantic search (default) · "title" = literal
     // title lookup → clicking a match opens the film's full page.
-    const [mode, setMode] = useState<"vibe" | "title">("vibe");
+    // Sólo con sesión: `/try` es anónimo por diseño y un invitado no tiene lista.
+    const [onlyWatchlist, setOnlyWatchlist] = useState(false);
+    const [mode, setModeState] = useState<"vibe" | "title">("vibe");
+    const setMode = useCallback((m: "vibe" | "title") => {
+        setModeState(m);
+        try { localStorage.setItem(MODE_KEY, m); } catch {}
+    }, []);
     const [titleResults, setTitleResults] = useState<TitleResult[]>([]);
+    // El director viaja aparte de las películas: mezclarlos en una sola lista
+    // obligaba a inventar cuánto pesa una persona frente a un film.
+    const [directorCard, setDirectorCard] = useState<{ name: string; film_count: number; profile_path?: string | null } | null>(null);
     const [titleSearching, setTitleSearching] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
 
     useEffect(() => {
         try {
             setRecents(JSON.parse(localStorage.getItem(RECENTS_KEY) || "[]"));
+            // Un modo pedido explícitamente al abrir gana al recordado.
+            if (initialMode) {
+                setModeState(initialMode);
+            } else {
+                const saved = localStorage.getItem(MODE_KEY);
+                if (saved === "title" || saved === "vibe") setModeState(saved);
+            }
         } catch {}
         inputRef.current?.focus();
     }, []);
@@ -165,9 +205,14 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
         const h = setTimeout(async () => {
             try {
                 const res = await api.get(`/api/search/autocomplete?q=${encodeURIComponent(q)}`);
-                setTitleResults(res.data || []);
+                const payload = res.data;
+                // Ver el comentario en more-like-this: forma vieja o nueva.
+                setTitleResults(Array.isArray(payload) ? payload : payload?.films || []);
+                setActive(0);
+                setDirectorCard(Array.isArray(payload) ? null : payload?.director || null);
             } catch {
                 setTitleResults([]);
+                setDirectorCard(null);
             } finally {
                 setTitleSearching(false);
             }
@@ -175,10 +220,13 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
         return () => clearTimeout(h);
     }, [mode, query]);
 
-    const openTitleResult = (r: TitleResult) => {
+    // Toda navegación cierra el modal primero: dejar el desplegable encima de
+    // la página recién abierta es la única forma de "llegar" sin haber salido.
+    const go = (href: string) => {
         onClose?.();
-        router.push(`/movie/${r.tmdb_id}`);
+        router.push(href);
     };
+    const openTitleResult = (r: TitleResult) => go(`/movie/${r.tmdb_id}`);
 
     const searchMutation = useMutation({
         mutationFn: async ({ text, forced }: { text: string; forced?: SearchIntent }) => {
@@ -192,6 +240,7 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                       query: text,
                       ...(forced ? { forced_intent: forced } : {}),
                       country_code: "ES",
+                      watchlist: onlyWatchlist,
                   })
                 : await api.post("/api/search/try", {
                       query: text.slice(0, GUEST_MAX_QUERY),
@@ -202,6 +251,12 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
         onSuccess: ({ data, ms }) => {
             setLowConfidence(Boolean(data.low_confidence));
             setDegraded(Boolean(data.degraded));
+            // El ámbito puede venir de la FRASE ("algo corto de mi lista"), no sólo
+            // del botón. Si no se reflejara, el conmutador diría "todo" mientras los
+            // resultados ya salen de la lista — y el usuario leería como catálogo
+            // entero algo que no lo es.
+            if (data.watchlist_applied) setOnlyWatchlist(true);
+            setRelaxedFilter(data.relaxed_filter ?? null);
             const unique = Array.from(
                 new Map((data.results as SearchResult[]) .map((r) => [r.movie_id, r])).values()
             );
@@ -246,16 +301,54 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
         });
     };
 
+    // A nivel de documento, no como onKeyDown del contenedor. Dependía de que el
+    // input tuviese el foco para que la tecla burbujease hasta el div; abierto con
+    // ⌘K el foco no siempre llegaba, y entonces las flechas se iban al scroll de
+    // la página. Sólo funcionaba tras pulsar Tab, que es justo el síntoma.
+    useEffect(() => {
+        const onDocKey = (e: KeyboardEvent) => {
+            if (!["ArrowDown", "ArrowUp", "Enter"].includes(e.key)) return;
+            const list = mode === "title" ? titleResults : results;
+            if (!list.length) return;
+            if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setActive((a) => Math.min(a + 1, list.length - 1));
+            } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setActive((a) => Math.max(a - 1, 0));
+            } else if (e.key === "Enter") {
+                const target = list[active];
+                if (!target) return;
+                e.preventDefault();
+                if (mode === "title") openTitleResult(target as TitleResult);
+                else openResult(target as SearchResult);
+            }
+        };
+        window.addEventListener("keydown", onDocKey);
+        return () => window.removeEventListener("keydown", onDocKey);
+    }, [mode, titleResults, results, active]);
+
     const onKeyDown = (e: React.KeyboardEvent) => {
+        // La lista navegable depende del modo. Antes esto miraba siempre
+        // `results`, así que en modo título las flechas no movían nada — y el pie
+        // seguía anunciando "↑↓ navigate".
+        const list = mode === "title" ? titleResults : results;
         if (e.key === "ArrowDown") {
             e.preventDefault();
-            setActive((a) => Math.min(a + 1, results.length - 1));
+            setActive((a) => Math.min(a + 1, list.length - 1));
         } else if (e.key === "ArrowUp") {
             e.preventDefault();
             setActive((a) => Math.max(a - 1, 0));
         } else if (e.key === "Enter") {
-            if (results.length > 0 && document.activeElement === inputRef.current && query.trim() && !searchMutation.isPending && results[active]) {
-                // Enter on input with results → open active result only when query already ran
+            // Esta rama estaba VACÍA: solo tenía un comentario describiendo lo que
+            // debía hacer. El pie anunciaba "↵ select" y no seleccionaba nada.
+            // El form ya maneja Enter cuando no hay fila activa (lanza la
+            // búsqueda), así que aquí solo se intercepta si hay algo que abrir.
+            const target = list[active];
+            if (target) {
+                e.preventDefault();
+                if (mode === "title") openTitleResult(target as TitleResult);
+                else openResult(target as SearchResult);
             }
         } else if (e.key === "Escape" && onClose) {
             onClose();
@@ -264,13 +357,36 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
 
     const hasResults = intent !== null;
     const chips = intent ? intentToChips(intent) : [];
-    const scoreOf = (r: SearchResult) => (r.score > 1 ? r.score : r.score * 100);
 
     return (
         <div
             className={cn("flex w-full flex-col border-2 border-primary bg-bg font-mono", embedded ? "" : "shadow-acid-primary")}
             onKeyDown={onKeyDown}
         >
+            {/* Pestañas, no chips: eran dos botoncitos de 10px DEBAJO del input,
+                que en móvil ni se veían ni se leían como un conmutador. A todo el
+                ancho y arriba del todo, la elección es lo primero que se ve y el
+                área táctil deja de ser un problema. */}
+            <div className="flex border-b-2 border-border-2">
+                {(["vibe", "title"] as const).map((mo) => (
+                    <button
+                        key={mo}
+                        type="button"
+                        onClick={() => { setMode(mo); inputRef.current?.focus(); }}
+                        aria-pressed={mode === mo}
+                        className={cn(
+                            "flex flex-1 items-center justify-center gap-2 border-b-2 py-3 font-mono text-[11px] uppercase tracking-[0.1em] transition-colors sm:py-2.5",
+                            mode === mo
+                                ? "-mb-0.5 border-primary bg-bg-2 font-bold text-primary"
+                                : "-mb-0.5 border-transparent text-fg-3 hover:text-fg"
+                        )}
+                    >
+                        <span aria-hidden>{mo === "title" ? "⌕" : "◐"}</span>
+                        {mo === "vibe" ? t("mb.mode_vibe") : t("mb.mode_title")}
+                    </button>
+                ))}
+            </div>
+
             {/* query bar */}
             <form
                 onSubmit={(e) => {
@@ -291,6 +407,23 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                     placeholder={mode === "title" ? t("mb.title_placeholder") : t("mobile.placeholder")}
                     className="flex-1 bg-transparent font-mono text-[15px] text-fg placeholder:text-fg-3 focus:outline-none"
                 />
+                {/* Ámbito. Se enciende solo si la frase ya lo pedía, así que el botón
+                    y "de mi lista" escrito son la misma cosa vista de dos maneras. */}
+                {mode === "vibe" && isSignedIn && (
+                    <button
+                        type="button"
+                        onClick={() => setOnlyWatchlist((v) => !v)}
+                        title={t("mb.only_watchlist")}
+                        className={cn(
+                            "shrink-0 border px-2 py-1 font-display text-[9px] uppercase tracking-[0.1em] transition-colors",
+                            onlyWatchlist
+                                ? "border-primary bg-primary text-primary-ink"
+                                : "border-border-2 text-fg-3 hover:border-fg-3"
+                        )}
+                    >
+                        {t("mb.only_watchlist")}
+                    </button>
+                )}
                 {(mode === "title" ? titleSearching : searchMutation.isPending) ? (
                     <Loader2 className="size-4 animate-spin text-primary" />
                 ) : mode === "vibe" && elapsed != null ? (
@@ -301,27 +434,45 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
             </form>
 
             {/* F10 mode strip — vibe (semantic) ↔ find a film (title → full page) */}
-            <div className="flex items-center gap-1.5 border-b border-border-2 px-4 py-2">
-                {(["vibe", "title"] as const).map((mo) => (
-                    <button
-                        key={mo}
-                        type="button"
-                        onClick={() => { setMode(mo); inputRef.current?.focus(); }}
-                        className={cn(
-                            "border px-2.5 py-1 font-mono text-[10px] uppercase tracking-wide transition-colors",
-                            mode === mo
-                                ? "border-primary bg-primary font-bold text-primary-ink"
-                                : "border-border-2 text-fg-3 hover:border-fg-3"
-                        )}
-                    >
-                        {mo === "vibe" ? t("mb.mode_vibe") : t("mb.mode_title")}
-                    </button>
-                ))}
-            </div>
 
             {/* F10 title mode — compact result rows → film full page */}
             {mode === "title" && (
-                <div className="px-4 py-3.5">
+                <div className="max-h-[420px] overflow-y-auto px-4 py-3.5">
+                    {/* El director va ARRIBA y aparte, no compitiendo en la lista.
+                        Así las películas se ordenan sólo por relevancia y no hay
+                        que decidir cuánto "pesa" una persona frente a un film. */}
+                    {directorCard && (
+                        <button
+                            onClick={() => go(`/director/${encodeURIComponent(directorCard.name)}`)}
+                            className="group mb-2 flex w-full items-center gap-3 border-2 border-primary bg-bg-2 px-3 py-2.5 text-left transition-colors hover:bg-bg-3"
+                        >
+                            {directorCard.profile_path ? (
+                                <span className="relative block size-9 shrink-0 overflow-hidden border border-border-2 bg-bg-3">
+                                    <Image
+                                        src={getTMDBImageUrl(directorCard.profile_path, "w185") || ""}
+                                        alt={directorCard.name}
+                                        fill
+                                        sizes="36px"
+                                        className="object-cover"
+                                    />
+                                </span>
+                            ) : (
+                                <span className="flex size-9 shrink-0 items-center justify-center border border-border-2 bg-bg-3 font-display text-[13px] text-fg-3">
+                                    {directorCard.name.charAt(0)}
+                                </span>
+                            )}
+                            <span className="font-display text-[10px] uppercase tracking-[0.12em] text-primary">
+                                {t("mb.director")}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg">
+                                {directorCard.name}
+                            </span>
+                            <span className="font-mono text-[11px] text-fg-3">
+                                {directorCard.film_count} {t("director.count")}
+                            </span>
+                            <span className="font-display text-sm text-fg-3 transition-colors group-hover:text-primary">→</span>
+                        </button>
+                    )}
                     {titleResults.length > 0 ? (
                         <div className="flex flex-col">
                             {titleResults.map((r) => (
@@ -335,7 +486,36 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                                             <Image src={getTMDBImageUrl(r.poster_path, "w92")} alt={r.title} fill sizes="32px" className="object-cover" />
                                         )}
                                     </span>
-                                    <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-fg">{r.title}</span>
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block truncate font-mono text-[13px] text-fg">{r.title}</span>
+                                        {r.director && (
+                                            // Un <Link> dentro del <button> de la fila
+                                            // sería HTML inválido, así que va como
+                                            // span con rol de enlace y su tecla.
+                                            // Esto es lo que le quita la presión al
+                                            // tope de 12 filas: el desplegable no
+                                            // tiene que caber la filmografía entera,
+                                            // sólo llevar a ella.
+                                            <span
+                                                role="link"
+                                                tabIndex={0}
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    go(`/director/${encodeURIComponent(r.director!)}`);
+                                                }}
+                                                onKeyDown={(e) => {
+                                                    if (e.key === "Enter" || e.key === " ") {
+                                                        e.preventDefault();
+                                                        e.stopPropagation();
+                                                        go(`/director/${encodeURIComponent(r.director!)}`);
+                                                    }
+                                                }}
+                                                className="block truncate font-mono text-[10px] text-fg-3 hover:text-primary hover:underline focus:text-primary focus:outline-none"
+                                            >
+                                                {r.director}
+                                            </span>
+                                        )}
+                                    </span>
                                     {r.year && <span className="font-mono text-[11px] text-fg-3">{r.year}</span>}
                                     <span className="font-display text-sm text-fg-3 transition-colors group-hover:text-primary">→</span>
                                 </button>
@@ -434,8 +614,21 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                             )
                         )}
                         {results.map((r, i) => (
+                            <div key={r.movie_id} className="contents">
+                            {/* Separador ANTES de la primera película de fuera de
+                                los filtros: las relajadas van siempre al final,
+                                así que basta comparar con la anterior. */}
+                            {r.outside_filters && !results[i - 1]?.outside_filters && (
+                                // Franja rellena, no una línea de puntos: bajando
+                                // rápido la separación no se veía. `sticky` la
+                                // mantiene a la vista mientras se recorre el
+                                // segundo bloque, que es cuando hace falta saber
+                                // por qué esas películas están ahí.
+                                <div className="sticky top-0 z-10 -mx-1 mb-1 mt-3 border-y border-primary bg-bg-3 px-2 py-1.5 font-mono text-[10px] leading-snug text-primary">
+                                    {t(`mb.relaxed_${relaxedFilter ?? r.outside_filters}`)}
+                                </div>
+                            )}
                             <button
-                                key={r.movie_id}
                                 onClick={() => openResult(r)}
                                 onMouseEnter={() => setActive(i)}
                                 className={cn(
@@ -458,6 +651,11 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                                         </span>
                                     </div>
                                     <div className="mt-0.5 truncate font-mono text-[10px] text-fg-3">
+                                        {r.outside_filters && (
+                                            <span className="mr-1.5 text-primary">
+                                                {t(`mb.outside_${r.outside_filters}`)}
+                                            </span>
+                                        )}
                                         {r.ai_reason || (r.genres || []).slice(0, 3).join(" · ").toLowerCase()}
                                     </div>
                                 </div>
@@ -465,10 +663,17 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
                                     <div className="font-display text-[13px] font-bold text-primary">
                                         {r.vectorbox_score != null ? `Q${Math.round(r.vectorbox_score)}` : "—"}
                                     </div>
-                                    <div className="font-mono text-[9px] text-fg-3">d {((100 - scoreOf(r)) / 100).toFixed(2)}</div>
+                                    {/* The per-film distance used to live here. The
+                                        row is ordered by relevance AND quality, so a
+                                        column showing only relevance read as a broken
+                                        ranking — The Man Who Would Be King sat 2nd at
+                                        69 above a film 8th at 78. Q below is the half
+                                        a viewer can act on; the other half is the
+                                        order itself. */}
                                 </div>
                                 {i === active && <Kbd k="↵" />}
                             </button>
+                            </div>
                         ))}
                     </div>
                 </>
@@ -476,12 +681,26 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
 
             {/* footer hints */}
             <div className="flex items-center justify-between border-t border-border-2 bg-bg-2 px-4 py-2.5 font-mono text-[10px] text-fg-3">
-                {hasResults ? (
-                    <span>{results.length} {t("mb.matched")}</span>
+                {/* El hint salía cuando NO había resultados y desaparecía al
+                    haberlos: se anunciaba justo cuando no había nada que navegar.
+                    Ahora acompaña a la lista, en los dos modos. */}
+                {(mode === "title" ? titleResults.length > 0 : hasResults) ? (
+                    <div className="flex items-center gap-3.5">
+                        <span>
+                            {mode === "title" ? titleResults.length : results.length}{" "}
+                            {t("mb.matched")}
+                        </span>
+                        <span>
+                            <Kbd k="↑↓" /> {t("mb.navigate")}
+                        </span>
+                        <span>
+                            <Kbd k="↵" /> {t("mb.select")}
+                        </span>
+                    </div>
                 ) : (
                     <div className="flex gap-3.5">
                         <span>
-                            <Kbd k="↑↓" /> navigate
+                            <Kbd k="↑↓" /> {t("mb.navigate")}
                         </span>
                         <span>
                             <Kbd k="↵" /> {t("mb.select")}
@@ -499,6 +718,7 @@ export function MagicBox({ embedded = false, onClose }: { embedded?: boolean; on
 /** ⌘K overlay — mounted once in the shell; opens on ⌘K / topbar / openMagicBox(). */
 export function MagicBoxModal() {
     const [open, setOpen] = useState(false);
+    const [requestedMode, setRequestedMode] = useState<"vibe" | "title" | undefined>();
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -508,7 +728,10 @@ export function MagicBoxModal() {
             }
             if (e.key === "Escape") setOpen(false);
         };
-        const onOpen = () => setOpen(true);
+        const onOpen = (e: Event) => {
+            setRequestedMode((e as CustomEvent).detail?.mode);
+            setOpen(true);
+        };
         window.addEventListener("keydown", onKey);
         window.addEventListener(OPEN_EVENT, onOpen);
         return () => {
@@ -522,7 +745,7 @@ export function MagicBoxModal() {
         // Full-screen on mobile (handoff: magic covers the whole phone incl. nav); centered overlay ≥lg.
         <div className="fixed inset-0 z-[70] flex items-start justify-center bg-bg p-0 lg:bg-black/60 lg:p-4 lg:pt-[12vh]" onClick={() => setOpen(false)}>
             <div className="h-full w-full overflow-y-auto pt-[max(env(safe-area-inset-top),12px)] lg:h-auto lg:max-w-[680px] lg:pt-0" onClick={(e) => e.stopPropagation()}>
-                <MagicBox onClose={() => setOpen(false)} />
+                <MagicBox onClose={() => setOpen(false)} initialMode={requestedMode} />
             </div>
         </div>
     );

@@ -19,6 +19,7 @@ import {
     FilterSearchParams,
     getFilteredFeed,
     markWatched,
+    setWatchlist,
     rejectMovie,
     USER_SESSION_KEY,
 } from "@/lib/api";
@@ -76,13 +77,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // shown when a card's info is pressed, hidden on close (the watchlist owns its
     // own filters, so the SYS_CONSOLE filter panel is redundant there).
     const showRail = pathname === "/feed" || (pathname === "/watch" && !!inspectedMovie);
+    const isImport = pathname === "/import";
     // F8: the rail now returns a SECTIONED filtered feed, not a flat item list.
     const [filteredResults, setFilteredResults] = useState<FeedResponse | null>(null);
+    const [activeMood, setActiveMood] = useState<string | null>(null);
     const [isFiltering, setIsFiltering] = useState(false);
     const filteredCount = filteredResults
         ? filteredResults.feed.reduce((n, s) => n + s.items.length, 0)
         : null;
-    const [inspectorActionLoading, setInspectorActionLoading] = useState<"watched" | "rejected" | null>(null);
+    const [inspectorActionLoading, setInspectorActionLoading] = useState<"watched" | "rejected" | "watchlist" | null>(null);
 
     // ?onboarding_complete=true → welcome refresh (read from location to avoid a
     // useSearchParams Suspense boundary around the whole shell).
@@ -149,6 +152,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // Onboarding jail redirect (ported from dashboard.tsx)
     useEffect(() => {
         if (!currentUserSession) return;
+        // Sin datos manda el jail de RENDER (abajo): monta el ImportWizard, que es
+        // la ÚNICA vía a Letterboxd. Redirigir aquí lo tapaba a los ~200 ms y
+        // dejaba a todo usuario recién registrado en el carrusel, sin import.
+        if (!currentUserSession.has_data) return;
+        // /import ES la otra salida del cold-start: expulsar de ahí al carrusel deja
+        // el ZIP de Letterboxd inalcanzable para todo el que tenga 1-14 valoraciones.
+        if (isImport) return;
         api.get("/api/onboarding/status")
             .then(({ data }) => {
                 const { ratings_count, completed } = data;
@@ -156,11 +166,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 const skipped = typeof window !== "undefined" && localStorage.getItem("vb_skip_onboarding") === "true";
 
                 if (!completed && ratings_count < 15) {
-                    if (ratings_count === 0) {
-                        if (typeof window !== "undefined") localStorage.removeItem("vb_skip_onboarding");
-                        router.replace("/onboarding");
-                        return;
-                    }
+                    // El borrado de vb_skip_onboarding en ratings_count === 0 anulaba
+                    // el propio skip del wizard: fuera.
                     if (!skipped) {
                         router.replace("/onboarding");
                         return;
@@ -170,7 +177,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 }
             })
             .catch(() => {});
-    }, [currentUserSession?.has_data, router]);
+    }, [currentUserSession?.has_data, pathname, router]);
 
     // Clear invalid providers when country changes
     useEffect(() => {
@@ -202,7 +209,33 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             setIsFiltering(false);
         }
     };
-    const clearFilterResults = () => setFilteredResults(null);
+    const clearFilterResults = () => {
+        setFilteredResults(null);
+        setActiveMood(null);
+    };
+
+    // Mood chips ride the SAME filtered-feed path as the rail: one code path, and
+    // the mood cannot end up ranking anything — it only narrows the pool.
+    const setMood = async (mood: string | null) => {
+        setActiveMood(mood);
+        if (!mood) {
+            setFilteredResults(null);
+            return;
+        }
+        setIsFiltering(true);
+        try {
+            // `scope` viaja también aquí: el conmutador está en el mismo panel que los
+            // ánimos, así que "algo reconfortante DE MI LISTA" es una sola petición.
+            setFilteredResults(await getFilteredFeed({
+                mood,
+                countryCode,
+                providers: streamingProviders,
+                watchlist: scope === "watchlist",
+            }));
+        } finally {
+            setIsFiltering(false);
+        }
+    };
 
     const handleInspectorMarkWatched = async (tmdbId: number) => {
         setInspectorActionLoading("watched");
@@ -212,6 +245,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             setInspectedMovie(null);
         } catch (e) {
             console.error("Failed to mark as watched:", e);
+        } finally {
+            setInspectorActionLoading(null);
+        }
+    };
+    const handleInspectorWatchlist = async (tmdbId: number) => {
+        setInspectorActionLoading("watchlist");
+        try {
+            await setWatchlist(tmdbId, true);
+            // A diferencia de "vista" o "descartar", esto NO cierra el inspector ni
+            // invalida el feed: la película sigue siendo un candidato válido y
+            // cerrar el panel haría perder el sitio por una acción que no la retira.
+        } catch (e) {
+            console.error("Failed to add to watchlist:", e);
         } finally {
             setInspectorActionLoading(null);
         }
@@ -302,18 +348,25 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 filteredResults,
                 isFiltering,
                 clearFilterResults,
+                activeMood,
+                setMood,
             }}
         >
             <div className="min-h-screen bg-bg text-fg">
-                <Sidebar
-                    collapsed={sidebarCollapsed}
-                    onToggleCollapse={toggleSidebar}
-                    letterboxdUsername={currentUserSession.letterboxd_username}
-                />
+                {/* /import es el wizard de arranque: sin sidebar, como ya se hace en
+                    móvil (va en MOBILE_SUBSCREENS). La salida es el back del
+                    SubScreenHeader + el topbar. */}
+                {!isImport && (
+                    <Sidebar
+                        collapsed={sidebarCollapsed}
+                        onToggleCollapse={toggleSidebar}
+                        letterboxdUsername={currentUserSession.letterboxd_username}
+                    />
+                )}
                 <div
                     className={cn(
                         "flex min-h-screen flex-col transition-[padding] duration-200 ease-out",
-                        sidebarCollapsed ? "lg:pl-[56px]" : "lg:pl-[184px]",
+                        !isImport && (sidebarCollapsed ? "lg:pl-[56px]" : "lg:pl-[184px]"),
                         showRail && "lg:pr-80"
                     )}
                 >
@@ -335,6 +388,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         onClearFilters={clearFilters}
                         onFilterSearch={handleFilterSearch}
                         onMarkWatched={handleInspectorMarkWatched}
+                        onWatchlist={handleInspectorWatchlist}
                         onReject={handleInspectorReject}
                         inspectorActionLoading={inspectorActionLoading}
                         filteredCount={filteredCount}
@@ -346,6 +400,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 {/* Mobile filters FAB + sheet — feed only (watchlist owns its own sheet). */}
                 {pathname === "/feed" && (
                     <FeedFilterSheet
+                        scope={scope}
+                        onScopeChange={setScope}
                         countryCode={countryCode}
                         onCountryChange={setCountryCode}
                         streamingProviders={streamingProviders}
@@ -363,6 +419,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         sectionId={inspectedMovie?.sectionId}
                         onClose={() => setInspectedMovie(null)}
                         onMarkWatched={handleInspectorMarkWatched}
+                        onWatchlist={handleInspectorWatchlist}
                         onReject={handleInspectorReject}
                         actionLoading={inspectorActionLoading}
                     />

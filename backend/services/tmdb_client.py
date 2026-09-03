@@ -12,11 +12,35 @@ import random
 from typing import Optional, Dict, List
 from datetime import timedelta
 import logging
+
+# Same floor the enricher refuses below — if these two drift, this client hands it
+# text it will always reject. cinematic_enricher imports only llm_models, so no cycle.
+from services.cinematic_enricher import MIN_OVERVIEW_CHARS
 from dotenv import load_dotenv
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+# Los dos idiomas de la interfaz, en el formato que TMDB espera. El inglés no
+# está: es el valor por defecto de la API, así que pedirlo es una clave de caché
+# de más para la misma respuesta.
+TMDB_LANGS = {"es": "es-ES"}
+
+
+def pick_fallback_overview(
+    original_language: Optional[str], usable_overviews: Dict[str, str]
+) -> tuple[Optional[str], Optional[str]]:
+    """Choose a synopsis when TMDB has none in English. Returns (lang_code, text).
+
+    Order: the film's own language (closest to how it was written), then Spanish
+    (the other UI locale), then anything at all — any real synopsis beats none,
+    because the enricher turns it into English prose either way.
+    """
+    for code in (original_language, "es", *usable_overviews):
+        if code and code in usable_overviews:
+            return code, usable_overviews[code]
+    return None, None
 
 
 class TMDBClient:
@@ -214,6 +238,61 @@ class TMDBClient:
         
         return None
     
+    async def get_person(self, name: str, lang: str = "en") -> Optional[Dict]:
+        """Foto y biografía de una persona por nombre, o None.
+
+        Dos llamadas porque TMDB las separa: `/search/person` da el id y la foto,
+        `/person/{id}` la biografía. Se cachea 30 días — una biografía cambia
+        menos que una película, y esto sólo se pide al abrir una ficha.
+
+        La bio se pide en el idioma pedido y cae a inglés si TMDB la devuelve
+        vacía, que pasa a menudo: medido 2026-08-04, existe en español para 5 de
+        5 directores probados, pero algunas son un muñón (Spielberg: 281 caracteres
+        frente a 3390 en inglés). Un muñón real se prefiere igualmente a un texto
+        que el lector no entiende; sólo el vacío justifica el salto.
+
+        Devuelve None en silencio si no hay coincidencia: una ficha de director
+        sin foto sigue siendo una ficha útil, y la filmografía sale de nuestra
+        base de datos, no de aquí.
+        """
+        name = (name or "").strip()[:200]
+        if not name:
+            return None
+
+        # El idioma va en la clave: sin él, el primer lector en español dejaría
+        # su bio cacheada 30 días para todos los que vengan en inglés.
+        cache_key = f"tmdb:person:{lang}:{name.lower()}"
+        r = await self._get_redis()
+        cached = await r.get(cache_key)
+        if cached:
+            return orjson.loads(cached)
+
+        found = await self._make_request("/search/person", {"query": name, "include_adult": "false"})
+        results = (found or {}).get("results") or []
+        # Coincidencia EXACTA de nombre: buscar "Anderson" devuelve una lista larga
+        # y quedarse con el primero pondría la foto de otra persona en la ficha,
+        # que es peor que no poner ninguna.
+        match = next((p for p in results if (p.get("name") or "").lower() == name.lower()), None)
+        if not match:
+            return None
+
+        params = {"language": TMDB_LANGS[lang]} if lang in TMDB_LANGS else {}
+        detail = await self._make_request(f"/person/{match['id']}", params) or {}
+        bio = (detail.get("biography") or "").strip()
+        if not bio and params:
+            fallback = await self._make_request(f"/person/{match['id']}", {}) or {}
+            bio = (fallback.get("biography") or "").strip()
+        person = {
+            "tmdb_id": match["id"],
+            "name": match.get("name") or name,
+            "profile_path": match.get("profile_path"),
+            "biography": bio or None,
+            "birthday": detail.get("birthday"),
+            "place_of_birth": detail.get("place_of_birth"),
+        }
+        await r.setex(cache_key, timedelta(days=30), orjson.dumps(person))
+        return person
+
     async def get_movie_details(self, tmdb_id: int, force_refresh: bool = False) -> Optional[Dict]:
         """
         Get detailed movie information
@@ -258,19 +337,37 @@ class TMDBClient:
             title_es = None
             overview_es = None
             
+            usable_overviews: Dict[str, str] = {}
+
             if "translations" in data and "translations" in data["translations"]:
                 for t in data["translations"]["translations"]:
+                    t_data = t.get("data", {}) or {}
+                    t_overview = (t_data.get("overview") or "").strip()
+                    if len(t_overview) >= MIN_OVERVIEW_CHARS:
+                        usable_overviews[t.get("iso_639_1")] = t_overview
                     if t.get("iso_639_1") == "es":
-                        data_es = t.get("data", {})
-                        title_es = data_es.get("title")
-                        overview_es = data_es.get("overview")
-                        break
-            
+                        title_es = t_data.get("title")
+                        overview_es = t_data.get("overview")
+
             # Use English as fallback for comparison to avoid redundant updates if identical
             if title_es and title_es != data.get("title"):
                 data["title_es"] = title_es
             if overview_es and overview_es != data.get("overview"):
                 data["overview_es"] = overview_es
+
+            # TMDB serves en-US by default, and plenty of non-English films have no English
+            # synopsis at all — 47 of the 76 unenrichable films in the catalogue had one
+            # waiting in the translations we were ALREADY downloading here (measured
+            # 2026-08-06). Left empty, the film is refused by the enricher and never enters
+            # gated recommendations. Original language first, then Spanish, then whatever
+            # exists: the enricher emits English prose regardless of the source language.
+            if len((data.get("overview") or "").strip()) < MIN_OVERVIEW_CHARS:
+                code, text = pick_fallback_overview(data.get("original_language"), usable_overviews)
+                if text:
+                    data["overview"] = text
+                    logger.info(
+                        f"No en-US synopsis for tmdb_id={tmdb_id}; using '{code}' translation"
+                    )
 
             # Extract Watch Providers (Raw, to be processed by service)
             # We don't process them here to keep client focused on fetching, 
@@ -407,10 +504,20 @@ class TMDBClient:
         primary_release_date_lte: Optional[str] = None,
         with_original_language: Optional[str] = None,
         with_companies: Optional[str] = None,
+        region: Optional[str] = None,
+        with_release_type: Optional[str] = None,
+        release_date_gte: Optional[str] = None,
+        release_date_lte: Optional[str] = None,
     ) -> List[Dict]:
         """
         Discover movies using TMDB's Discover API.
         Returns movies from the global TMDB database based on filters.
+
+        `region` + `release_date.*` filtran por la fecha de estreno EN ESE PAÍS, no por
+        `primary_release_date`, que es la mundial. La diferencia no es sutil: una película
+        extranjera que llega a los cines españoles hoy puede tener su fecha primaria 8-16
+        meses atrás (Jumbo 2025-03-31 → cines ES 2026-07-24), así que una ventana de 90
+        días sobre la primaria no la ve nunca. `with_release_type=3` = estreno en cine.
         """
         params = {
             "api_key": self.api_key,
@@ -429,6 +536,14 @@ class TMDBClient:
             params["primary_release_date.gte"] = f"{year_min}-01-01"
         if year_max:
             params["primary_release_date.lte"] = f"{year_max}-12-31"
+        if region:
+            params["region"] = region
+        if with_release_type:
+            params["with_release_type"] = with_release_type
+        if release_date_gte:
+            params["release_date.gte"] = release_date_gte
+        if release_date_lte:
+            params["release_date.lte"] = release_date_lte
         if vote_average_min:
             params["vote_average.gte"] = vote_average_min
         if vote_average_max:

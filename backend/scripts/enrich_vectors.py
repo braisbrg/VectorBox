@@ -167,11 +167,19 @@ async def enrich_vectors(missing_only: bool = True, limit: int = None):
     logger.info(f"Enrichment Complete. Updated {success_count} movies.")
 
 
+# El qwen se DERIVA de ENRICH_CHAIN: era la segunda fuente de verdad del ID y
+# CLAUDE.md afirmaba que `llm_models.py` es "el único fichero a tocar cuando un
+# modelo muere", cosa que no era cierta mientras este diccionario lo repitiera.
+# Los dos oss no se derivan porque su alias corto no sale del ID y llevan un año
+# sin cambiar; el que churnea es el qwen (3-32b → 3.6-27b → 3.8-27b en un año).
+from services.llm_models import ENRICH_CHAIN
+
+_QWEN = next(m for m in ENRICH_CHAIN if m.startswith("qwen/"))
 MODEL_ALIASES = {
-    "gemini":      "gemini-2.5-flash",
-    "oss-120":     "openai/gpt-oss-120b",
-    "oss-20":      "openai/gpt-oss-20b",
-    "qwen3.6-27b": "qwen/qwen3.6-27b",
+    "gemini":              "gemini-2.5-flash",
+    "oss-120":             "openai/gpt-oss-120b",
+    "oss-20":              "openai/gpt-oss-20b",
+    _QWEN.split("/")[-1]:  _QWEN,
 }
 
 # When a restricted chain returns the legacy fallback (model_used=None) this
@@ -196,7 +204,11 @@ async def enrich_embeddings_via_groq(
     """
     import sys
     from openai import AsyncOpenAI
-    from services.cinematic_enricher import generate_cinematic_description, DailyLimitExhausted
+    from services.cinematic_enricher import (
+        generate_cinematic_description,
+        DailyLimitExhausted,
+        MIN_OVERVIEW_CHARS,
+    )
 
     gemini_key = os.environ.get("GEMINI_API_KEY")
     groq_key = os.environ.get("GROQ_API_KEY")
@@ -211,9 +223,16 @@ async def enrich_embeddings_via_groq(
             timeout=40.0,  # REL-4: bound calls (SDK default 600s) so a hung
                            # request can't stall an unattended bulk run
         )
-        # Groq ~30 RPM free tier — conservative pacing
+        # Groq's free tier binds on TOKENS, not requests. Measured live 2026-08-06 from
+        # the response headers: x-ratelimit-limit-tokens=8000 per minute, and one
+        # enrichment costs ~510 (388 prompt + 122 completion) → a ceiling of ~15 films/min.
+        # The old pacing was written against "~30 RPM" and runs 2-3x over the TOKEN budget.
+        # NOT observed failing — the enricher waits out per-minute 429s correctly, so the
+        # old value churned retries rather than losing films. This just stops relying on
+        # error handling for the normal path. 10 films + 30s ≈ 13/min; if a big backfill
+        # ever needs more throughput, the chain's three models have SEPARATE buckets.
         batch_size = 10
-        batch_delay = 2.0
+        batch_delay = 30.0
     elif gemini_key:
         logger.info("Starting LLM-Enriched Embedding Generation via Gemini Flash 2.5 (Groq not configured)...")
         groq_client = AsyncOpenAI(
@@ -242,14 +261,25 @@ async def enrich_embeddings_via_groq(
     model_samples: dict[str, tuple[str, str]] = {}  # model_id → (movie_title, description_preview)
 
     async with AsyncSessionLocal() as db:
-        query = select(Movie).where(Movie.has_enriched_embedding.is_(False))
+        # Films with no usable synopsis are refused by the enricher by design (it would
+        # hallucinate one from the title). Left in the query they come back every single
+        # run, always fail, and trip the consecutive-fallback stop — which then blames the
+        # Groq quota for what is missing TMDB data. Filter them here so a fallback in the
+        # loop below means what the stop message says it means.
+        usable_overview = func.length(func.trim(func.coalesce(Movie.overview, ""))) >= MIN_OVERVIEW_CHARS
+        query = select(Movie).where(Movie.has_enriched_embedding.is_(False)).where(usable_overview)
         if limit:
             query = query.limit(limit)
 
         result = await db.execute(query)
         candidates = result.scalars().all()
 
-        logger.info(f"Found {len(candidates)} movies to enrich")
+        skipped = await db.scalar(
+            select(func.count()).select_from(Movie)
+            .where(Movie.has_enriched_embedding.is_(False)).where(~usable_overview)
+        )
+        logger.info(f"Found {len(candidates)} movies to enrich"
+                    + (f" ({skipped} skipped: no usable synopsis to enrich from)" if skipped else ""))
 
         if not candidates:
             print("\n=== Enrichment Summary ===")
@@ -572,13 +602,13 @@ if __name__ == "__main__":
         default=None,
         help="Restrict enrichment to a single model alias. No fallback to other models. "
              "Stops gracefully when the daily limit for that model is exhausted. "
-             "Aliases: gemini | oss-120 | oss-20 | qwen3.6-27b. "
-             "Example: --model-only qwen3.6-27b  OR  --model-only oss-120"
+             "Aliases: gemini | oss-120 | oss-20 | qwen3.8-27b. "
+             "Example: --model-only qwen3.8-27b  OR  --model-only oss-120"
     )
     parser.add_argument(
         "--smart",
         action="store_true",
-        help="Restrict enrichment to the canonical quality chain (qwen3.6-27b, oss-120, oss-20). "
+        help="Restrict enrichment to the canonical quality chain (qwen3.8-27b, oss-120, oss-20). "
              "Use this when you want consistent high-quality cinematic descriptions across "
              "the whole catalogue. Mutually exclusive with --model-only."
     )
@@ -587,8 +617,8 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Restrict enrichment to a custom, ordered chain of model aliases "
-             "(comma-separated). The 2026-06 sweep found qwen3.6-27b + oss-120 the "
-             "best free pair for V2 descriptions. Example: --chain qwen3.6-27b,oss-120. "
+             "(comma-separated). The 2026-06 sweep found qwen3.8-27b + oss-120 the "
+             "best free pair for V2 descriptions. Example: --chain qwen3.8-27b,oss-120. "
              "Mutually exclusive with --model-only and --smart."
     )
     parser.add_argument(
@@ -598,7 +628,7 @@ if __name__ == "__main__":
              "of sequential fallback. Each model has its own rate-limit bucket, so "
              "this drains the shared daily quota in ~half the wall-clock. "
              "Requires --chain with 2+ models. Example: "
-             "--chain qwen3.6-27b,oss-120 --parallel"
+             "--chain qwen3.8-27b,oss-120 --parallel"
     )
     parser.add_argument(
         "--reset-enrichment",
@@ -654,7 +684,7 @@ if __name__ == "__main__":
     if args.parallel:
         if not chain_override or len(chain_override) < 2:
             print("Error: --parallel requires --chain with 2+ models "
-                  "(e.g. --chain qwen3.6-27b,oss-120 --parallel).")
+                  "(e.g. --chain qwen3.8-27b,oss-120 --parallel).")
             sys.exit(1)
         if not args.enrich_embeddings:
             print("Error: --parallel only applies to --enrich-embeddings.")

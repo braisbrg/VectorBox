@@ -15,7 +15,6 @@ import { useLanguage } from "@/components/language-provider";
 import { cn } from "@/lib/utils";
 
 interface MoreLikeThisProps {
-    userId?: number;
 }
 
 interface SearchedMovie {
@@ -24,6 +23,7 @@ interface SearchedMovie {
     poster_path?: string;
     year?: number;
     overview?: string;
+    director?: string | null;
 }
 
 interface SimilarRec {
@@ -58,7 +58,11 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
     const searchMutation = useMutation({
         mutationFn: async (query: string) => {
             const res = await api.get(`/api/search/autocomplete?q=${encodeURIComponent(query)}`);
-            return res.data as SearchedMovie[];
+            // Tolera la forma antigua (array) y la nueva ({director, films}).
+            // Cambiar la forma sin esto dejó la búsqueda vacía en cualquier
+            // pestaña abierta con el bundle anterior: JS viejo + API nueva =
+            // `.length` sobre un objeto, sin un solo error en consola.
+            return (Array.isArray(res.data) ? res.data : res.data?.films ?? []) as SearchedMovie[];
         },
         onSuccess: (data) => {
             const seen = new Set(seeds.map((s) => s.tmdb_id));
@@ -91,13 +95,19 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [seeds]);
 
-    // Run the handed-over text once on arrival. Prefilling the box without
-    // searching would still make the visitor press enter on words they already
-    // typed, which is the handoff failing quietly.
+    // As-you-type (same debounce as the Magic Box title mode). Also covers the
+    // handoff: the box arrives prefilled, so the first pass fires on its own —
+    // pressing enter on words you already typed is the handoff failing quietly.
     useEffect(() => {
-        if (handoff.trim()) searchMutation.mutate(handoff);
+        const q = searchQuery.trim();
+        if (q.length < 2) {
+            setSearchResults([]);
+            return;
+        }
+        const h = setTimeout(() => searchMutation.mutate(q), 300);
+        return () => clearTimeout(h);
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [searchQuery]);
 
     const handleSearch = (e: React.FormEvent) => {
         e.preventDefault();
@@ -236,7 +246,9 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
                                             </div>
                                             <div className="min-w-0 flex-1">
                                                 <div className={cn("truncate font-mono text-xs", isPicked ? "text-primary" : "text-fg")}>{movie.title}</div>
-                                                <div className="font-mono text-[10px] text-fg-3">{movie.year}</div>
+                                                <div className="truncate font-mono text-[10px] text-fg-3">
+                                                    {[movie.year, movie.director].filter(Boolean).join(" · ")}
+                                                </div>
                                             </div>
                                             <span className="font-display text-lg text-primary">{isPicked ? "✓" : "+"}</span>
                                         </button>
@@ -268,7 +280,9 @@ export function MoreLikeThis({}: MoreLikeThisProps) {
                                             <div className={cn("mt-1 truncate font-mono text-[10px] leading-tight", isPicked ? "text-primary" : "text-fg-2")}>
                                                 {movie.title}
                                             </div>
-                                            <div className="font-mono text-[9px] text-fg-3">{movie.year}</div>
+                                            <div className="truncate font-mono text-[9px] text-fg-3">
+                                                {[movie.year, movie.director].filter(Boolean).join(" · ")}
+                                            </div>
                                         </button>
                                     );
                                 })}

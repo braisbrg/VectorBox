@@ -5,5 +5,5 @@ import { useShell } from "@/components/shell/shell-context";
 
 export default function MoreLikeThisPage() {
     const { session } = useShell();
-    return <MoreLikeThis userId={session.id} />;
+    return <MoreLikeThis />;
 }

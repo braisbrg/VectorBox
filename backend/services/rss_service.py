@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import delete, cast, select, Date, func
+from sqlalchemy import delete, cast, select, Date, func, or_
 import numpy as np
 
 from models.database import User, Movie, UserRating
@@ -353,7 +353,15 @@ class RSSService:
                         # update it to reflect Letterboxd's current state. RSS is
                         # authoritative for likes once the parser captures the field.
                         "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
-                        "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
+                        # COALESCE y no `excluded` a secas: el parser deja
+                        # `watched_date: None` cuando la entrada del RSS no trae
+                        # <letterboxd:watchedDate>, y sobrescribir con eso borraba
+                        # una fecha de diario buena que ya estaba guardada. Una
+                        # fecha nueva sí manda; la ausencia de fecha, no.
+                        "watched_date": func.coalesce(
+                            getattr(insert(UserRating).excluded, "watched_date"),
+                            UserRating.watched_date,
+                        ),
                         "review": getattr(insert(UserRating).excluded, "review"),
                         "watch_count": (
                             func.coalesce(UserRating.watch_count, 1) + 1
@@ -415,7 +423,7 @@ class RSSService:
                 
         return stats
 
-    async def get_group_recommendations_hybrid(self, usernames: List[str], sources: Optional[Dict[str, str]] = None, focus: Optional[str] = None) -> List[Dict]:
+    async def get_group_recommendations_hybrid(self, usernames: List[str], sources: Optional[Dict[str, str]] = None, focus: Optional[str] = None, limit: int = 50, session_filters: Optional[Dict] = None) -> List[Dict]:
         """
         Group Vibe 2.0: Hybrid Watchlist Priority + Discovery
         1. Collect Taste Vectors & Watchlists for all users (DB & Guest).
@@ -430,10 +438,13 @@ class RSSService:
         """
         # 1. Collect Data
         user_data = [] # List of {'username': str, 'vector': np.array}
+        # Per member, the films they love — the seeds the fusion path seeds itself
+        # with. The centroid path below only ever needed their average.
+        member_seeds: List[Dict] = []
         watchlist_candidates = set()
         watchlist_counts: Dict[int, int] = {}  # tmdb_id -> how many members saved it
         excluded_ids = set()
-        
+
         for username in usernames:
             # Find user in DB — unless B-34 forces the Letterboxd/RSS path for
             # this handle (then the DB account with the same name is ignored).
@@ -448,14 +459,21 @@ class RSSService:
             if user:
                 # --- DB USER ---
                 # A. Get Taste Vector (Avg of recent 4+ star movies)
+                # 300, not 50: the fusion path wants every film you love as a seed
+                # (more seeds is strictly better there), while the centroid below
+                # keeps using the most recent 50 exactly as before.
                 stmt = select(Movie.tmdb_id).join(UserRating).where(
                     UserRating.user_id == user.id,
                     UserRating.rating >= 4.0
-                ).order_by(UserRating.watched_date.desc()).limit(50)
-                
+                # 42% de las filas no tienen fecha: sin `nulls_last` las semillas
+                # "mas recientes" serian justo las que no se sabe cuando se vieron.
+                ).order_by(UserRating.watched_date.desc().nulls_last()).limit(300)
+
                 result = await self.db.execute(stmt)
-                tmdb_ids = result.scalars().all()
-                
+                loved_ids = list(result.scalars().all())
+                tmdb_ids = loved_ids[:50]
+                member_seeds.append({"username": username, "loved": loved_ids, "user_id": user.id})
+
                 if tmdb_ids:
                     vectors = await self._fetch_vectors(tmdb_ids)
                     if vectors:
@@ -503,7 +521,8 @@ class RSSService:
                             target_items = liked
                             logger.info(f"Guest {username}: rating-filtered centroid ({len(liked)} liked of {len(rated)} rated)")
                     tmdb_ids = [i['tmdb_id'] for i in target_items if i.get('tmdb_id')]
-                    
+                    member_seeds.append({"username": username, "loved": tmdb_ids, "user_id": None})
+
                     if tmdb_ids:
                         vectors = await self._fetch_vectors(tmdb_ids)
                         if vectors:
@@ -545,7 +564,19 @@ class RSSService:
 
         if not user_data:
             return []
-            
+
+        # 1b. FUSION PATH (2026-08-03). Fuse one ranked list per member instead of
+        # scoring against the average of their vectors — see services/group_fusion.py
+        # for the measurement. Falls back to the centroid path below whenever the
+        # precomputed neighbour table is missing (scripts/build_neighbor_table.py),
+        # so a cold Redis degrades instead of failing.
+        fused = await self._fused_group_recommendations(
+            member_seeds, excluded_ids, watchlist_counts, user_data,
+            limit=limit, session_filters=session_filters,
+        )
+        if fused is not None:
+            return fused
+
         # Extract vectors for centroid calc
         user_vectors = [u['vector'] for u in user_data]
 
@@ -616,8 +647,9 @@ class RSSService:
                 with_vectors=True
             )
             for p in points:
-                if p.vector:
-                    candidate_vectors_map[p.id] = np.array(p.vector)
+                dense = self.qdrant._dense_of(p.vector)
+                if dense is not None:
+                    candidate_vectors_map[p.id] = np.array(dense)
         except Exception as e:
             logger.error(f"Error fetching candidate vectors: {e}")
             return []
@@ -698,8 +730,213 @@ class RSSService:
         for i, res in enumerate(scored_results[:5]):
             logger.info(f"Top {i+1}: ID={res['tmdb_id']}, Score={res['score']:.3f} (Avg={res['avg_sim']:.3f}, Min={res['min_sim']:.3f}, WL={res['is_watchlist']})")
             
-        # Return top 50 (to allow filtering of invalid/missing movies downstream)
-        return scored_results[:50]
+        # Return the top `limit` (headroom for the downstream filtering of
+        # invalid/missing movies, and for the session filters of the endpoint).
+        logger.info(
+            "[group] %d candidatos puntuados, se devuelven %d",
+            len(scored_results), min(limit, len(scored_results)),
+        )
+        return scored_results[:limit]
+
+    # How many directors/keywords per member reach the candidate query. See the
+    # comment at the capping site: uncapped it selects three quarters of the
+    # catalogue and costs 4x the time.
+    ATTR_CAP = 30
+
+    async def _fused_group_recommendations(
+        self, member_seeds: List[Dict], excluded_ids: set,
+        watchlist_counts: Dict[int, int], user_data: Optional[List[Dict]] = None,
+        limit: int = 50, session_filters: Optional[Dict] = None,
+    ) -> Optional[List[Dict]]:
+        """Rank by fusing one list per member. Returns None when the precomputed
+        neighbour table is absent, which hands the caller back to the centroid path.
+
+        Two Postgres queries regardless of group size, one MGET for every seed's
+        neighbours (1.5 ms for 350) and one small vector fetch for the display
+        score. Nothing here queries Qdrant per film — that is the whole point.
+        """
+        import json as _json
+        import os as _os
+
+        import redis.asyncio as aioredis
+        from services import group_fusion
+
+        NEIGHBOUR_KEY = "knn:v1:{}"      # written by scripts/build_neighbor_table.py
+        META_KEY = "knn:v1:meta"
+
+        seeds = [m for m in member_seeds if m.get("loved")]
+        if len(seeds) < 2:
+            return None
+
+        redis = aioredis.from_url(_os.getenv("REDIS_URL", "redis://redis:6379"), decode_responses=True)
+        try:
+            if not await redis.get(META_KEY):
+                logger.warning(
+                    "[group-fusion] neighbour table missing — falling back to the centroid path. "
+                    "Run scripts/build_neighbor_table.py"
+                )
+                return None
+            wanted = sorted({t for m in seeds for t in m["loved"]})
+            raw = await redis.mget([NEIGHBOUR_KEY.format(t) for t in wanted])
+        finally:
+            await redis.close()
+        neighbours = {t: _json.loads(v) for t, v in zip(wanted, raw) if v}
+        if not neighbours:
+            logger.warning("[group-fusion] no neighbours resolved for %d seeds — falling back", len(wanted))
+            return None
+
+        # Structured lists: directors and keywords this member loves repeatedly.
+        # Two queries total: what their films are made of, then what else shares it.
+        rows = (await self.db.execute(
+            select(Movie.tmdb_id, Movie.directors, Movie.keywords).where(Movie.tmdb_id.in_(wanted))
+        )).all()
+        by_film = {r[0]: (r[1] or [], r[2] or []) for r in rows}
+        per_member_attrs, all_dirs, all_keys = [], set(), set()
+        for m in seeds:
+            dcount, kcount = {}, {}
+            for t in m["loved"]:
+                d, k = by_film.get(t, ([], []))
+                for x in d: dcount[x] = dcount.get(x, 0) + 1
+                for x in k: kcount[x] = kcount.get(x, 0) + 1
+            # Only the strongest attributes. Uncapped, a 300-film library yields
+            # 485 "recurring" keywords that between them touch 15.326 of the
+            # 20.418 films — that is not a structured signal, it is the catalogue.
+            # It also cost 407 ms in Postgres; the cap brings it to 111 ms.
+            dirs = dict(sorted(((x, c) for x, c in dcount.items() if c >= 2),
+                               key=lambda kv: -kv[1])[:self.ATTR_CAP])
+            keys = dict(sorted(((x, c) for x, c in kcount.items() if c >= 3),
+                               key=lambda kv: -kv[1])[:self.ATTR_CAP])
+            per_member_attrs.append((dirs, keys))
+            all_dirs |= set(dirs); all_keys |= set(keys)
+
+        candidates_by_attr = []
+        if all_dirs or all_keys:
+            conds = []
+            if all_dirs: conds.append(Movie.directors.overlap(list(all_dirs)))
+            if all_keys: conds.append(Movie.keywords.overlap(list(all_keys)))
+            candidates_by_attr = (await self.db.execute(
+                select(Movie.tmdb_id, Movie.directors, Movie.keywords).where(or_(*conds))
+            )).all()
+
+        per_member_lists = []
+        for m, (dirs, keys) in zip(seeds, per_member_attrs):
+            dir_hits, key_hits = {}, {}
+            for tid, d, k in candidates_by_attr:
+                if tid in excluded_ids:
+                    continue
+                strength = max((dirs.get(x, 0) for x in (d or [])), default=0)
+                if strength:
+                    dir_hits[tid] = strength
+                strength = sum(keys.get(x, 0) for x in (k or []))
+                if strength:
+                    key_hits[tid] = strength
+            watchlist = []
+            if m.get("user_id"):
+                watchlist = list((await self.db.execute(
+                    select(Movie.tmdb_id).join(UserRating, Movie.id == UserRating.movie_id).where(
+                        UserRating.user_id == m["user_id"], UserRating.is_watchlist.is_(True)
+                    )
+                )).scalars().all())
+            per_member_lists.append(group_fusion.member_lists(
+                neighbours=neighbours,
+                loved=m["loved"],
+                directors=sorted(dir_hits, key=lambda t: -dir_hits[t]),
+                keywords=sorted(key_hits, key=lambda t: -key_hits[t]),
+                watchlist=[t for t in watchlist if t not in excluded_ids],
+            ))
+
+        pool = {t for lists in per_member_lists for ids in lists.values() for t in ids} - excluded_ids
+        meta = (await self.db.execute(
+            select(Movie.tmdb_id, Movie.vectorbox_score, Movie.runtime, Movie.directors, Movie.year)
+            .where(Movie.tmdb_id.in_(list(pool)))
+        )).all()
+        quality = {r[0]: (r[1] or 0.0) for r in meta}
+        runtime = {r[0]: (r[2] or 0.0) for r in meta}
+        directors_of = {r[0]: (r[3] or []) for r in meta}
+
+        # Filtros de sesión EN ORIGEN, igual que las filas anchas del feed
+        # (`feed_service._apply_filters`: "the 3 wide rows filter AT SOURCE").
+        # Aquí no hay consulta a Qdrant a la que colgar un filtro de payload —los
+        # candidatos salen de la tabla de vecinos precalculada— así que el origen es
+        # este pool, y `exclude` es la puerta que ya existía para entrar.
+        #
+        # La diferencia importa: post-filtrando, la fusión gastaba sus 50 puestos en
+        # películas que luego se caían y "2010+ y Q>=80 y menos de 90 min" sobrevivía
+        # 0 de 50. Excluyendo antes, esos 50 puestos son 50 películas elegibles.
+        no_elegibles: set = set()
+        sf = session_filters or {}
+        if sf:
+            years = {r[0]: r[4] for r in meta}
+            for t in pool:
+                y, q, rt = years.get(t), quality.get(t), runtime.get(t)
+                if sf.get("year_min") and (not y or y < sf["year_min"]):
+                    no_elegibles.add(t)
+                elif sf.get("year_max") and (not y or y > sf["year_max"]):
+                    no_elegibles.add(t)
+                elif sf.get("max_runtime") and (not rt or rt > sf["max_runtime"]):
+                    no_elegibles.add(t)
+                elif sf.get("min_score") is not None and (not q or q < sf["min_score"]):
+                    no_elegibles.add(t)
+            logger.info(
+                "[group-fusion] filtros en origen: %d de %d candidatos elegibles",
+                len(pool) - len(no_elegibles), len(pool),
+            )
+
+        ranked = group_fusion.fuse(
+            per_member_lists, quality, runtime, directors_of,
+            exclude=excluded_ids | no_elegibles, limit=limit,
+        )
+        if not ranked:
+            logger.warning("[group-fusion] fusion produced nothing — falling back")
+            return None
+
+        # The ORDER is the recommendation; `score` stays the real mean cosine so the
+        # UI keeps showing a similarity it can defend rather than a rank in disguise.
+        sims = {}
+        vectors = await self._fetch_vectors(ranked)
+        if vectors and len(vectors) == len(ranked):
+            # Reuse the centroids the caller already built — refetching each
+            # member's 50 vectors here cost one Qdrant round trip per member for
+            # a number that is only ever displayed.
+            by_name = {u["username"]: u["vector"] for u in (user_data or [])}
+            centroids = []
+            for m in seeds:
+                c = by_name.get(m["username"])
+                if c is None:
+                    mv = await self._fetch_vectors(m["loved"][:50])
+                    if not mv:
+                        continue
+                    c = np.mean(mv, axis=0)
+                centroids.append(c / (np.linalg.norm(c) or 1.0))
+            for tid, vec in zip(ranked, vectors):
+                v = np.asarray(vec, dtype=np.float32)
+                v = v / (np.linalg.norm(v) or 1.0)
+                sims[tid] = [float(np.dot(v, c)) for c in centroids]
+
+        logger.info("[group-fusion] %d members, %d seeds, pool %d -> %d films",
+                    len(seeds), len(wanted), len(pool), len(ranked))
+        results = []
+        for tid in ranked:
+            member_sims = sims.get(tid) or []
+            results.append({
+                "tmdb_id": tid,
+                "score": float(np.mean(member_sims)) if member_sims else 0.0,
+                "avg_sim": float(np.mean(member_sims)) if member_sims else 0.0,
+                "min_sim": float(np.min(member_sims)) if member_sims else 0.0,
+                "is_watchlist": watchlist_counts.get(tid, 0) > 0,
+                # Per-member COSINE, same contract as the centroid path. The
+                # ranking mass that actually put the film here would be more
+                # honest, but group-vibe-picker.tsx derives three things from
+                # this field — the predict column, its sort, and the agreement
+                # indicator (`1 - (max - min)`), which reads ~0 the moment the
+                # values are a normalised share instead of a similarity. Changing
+                # the meaning needs the frontend in the same commit.
+                "contributors": [
+                    {"username": m["username"], "score": float(max(0.0, s))}
+                    for m, s in zip(seeds, member_sims)
+                ],
+            })
+        return results
 
     async def _fetch_vectors(self, tmdb_ids: List[int]) -> List[np.ndarray]:
         """Helper to fetch vectors from Qdrant"""
@@ -712,8 +949,9 @@ class RSSService:
                 with_vectors=True
             )
             for p in points:
-                if p.vector:
-                    vectors.append(np.array(p.vector))
+                dense = self.qdrant._dense_of(p.vector)
+                if dense is not None:
+                    vectors.append(np.array(dense))
         except Exception as e:
             logger.error(f"Error fetching vectors: {e}")
         return vectors

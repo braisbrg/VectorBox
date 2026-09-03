@@ -48,14 +48,36 @@ def test_single_source_tmdb_only_capped_by_coverage():
     assert result.score >= 70.0, f"TMDb 8.5 with coverage 0.85 should still be >70, got {result.score}"
 
 
-def test_two_sources_intermediate_coverage():
-    """Two sources → 0.95 coverage factor; score should sit between 1-source and 3-source."""
+def test_missing_metacritic_costs_nothing():
+    """Sin Metascore pero con las dos fuentes votadas → coverage 1.00, sin penalización.
+
+    Metacritic dejó de contar como «fuente» el 2026-08-17: su ausencia significa
+    que Metacritic no reseñó la película, y eso es un artefacto de época y de
+    geografía (cubre el 22% de lo anterior a 1960 y el 19% de sus películas son
+    no inglesas, frente al 53% de las que no cubre), no un dato fino. Contarla
+    gravaba al cine viejo y extranjero — El gran dictador, con 258k votos de
+    IMDb, perdía un 5% por «falta de validación cruzada».
+    """
     omdb = _omdb(imdb_rating=8.0, imdb_votes=50_000, metascore=None)
     result = _client().calculate_vectorbox_score(omdb, 7.8, tmdb_vote_count=5_000)
     assert result.score is not None
-    # IMDb 8.0 in p90..p99 region, TMDb 7.8 in p90..p99 region.
-    # weighted_avg ≈ 90-94, * 0.95 ≈ 85-89
-    assert 80.0 <= result.score <= 92.0, f"Expected ~85, got {result.score}"
+    # IMDb 8.0 y TMDb 7.8, ambas en la zona p90..p99 → weighted_avg ≈ 91.5, sin factor.
+    assert 88.0 <= result.score <= 95.0, f"Expected ~91.5, got {result.score}"
+
+
+def test_una_sola_fuente_votada_si_penaliza():
+    """El suelo de 0.85 sigue vivo: una única fuente crowd es dato fino de verdad.
+
+    Es la mitad que no se tocó — sin ella, quitar la penalización de Metacritic
+    habría dejado que un especial de TV sólo-TMDB llegara al 99.
+    """
+    solo_imdb = _omdb(imdb_rating=8.0, imdb_votes=50_000, metascore=88)
+    con_ambas = _omdb(imdb_rating=8.0, imdb_votes=50_000, metascore=88)
+    penalizado = _client().calculate_vectorbox_score(solo_imdb, None, tmdb_vote_count=None)
+    completo = _client().calculate_vectorbox_score(con_ambas, 7.8, tmdb_vote_count=5_000)
+    assert penalizado.score < completo.score, (
+        f"sin TMDB debe puntuar menos ({penalizado.score} vs {completo.score})"
+    )
 
 
 def test_all_sources_at_floor():

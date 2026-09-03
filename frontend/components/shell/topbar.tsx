@@ -31,14 +31,29 @@ export function ShellTopbar() {
                 and leaves a single flex child, which justify-between packs to the
                 LEFT. The margin holds the actions right in both states. */}
             <div className="ml-auto flex items-center gap-3">
-                <button
-                    onClick={openMagicBox}
-                    className="hidden min-w-[280px] items-center gap-2.5 border border-border-2 bg-bg-2 px-3 py-2 font-mono text-xs text-fg-3 transition-colors hover:border-primary hover:text-primary lg:flex"
-                >
-                    <span className="text-primary">◐</span>
-                    <span className="flex-1 text-left">{t("mobile.kbar")}</span>
-                    <kbd className="border border-border-2 bg-bg-3 px-1.5 py-0.5 font-display text-[9px] text-fg-2">⌘K</kbd>
-                </button>
+                {/* Dos botones de igual peso, con su etiqueta visible. La versión
+                    anterior era un botón ancho con texto y otro de un solo carácter
+                    pegado al lado: no se leía como dos cosas, parecía un icono
+                    decorativo del primero. */}
+                <div className="hidden items-center gap-1.5 lg:flex">
+                    <button
+                        onClick={() => openMagicBox("vibe")}
+                        title={t("mb.mode_vibe")}
+                        className="group flex items-center gap-2 border border-border-2 bg-bg-2 px-3 py-2 font-mono text-xs text-fg-3 transition-colors hover:border-primary hover:text-primary"
+                    >
+                        <span className="text-primary">◐</span>
+                        <span>{t("mb.mode_vibe")}</span>
+                    </button>
+                    <button
+                        onClick={() => openMagicBox("title")}
+                        title={t("mb.mode_title")}
+                        className="group flex items-center gap-2 border border-border-2 bg-bg-2 px-3 py-2 font-mono text-xs text-fg-3 transition-colors hover:border-primary hover:text-primary"
+                    >
+                        <span className="text-primary">⌕</span>
+                        <span>{t("mb.mode_title")}</span>
+                    </button>
+                    <kbd className="ml-0.5 border border-border-2 bg-bg-3 px-1.5 py-0.5 font-display text-[9px] text-fg-2">⌘K</kbd>
+                </div>
                 <Link
                     href="/you"
                     aria-label="Profile"

@@ -37,7 +37,7 @@ from sqlalchemy import select
 from config import AsyncSessionLocal
 from models.database import Movie
 from services.embedding_service import EmbeddingService
-from services.magic_search_ranking import compute_blended_score, movie_passes_post_filter
+from services.magic_search_ranking import compute_relevance, movie_passes_post_filter
 from services.nlp_search import parse_user_intent
 from services.qdrant_service import QdrantService
 
@@ -94,11 +94,11 @@ async def run_one(query: str, emb: EmbeddingService, qd: QdrantService) -> dict:
         m = db_movies.get(h.payload.get("tmdb_id") or h.id)
         if m is None or not movie_passes_post_filter(m, intent):
             continue
-        final, _ts, _w = compute_blended_score(
+        relevance, _ts, weight = compute_relevance(
             raw_cosine=h.score, query=query, intent=intent,
             title=m.title or "", vbs=m.vectorbox_score,
         )
-        kept.append((final, h.score, m))
+        kept.append((relevance * weight, h.score, m))
 
     kept.sort(key=lambda x: x[0], reverse=True)
     raw = [h.score for h in hits.points]          # every neighbour Qdrant offered

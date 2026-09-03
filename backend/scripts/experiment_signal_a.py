@@ -364,7 +364,7 @@ async def strategy_e_quality_weighted_global(db, qdrant: QdrantService, user_id:
         base = rating_part + liked_part
         if base <= 0:
             continue
-        ref = ur.created_at or ur.watched_date
+        ref = ur.watched_date  # NUNCA created_at: es la fecha de import (ver test_anti_vector_recency)
         w = base * _recency_decay(ref, half_life_days=365.0)
         if w < 0.02:
             continue
@@ -429,7 +429,7 @@ async def strategy_g_multi_anchor(
     for ur, m in candidates:
         base = max(0.0, ((ur.rating or 0) - 2.5) / 2.5) + (0.5 if ur.is_liked else 0.0)
         base += np.log1p(max(0, (ur.watch_count or 1) - 1)) * 0.3
-        ref = ur.created_at or ur.watched_date
+        ref = ur.watched_date  # NUNCA created_at: es la fecha de import (ver test_anti_vector_recency)
         score = base * _recency_decay(ref, half_life_days=540.0)
         scored.append((score, m))
     scored.sort(key=lambda x: -x[0])

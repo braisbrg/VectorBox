@@ -1,4 +1,5 @@
 import os
+import hashlib
 import re
 import instructor
 from pydantic import BaseModel, Field, field_validator
@@ -9,6 +10,58 @@ import logging
 from services.llm_models import PARSER_CHAIN, REASONING_EFFORT
 
 logger = logging.getLogger(__name__)
+
+from telemetry import get_tracer
+
+_tracer = get_tracer("nlp_search")
+
+
+# "de mi lista" / "from my watchlist": se detecta con TEXTO, no con un campo del
+# parser. Cada campo opcional que se añade al esquema es un campo que el modelo
+# rellena a veces sin que nadie lo pida — `original_language` se inventaba 6 de 10
+# (ver CLAUDE.md) — y aquí una alucinación no degrada el resultado: lo vacía, porque
+# recorta el universo al 4% del catálogo. Encima cuesta cero tokens y se prueba sin Groq.
+_WATCHLIST_RE = re.compile(
+    r"\b(?:de|en|from|in|on)\s+(?:mi|my)\s+"
+    r"(?:lista(?:\s+de\s+pendientes)?|watchlist|pendientes|list|watch\s*list)\b",
+    re.IGNORECASE,
+)
+
+
+def detectar_watchlist(query: str) -> tuple[str, bool]:
+    """(consulta sin la frase, si pedía la watchlist).
+
+    La frase se QUITA: el texto acaba embebido, y "de mi lista" no describe ninguna
+    película — dejarla dentro mete tokens de lista en un vector que debe ser tema puro.
+
+    Si al quitarla no queda nada, la consulta era SÓLO el ámbito y no hay tema que
+    buscar: se devuelve intacta y sin marcar, porque para eso está el conmutador.
+    """
+    limpia, n = _WATCHLIST_RE.subn(" ", query)
+    if not n:
+        return query, False
+    limpia = re.sub(r"\s+", " ", limpia).strip(" ,.;-")
+    return (limpia, True) if limpia else (query, False)
+
+
+async def _traced_create(client, *, model: str, span_name: str, **kwargs):
+    """One Groq call, traced.
+
+    The parse is the slowest leg of a Magic Box search — ~1.1s on a good day, 16s
+    back when the SDK retried a 429 before the chain could fall through — and it
+    appeared in no trace at all. Wrapped as a helper rather than around the
+    existing try/except so the fallback logic keeps its shape: each attempt gets
+    its own span, so a trace SHOWS the chain falling through instead of implying
+    the primary was merely slow.
+    """
+    with _tracer.start_as_current_span(span_name) as span:
+        span.set_attribute("llm.model", model)
+        try:
+            return await client.chat.completions.create(model=model, **kwargs)
+        except Exception as e:
+            span.set_attribute("llm.failed", True)
+            span.set_attribute("llm.error", type(e).__name__)
+            raise
 
 # LLM sometimes emits a language NAME ("Spanish") instead of the ISO 639-1 code
 # the catalogue stores ("es") — that mismatch silently zero-results the query
@@ -239,9 +292,120 @@ def ensure_audience_request(intent: "MovieSearchIntent", query: str) -> "MovieSe
     return intent
 
 
+# Decade and year markers: "1970s", "70's", "'70s", "años 70", a bare "1974".
+# Deliberately NOT "retro", "vintage" or "classic" — those describe an aesthetic
+# a film description can actually contain, and stripping them would remove theme.
+_ERA_TOKEN = re.compile(
+    r"\b(?:"
+    # "de los 70", "años 90" — the Spanish prefix already marks this as an era,
+    # so no plural 's' is required (Spanish does not use one).
+    r"(?:de\s+los\s+|a[nñ]os\s+)(?:19|20)?\d0"
+    # "1970s", "70s", "70's" — bare, so the plural is what marks it.
+    r"|(?:19|20)?\d0\s*['’]?s"
+    # A literal year.
+    r"|(?:19|20)\d{2}"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def strip_era_from_semantic_query(intent: "MovieSearchIntent") -> "MovieSearchIntent":
+    """Remove era tokens from `semantic_query` once `year_min`/`year_max` hold them.
+
+    Third guard for the same failure as `guard_language_filter`: the field
+    description forbids era ("NEVER include ... era, country, language") and the
+    model emits it anyway. A prompt is a probability; this is the rule.
+
+    Measured 2026-07-30 on "atracos con mucho estilo, cine de los 70", same
+    1970-79 filter in every run — only the semantic text differs:
+
+      ES as parsed   "…crime, cool, retro, 1970s, slick, gangster, action"
+                     Odds and Evens, Trouble Man, Shaft, Sweet Sweetback
+      minus era      "…crime, cool, slick, gangster, action"
+                     Trouble Man, The Driver, The Sting, Super Fly
+      EN as parsed   "heist, caper, robbery, stylish, slick, sophisticated…"
+                     The Driver, The Sting, First Great Train Robbery, Un Flic
+
+    Era words cost twice. They are already a hard filter, so in the vector they
+    only dilute the subject — and because they match every film of the decade
+    they RAISE mean cosine while lowering relevance. The contaminated run scored
+    0.619 confidence against the clean run's 0.464, which is also why no
+    confidence threshold can police this (see the measurements in
+    services/showcase_service.py above MIN_RESULTS).
+
+    Only fires when the era survives as a filter, so no information is lost; if
+    stripping would empty the field, the original text stays.
+    """
+    if not (intent.year_min or intent.year_max):
+        return intent
+    original = intent.semantic_query or ""
+    stripped = _ERA_TOKEN.sub("", original)
+    # Tidy the separators the removal leaves behind: ", ," and dangling commas.
+    stripped = re.sub(r"\s*,\s*(?=,)", "", stripped)
+    stripped = re.sub(r"\s{2,}", " ", stripped).strip(" ,")
+    if stripped and stripped != original:
+        logger.info("[Era guard] %r -> %r", original, stripped)
+        intent.semantic_query = stripped
+    return intent
+
+
+# ── caché del parse ──────────────────────────────────────────────────────────
+#
+# El parse es ~1,5 s de una consulta de 2,2 s, y cuesta ~2000 tokens del techo de
+# 8000 POR MINUTO que tiene el plan gratuito de Groq: cuatro búsquedas seguidas
+# lo agotan, y eso ya ha tumbado auditorías y calentados enteros. Cachearlo
+# convierte cada repetición en cero tokens y ~50 ms, independientemente de qué
+# porcentaje de consultas se repita — el beneficio sobre el rate limit es cierto
+# aunque el hit rate sea bajo.
+#
+# Efecto secundario deseable: el parser NO es determinista. La misma frase da
+# intents distintos entre llamadas (medido: "atracos… de los 70" emitió `1970s`
+# en el semantic_query dos veces de nueve). Cachear hace que una consulta repetida
+# dé el mismo resultado, que es lo que un usuario espera al recargar.
+#
+# La versión va en la clave para que un cambio del esquema de MovieSearchIntent
+# invalide todo de golpe en vez de deserializar basura.
+PARSE_CACHE_VERSION = "v1"
+PARSE_CACHE_TTL = 60 * 60 * 24 * 7
+
+
+def parse_cache_key(query: str) -> str:
+    normalized = " ".join((query or "").lower().split())
+    digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"parse:{PARSE_CACHE_VERSION}:{digest}"
+
+
+async def parse_user_intent_cached(redis, query: str) -> "MovieSearchIntent":
+    """`parse_user_intent` con memoria. Sin redis, se comporta igual que él.
+
+    Un parse DEGRADADO no se cachea nunca: es la respuesta de "no había modelo",
+    no un análisis de la frase, y congelarlo durante una semana convertiría un
+    corte de Groq de treinta segundos en una semana de respuestas pobres.
+    """
+    if redis is None:
+        return await parse_user_intent(query)
+
+    key = parse_cache_key(query)
+    try:
+        raw = await redis.get(key)
+        if raw:
+            return MovieSearchIntent.model_validate_json(raw)
+    except Exception as e:      # una caché rota degrada a parsear, no a fallar
+        logger.warning("Parse cache read failed for %r: %s", query, e)
+
+    intent = await parse_user_intent(query)
+    if not parse_failed(intent):
+        try:
+            await redis.setex(key, PARSE_CACHE_TTL, intent.model_dump_json())
+        except Exception as e:
+            logger.warning("Parse cache write failed for %r: %s", query, e)
+    return intent
+
+
 def finalize_intent(intent: "MovieSearchIntent", query: str) -> "MovieSearchIntent":
     """Every deterministic repair the parser's output needs, in one place."""
     intent = guard_language_filter(intent, query)
+    intent = strip_era_from_semantic_query(intent)
     intent = ensure_semantic_query(intent, query)
     intent = ensure_quality_filter(intent, query)
     return ensure_audience_request(intent, query)
@@ -322,7 +486,7 @@ class MovieSearchIntent(BaseModel):
     # only encodes what films are about. The fix is confidence-aware ranking —
     # when mean similarity is low the structured filters (here mpaa G/PG) and
     # vectorbox_score should carry the ordering instead of a meaningless cosine.
-    # That is a change to compute_blended_score, not to this string.
+    # That is a change to compute_relevance, not to this string.
     semantic_query: str = Field(
         ...,
         description=(
@@ -667,8 +831,10 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
     # is near-deterministic, not deterministic (measured 6/10 vs 4/10 on identical
     # input), so the rule runs on the way out rather than trusting the prompt.
     try:
-        return finalize_intent(await client.chat.completions.create(
+        return finalize_intent(await _traced_create(
+            client,
             model=primary_model,
+            span_name="llm.parse_intent",
             response_model=MovieSearchIntent,
             messages=messages,
             temperature=0,  # structured extraction — determinism over creativity (cuts search volatility)
@@ -678,8 +844,10 @@ async def parse_user_intent(user_query: str) -> MovieSearchIntent:
         if fallback_model:
             logger.warning(f"Primary model failed: {e}. Trying fallback.")
             try:
-                return finalize_intent(await client.chat.completions.create(
+                return finalize_intent(await _traced_create(
+                    client,
                     model=fallback_model,
+                    span_name="llm.parse_intent.fallback",
                     response_model=MovieSearchIntent,
                     messages=messages,
                     temperature=0,
@@ -731,8 +899,10 @@ async def search_with_reasoning(user_query: str, candidates: List[dict]) -> List
 
     model = "openai/gpt-oss-120b" if os.environ.get("GROQ_API_KEY") else "gemini-2.5-flash"
     try:
-        response = await client.chat.completions.create(
+        response = await _traced_create(
+            client,
             model=model,
+            span_name="llm.deep_analysis",
             response_model=DeepAnalysisResponse,
             messages=[
                 {"role": "system", "content": system_prompt},

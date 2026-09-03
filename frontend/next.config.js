@@ -1,6 +1,13 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   output: "standalone",
+  // Fuente única de la versión del frontend: `package.json`. Antes había TRES
+  // valores vivos a la vez — "V2.1.0_PROD" a pelo en la consola derecha,
+  // "v3.0.0" dentro de los mensajes i18n (donde no pinta nada: era idéntico en
+  // los dos idiomas, o sea un dato, no una traducción) y "1.0.0" en la API.
+  env: {
+    NEXT_PUBLIC_APP_VERSION: require("./package.json").version,
+  },
   images: {
     remotePatterns: [
       {

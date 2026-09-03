@@ -83,6 +83,100 @@ def is_low_confidence(raw_cosines: list[float]) -> bool:
     """True when the catalogue has nothing close enough to be a recommendation."""
     return search_confidence(raw_cosines) < LOW_CONFIDENCE_MEAN
 
+# --- relevance cliff ---------------------------------------------------------
+#
+# A filtered search ALWAYS returns its nearest neighbours, however far away they
+# are. That is how "atracos con estilo, cine europeo de los 70" shipped a row of
+# twenty with two heists in it: inside a box of 442 films the nearest twenty are
+# just the most 70s-Euro-crime-ish things in the box, and nothing downstream
+# asked whether they were close enough to be an answer.
+#
+# What this is NOT: a judgement about the query. Three candidate detectors were
+# measured on a 12-query panel (2026-07-31) and every one of them FAILED to
+# separate answerable from unanswerable — absolute cosine, the cosine recovered
+# by dropping filters, and keyword overlap all put a good case on the wrong side:
+#
+#   abs     kung fu 70s (good) 0.477  <  found footage 60s (bad) 0.557
+#   drop    atracos EU (bad)  +0.000  <  anime 90s (good)       +0.091
+#   overlap superheroes 60s (bad) 100% > thrillers coreanos (good) 10%
+#
+# So no gate classifies the question. This trims the TAIL instead, relative to
+# the best neighbour this query actually found, which cannot be wrong about a
+# query because it never removes the head. Measured survivors at 0.85:
+#
+#   padded  cyberpunk 50s 20->7   zombis 40s 20->6   atracos EU 20->15
+#   real    giallo 20  noir 20  grief 20  heists-70s 20  korean 20
+#           slasher 17  anime 90s 12  kung fu 70s 9
+#
+# 0.88 starts gutting real answers (giallo 20->10, kung fu 20->5); 0.80 barely
+# trims anything (cyberpunk keeps 18). The worst case at 0.85 is a legitimate
+# query served 9 films instead of 20 — a smaller row, never a blank page.
+#
+# Applied to the RAW cosine, before the VBS blend, so relevance decides who is
+# in the answer and quality only decides the order within it.
+RELEVANCE_CLIFF = 0.85
+
+
+def trim_to_relevant(raw_results: list[dict]) -> list[dict]:
+    """Drop neighbours far below the best one this query found."""
+    if not raw_results:
+        return raw_results
+    best = max((r.get("score") or 0.0) for r in raw_results)
+    if best <= 0:
+        return raw_results
+    floor = best * RELEVANCE_CLIFF
+    return [r for r in raw_results if (r.get("score") or 0.0) >= floor]
+
+
+# --- safety net: keep the subject, relax the modifier ------------------------
+#
+# Some requests cannot be satisfied because the films do not exist. "cyberpunk de
+# los 50" is the clean example: the catalogue holds three 1950s films with any
+# adjacent keyword (Forbidden Planet, The War of the Worlds, On the Beach) and
+# none is cyberpunk, because the genre starts around 1982 — Blade Runner sits in
+# the control group one decade later. Nothing is broken there; the answer simply
+# is not in the world, let alone the catalogue.
+#
+# Padding the row with the nearest 1950s films is the wrong response, and so is a
+# blank page. What a person asking for "cyberpunk de los 50" wants is cyberpunk:
+# the SUBJECT is the request, the era is a preference. So when the row comes back
+# short, the same theme is searched again with the era dropped, and those films
+# are appended MARKED, never silently mixed in.
+#
+# Triggered by the LENGTH OF THE ROW, not by a judgement about the query — same
+# reason as the cliff, since three query-level detectors were measured and none
+# separated answerable from unanswerable. Measured row lengths after the cliff:
+#
+#   real answers     kung fu 70s 9 · giallo 10 · anime 90s 12 · atracos EU 14
+#   nothing there    cyberpunk 50s 7 · zombis 40s 5
+#
+# 8 sits in that gap. Being wrong is cheap in both directions: too eager appends
+# clearly-labelled extras to a row that was already fine, too shy leaves today's
+# behaviour. Neither can empty a page or hide the films the user did ask for.
+RELAXED_MIN_ROW = 8
+
+
+def relaxable_dimension(intent: MovieSearchIntent) -> Optional[str]:
+    """Which filter to drop when the row is too short, or None.
+
+    Era first: it is the dimension least likely to have a thematic correlate in
+    the catalogue, and the one a viewer trades away most readily. Country second.
+    Genre, runtime and the quality bars are never relaxed — those are the request
+    itself, not a preference around it.
+    """
+    if intent.year_min or intent.year_max:
+        return "era"
+    if intent.countries:
+        return "countries"
+    return None
+
+
+def relaxed_filters(qdrant_filters: dict, dimension: str) -> dict:
+    """`qdrant_filters` minus the relaxed dimension."""
+    dropped = {"era": ("year_min", "year_max"), "countries": ("countries",)}[dimension]
+    return {k: v for k, v in qdrant_filters.items() if k not in dropped}
+
+
 # --- Title-boost parameters --------------------------------------------------
 
 TITLE_BOOST_QUERY_MAX_LEN = 40
@@ -258,20 +352,26 @@ def quality_gate_weight(vbs: Optional[float], quality_gate_bypass: bool) -> floa
     return floor + (1.0 - floor) * sigmoid
 
 
-# --- 4. blended score --------------------------------------------------------
+# --- 4. relevance + quality weight -------------------------------------------
 
 
-def compute_blended_score(
+def compute_relevance(
     raw_cosine: float,
     query: str,
     intent: MovieSearchIntent,
     title: str,
     vbs: Optional[float],
 ) -> tuple[float, Optional[float], float]:
-    """The score the front-end actually sees and the ranker sorts by.
+    """Returns (relevance, title_sim_or_None, quality_weight).
 
-    Returns (final_score, title_sim_or_None, quality_weight). The two extras
-    are useful for debug payloads and the validation script.
+    RANK by `relevance * weight`, DISPLAY `relevance`. Two different questions:
+    "how close is this to what you asked" and "which of these do we put first".
+    VBS answers the second and has no business in the first — "muy bien
+    valoradas" showed 99 while a precise, correctly-answered giallo query showed
+    83, because the vague query matched acclaimed films (2026-07-31).
+
+    This used to return the product and the route divided the weight back out to
+    display it, which is the same two numbers with a cancellation in between.
     """
     score = normalize_similarity_score(raw_cosine)
 
@@ -286,7 +386,7 @@ def compute_blended_score(
             )
 
     weight = quality_gate_weight(vbs, intent.quality_gate_bypass)
-    return score * weight, ts, weight
+    return score, ts, weight
 
 
 # --- 5. post-filter ---------------------------------------------------------
@@ -300,6 +400,14 @@ def movie_passes_post_filter(movie: Movie, intent: MovieSearchIntent) -> bool:
     against synthetic Movie objects.
     """
     if intent.safe_mode and bool(movie.is_adult):
+        return False
+
+    # A film nobody can watch yet is not a recommendation. Found 2026-07-30 while
+    # measuring the landing: "atracos con estilo" returned `Untitled Ocean's
+    # Prequel (2027)` in the top twelve. 184 unreleased films carry a searchable
+    # vector, so this is not a one-off. rss.py:573 already refuses them for the
+    # same reason; the upcoming RAIL keeps its own query and is unaffected.
+    if movie.is_upcoming:
         return False
 
     if intent.mpaa_ratings is not None:

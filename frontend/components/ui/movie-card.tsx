@@ -15,26 +15,17 @@ export interface MovieCardProps {
     year?: number;
     runtime?: number;
     rating?: number;
-    matchScore?: number;
+    matchScore?: number | null;
     vectorbox_score?: number;
     title_es?: string;
-    overview?: string;
-    overview_es?: string;
-    genres?: string[];
     onInspect?: (id: number, contributors?: Contributor[]) => void;
     onReject?: (id: number) => void;
     onMarkWatched?: (id: number) => void;
     priority?: boolean;
     className?: string;
-    badgeType?: string;
-    providers?: string[];
     contributors?: Contributor[];
-    forceVectorBoxScore?: boolean;
-    imdb_rating?: number;
-    metacritic_rating?: number;
     letterboxd_rating?: number;
     href?: string;
-    variant?: "overlay" | "grid";
     isRejecting?: boolean;
     isMarkingWatched?: boolean;
     /** Override the HUD's right slot (default ★ rating) — e.g. provider name on watchlist. */
@@ -88,8 +79,12 @@ export function MovieCard({
     // `hudRight` by the "Popular on Letterboxd" row only (ratings live in the
     // inspector for everything else — no fake TMDB-derived stars on cards).
 
-    const releaseBadge = contributors?.find((c) => c.type === "upcoming")?.release_badge;
-    const status = releaseBadge ? { label: releaseBadge, tone: "upcoming" } : undefined;
+    // Cualquier contribuidor con chapa, no sólo `upcoming`: la fila "Leaving Soon"
+    // mandaba la suya desde el primer día y se perdía aquí, en el último borde.
+    const badged = contributors?.find((c) => c.release_badge);
+    const status = badged?.release_badge
+        ? { label: badged.release_badge, tone: badged.type === "leaving_soon" ? "leaving-soon" : "upcoming" }
+        : undefined;
 
     const movieLink = href || `https://letterboxd.com/tmdb/${id}/`;
 
@@ -134,9 +129,13 @@ export function MovieCard({
                         </div>
                     )}
 
-                    {/* Q corner-tag tab (top-right) — only when a real quality score exists */}
-                    {q != null && q > 0 && (
-                        <span className="absolute right-0 top-0 z-20 bg-primary px-[7px] py-[3px] font-display text-[11px] font-bold leading-none tracking-[0.04em] text-primary-ink">
+                    {/* Q corner-tag tab (top-right) — only when a real quality score exists.
+                        Unreleased films are excluded explicitly: VBS is built from IMDb/TMDB
+                        ratings, so with no votes yet the formula floors them at ~15 rather
+                        than at null, and "On Your Radar" was painting Q15 on every card as if
+                        the film were bad. It isn't rated, which is a different thing. */}
+                    {q != null && q > 0 && !status && (
+                        <span className="absolute right-0 top-0 z-10 bg-primary px-[7px] py-[3px] font-display text-[11px] font-bold leading-none tracking-[0.04em] text-primary-ink">
                             Q{Math.round(q)}
                         </span>
                     )}
@@ -145,7 +144,7 @@ export function MovieCard({
                     {status && (
                         <span
                             className={cn(
-                                "absolute left-1.5 top-1.5 z-20 px-1.5 py-0.5 font-display text-[9px] font-bold uppercase leading-none tracking-[0.08em]",
+                                "absolute left-1.5 top-1.5 z-10 px-1.5 py-0.5 font-display text-[9px] font-bold uppercase leading-none tracking-[0.08em]",
                                 STATUS_TONE[status.tone]
                             )}
                         >
@@ -153,8 +152,17 @@ export function MovieCard({
                         </span>
                     )}
 
-                    {/* stacked action triad (hover, right edge) */}
-                    <div className="absolute inset-y-0 right-0 z-30 flex w-[34px] flex-col border-l border-border-2 bg-black/80 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                    {/* stacked action triad (hover, right edge). z-20, not z-30+ —
+                        this card sits below a sticky topbar (z-30) in the same
+                        stacking context; matching or exceeding it lets a hovered
+                        card's triad paint over the topbar on scroll. */}
+                    {/* Sin acciones no hay barra. Se pintaba siempre, así que en la
+                        landing —donde esta tarjeta no recibe ningún callback— el
+                        hover mostraba una franja negra de 34px vacía: parecía
+                        interactiva y no hacía nada. Los botones ya se filtraban por
+                        `show`; lo que faltaba era filtrar el contenedor. */}
+                    {triad.length > 0 && (
+                    <div className="absolute inset-y-0 right-0 z-20 flex w-[34px] flex-col border-l border-border-2 bg-black/80 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                         {triad.map((b, i) => (
                             <button
                                 key={b.title}
@@ -175,6 +183,7 @@ export function MovieCard({
                             </button>
                         ))}
                     </div>
+                    )}
                 </div>
 
                 {/* HUD strip — runtime · (year | ★ letterboxd on the popular row) */}

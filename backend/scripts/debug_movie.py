@@ -199,7 +199,7 @@ async def _signal_a_analysis(movie: Movie, user_id: int, db, qdrant: QdrantServi
     for ur, m in candidates:
         base = max(0.0, ((ur.rating or 0) - 2.5) / 2.5) + (0.5 if ur.is_liked else 0.0)
         base += float(np.log1p(max(0, (ur.watch_count or 1) - 1))) * 0.3
-        ref = ur.created_at or ur.watched_date
+        ref = ur.watched_date  # NUNCA created_at: es la fecha de import (ver test_anti_vector_recency)
         scored.append((base * _recency_decay(ref), m))
     scored.sort(key=lambda x: -x[0])
     anchors = scored[:7]

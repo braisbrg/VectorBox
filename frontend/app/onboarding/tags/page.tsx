@@ -22,6 +22,10 @@ export default function OnboardingTagsPage() {
 
     useEffect(() => {
         setHydrated(true);
+        // Being here IS the rate flow — the landing links straight in, skipping
+        // the start-selection screen that used to set this. Without it /onboarding
+        // bounces the guest back to that screen after Continue.
+        localStorage.setItem("vb_onb_rate", "1");
         // Make sure the guest has an anon session so the POST /tags below
         // can authenticate via cookie. Idempotent — no-op if cookie already set.
         api.post("/api/onboarding/init-session").catch(() => { /* offline ok */ });
@@ -60,7 +64,7 @@ export default function OnboardingTagsPage() {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.4 }}
-                className="z-10 w-full max-w-3xl space-y-8"
+                className="z-10 w-full max-w-5xl space-y-8"
             >
                 <div className="space-y-2 text-center">
                     <p className="eyebrow text-primary">{t("wiz.taste_title")}</p>

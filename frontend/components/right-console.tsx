@@ -1,6 +1,6 @@
 "use client";
 
-import { X, Check, Loader2 } from "lucide-react";
+import { X, Check, Loader2, Plus } from "lucide-react";
 import { m, AnimatePresence } from "framer-motion";
 import Image from "next/image";
 import Link from "next/link";
@@ -8,8 +8,10 @@ import { useState } from "react";
 import { FeedItem, getTMDBImageUrl, FilterSearchParams } from "@/lib/api";
 import { WhyThisFilm } from "@/components/why-this-film";
 import { FilterForm } from "@/components/filter-form";
+import { MoodChips } from "@/components/mood-chips";
 import { useLanguage } from "@/components/language-provider";
 import { cn } from "@/lib/utils";
+import { APP_VERSION } from "@/lib/version";
 
 interface RightConsoleProps {
     selectedMovie: FeedItem | null;
@@ -24,8 +26,9 @@ interface RightConsoleProps {
     onClearFilters: () => void;
     onFilterSearch?: (params: FilterSearchParams) => void;
     onMarkWatched?: (tmdbId: number) => void;
+    onWatchlist?: (tmdbId: number) => void;
     onReject?: (tmdbId: number) => void;
-    inspectorActionLoading?: "watched" | "rejected" | null;
+    inspectorActionLoading?: "watched" | "rejected" | "watchlist" | null;
     /** Count of active filter-search results (shows the "N films match" rail line). */
     filteredCount?: number | null;
 }
@@ -41,9 +44,12 @@ export function RightConsole({
     onClearFilters,
     onFilterSearch,
     onMarkWatched,
+    onWatchlist,
     onReject,
     inspectorActionLoading,
     filteredCount,
+    scope,
+    onScopeChange,
 }: RightConsoleProps) {
     const inspectedMovie = selectedMovie;
     const selectedContributors = selectedMovie?.contributors;
@@ -54,6 +60,12 @@ export function RightConsole({
         language === "es" && inspectedMovie?.overview_es ? inspectedMovie.overview_es : inspectedMovie?.overview;
 
     const [scoreExpanded, setScoreExpanded] = useState(false);
+    // Sinopsis plegada por defecto. Una de TMDB pasa de 600 caracteres y en un
+    // rail de 320px empuja "disponible en" y las acciones fuera de la pantalla:
+    // había que bajar muchísimo para llegar a lo accionable. Se pliega por encima
+    // de este umbral, no siempre — plegar tres líneas es ruido.
+    const [overviewExpanded, setOverviewExpanded] = useState(false);
+    const overviewIsLong = (displayOverview?.length ?? 0) > 240;
 
     return (
         <aside className="fixed right-0 top-0 z-40 hidden h-screen w-80 flex-col overflow-hidden border-l border-border-2 bg-bg font-mono text-xs lg:flex">
@@ -72,6 +84,7 @@ export function RightConsole({
                         </div>
 
                         <div className="flex-1 overflow-y-auto p-4 scrollbar-hide">
+                            <MoodChips />
                             <FilterForm
                                 countryCode={countryCode}
                                 onCountryChange={onCountryChange}
@@ -80,13 +93,15 @@ export function RightConsole({
                                 onClearFilters={onClearFilters}
                                 onFilterSearch={onFilterSearch}
                                 filteredCount={filteredCount}
+                                scope={scope}
+                                onScopeChange={onScopeChange}
                             />
                         </div>
 
                         <div className="border-t border-border-2 bg-bg-2 p-4">
                             <div className="flex items-center justify-between text-[9px] text-fg-3">
                                 <span>STATUS: ONLINE</span>
-                                <span>V2.1.0_PROD</span>
+                                <span>V{APP_VERSION}_PROD</span>
                             </div>
                         </div>
                     </m.div>
@@ -154,8 +169,13 @@ export function RightConsole({
                                         <div className="mb-1 flex items-center justify-between">
                                             <span className="text-[10px] font-bold uppercase italic text-fg-3">VECTORBOX_SCORE</span>
                                             <div className="flex items-center gap-2">
+                                                {/* No fallback to match_score: that is a
+                                                    SIMILARITY, and this box is labelled
+                                                    VECTORBOX_SCORE. movie-card.tsx already
+                                                    says so; these two inspectors did the
+                                                    opposite. No VBS → show nothing. */}
                                                 <span className="font-display text-xl text-primary">
-                                                    {inspectedMovie.vectorbox_score || inspectedMovie.match_score}
+                                                    {inspectedMovie.vectorbox_score ?? "—"}
                                                 </span>
                                                 <span className="text-[9px] text-fg-3">{scoreExpanded ? "▲" : "▼"}</span>
                                             </div>
@@ -163,7 +183,7 @@ export function RightConsole({
                                         <div className="h-1 w-full overflow-hidden bg-border">
                                             <div
                                                 className="h-full bg-primary"
-                                                style={{ width: `${inspectedMovie.vectorbox_score || inspectedMovie.match_score}%` }}
+                                                style={{ width: `${inspectedMovie.vectorbox_score ?? 0}%` }}
                                             />
                                         </div>
                                         {scoreExpanded && (inspectedMovie.imdb_rating || inspectedMovie.metacritic_rating || inspectedMovie.rating) && (
@@ -195,9 +215,22 @@ export function RightConsole({
                                         <span className="block border-b border-border pb-2 text-[10px] uppercase tracking-widest text-fg-3">
                                             {">"} DATA_SYNOPSIS
                                         </span>
-                                        <p className="text-[11px] normal-case leading-relaxed text-fg-2">
+                                        <p
+                                            className={cn(
+                                                "text-[11px] normal-case leading-relaxed text-fg-2",
+                                                overviewIsLong && !overviewExpanded && "line-clamp-4"
+                                            )}
+                                        >
                                             {displayOverview || "NO OVERVIEW DATA AVAILABLE IN LOCAL_CACHE."}
                                         </p>
+                                        {overviewIsLong && (
+                                            <button
+                                                onClick={() => setOverviewExpanded((v) => !v)}
+                                                className="text-[10px] uppercase tracking-widest text-fg-3 transition-colors hover:text-primary"
+                                            >
+                                                {overviewExpanded ? t("insp.less") : t("insp.more")}
+                                            </button>
+                                        )}
                                     </div>
 
                                     {/* Available on (handoff renderRailInspector) */}
@@ -234,6 +267,19 @@ export function RightConsole({
 
                                     {/* Actions */}
                                     <div className="space-y-2 pt-4">
+                                        {/* La watchlist faltaba aquí y es la acción
+                                            más probable al inspeccionar algo que no
+                                            has visto: decidir verla luego. */}
+                                        {onWatchlist && (
+                                            <button
+                                                onClick={() => onWatchlist(inspectedMovie.id)}
+                                                disabled={inspectorActionLoading !== null}
+                                                className="flex w-full items-center justify-center gap-2 border border-border-2 py-3 text-fg-2 transition-colors hover:border-primary hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                                            >
+                                                {inspectorActionLoading === "watchlist" ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />}
+                                                <span className="text-[10px] font-bold uppercase tracking-widest">{">"} {t("insp.watchlist")}</span>
+                                            </button>
+                                        )}
                                         <button
                                             onClick={() => onMarkWatched?.(inspectedMovie.id)}
                                             disabled={inspectorActionLoading !== null}

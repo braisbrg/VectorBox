@@ -563,7 +563,6 @@ export function FeedContainer({
                             userId={userId}
                             sectionId={section.id}
                             type={section.type}
-                            forceVectorBoxScore={section.id === "wildcard"}
                             priority={index === 0}
                             onInspect={handleInspect}
                             titlePrefix={

@@ -3,12 +3,14 @@ import argparse
 import logging
 import os
 import sys
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, date, timezone
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import select, or_, and_, update
+from sqlalchemy import select, or_, and_, update, text as _sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import object_session as _sync_object_session
+from sqlalchemy.ext.asyncio import async_object_session
 
 from config import AsyncSessionLocal
 from models.database import Movie
@@ -70,8 +72,77 @@ async def get_movies_to_refresh(db, strategy: str, limit: int, force: bool = Fal
                 Movie.last_metadata_refresh < threshold,
             ))
 
+    # `LIMIT` sin `ORDER BY` no es una cola, es una muestra arbitraria del heap: con 179
+    # elegibles y limit=100 la misma centena puede volver run tras run y las otras 79 no
+    # refrescarse NUNCA. Así llevaban 38 filas de `movie_availability` en ES ancladas en
+    # marzo-mayo (5 meses) mientras el resto del país estaba al día (medido 2026-08-19).
+    # `nulls_first` porque en ASC Postgres pone los NULL al FINAL, y NULL aquí significa
+    # "no se ha refrescado jamás" — los 422 más urgentes irían los últimos. Es el espejo
+    # exacto de la regla de `nullslast()` del CLAUDE.md.
+    query = query.order_by(Movie.last_metadata_refresh.asc().nulls_first())
     result = await db.execute(query.limit(limit))
     return result.scalars().all()
+
+
+async def _guardar_disponibilidad(movie: Movie, tmdb_data: dict) -> None:
+    """Persiste en `movie_availability` los proveedores que ya vienen en el detalle.
+
+    Sólo `flatrate` (suscripción): que una película se pueda ALQUILAR no es tenerla, y
+    mezclarlo haría que el filtro por proveedor del rail devolviese títulos que hay que
+    pagar aparte. Escribe todos los países que TMDB traiga, no sólo ES — el dato ya está
+    y `country_code` es parte de la clave, así que no cuesta nada guardarlos.
+    """
+    from sqlalchemy.dialects.postgresql import insert as _pg_insert
+    from models.database import MovieAvailability
+    from services.provider_service import es_ruido
+
+    datos = (tmdb_data or {}).get("providers_data")
+    if not isinstance(datos, dict):
+        return
+    # Un `{}` NO es una respuesta mala, es "no está en ningún sitio, en ningún país":
+    # si la llamada a TMDB hubiera fallado, `refresh_movie` ya habría salido con None
+    # antes de llegar aquí. Tratarlo como fallo dejaba tres películas (Tallulah, A Free
+    # Man, Emotional Architecture 1959) afirmando Netflix/Filmin/Arte para siempre.
+
+    ahora = datetime.now(timezone.utc)
+    sesion = async_object_session(movie)
+    if sesion is None:
+        return
+    # Este bucle sólo sabe AÑADIR y ACTUALIZAR: recorre los países que TMDB devuelve.
+    # Cuando una película DEJA de estar en un país, TMDB deja de mandar ese bloque, así
+    # que la fila vieja no se toca nunca y sigue afirmando el proveedor para siempre.
+    # Medido 2026-08-19: 49 filas de ES afirmando disponibilidad con hasta 5 meses, y
+    # **47 de ellas visitadas por este mismo refresco después de esa fecha** (A Serbian
+    # Film se refrescó el 13-08 y estrenó fila de otro país ese día, con la de ES clavada
+    # en el 21-04). Vaciamos aquí las que ya no vienen: `datos` no vacío significa que la
+    # respuesta de TMDB es buena, así que un país ausente es un "ya no está", no un fallo.
+    paises = [k for k in datos if isinstance(k, str) and len(k) == 2]
+    limpiar = (update(MovieAvailability)
+               .where(MovieAvailability.movie_id == movie.id,
+                      MovieAvailability.providers != _sa_text("'[]'::jsonb"))
+               .values(providers=[], last_updated=ahora))
+    if paises:
+        limpiar = limpiar.where(MovieAvailability.country_code.not_in(paises))
+    await sesion.execute(limpiar)
+    for pais, bloque in datos.items():
+        if not isinstance(pais, str) or len(pais) != 2:
+            continue
+        flatrate = (bloque or {}).get("flatrate") or []
+        # `es_ruido` quita "X with Ads" (el mismo servicio repetido: "Netflix Standard
+        # with Ads" junto a "Netflix") y "X Amazon Channel" (suscripción de pago aparte
+        # dentro de Prime, que con Prime a secas no puedes ver). Eran 19 de los 55
+        # proveedores distintos de ES. Se filtra al ESCRIBIR para que ninguna superficie
+        # tenga que acordarse. Ver services/provider_service.es_ruido.
+        provs = [{"provider_id": p.get("provider_id"), "provider_name": p.get("provider_name")}
+                 for p in flatrate
+                 if p.get("provider_id") and not es_ruido(p.get("provider_name"))]
+        stmt = _pg_insert(MovieAvailability).values(
+            movie_id=movie.id, country_code=pais, providers=provs, last_updated=ahora,
+        ).on_conflict_do_update(
+            index_elements=["movie_id", "country_code"],
+            set_={"providers": provs, "last_updated": ahora},
+        )
+        await sesion.execute(stmt)
 
 
 async def refresh_movie(movie: Movie, tmdb: TMDBClient, omdb: OMDbClient) -> bool:
@@ -165,6 +236,39 @@ async def refresh_movie(movie: Movie, tmdb: TMDBClient, omdb: OMDbClient) -> boo
                 )
                 if vb.score is not None:
                     movie.vectorbox_score = vb.score
+
+        # Fechas por país DERIVADAS del bloque `release_dates` que ya se acaba de
+        # descargar. Las tres columnas estaban declaradas, migradas y LEÍDAS (la cabecera
+        # del radar y el bloque de abajo), pero **nadie las escribía**: medido 2026-08-12,
+        # `release_date_es` era NULL en 21.320 de 21.374 películas (100%) mientras el
+        # JSONB crudo estaba al 100%. Eso rompía tres cosas a la vez — la cabecera del
+        # radar se quedaba con 4 candidatas, `mark_released_upcoming` no podía detectar
+        # ningún flag caducado, y no se podía filtrar por país en local.
+        # Coste: CERO llamadas extra, el dato ya viene en este mismo `get_movie_details`.
+        rd = movie.release_dates or {}
+        if isinstance(rd, dict) and rd:
+            def _fecha(valor):
+                try:
+                    return date.fromisoformat(str(valor)[:10])
+                except (TypeError, ValueError):
+                    return None
+            if rd.get("ES"):
+                movie.release_date_es = _fecha(rd["ES"]) or movie.release_date_es
+            if rd.get("US"):
+                movie.release_date_us = _fecha(rd["US"]) or movie.release_date_us
+            # "WW" no existe como clave: el estreno mundial es el MÁS TEMPRANO de todos.
+            todas = [d for d in (_fecha(v) for v in rd.values()) if d]
+            if todas:
+                movie.release_date_ww = min(todas)
+
+        # Disponibilidad en streaming, del mismo detalle. `providers_data` viene en el
+        # `append_to_response` de `get_movie_details` y hasta hoy se descartaba, así que
+        # `movie_availability` sólo se llenaba de forma REACTIVA (cuando alguien miraba
+        # una película). Resultado medido: de los 12.860 candidatos de feed, sólo el 20%
+        # tenía disponibilidad fresca según el TTL de 7 días del propio ProviderService.
+        # Persistirlo aquí es gratis y es lo que permitirá filtrar por proveedor EN ORIGEN
+        # en vez de post-filtrar, que es lo que hoy vacía filas enteras del feed.
+        await _guardar_disponibilidad(movie, tmdb_data)
 
         if movie.is_upcoming:
             today = date.today()

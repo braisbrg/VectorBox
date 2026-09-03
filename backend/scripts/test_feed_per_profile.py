@@ -67,10 +67,16 @@ async def main():
                     continue
                 print(f"\n  {section.title!r}")
                 for it in items:
-                    score = it.match_score or 0
+                    # `or 0` era peor que no imprimir nada: esta columna valía 99
+                    # para 11 de los 13 productores del feed (constante disfrazada
+                    # de parecido), así que el único diagnóstico que compara feeds
+                    # entre perfiles sólo sabía decir "bien". Ahora un guión dice la
+                    # verdad — esta fila no compara con nada — y el número, cuando
+                    # sale, es un parecido de verdad.
+                    sim = "  —" if it.match_score is None else f"{it.match_score:>3.0f}"
                     vbs = it.vectorbox_score or 0
                     title = (it.title or "?")[:38]
-                    print(f"    score={score:>3.0f} vbs={vbs:>3.0f}  {title:38s} ({it.year})")
+                    print(f"    sim={sim} vbs={vbs:>3.0f}  {title:38s} ({it.year})")
     finally:
         await tmdb.aclose()
 

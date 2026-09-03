@@ -11,6 +11,22 @@ from services.tmdb_client import TMDBClient
 
 logger = logging.getLogger(__name__)
 
+# Variantes que son RUIDO para el usuario, filtradas al ESCRIBIR para que ninguna
+# superficie tenga que acordarse (ficha, filtros, filas, "se va pronto"). Son 19 de los
+# 55 proveedores distintos de ES — más de un tercio — y de dos clases:
+#
+#   · "X with Ads"        -> el MISMO servicio con el plan barato. "Netflix Standard with
+#                            Ads" (1.623 películas) junto a "Netflix" es la misma entrada
+#                            dos veces.
+#   · "X Amazon Channel"  -> suscripción de PAGO APARTE dentro de Prime. Con Prime a secas
+#                            no puedes verla, así que anunciarla como disponible miente.
+#                            Es lo que hacía que "se va de Prime" saliera sobre películas
+#                            que el usuario no podía ver (Frantic, Payback — 2026-08-19).
+def es_ruido(nombre: str | None) -> bool:
+    n = (nombre or "").lower()
+    return "amazon channel" in n or "with ads" in n
+
+
 class ProviderService:
     """
     Service to handle persistent caching of streaming providers.
@@ -63,6 +79,8 @@ class ProviderService:
             for provider_type in ["flatrate", "free"]:
                 if provider_type in providers_data:
                     for p in providers_data[provider_type]:
+                        if es_ruido(p.get("provider_name")):
+                            continue
                         providers_list.append({
                             "provider_id": p["provider_id"],
                             "provider_name": p["provider_name"]
@@ -158,6 +176,8 @@ class ProviderService:
                  for provider_type in ["flatrate", "free"]:
                      if provider_type in providers_data:
                          for p in providers_data[provider_type]:
+                             if es_ruido(p.get("provider_name")):
+                                 continue
                              providers_list.append({
                                  "provider_id": p["provider_id"],
                                  "provider_name": p["provider_name"]

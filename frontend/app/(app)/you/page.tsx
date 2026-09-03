@@ -235,8 +235,11 @@ export default function ProfilePage() {
                     >
                         <span className="text-primary">★</span> {t("you2.rate_more")}
                     </Link>
+                    {/* ?step=import: recalibrar es subir el ZIP otra vez, no repetir
+                        el alta. Sin esto caías en el paso 1 del asistente de
+                        onboarding, que ya habías completado. */}
                     <Link
-                        href="/import"
+                        href="/import?step=import"
                         className="flex min-h-[36px] items-center gap-2 border border-border-2 px-3.5 py-2 font-mono text-[11px] uppercase text-fg-2 transition-colors hover:border-primary hover:text-primary"
                     >
                         <span className="text-primary">↻</span> {t("you2.recalibrate")}
@@ -252,6 +255,12 @@ export default function ProfilePage() {
                         className="flex min-h-[36px] items-center justify-center border border-border-2 px-3.5 py-2 font-mono text-[11px] uppercase text-fg-2 transition-colors hover:border-primary hover:text-primary"
                     >
                         {t("you2.space")}
+                    </Link>
+                    <Link
+                        href="/stats"
+                        className="flex min-h-[36px] items-center justify-center border border-border-2 px-3.5 py-2 font-mono text-[11px] uppercase text-fg-2 transition-colors hover:border-primary hover:text-primary"
+                    >
+                        {t("you2.stats")}
                     </Link>
                     <Link
                         href="/set"

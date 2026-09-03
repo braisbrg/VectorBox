@@ -18,9 +18,9 @@ def test_quality_gate_excludes_adult():
     """Any signed-in user can push a row into the shared catalogue via
     POST /movies/{id}/rate; random/wildcard serve the whole catalogue to
     everyone. Curation is not an access control — the gate must filter."""
-    from services.recommendation_engine import MOVIE_QUALITY_GATE
+    from services.recommendation_engine import movie_quality_gate
 
-    rendered = " ".join(str(c) for c in MOVIE_QUALITY_GATE)
+    rendered = " ".join(str(c) for c in movie_quality_gate())
     assert "is_adult" in rendered
     assert "is_excluded" in rendered
 

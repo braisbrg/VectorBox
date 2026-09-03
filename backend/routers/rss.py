@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 from typing import List, Dict
-from pydantic import BaseModel, conlist, constr
+from pydantic import BaseModel, Field, conlist, constr
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import User, Movie, UserRating
@@ -162,6 +162,12 @@ class GroupVibeRequest(BaseModel):
     # minutes and/or provider names (case-insensitive match on TMDB names).
     max_runtime: Optional[int] = None
     providers: Optional[List[str]] = None
+    # Los mismos dos controles que ya existen en el feed y en la watchlist: rango de
+    # años y suelo de VBS. Acotados como allí — un año fuera de rango o un Q>100 no
+    # es una petición, es un error, y vale más un 422 que una lista vacía sin motivo.
+    year_min: Optional[int] = Field(None, ge=1800, le=2100)
+    year_max: Optional[int] = Field(None, ge=1800, le=2100)
+    min_score: Optional[float] = Field(None, ge=0, le=100)
 
 async def _invalidate_feed_cache(user_id: int) -> None:
     """Delete all cached feed keys for this user after RSS sync or upload."""
@@ -188,16 +194,62 @@ async def _invalidate_feed_cache(user_id: int) -> None:
     except Exception as e:
         logger.error(f"Feed cache invalidation failed for user_id={user_id}: {e}")
 
+def _watchlist_settled(last_lb_count: "int | None", lb_total: "int | None") -> bool:
+    """May the scrape early-exit at the already-synced boundary, or must it run
+    the full list for the removal reconcile?
+
+    Letterboxd's own watchlist total (`data-num-entries`, free on page 1) vs the
+    same number stored from the previous sync. Only ever LB-total vs LB-total, so
+    our resolvable/irresolvable offset (series etc. we can't map to a TMDB movie)
+    never enters the maths. Below the baseline → something left → full scrape.
+
+    Decidable after page 1, which is the point: the answer cannot change later in
+    the loop, so there is no mid-scrape flag to carry.
+
+    ponytail: a removal MASKED by an equal addition keeps the total flat and reads
+    as settled. That is the weekly `force_reconcile`'s job — it always was, for the
+    irresolvable-masked case. Counting additions here to catch the resolvable half
+    a few days earlier is what forced this gate to live at the boundary instead of
+    at page 1; if same-sync masked-removal detection ever matters, the exit is to
+    add `+ additions` back and re-introduce the flag.
+
+    Degradation: no total (page-1 parse failed) → allow the stop (plain incremental,
+    weekly net covers removals). No baseline (first sync / Redis-evicted) → full
+    scrape, which reconciles and re-establishes the baseline.
+    """
+    if lb_total is None:
+        return True
+    return last_lb_count is not None and lb_total >= last_lb_count
+
+
+def _scrape_was_complete(films_seen: int, lb_total: "int | None") -> bool:
+    """Did the scrape actually reach the end of the list?
+
+    `_scrape_listing_page` returns an empty page both at the real end of the list and
+    on a 429/403/timeout the retries never cleared, and the loop breaks on either. So
+    without this check a mid-list block looks like a finished full scrape, and the
+    reconcile below demotes every row past the failure point. `films_seen` counts
+    every film Letterboxd showed us, resolvable or not, so it is comparable to
+    lb_total (measured live 2026-08-11: 603 == 603 over braisbg's 22 pages).
+
+    `>=` not `==`: a film removed mid-scrape leaves us one short, and skipping a
+    reconcile is free (the next sync runs it) while a wrong one loses data. No total
+    → nothing to check against, allow it.
+    """
+    return lb_total is None or films_seen >= lb_total
+
+
 async def _run_sync_background(
-    user_id: int, letterboxd_profile: str, tmdb: TMDBClient, reconcile: bool = False
+    user_id: int, letterboxd_profile: str, tmdb: TMDBClient, force_reconcile: bool = False
 ) -> None:
     """Background task — owns its own session. Never re-raises.
 
-    `reconcile=False` (the sync-button path): fast INCREMENTAL watchlist scrape
-    that early-exits at the already-synced boundary and skips the removal
-    reconcile. `reconcile=True` (the ~daily background path): FULL scrape + F-31
-    removal reconcile. The endpoint runs the full path at most once/day per user
-    so a normal sync is always cheap.
+    Watchlist sync is INCREMENTAL by default: scrape newest-first page by page and
+    early-exit at the first fully-already-synced page — but only if page 1's
+    `data-num-entries` says the list hasn't shrunk since last sync
+    (`_watchlist_settled`). If it has, we scrape the whole list so the F-31 reconcile
+    can find what left. The weekly `force_reconcile` is the backstop for a removal
+    masked by an equal addition, which keeps the total flat.
     """
     from config import AsyncSessionLocal
     async with AsyncSessionLocal() as db:
@@ -209,13 +261,29 @@ async def _run_sync_background(
             movie_service = MovieService(db, tmdb=tmdb)
             watchlist_added = 0
 
+            # Removal-detection baseline (Redis): Letterboxd's own watchlist total
+            # from the previous sync. Compared LB-total vs LB-total, so our
+            # resolvable/irresolvable offset (series etc.) never enters the maths.
+            import redis.asyncio as aioredis
+            from config import REDIS_URL
+            rds = aioredis.from_url(REDIS_URL, decode_responses=True)
+            lb_total: "int | None" = None
+
             try:
+                last_lb_count = None
+                try:
+                    _raw = await rds.get(f"rss:wl_lb_count:{user_id}")
+                    last_lb_count = int(_raw) if _raw is not None else None
+                except Exception:
+                    last_lb_count = None
+
                 # B-37 incremental watchlist sync: scrape newest-first PAGE BY PAGE
                 # and STOP at the first page whose films are ALL already in this
                 # user's watchlist (the "already-synced" boundary — the list is
-                # date-added-descending, so new films only ever appear at the top).
-                # One coincidental match is possible; a whole page is not. Cuts a
-                # typical re-sync from ~22 pages to 1-2 and only resolves NEW films.
+                # date-added-descending, so new films only ever appear at the top)
+                # — but only if _watchlist_settled cleared it off page 1's total.
+                # Cuts a typical re-sync from ~22 pages to 1-2 and only resolves
+                # NEW films.
                 known_rows = await db.execute(
                     select(Movie.tmdb_id)
                     .join(UserRating, UserRating.movie_id == Movie.id)
@@ -226,17 +294,42 @@ async def _run_sync_background(
                 # Resolved tmdb→movie ids seen this run (for the F-31 removal reconcile).
                 resolved_movie_ids: set[int] = set()
                 full_scrape = True  # False if we early-exit → skip the removal reconcile
+                may_early_exit = False  # decided once, off page 1's total (see _watchlist_settled)
                 MAX_WATCHLIST_PAGES = 50
 
+                # Posición en la lista de Letterboxd, contada sobre TODO lo que la
+                # página trae — también lo que no resuelve a TMDB (las series), o
+                # las posiciones se desplazarían respecto a lo que el usuario ve.
+                #
+                # ponytail: un sync incremental sólo re-estampa las páginas que
+                # visita. Tras añadir N películas, lo que queda por debajo del corte
+                # arrastra su posición vieja (desfase N) hasta el siguiente scrape
+                # completo, así que un par de filas pueden cruzarse justo en la
+                # frontera. Se corrige solo; si algún día molesta, la salida es
+                # sumar N a lo no visitado en vez de esperar al scrape completo.
+                lb_rank = 0
+
                 for page in range(1, MAX_WATCHLIST_PAGES + 1):
-                    page_films, has_more = await scraper._scrape_listing_page(
+                    page_films, has_more, page_total = await scraper._scrape_listing_page(
                         letterboxd_profile, "watchlist", page
                     )
+                    if page == 1:
+                        # data-num-entries — Letterboxd's own watchlist total, page 1 only.
+                        # It answers the early-exit question on its own, so decide here
+                        # and carry a bool instead of re-asking at every boundary.
+                        lb_total = page_total
+                        may_early_exit = not force_reconcile and _watchlist_settled(last_lb_count, lb_total)
+                        if not may_early_exit:
+                            logger.info(
+                                f"[watchlist-sync] user_id={user_id} full scrape "
+                                f"({'forced' if force_reconcile else f'lb_total={lb_total} < baseline {last_lb_count}'})"
+                            )
                     if not page_films:
                         break  # natural end (empty/404) — full_scrape stays True
 
                     page_tmdb_ids: list[int] = []
                     for item in page_films:
+                        lb_rank += 1
                         film_slug = item["film_slug"]
                         film_year = item.get("year")
                         film_title = item.get("title")  # preserves accents/punct
@@ -286,34 +379,48 @@ async def _run_sync_background(
                         )
                         existing = (await db.execute(rating_stmt)).scalars().first()
                         if existing:
+                            existing.watchlist_rank = lb_rank
                             if not existing.is_watchlist:
                                 existing.is_watchlist = True
                                 watchlist_added += 1
                         else:
-                            db.add(UserRating(user_id=user_id, movie_id=movie.id, is_watchlist=True))
+                            db.add(UserRating(
+                                user_id=user_id, movie_id=movie.id,
+                                is_watchlist=True, watchlist_rank=lb_rank,
+                            ))
                             watchlist_added += 1
 
-                    # Early-exit (incremental path only): an entire page already in
-                    # the watchlist = boundary reached. The reconcile path never
-                    # early-exits (it needs the whole list to detect removals).
-                    if not reconcile and page_tmdb_ids and all(t in known_tmdb_ids for t in page_tmdb_ids):
+                    # Already-synced boundary: an entire page's films already in the
+                    # watchlist. Page 1 already ruled out a removal, so stop here.
+                    if may_early_exit and page_tmdb_ids and all(t in known_tmdb_ids for t in page_tmdb_ids):
                         full_scrape = False
                         logger.info(
                             f"[watchlist-sync] user_id={user_id} incremental stop at page {page}: "
-                            f"all {len(page_tmdb_ids)} films already synced"
+                            f"all known, lb_total={lb_total} >= baseline {last_lb_count}"
                         )
                         break
                     if not has_more:
                         break  # natural end of the list
 
-                # F-31 reconcile (removals) — ONLY on a FULL scrape. On an
-                # incremental (early-exit) sync we didn't see the whole list, so
-                # demoting here would wrongly clear everything past the boundary.
-                # (Removals are picked up on the next full scrape — which happens
-                # whenever no whole page is already-known.) Skip on 0-films too
-                # (transient scrape failure — don't wipe the watchlist).
+                # F-31 reconcile (removals) — ONLY on a scrape that saw the WHOLE
+                # list, because it demotes everything it didn't see. Three ways it
+                # didn't: an early-exit at the boundary; a scrape truncated by a
+                # block the retries never cleared (`_scrape_was_complete` — the loop
+                # cannot tell that from the end of the list); zero films resolved.
+                # Skipping is always safe: the next sync reconciles.
                 watchlist_removed = 0
-                if full_scrape and resolved_movie_ids:
+                if not full_scrape:
+                    logger.info(
+                        f"[watchlist-reconcile] user_id={user_id} incremental sync (early-exit) — "
+                        f"skipping removal reconcile (removals caught on the next full scrape)"
+                    )
+                elif not _scrape_was_complete(lb_rank, lb_total):
+                    logger.warning(
+                        f"[watchlist-reconcile] user_id={user_id} scrape came back SHORT "
+                        f"({lb_rank}/{lb_total} films — blocked or rate-limited mid-list); "
+                        f"skipping reconcile so the tail isn't demoted"
+                    )
+                elif resolved_movie_ids:
                     from sqlalchemy import update as sql_update
                     upd_result = await db.execute(
                         sql_update(UserRating)
@@ -328,16 +435,18 @@ async def _run_sync_background(
                             f"[watchlist-reconcile] user_id={user_id} demoted {watchlist_removed} "
                             f"rows whose film was no longer in the Letterboxd watchlist"
                         )
-                elif not full_scrape:
-                    logger.info(
-                        f"[watchlist-reconcile] user_id={user_id} incremental sync (early-exit) — "
-                        f"skipping removal reconcile (removals caught on the next full scrape)"
-                    )
                 else:
                     logger.warning(
                         f"[watchlist-reconcile] user_id={user_id} resolved 0 films; "
                         f"skipping reconcile to avoid wiping on a transient scrape failure"
                     )
+
+                # Store the fresh Letterboxd total as next sync's removal baseline.
+                if lb_total is not None:
+                    try:
+                        await rds.set(f"rss:wl_lb_count:{user_id}", lb_total)
+                    except Exception:
+                        pass
 
             finally:
                 await scraper.close()
@@ -345,6 +454,10 @@ async def _run_sync_background(
                 # task's MovieService. tmdb is the injected singleton — never
                 # closed by MovieService.close() (it doesn't own it).
                 await movie_service.close()
+                try:
+                    await rds.close()
+                except Exception:
+                    pass
 
             await db.commit()
 
@@ -429,15 +542,17 @@ async def sync_user_data(
         raise HTTPException(status_code=403, detail="Cannot sync another user's Letterboxd account")
     letterboxd_profile = user.letterboxd_username
 
-    # Decouple removal-reconcile from the fast sync: claim a once-per-day slot
-    # with an atomic SET NX EX. The first sync of the day runs the FULL scrape +
-    # reconcile; every other sync is the cheap incremental path.
+    # Weekly SAFETY NET for removals: claim a once-per-week slot with an atomic
+    # SET NX EX. Normally a removal is caught on the very next sync (see
+    # _watchlist_settled: lb_total short of baseline+additions) even when an equal
+    # addition keeps the raw total flat — this weekly forced full scrape is only
+    # the backstop for the rare irresolvable-masked case.
     import redis.asyncio as aioredis
     from config import REDIS_URL
-    reconcile = False
+    force_reconcile = False
     r = aioredis.from_url(REDIS_URL, decode_responses=True)
     try:
-        reconcile = bool(await r.set(f"rss:reconcile:{user.id}", "1", nx=True, ex=86400))
+        force_reconcile = bool(await r.set(f"rss:reconcile:{user.id}", "1", nx=True, ex=604800))
         # In-progress flag so the UI can spin until the sync actually finishes
         # (600s safety TTL — cleared by _run_sync_background's finally).
         await r.set(f"rss:syncing:{user.id}", "1", ex=600)
@@ -449,7 +564,7 @@ async def sync_user_data(
         except Exception:
             pass
 
-    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb, reconcile)
+    background_tasks.add_task(_run_sync_background, user.id, letterboxd_profile, tmdb, force_reconcile)
 
     return {
         "status": "started",
@@ -481,7 +596,26 @@ async def get_group_recommendations(
     rss_service = RSSService(db, tmdb=tmdb, qdrant=qdrant)
 
     # Get Hybrid Recommendations
-    scored_results = await rss_service.get_group_recommendations_hybrid(payload.usernames, sources=payload.sources, focus=payload.focus)
+    # Más candidatos SÓLO cuando hay filtros que puedan agotarlos. Sin filtros, los
+    # 50 de siempre: el coste extra no compra nada y esta ruta ya es la más lenta.
+    hay_filtros = bool(
+        payload.max_runtime or payload.providers
+        or payload.year_min or payload.year_max or payload.min_score is not None
+    )
+    scored_results = await rss_service.get_group_recommendations_hybrid(
+        payload.usernames, sources=payload.sources, focus=payload.focus,
+        limit=200 if hay_filtros else 50,
+        # En ORIGEN, como las filas anchas del feed: la fusión excluye lo no elegible
+        # antes de rankear, así que sus puestos se llenan con películas que pasan el
+        # filtro. Los proveedores no viajan aquí porque no son un campo de la ficha
+        # —hay que preguntarle a TMDB— y siguen siendo post-filtro, igual que en el feed.
+        session_filters={
+            "year_min": payload.year_min,
+            "year_max": payload.year_max,
+            "min_score": payload.min_score,
+            "max_runtime": payload.max_runtime,
+        } if hay_filtros else None,
+    )
     
     if not scored_results:
         return []
@@ -561,20 +695,43 @@ async def get_group_recommendations(
 
     wanted_providers = {p.strip().lower() for p in (payload.providers or []) if p.strip()}
 
-    async def _build(res):
-        movie = movie_map.get(res['tmdb_id'])
-        if not movie:
-            return None
+    def _passes_local(movie) -> bool:
+        """Todo lo que se decide con la fila de Postgres. Ni una llamada de red.
+
+        Va aparte de `_build` y ANTES que él porque `_build` pide proveedores a TMDB
+        por película: con estos filtros dentro, ampliar el pool para que no se agote
+        multiplicaba las llamadas a TMDB por diez. Filtrando primero por lo barato,
+        el pool grande cuesta una consulta a Postgres y las llamadas caras se hacen
+        sólo sobre las que ya han sobrevivido.
+        """
         # No unreleased films in a "watch tonight together" list (user 2026-07-05).
         # is_upcoming alone missed in-production films with NO dates at all
         # (Merrily We Roll Along: year=None, runtime=0, is_upcoming=False) —
         # require a past-or-present year AND a real runtime.
         from datetime import date as _date
         if movie.is_upcoming or not movie.year or movie.year > _date.today().year or not movie.runtime:
-            return None
+            return False
         # Session runtime cap — unknown runtimes are dropped too ("we have 90
         # minutes" is a hard constraint, an unknown 3h film breaks the promise)
-        if payload.max_runtime and (movie.runtime is None or movie.runtime > payload.max_runtime):
+        if payload.max_runtime and movie.runtime > payload.max_runtime:
+            return False
+        # Rango de años. El año ya está garantizado no nulo por la guarda de arriba.
+        if payload.year_min and movie.year < payload.year_min:
+            return False
+        if payload.year_max and movie.year > payload.year_max:
+            return False
+        # Suelo de calidad. Sin VBS NO pasa, al revés que el runtime desconocido:
+        # "algo bueno" es una promesa que una película sin puntuar no puede cumplir,
+        # y colarlas convertiría el filtro en ruido.
+        if payload.min_score is not None and (
+            movie.vectorbox_score is None or movie.vectorbox_score < payload.min_score
+        ):
+            return False
+        return True
+
+    async def _build(res):
+        movie = movie_map.get(res['tmdb_id'])
+        if not movie:
             return None
         try:
             providers_data = await rss_service.tmdb.get_watch_providers(movie.tmdb_id, "ES")
@@ -606,9 +763,24 @@ async def get_group_recommendations(
             ]
         }
 
-    # With session filters active, run the whole 50-candidate pool through the
-    # filter so the list doesn't starve; otherwise the top 20 as before.
-    pool = scored_results[:50] if (payload.max_runtime or wanted_providers) else scored_results[:20]
+    # Primero los filtros locales sobre TODO el pool, después las llamadas a TMDB
+    # sólo sobre lo que sobrevivió. El orden es lo que hace asumible pedir 200
+    # candidatos en vez de 50: la supervivencia de "2010+ y Q>=80 y menos de 90 min"
+    # era 0 de 50 y pasa a haber material de verdad (medido con
+    # scripts/audit_group_filters.py — un post-filtro sobre una búsqueda acotada se
+    # queda sin nada EN SILENCIO, que es la trampa que ya costó un barrido aquí).
+    supervivientes = [
+        res for res in scored_results
+        if res['tmdb_id'] in movie_map and _passes_local(movie_map[res['tmdb_id']])
+    ]
+    if len(supervivientes) < 20:
+        logger.info(
+            "[group] filtros locales dejan %d de %d candidatos",
+            len(supervivientes), len(scored_results),
+        )
+    # El corte de proveedores sigue siendo un post-filtro con red, así que se le da
+    # margen (50) sólo cuando está activo.
+    pool = supervivientes[:50] if wanted_providers else supervivientes[:20]
     tasks = [_build(res) for res in pool]
     final_results = [r for r in await asyncio.gather(*tasks) if r is not None][:20]
 

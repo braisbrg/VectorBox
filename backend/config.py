@@ -12,6 +12,12 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL", "").replace("postgresql://", "postgresql+asyncpg://")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 
+# Versión de la aplicación. El backend anunciaba "1.0.0" en dos sitios de
+# `main.py` mientras el frontend iba por la 3.0.0 — dos deployables distintos,
+# pero el número debe ser el mismo. Se sube A MANO aquí y en
+# `frontend/package.json`, que son las dos únicas fuentes.
+APP_VERSION = "3.1.0"
+
 # Clerk auth (per-instance JWKS URL, e.g. https://<instance>.clerk.accounts.dev/.well-known/jwks.json)
 CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
 

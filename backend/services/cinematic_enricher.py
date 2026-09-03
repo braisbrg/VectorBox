@@ -13,6 +13,14 @@ from services.llm_models import ENRICH_CHAIN, REASONING_EFFORT
 
 logger = logging.getLogger(__name__)
 
+# Minimum usable source text. Below this the model invents a plausible description
+# from the title alone (see the guard in generate_cinematic_description), so the film
+# is refused instead of enriched. `enrich_vectors.py` filters its candidate query on
+# this same constant — import it, never re-type the number: when the two drift, the
+# script feeds the enricher films it will always refuse and reports the resulting
+# fallbacks as "chain quota exhausted".
+MIN_OVERVIEW_CHARS = 20
+
 
 # Re-exported for clustering_service (cluster-naming shares this chain). Model
 # IDs + reasoning-effort live in services/llm_models.py — the single source of
@@ -128,7 +136,7 @@ async def generate_cinematic_description(
     # has_enriched_embedding — the film stays out of gated recommendations.
     # ponytail: <20 chars = effectively empty; raise the floor if real
     # terse-overview films start getting skipped.
-    if len((overview or "").strip()) < 20:
+    if len((overview or "").strip()) < MIN_OVERVIEW_CHARS:
         return fallback, None
 
     genres_str = ", ".join(genres) if genres else "Unknown"

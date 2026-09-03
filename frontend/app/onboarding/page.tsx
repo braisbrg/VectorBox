@@ -399,12 +399,23 @@ export default function OnboardingCarouselPage() {
                     </div>
                     <div className="flex items-center gap-3">
                         {isSignedIn ? (
-                            <button
-                                onClick={() => router.push("/?onboarding_complete=true")}
-                                className="border border-border-2 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-fg-2 transition-colors hover:border-primary hover:text-primary"
-                            >
-                                {t("gonb.back_to_feed")}
-                            </button>
+                            <>
+                                {/* La otra vía de arranque: el ZIP/RSS de Letterboxd. Sin esto
+                                    un registrado que aterriza aquí no tiene forma de llegar
+                                    al wizard sin pasar por ajustes. */}
+                                <Link
+                                    href="/import"
+                                    className="border border-border-2 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-fg-2 transition-colors hover:border-primary hover:text-primary"
+                                >
+                                    {t("gonb.import_lb")}
+                                </Link>
+                                <button
+                                    onClick={() => router.push("/?onboarding_complete=true")}
+                                    className="border border-border-2 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider text-fg-2 transition-colors hover:border-primary hover:text-primary"
+                                >
+                                    {t("gonb.back_to_feed")}
+                                </button>
+                            </>
                         ) : (
                             <>
                                 <span className={cn(

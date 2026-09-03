@@ -7,15 +7,18 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 
 | Script | Description | Command (Safe to Run) |
 | :--- | :--- | :--- |
-| **`maintenance_orchestrator.py`** | **Master Orchestrator.** Runs the full DB maintenance pipeline in 8 phases respecting OMDb daily budget (`api_budget` table) and Groq daily limits. Phases: (1) refresh_metadata for missing `imdb_vote_count` or stale, (2) embedding_audit for NULL `embedding_quality_score`, (3) embedding_repair via Groq for low-quality / not-yet-enriched, (4) backfill cinematic descriptions, (5) reset user clusters, (6) recalc VBS from DB columns (no API — catches films Phase 1 didn't refresh and propagates formula changes), (7) vector_presence_check — diffs DB vs Qdrant point IDs and re-upserts the missing ones from stored text (replaces legacy `heal_vectors.py`), (8) popular_refresh — scrapes Letterboxd "Popular This Week" with Trakt fallback and writes the Redis cache that powers the "Popular on Letterboxd" feed section (replaces legacy `popular_scraper.py`). Stops gracefully on budget exhaustion. Resumable across runs. | `docker-compose exec backend python scripts/maintenance_orchestrator.py [--phases 1,2,3,6,7,8] [--omdb-budget 1000] [--embed-limit 500] [--dry-run]` |
-| **`warm_showcase.py`** | **Landing Showcase Warmer.** Fills the `showcase:{version}:{slug}:{lang}` Redis cache that `GET /api/search/showcase` serves — that endpoint is a pure cache reader (503 on a miss, never computes) so the landing's input set stays closed. Drives the real `/api/search/try` pipeline over HTTP — the same public door a visitor gets, so the cache can never be warmer than the product — sleeping 13s between calls to respect its 5/min limit. Refuses answers below `MIN_RESULTS=6` or `MIN_MEAN_SCORE=55` and never lets a degraded (parser-fallback) run overwrite a healthy cached entry. **Run on every deploy** and after changing `SHOWCASE_QUERIES` (in `services/showcase_service.py`), the embeddings, or the ranking. | `docker-compose exec backend python scripts/warm_showcase.py [--dry-run] [--slug grief] [--lang es]` |
+| **`maintenance_orchestrator.py`** | **Master Orchestrator.** Runs the full DB maintenance pipeline in 11 phases respecting OMDb daily budget (`api_budget` table) and Groq daily limits. Phases: (1) refresh_metadata for missing `imdb_vote_count` or stale, (2) embedding_audit for NULL `embedding_quality_score`, (3) embedding_repair via Groq for low-quality / not-yet-enriched, (4) backfill cinematic descriptions, (5) reset user clusters, (6) recalc VBS from DB columns (no API — catches films Phase 1 didn't refresh and propagates formula changes) **y sincroniza el payload `vectorbox_score` de Qdrant, que es el que lee el slider de Q y el feed filtrado — diffea contra Qdrant, así que repara la deriva vieja además de no crear nueva**, (7) vector_presence_check — diffs DB vs Qdrant point IDs and re-upserts the missing ones from stored text (replaces legacy `heal_vectors.py`), (8) popular_refresh — scrapes Letterboxd "Popular This Week" (sin fallback: Trakt murió 2026-08-06) y escribe la caché Redis de la sección "Popular on Letterboxd", (9) neighbor_table, (10) seed_new, (11) streaming_changes. Stops gracefully on budget exhaustion. Resumable across runs. | `docker-compose exec backend python scripts/maintenance_orchestrator.py [--phases 1,2,3,6,7,8] [--omdb-budget 1000] [--embed-limit 500] [--dry-run]` |
+| **`warm_showcase.py`** | **Landing Showcase Warmer.** Fills the `showcase:{version}:{slug}:{lang}` Redis cache that `GET /api/search/showcase` serves — that endpoint is a pure cache reader (503 on a miss, never computes) so the landing's input set stays closed. Drives the real `/api/search/try` pipeline over HTTP — the same public door a visitor gets, so the cache can never be warmer than the product — sleeping 13s between calls to respect its 5/min limit. Refuses answers below `MIN_RESULTS=6` and never lets a degraded (parser-fallback) run overwrite a healthy cached entry. (`MIN_MEAN_SCORE=55` also lived here and was deleted 2026-08-11: it read a scale whose minimum is 60, so it could never fire. The only magnitude guard left is `tests/test_similarity_scale.py`.) **Ya NO hace falta en cada deploy**: el job `warm_showcase_if_cold` de `backend/scheduler.py` calienta lo que falte a los 3 min del arranque y cada 6 h. Se ejecuta a mano para forzar un recalentado, y conviene mirar su salida tras cambiar `SHOWCASE_QUERIES`, los embeddings o el ranking. | `docker-compose exec backend python scripts/warm_showcase.py [--dry-run] [--slug grief] [--lang es]` |
 | **`seed_db.py`** | **The Main Engine.** Uses `MovieFactory` to fetch movies from TMDB with **Spanish Metadata**, **Keywords**, and strict Pydantic **OMDb Ratings**. Upserts to Postgres + Qdrant. 12 discovery strategies covering TMDB Discover sorts, language slicing, Trakt user-behaviour lists, production companies, and saga collections. See `--strategy` details below. | `docker-compose exec backend python scripts/seed_db.py --limit 100 --strategy popular` |
 | **`seed_essentials.py`** | **Curated Bootstrap.** Iterates a hardcoded list of canonical companies (Marvel, Pixar, Ghibli, Disney, A24, Warner…) and sagas (Star Wars, Harry Potter, MCU phases, James Bond, LOTR, Pixar collections…) and seeds any film not yet in DB. Idempotent. Reuses a single `DatabaseSeeder` instance so the embedding model loads once. Use to fill in the canonical cinema after the catalogue has been bootstrapped with `popular`. | `docker-compose exec backend python scripts/seed_essentials.py` |
 | **`refresh_metadata.py`** | **Metadata Refresher.** Fetches fresh `vote_count`, `vote_average`, `popularity`, `poster_path`, `genres`, `runtime` from TMDB and recalculates `vectorbox_score` for movies already in DB. Selects movies by age cohort. Use `--dry-run` to preview. | `docker-compose exec backend python scripts/refresh_metadata.py --strategy recent --limit 200` |
-| **`enrich_vectors.py`** | **Data Fixer & LLM Embeddings.** Fetches missing keywords/credits from TMDB. Uses Groq to generate ~80-word cinematic descriptions and upserts 768d semantic vectors (`google/embeddinggemma-300m`). Run with `--enrich-embeddings` to process LLM upgrades. Model control: `--model-only <alias>` (single model, no fallback; aliases `gemini\|oss-120\|oss-20\|qwen3-32b\|qwen3.6-27b` — Llama 70B/8B/Scout decommissioned), `--chain a,b` (ordered fallback — the 2026-06 sweep favours `qwen3-32b,oss-120`), `--parallel` (run a `--chain` concurrently), `--smart` (top-4 models), and `--reset-enrichment` for a fresh start. | `docker-compose exec backend python scripts/enrich_vectors.py --enrich-embeddings --chain qwen3-32b,oss-120 [--parallel]` |
+| **`enrich_vectors.py`** | **Data Fixer & LLM Embeddings.** Fetches missing keywords/credits from TMDB. Uses Groq to generate ~80-word cinematic descriptions and upserts 768d semantic vectors (`google/embeddinggemma-300m`). Run with `--enrich-embeddings` to process LLM upgrades. Model control: `--model-only <alias>` (single model, no fallback; aliases `gemini\|oss-120\|oss-20\|qwen3.6-27b` — **`qwen3-32b` y los Llama 70B/8B/Scout están decomisionados**, la cadena viva está en `services/llm_models.py`), `--chain a,b`, `--parallel`, `--smart`, `--reset-enrichment`. **Ritmo (2026-08-06):** el techo de Groq es de TOKENS, no de peticiones — `x-ratelimit-limit-tokens=8000`/min y ~510 por película, o sea **~15 películas/min**. `batch_delay` pasó de 2s a 30s para no depender del manejo de 429. **Salta las películas sin sinopsis usable** (`MIN_OVERVIEW_CHARS`): antes volvían en cada ejecución, fallaban siempre y disparaban el corte de 8-fallbacks reportándolo como «chain quota exhausted» con la cuota intacta. | `docker-compose exec backend python scripts/enrich_vectors.py --enrich-embeddings --chain qwen3.6-27b,oss-120 [--parallel]` |
 | **`backfill_descriptions.py`** | **Description Backfiller.** Fills `cinematic_description` for movies that already have LLM embeddings (`has_enriched_embedding=True`) but no saved description. Does NOT regenerate embeddings — only calls the LLM and saves the text. Handles `DailyLimitExhausted` gracefully (commits progress and stops). Use `--dry-run` to count. | `docker-compose exec backend python scripts/backfill_descriptions.py [--limit N] [--dry-run]` |
 | **`reset_profiles.py`** | **"The Refresh Button".** Forces a complete rebuild of User Clusters. Truncates `user_clusters` table and wipes Redis cache. | `docker-compose exec backend python scripts/reset_profiles.py` |
 | **`audit_search.py`** | **Magic Box behaviour audit.** Calls `_run_natural_search` directly — the exact body `/natural` and `/try` delegate to — over a 40-query panel spanning thematic, structural, mood, audience-fit, open-request, quality-only, title-lookup and nonsense queries. Every row declares the shape its answer must have (`films` / `catalogue` / `similar` / `refuse`) and passes only if the right branch answered, with enough films, at a mean VBS worth recommending. Rows the parser never read are marked `!!` and dropped from the score — those measure Groq, not the engine. **Run after any change to the parser prompt, the confidence gate, the ranking or the embeddings.** Paces itself at 20s/query because Groq's free tier caps at 8000 tokens per MINUTE; `--pace 0` reproduces what a burst of real users does. | `docker-compose exec backend python scripts/audit_search.py [--repeat 3] [--only familiar] [--pace 0]` |
+| **`eval_search.py`** | **Golden set de la Magic Box — el banco que aprueba o rechaza un cambio de ranking.** 12 consultas descriptivas con relevancia graduada (nDCG@10, Recall@20) + 10 de entidad (MRR@5). Determinista vía `forced_intent`: no gasta Groq y repite el mismo número. ⚠ Lee su docstring antes de comparar dos pasadas: mide ORDEN y no MAGNITUD, y **deriva cuando el backlog de enriquecimiento hace visibles películas nuevas** — usa `--json` y compara POR CONSULTA, nunca medias. | `docker compose exec backend python scripts/eval_search.py [--json] [--lexical on\|off] [--verbose]` |
+| **`eval_searchbar.py`** | **Banco de la searchbar (modo título).** 25 consultas con etiquetas verificadas contra TMDB (exacto, prefijo, erratas, acentos, títulos en castellano, nicho, ambiguas) + 4 de director + 7 de entrada basura. Mide **puesto 1** sobre todo — en un autocompletado el primer sitio es casi todo el producto — más top-3 y MRR. Contra el endpoint real por HTTP, no contra la función. Necesita TMDB en vivo, por eso no es un test de pytest. | `docker compose exec backend python scripts/eval_searchbar.py [--json]` |
+| **`audit_group_filters.py`** | **Supervivencia de los filtros de la recomendación de grupo.** Dos columnas: POST (cuántas del pool sobrevivirían a un post-filtro) y ORIGEN (cuántas devuelve el generador con `session_filters`, que es como funciona hoy). La comparación ES el hallazgo: post-filtrando, «2010+ y Q>=80 y menos de 90 min» daba 1/200; en origen, 39/200. Correr tras tocar filtros de grupo o la fusión. | `docker compose exec backend python scripts/audit_group_filters.py` |
 | **`experiment_confidence.py`** | **Where the confidence threshold came from.** Runs an 18-query panel (answerable vs unanswerable) through an offline reconstruction of the pipeline and reports which statistic separates the two groups. Established `LOW_CONFIDENCE_MEAN = 0.43` (raw_mean@10, margin +0.018) and that VBS is worse than useless for the job — nonsense returns *acclaimed* films. Kept as the evidence behind the constant; use `audit_search.py` for day-to-day checks. | `docker-compose exec backend python scripts/experiment_confidence.py [--repeat 3]` |
 | **`test_magic_box.py`** | **NLP Verification.** Runs a stress test on the 4-Tier Cascading Fallback pipeline to verify query parsing and Qdrant filter construction. | `docker-compose exec backend python scripts/test_magic_box.py` |
 | **`verify_nlp_fallback.py`** | **Chaos Monkey.** Mocks failures in 1st/2nd tier LLM clients to guarantee that the application successfully cascades down to the universal fallback tiers without crashing. | `docker-compose run --rm backend python scripts/verify_nlp_fallback.py` |
@@ -61,7 +64,12 @@ All Python scripts located in `backend/scripts/`. Run these via Docker execution
 | **`experiment_trakt.py`** | **Alternative Signal C source comparison.** Same 12-seed pool as `experiment_signal_c.py` but pulls related films from **Trakt API** (`/movies/{id}/related`) instead of TMDB. Use to evaluate whether Trakt's user-behaviour-based recs are higher quality than TMDB's noisy collab filter, especially for niche/recent/non-English films. Requires `TRAKT_CLIENT_ID` env var (free, sign up at https://trakt.tv/oauth/applications). Reports catalogue-coverage (% of recs already in our DB) and pass-rate per filter strategy. | `docker compose exec backend python scripts/experiment_trakt.py` |
 | **`check_embeddings.py`** | **Embedding Sanity Check.** Compares stored Qdrant vectors against an embeddinggemma reference embedding built from the shared name-free recipe (`overview + genres + keywords` — see `backend/utils/embedding_reference.py`). Flags movies below cosine threshold as likely-corrupt. Flags: `--update-db` persist score, `--fix` re-enrich flagged, `--user-id` scope to one user, `--tmdb-id` check a single movie, `--recheck` re-run on movies that already have a score (default skips them), `--verbose` print reference text + first 5 dims of stored/reference vectors, `--threshold` let's you change the threshold value to flag movies | `docker-compose exec backend python scripts/check_embeddings.py --tmdb-id 129 --verbose --recheck --threshold 0.5` |
 | **`fix_qdrant_ids.py`** | **Qdrant ID Audit (T-04).** Walks every Qdrant point and classifies it as modern (`point.id == Movie.tmdb_id`), legacy (`point.id == Movie.id`, requires migration to tmdb_id), or orphan (no DB record). Migrates legacy points by re-upserting under the correct tmdb_id and deleting the legacy point. Dry-run by default; pass `--execute` to apply. `--delete-orphans` (requires `--execute`) wipes points with no DB record. | `docker-compose exec backend python scripts/fix_qdrant_ids.py [--execute] [--delete-orphans] [--limit 200]` |
-| **`test_guest_feed.py`** | **Recommendation Quality QA.** Tests the `/public/guest-feed` recommendation logic offline. Accepts a JSON ratings dict, a DB user ID, or a named preset (`cinephile`, `blockbuster`). Reports VectorBox score distribution, genre distribution, top-10 results, and genre coverage (% of positive-seed genres represented in recs). | `docker compose exec backend python scripts/test_guest_feed.py --preset cinephile` |
+| **`test_guest_feed.py`** | **Recommendation Quality QA.** Tests the `/public/guest-feed` recommendation logic offline. Accepts a JSON ratings dict, a DB user ID, or a named preset (`cinephile`, `blockbuster`). Reports VectorBox score distribution, genre distribution, top-10 results, and genre coverage (% of positive-seed genres represented in recs). | `docker compose exec backend python scripts/test_guest_feed.py --preset cinephile` || **`sync_qdrant_payload.py`** | **Backfill del payload de Qdrant.** Rellena los campos por los que Qdrant filtra. Una clave AUSENTE hace la película invisible a ese filtro **sin un solo error** — medido el 2026-08-19: 963 puntos (4,4% del catálogo) sin diez claves. `--fill-missing` sólo rellena huecos (no pisa valores) y salta los `None`. La guardia de escritura de 2026-07-30 protegía puntos NUEVOS; no reparaba los viejos, que es por lo que hicieron falta las dos cosas. | `docker compose exec backend python scripts/sync_qdrant_payload.py [--fill-missing]` |
+| **`compute_mood_axes.py`** | **Proyecta y estampa los ejes de mood.** Calcula el percentil 0-100 de `gravedad` y `humanidad` sobre todo el catálogo y lo escribe en Postgres **y** en el payload de Qdrant. Obligatorio tras tocar las anclas de `services/mood_axes.py`. Antes de ejecutarlo conviene medir la deriva: el 2026-08-19 el eje salió idéntico (Spearman 0,993/0,995, sesgo 0) y sólo el 4,17% de las películas cambiaron de banda. ⚠ Su docstring dice "los tres ejes"; son dos desde 2026-08-05. | `docker compose exec backend python scripts/compute_mood_axes.py [--dry-run]` |
+| **`build_neighbor_table.py`** | **Tabla de vecinos precalculada.** Guarda los vecinos más cercanos de cada película una vez, para que la sincronización de grupo no consulte Qdrant por película en tiempo de petición. Re-ejecutar tras cualquier re-embed. | `docker compose exec backend python scripts/build_neighbor_table.py` |
+| **`flag_non_film_catalog_sweep.py`** | **Barrido de no-películas.** Pasa `is_likely_non_film` por el catálogo existente y marca las coincidencias (recopilatorios, conciertos, episodios que TMDB lista como film). | `docker compose exec backend python scripts/flag_non_film_catalog_sweep.py [--dry-run]` |
+| **`purge_hallucinated_enrichment.py`** | **Purga de enriquecimiento alucinado.** Borra las descripciones cinematográficas en las que el LLM se inventó contenido, para que se re-generen. | `docker compose exec backend python scripts/purge_hallucinated_enrichment.py` |
+| **`migrate_add_sparse.py`** | **Fase 1 — vector sparse BM25.** Qdrant NO deja añadir un vector sparse a una colección existente (`update_collection` sólo toca los que ya están), así que **recrea la colección**. Los densos no se recalculan: se leen y se copian, de modo que no toca el embedding. Operación irreversible — leer el docstring entero antes. | `docker compose exec backend python scripts/migrate_add_sparse.py` |
 
 ### seed_db.py — `--strategy` details
 
@@ -76,15 +84,21 @@ Every strategy dedupes against existing `Movie.tmdb_id` before processing, so re
 | `by_language` | TMDB Discover | `with_original_language=<iso>` + `vote_count.desc`, `vote_count≥30` | Combat anglo bias. Requires `--language es\|ja\|ko\|fr\|de\|it\|...` |
 | `classic` | TMDB Discover, pre-1990 | `vote_count.desc`, `vote_count≥100` | Old cinema that vote_count.desc on the global pool drowns out |
 | `trending` | TMDB `/trending/movie/week` | TMDB internal trending score | What's hot this week (small pool, ~60 films) |
-| `trakt_popular` | Trakt `/movies/popular` | most-watched globally | User-behaviour signal vs TMDB vote count — distinct sesgo, cinéfilo |
-| `trakt_trending` | Trakt `/movies/trending` | most users watching right now | Real-time engagement — newer/buzzier than TMDB trending |
-| `trakt_anticipated` | Trakt `/movies/anticipated` | most added to watchlists (unreleased) | Better signal than `upcoming` — filtered by *demand*, not raw popularity. Also marks `is_upcoming=True` + fetches per-country release dates (same as TMDB `upcoming`). |
+| ~~`trakt_popular`~~ 🔴 | Trakt `/movies/popular` | most-watched globally | User-behaviour signal vs TMDB vote count — distinct sesgo, cinéfilo |
+| ~~`trakt_trending`~~ 🔴 | Trakt `/movies/trending` | most users watching right now | Real-time engagement — newer/buzzier than TMDB trending |
+| ~~`trakt_anticipated`~~ 🔴 | Trakt `/movies/anticipated` | most added to watchlists (unreleased) | Better signal than `upcoming` — filtered by *demand*, not raw popularity. Also marks `is_upcoming=True` + fetches per-country release dates (same as TMDB `upcoming`). |
 | `by_company` | TMDB Discover, `with_companies` | `vote_count.desc`, no vote floor | All films of a production company. Requires `--company-id <N>`. |
 | `by_collection` | TMDB `/collection/{id}` | Single call, returns all parts | Enumerate every film of a saga. Requires `--collection-id <N>`. `--limit` ignored. |
 | `from_file` | Curated-list TSV (`Pos / Rank / Title / Director / Year / Country / Mins`, e.g. TSPDT 1000 export) | Resolves each row via TMDB search (`title+year`, then ±1yr, then no-year with ±2yr sanity) + director-surname gate against credits | Canon lists whose axis is orthogonal to popularity. NO vote floor — the list IS the curation. Requires `--file <path>`. `[TV]` rows skipped; unresolved rows → `<file>.unresolved.csv` for manual review, never a silent guess. Supports `--dry-run`. |
 
 **Requirements:**
-- Trakt strategies need `TRAKT_CLIENT_ID` in env (free at https://trakt.tv/oauth/applications). Already configured for Signal C.
+- 🔴 **Las tres estrategias Trakt están MUERTAS desde 2026-08-06.** La API devuelve `403 Forbidden`
+  a cualquier clave y **crear una aplicación nueva exige Trakt VIP** (de pago) — la cuenta no
+  tiene ninguna app registrada, así que el `TRAKT_CLIENT_ID` del `.env` es huérfano. Descartado
+  por medición: no es el User-Agent, no es la huella TLS (`curl_cffi` chrome124/120/safari17),
+  y no es la red (`GET api.trakt.tv/` devuelve 412, respuesta propia de Trakt). Devuelven **0
+  películas en silencio**, que parece cobertura perfecta. Afecta también a la **Señal C** del
+  tridente y al respaldo de la Fase 8. Ver BACKLOG.
 - `by_language` errors out without `--language`.
 - `by_company` errors out without `--company-id`.
 - `by_collection` errors out without `--collection-id`.
@@ -131,10 +145,10 @@ docker-compose exec backend python scripts/seed_db.py --strategy by_language --l
 docker-compose exec backend python scripts/seed_db.py --strategy classic --limit 500
 docker-compose exec backend python scripts/seed_db.py --strategy trending --limit 60
 
-# Trakt strategies (require TRAKT_CLIENT_ID)
-docker-compose exec backend python scripts/seed_db.py --strategy trakt_popular --limit 500
-docker-compose exec backend python scripts/seed_db.py --strategy trakt_trending --limit 200
-docker-compose exec backend python scripts/seed_db.py --strategy trakt_anticipated --limit 200
+# Trakt strategies — 🔴 MUERTAS, no las ejecutes (ver la nota de arriba). La API devuelve
+# 403 a cualquier clave, crear una app nueva exige VIP de pago y `TRAKT_CLIENT_ID` es
+# huérfano. Se dejan escritas para que nadie las vuelva a proponer como si fueran nuevas.
+#   seed_db.py --strategy trakt_popular | trakt_trending | trakt_anticipated
 
 # Companies and collections
 docker-compose exec backend python scripts/seed_db.py --strategy by_company --company-id 420 --limit 100      # Marvel Studios
@@ -145,8 +159,10 @@ docker-compose exec backend python scripts/seed_db.py --strategy by_collection -
 # Curated lists (TSPDT etc.) — always dry-run first. Seeding is TMDB-bound (NO Groq at seed time:
 # the seeder's MovieFactory gets no groq_client, films land with legacy vectors +
 # has_enriched_embedding=False). AFTER seeding, drain the enrichment backlog with:
-#   python scripts/enrich_vectors.py --enrich-embeddings --chain qwen3-32b,oss-120,qwen3.6-27b --parallel
-# (or let maintenance_orchestrator Phase 4 sweep it), then flush section:* keys.
+#   python scripts/enrich_vectors.py --enrich-embeddings
+# (qwen3-32b ya NO existe: la cadena vive en services/llm_models.py, no la escribas a mano).
+# El sweep automático es la Fase 3 del orquestador, no la 4 — la 4 solo rellena texto de
+# películas YA enriquecidas. Después, flush de section:*.
 docker-compose exec backend python scripts/seed_db.py --strategy from_file --file scripts/data/tspdt_top1000.tsv --dry-run
 docker-compose exec backend python scripts/seed_db.py --strategy from_file --file scripts/data/tspdt_top1000.tsv --limit 300
 
@@ -168,29 +184,46 @@ Single entry point for routine DB maintenance. Replaces ad-hoc sequencing of `re
 |---|---|---|---|
 | 1 | `refresh_metadata` | OMDb + TMDB | OMDb daily budget reached |
 | 2 | `embedding_audit` | none (local embeddinggemma) | `--embed-limit` |
-| 3 | `embedding_repair` | Groq | `DailyLimitExhausted` or `--embed-limit` |
+| 3 | `embedding_repair` | Groq | `DailyLimitExhausted` or `--embed-limit`. **Excluye los overviews < `MIN_OVERVIEW_CHARS`**: la guarda anti-alucinación del enricher los rechaza SIN llamar a la API, así que en la cola sólo podían contar como `failed` y volvían cada noche (medido 2026-08-18: 26 de 31 candidatos, el 84%) |
 | 4 | `backfill_descriptions` | Groq | `DailyLimitExhausted` or `--embed-limit` |
 | 5 | `reset_profiles` | none | runs once over every user with at least one rating |
-| 6 | `recalc_vbs` | none | runs once over the whole `movies` table |
+| 6 | `recalc_vbs` | none | runs once over the whole `movies` table + un scroll de Qdrant para sincronizar `vectorbox_score` |
 | 7 | `vector_presence_check` | none | runs once; re-encodes & upserts films missing from Qdrant |
-| 8 | `popular_refresh` | Letterboxd HTML + Trakt fallback | one scrape; writes `cache:{FEED_CACHE_VERSION}:popular_letterboxd:ids` with 24h TTL |
+| 8 | `popular_refresh` | Letterboxd HTML | one scrape (3 attempts, 120s apart); writes `cache:{FEED_CACHE_VERSION}:popular_letterboxd:ids` with 7d TTL |
+| 9 | `neighbor_table` | none | one pass; ~16s for 20k films. MUST run after anything that changes vectors (3, 4, 7) |
+| **10** | **`seed_new`** | TMDB Discover | `--seed-limit` per strategy. **Runs FIRST** in the default order |
+
+**Phase 10 (`seed_new`, added 2026-08-06)** — ingests new films with `upcoming` + `recent`. Until
+it existed, **no phase brought a single new film in**: the orchestrator only maintained what was
+already there, so a daily run never grew the catalogue. It is **first** in the default order on
+purpose — put last, the new films would sit unenriched (Phase 3), unscored (6) and out of the
+neighbour table (9) until the next day's run. Only those two strategies: both ask TMDB for a
+moving window and return ~15 films/day each (measured). The wide ones (`popular`, `classic`,
+`trending`, `by_language`) return their cap on **every** call — those are catalogue expansion, a
+deliberate decision, never a cron job.
 
 **Arguments:**
-- `--phases 1,2,3,4,5,6,7,8` — comma-separated phases to run (default: all)
+- `--phases 10,1,2,3,4,5,6,7,8,9` — comma-separated phases, **run in the order given** (default: this one, with 10 first)
 - `--omdb-budget N` — max OMDb calls for this run, capped by remaining daily quota in `api_budget` table (default: 100000 — Patron tier)
 - `--embed-limit N` — max movies per **Groq-bound** embedding phase (3 repair, 4 backfill). Default: 500. These cost Groq quota so the cap is conservative.
 - `--audit-limit N` — max movies per Phase 2 audit (no API — only local embeddinggemma inference, ~15ms/film). Default: 20000 ≈ 2× current catalog. Raise if seeds push the catalog past ~18k. A partial sweep is now flagged with a `STILL UNAUDITED: N` WARNING so it's visible.
+- `--seed-limit N` — max NEW films per strategy in Phase 10. Default: 200. Both strategies yield ~15/day, so this is a runaway guard, not a target.
 - `--dry-run` — preview targets without writing
 
 **Phase 1 selector:** films with `imdb_id` set AND (NULL `imdb_vote_count` OR `last_metadata_refresh` older than `REFRESH_STALE_DAYS` = 7d). Ordered by `popularity DESC`. With Patron tier + ~10k catalog a full weekly sweep ≈ 10k calls (10% of daily cap), so the constant is dimensioned for weekly freshness, not the old monthly cadence.
 
-**Phase 8 source-of-truth:** Letterboxd's `/films/ajax/popular/this/week/` endpoint, scraped via `curl_cffi` Chrome TLS impersonation. Slug→tmdb_id resolution uses the Redis cache `letterboxd:slug2tmdb:{slug}` (30d positive / 7d negative). If the scrape resolves < 20 TMDB IDs (parser drift, Cloudflare challenge, 403), falls back to Trakt `/movies/trending` to keep the feed populated. Logs `source=letterboxd|trakt|letterboxd_degraded` so drift is visible.
+**Phase 8 source-of-truth:** Letterboxd's `/csi/films/films-browser-list/popular/this/week/` fragment, scraped via `curl_cffi` Chrome TLS impersonation after a warm-up GET to `letterboxd.com/` that seeds the CSRF cookie the endpoint demands. Slug→tmdb_id resolution uses the Redis cache `letterboxd:slug2tmdb:{slug}` (30d positive / 7d negative).
+
+**No fallback (desde 2026-08-18).** Trakt fue el respaldo, pero su API responde 403 a cualquier clave desde 2026-08-06 y crear una app nueva exige VIP de pago: la rama sólo servía para escribir `source=trakt` en las stats y hacer creer que había red debajo. Ahora Letterboxd es la única fuente. ⚠ **Cloudflare limita por RUTA, no por IP** — medido 2026-08-18: las páginas de película seguían devolviendo 200 mientras `/films/popular/` y el warm-up a `letterboxd.com/` daban 403 durante minutos. El enfriamiento **no es fijo y cada intento lo re-arma** (una sonda se despejó a los 90s y otra a los 270s), así que los **3 intentos separados 120s son una segunda oportunidad barata, no una garantía**; alargarlos no compra nada, porque una corrida diaria que no venga precedida de una ráfaga acierta al primer intento. Lo que de verdad protege la sección es el **TTL de 7 días**: la fase corre a diario, así que con 24h una sola corrida bloqueada la vaciaba; con 7d hacen falta siete seguidas, y una corrida fallida deja la caché anterior intacta — nunca la borra.
 
 **Recommended cadence:**
 ```bash
-# Daily — refresh stale metadata, drain Groq quota for repair, recalc VBS,
-#         heal any film missing from Qdrant, refresh popular cache.
-0 3 * * *  docker compose exec -T backend python scripts/maintenance_orchestrator.py --phases 1,2,3,6,7,8 --omdb-budget 5000 --embed-limit 200
+# Daily — ingest new releases FIRST, then refresh stale metadata, drain Groq quota for
+#         repair, recalc VBS, heal any film missing from Qdrant, refresh popular cache,
+#         rebuild the neighbour table last (phases 3 and 7 moved the vectors).
+#         Con la Fase 10 delante, esta línea sola YA mantiene el catálogo: no hace falta
+#         un cron aparte de seed_db.
+0 3 * * *  docker compose exec -T backend python scripts/maintenance_orchestrator.py --phases 10,1,2,3,6,7,8,9 --omdb-budget 5000 --embed-limit 200
 
 # Weekly — backfill descriptions and re-cluster
 0 4 * * 0  docker compose exec -T backend python scripts/maintenance_orchestrator.py --phases 4,5
@@ -240,6 +273,30 @@ Commands defined in `frontend/package.json`. Run these from the host machine ins
 | **Security** | `pnpm run security-check` | Runs `pnpm audit` with high severity level. |
 | **Dev** | `pnpm dev` | Starts Next.js dev server (Host only). |
 | **Linting** | `pnpm lint` | Runs ESLint analysis. |
+
+## 📏 Bancos y experimentos — los instrumentos, no los resultados
+
+Ninguno de éstos cambia datos. Existen para **decidir**, y este repo tiene un historial largo de
+decidir con instrumentos rotos (ver `docs/HALLAZGOS_2026-08-19.md` y la sección C de
+`docs/AUDIT_PLAYBOOK.md`), así que antes de creerse un número de aquí: mide el suelo de ruido,
+compara **pareado**, y comprueba que el ancla del azar da lo que debe.
+
+| Script | Qué decide | Comando |
+| :--- | :--- | :--- |
+| **`verify_search_branches.py`** | **Qué rama responde, SIN pasar por el parser.** 12 casos vía `forced_intent`, así que es determinista, repetible y **no gasta presupuesto de Groq**. Es la herramienta preferida frente a cualquier cosa que mida *a través* del parser. | `docker compose exec backend python scripts/verify_search_branches.py --repeat 3` |
+| **`eval_recommendations.py`** | **Banco pareado para cambios de recomendación — el instrumento, no un resultado.** Evalúa las dos variantes sobre exactamente el mismo caso y promedia las *diferencias*, que es lo que cancela el ruido de dificultad. | `docker compose exec backend python scripts/eval_recommendations.py` |
+| **`bench_signal_a_production.py`** | **Hold-out de la Señal A evaluando LA FUNCIÓN DE PRODUCCIÓN**, no una reimplementación. Aporta además `ci95()`, que devuelve **(media, semiancho)** — leerlo como (lo, hi) ya invirtió veredictos enteros. | `docker compose exec backend python scripts/bench_signal_a_production.py` |
+| **`bench_vector_space.py`** | **En qué espacio debe vivir el centroide de gusto.** Compara crudo / centrado α=0.5 / ABTT k=1 / ABTT k=7 contra los controles `VBS` y `azar`. De aquí sale que el centroide crudo está a **0,971 del centro del catálogo** y su d' es **negativo**. | `docker compose exec backend python scripts/bench_vector_space.py` |
+| **`bench_person_discovery.py`** | **¿Te habría llevado a esa persona ANTES de que llegaras solo?** Hold-out TEMPORAL sobre directores y actores. El control que importa: restringir a personas NUNCA vistas, que es donde la mitad de las ganancias se evaporan. | `docker compose exec backend python scripts/bench_person_discovery.py` |
+| **`bench_inter_director.py`** | **¿Sirve una señal INTER-director?** Hold-out dejando fuera un director entero. Resultado que conviene recordar: incluso con centroides centrados, la afinidad inter-director pierde contra la popularidad. | `docker compose exec backend python scripts/bench_inter_director.py` |
+| **`bench_quality_gate.py`** | **¿Debe la Señal A tener un tope duro de calidad?** Cuatro variantes medidas. Sostuvo la decisión de NO quitarlo. | `docker compose exec backend python scripts/bench_quality_gate.py` |
+| **`bench_synthetic_profiles.py`** | **Perfiles sintéticos para evaluar la Señal A sin el sesgo canónico.** Existe porque sólo dos usuarios reales tienen `watched_date` y sus futuros SON el canon. | `docker compose exec backend python scripts/bench_synthetic_profiles.py` |
+| **`bench_cinco_ejes.py`** | **¿Es una lista BUENA Y VARIADA?** Cinco ejes, sin predecir nada. Complementa a los hold-out, que no ven la calidad. | `docker compose exec backend python scripts/bench_cinco_ejes.py` |
+| **`bench_a_vs_g2.py`** | **A (centroide global) vs G2 (multi-anchor), re-decidido.** Rehace una decisión de 2026-05 que se había tomado con una reimplementación cuyo `_strategy_g2_topk` devolvía **1 y 0 películas**. | `docker compose exec backend python scripts/bench_a_vs_g2.py` |
+| **`audit_score_surfaces.py`** | **Qué SIGNIFICA la puntuación en cada superficie, y si cada una rellena.** Pregunta más estrecha que `audit_search.py` y **no necesita Groq**, así que corre con cualquier presupuesto. | `docker compose exec backend python scripts/audit_score_surfaces.py` |
+| **`experiment_centering.py`** | **¿Arregla el centrado las dos poblaciones de coseno?** (2026-08-11). Midió **pares**, no centroides — por eso su "no centrar" sigue siendo correcto y no contradice lo del centroide. | `docker compose exec backend python scripts/experiment_centering.py` |
+| **`experiment_signal_a_heldout.py`** · **`experiment_signal_a_heldout_anchored.py`** | Hold-out de la Señal A, la segunda con ancla y ruido. _(Histórico: su métrica premia la canonicidad, así que no sirve para ordenar recomendadores — usar `bench_signal_a_production.py`.)_ | `docker compose exec backend python scripts/experiment_signal_a_heldout.py` |
+| **`experiment_enricher_models.py`** | **Barrido de modelos para el prompt ganador (V2-nameban).** Es lo que se ejecuta cuando muere un modelo de Groq. ⚠ Su lista interna nombra `qwen3-32b`, `scout` y `70b`, **los tres ya apagados**: actualizarla contra `/v1/models` antes de correrlo. | `docker compose exec backend python scripts/experiment_enricher_models.py` |
 
 ## 🛠️ Host Utility Scripts
 Run these from the root directory of the project on your host machine.

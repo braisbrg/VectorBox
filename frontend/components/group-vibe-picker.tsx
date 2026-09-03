@@ -20,13 +20,24 @@ const MAX_MEMBERS = 6;
 const tokenColor = (i: number) => `hsl(${(i * 73) % 360}, 60%, 55%)`;
 const tokenLetter = (i: number) => String.fromCharCode(65 + i);
 
-type SortKey = "prediction" | "watchlisted" | "quality";
+// "match" keeps the order the backend sent — that order IS the recommendation
+// (one ranked list per member, fused; services/group_fusion.py).
+//
+// There used to be a "prediction" option that re-sorted by the mean of the
+// per-member cosines. It was the default, which is why this rail looked
+// unchanged after the fusion work landed, and it reproduces the old centroid
+// ranking — measured worse than the fusion on both accuracy and coverage. A
+// sort that produces a worse list is not a view, it is a wrong answer with a
+// button, so it is gone. "watchlisted" and "quality" stay: those are genuinely
+// different QUESTIONS ("what do we already want to see", "what is best rated"),
+// not competing answers to the same one.
+type SortKey = "match" | "watchlisted" | "quality";
 
 export function GroupVibePicker({ currentUsername }: { currentUsername: string }) {
     const { language, t } = useLanguage();
     const [handles, setHandles] = useState<string[]>([currentUsername]);
     const [input, setInput] = useState("");
-    const [sort, setSort] = useState<SortKey>("prediction");
+    const [sort, setSort] = useState<SortKey>("match");
     const [data, setData] = useState<GroupVibeResponse | null>(null);
     const [quickLook, setQuickLook] = useState<QuickLookFilm | null>(null);
     // shareables (F3): group PNG + per-peer pair PNG
@@ -40,6 +51,8 @@ export function GroupVibePicker({ currentUsername }: { currentUsername: string }
     // session filters: "we only have 90 min and filmin+hbo"
     const [maxRuntime, setMaxRuntime] = useState<number | null>(null);
     const [providerFilter, setProviderFilter] = useState<Set<string>>(new Set());
+    const [yearMin, setYearMin] = useState<number | null>(null);
+    const [minScore, setMinScore] = useState<number | null>(null);
 
     const runMutation = useMutation({
         mutationFn: () =>
@@ -48,6 +61,8 @@ export function GroupVibePicker({ currentUsername }: { currentUsername: string }
                 focus: focus && handles.includes(focus) ? focus : null,
                 maxRuntime,
                 providers: [...providerFilter],
+                yearMin,
+                minScore,
             }),
         onSuccess: setData,
     });
@@ -81,8 +96,8 @@ export function GroupVibePicker({ currentUsername }: { currentUsername: string }
         const recs = [...data.recommendations];
         const pred = (r: GroupRecommendation) =>
             r.contributors.length ? r.contributors.reduce((s, c) => s + c.score, 0) / r.contributors.length : r.similarity_score;
+        if (sort === "match") return recs;                       // orden del backend, intacto
         if (sort === "watchlisted") recs.sort((a, b) => b.watchlisted_by.length - a.watchlisted_by.length || pred(b) - pred(a));
-        else if (sort === "prediction") recs.sort((a, b) => pred(b) - pred(a));
         else recs.sort((a, b) => (b.movie.vectorbox_score ?? 0) - (a.movie.vectorbox_score ?? 0));
         return recs;
     }, [data, sort]);
@@ -243,6 +258,56 @@ export function GroupVibePicker({ currentUsername }: { currentUsername: string }
                                 ))}
                             </div>
                         </div>
+                        {/* Año y calidad, los dos controles que el feed y la watchlist
+                            ya tienen y a esta pantalla le faltaban. En segmentos y no
+                            en sliders: aquí se decide en grupo y en voz alta, y una
+                            década es algo que se dice ("algo de los 90"); un 73 de VBS
+                            no lo dice nadie. */}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                            <span className="w-[92px] font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">{t("grp.from_year")}</span>
+                            <div className="flex border border-border-2">
+                                {[
+                                    { v: null, label: t("grp.any") },
+                                    { v: 1980, label: "80+" },
+                                    { v: 1990, label: "90+" },
+                                    { v: 2000, label: "2000+" },
+                                    { v: 2010, label: "2010+" },
+                                ].map((o) => (
+                                    <button
+                                        key={o.label}
+                                        onClick={() => setYearMin(o.v)}
+                                        className={cn(
+                                            "border-r border-border-2 px-2.5 py-1 font-mono text-[10px] transition-colors last:border-r-0",
+                                            yearMin === o.v ? "bg-primary font-bold text-primary-ink" : "text-fg-3 hover:text-fg"
+                                        )}
+                                    >
+                                        {o.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                            <span className="w-[92px] font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">{t("grp.min_q")}</span>
+                            <div className="flex border border-border-2">
+                                {[
+                                    { v: null, label: t("grp.any") },
+                                    { v: 70, label: "Q ≥ 70" },
+                                    { v: 80, label: "Q ≥ 80" },
+                                    { v: 85, label: "Q ≥ 85" },
+                                ].map((o) => (
+                                    <button
+                                        key={o.label}
+                                        onClick={() => setMinScore(o.v)}
+                                        className={cn(
+                                            "border-r border-border-2 px-2.5 py-1 font-mono text-[10px] transition-colors last:border-r-0",
+                                            minScore === o.v ? "bg-primary font-bold text-primary-ink" : "text-fg-3 hover:text-fg"
+                                        )}
+                                    >
+                                        {o.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                             <span className="w-[92px] font-mono text-[10px] uppercase tracking-[0.08em] text-fg-3">{t("grp.providers")}</span>
                             <div className="flex flex-wrap gap-1">
@@ -351,7 +416,7 @@ export function GroupVibePicker({ currentUsername }: { currentUsername: string }
 
                     {/* CENTROID PANEL */}
                     <div className="border-2 border-primary bg-bg-2 p-4">
-                        <div className="mb-2 font-display text-[11px] uppercase tracking-[0.18em] text-primary">shared centroid</div>
+                        <div className="mb-2 font-display text-[11px] uppercase tracking-[0.18em] text-primary">group match</div>
                         <div className="grid grid-cols-1 gap-4 font-mono text-[11px] text-fg-2 sm:grid-cols-3">
                             <div>
                                 <div className="eyebrow mb-1">members</div>
@@ -380,7 +445,7 @@ export function GroupVibePicker({ currentUsername }: { currentUsername: string }
                             <span className="eyebrow">recommendations · matrix</span>
                             <div className="flex items-center gap-1 font-mono text-[10px] text-fg-3">
                                 <span>sort:</span>
-                                {(["prediction", "watchlisted", "quality"] as SortKey[]).map((s) => (
+                                {(["match", "watchlisted", "quality"] as SortKey[]).map((s) => (
                                     <button
                                         key={s}
                                         onClick={() => setSort(s)}
@@ -410,7 +475,7 @@ export function GroupVibePicker({ currentUsername }: { currentUsername: string }
                                 const why =
                                     r.watchlisted_by.length > 0
                                         ? `on ${r.watchlisted_by.map((w) => `@${w}`).join(" + ")}'s watchlist`
-                                        : "centroid pick · unseen by all";
+                                        : "fits everyone · unseen by all";
                                 return (
                                     <button
                                         key={r.movie.tmdb_id}

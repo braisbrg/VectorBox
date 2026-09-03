@@ -55,7 +55,10 @@ CASES = [
     _Case("Catalog median film",             6.7,    10_000,  60, 6.77,    1_000,  60.5),
     _Case("Sub-floor obscure film",          3.8,       450,  25, 4.2,        80,  34.1),
     _Case("Single-source TMDB-only indie",   None,      None, None, 8.497,   590,  80.4),
-    _Case("Two-source partial coverage",     8.0,    50_000, None, 7.8,    5_000,  87.0),
+    # Sin Metacritic no hay penalización: los dos votados están presentes.
+    _Case("Two-source partial coverage",     8.0,    50_000, None, 7.8,    5_000,  91.5),
+    # Sin TMDB sí la hay (×0.85) — una sola fuente votada es dato fino.
+    _Case("No-TMDB, IMDb+Metacritic",        8.0,    50_000,   88, None,    None,  78.5),
 ]
 
 
