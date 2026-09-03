@@ -8,6 +8,22 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
+## [Unreleased]
+
+### Security
+- `pnpm audit` is now at **zero** advisories, down from one moderate: the postcss bump closed
+  the last one left after the 3.1.0 overrides.
+
+### Changed
+- Dependency maintenance, clearing ten Dependabot PRs that had been open since May. Backend:
+  `orjson`, `PyJWT`, `pydantic`, `pydantic-settings`, `openai`; `requirements.lock` regenerated
+  with hashes and verified by installing it under `--require-hashes`. Frontend: `next` 16.2.11 →
+  16.3.4, `react`/`react-dom` 19.2.8, `tailwindcss` 4.3.3, `tailwind-merge` 3.6.0, `postcss`
+  8.5.26, `eslint` 9.39.5. Major bumps the Dependabot groups exclude (`lucide-react` 1.x,
+  `framer-motion` 13.x) and `@clerk/nextjs` were deliberately left out.
+
+---
+
 ## [3.1.0] — 2026-09-02
 
 MINOR, not MAJOR: feed rows, filters and mood axes were added, but **no endpoint was removed** —
