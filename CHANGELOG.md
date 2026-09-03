@@ -8,7 +8,9 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
-## [Unreleased]
+## [3.1.2] — 2026-09-03
+
+PATCH: security only. No API changes.
 
 ### Fixed
 - **The security gate had not audited anything for months.** `security_audit.py` ran
@@ -154,6 +156,7 @@ pre-release audit. MAJOR because public API endpoints were removed alongside the
 Tags `v2.0.0` through `v2.3.1` predate this file. Use `git log` and `git tag` for their history;
 `BACKLOG.md` carries the decision record and bug history in full.
 
+[3.1.2]: https://github.com/braisbrg/VectorBox/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/braisbrg/VectorBox/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/braisbrg/VectorBox/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/braisbrg/VectorBox/compare/v2.3.1...v3.0.0
