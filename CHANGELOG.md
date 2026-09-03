@@ -19,8 +19,12 @@ not just what changed. Where a number appears, it was taken from the running sys
   `orjson`, `PyJWT`, `pydantic`, `pydantic-settings`, `openai`; `requirements.lock` regenerated
   with hashes and verified by installing it under `--require-hashes`. Frontend: `next` 16.2.11 →
   16.3.4, `react`/`react-dom` 19.2.8, `tailwindcss` 4.3.3, `tailwind-merge` 3.6.0, `postcss`
-  8.5.26, `eslint` 9.39.5. Major bumps the Dependabot groups exclude (`lucide-react` 1.x,
-  `framer-motion` 13.x) and `@clerk/nextjs` were deliberately left out.
+  8.5.26, `eslint` 9.39.5. Also the `infrastructure-critical` group: `fastapi` 0.136.1 →
+  0.141.1, `sqlalchemy` 2.0.51, `alembic` 1.19.0, `scikit-learn` 1.9.0, `qdrant-client`
+  1.19.0 and OpenTelemetry 1.44.0 (with the instrumentation packages moved to the matching
+  0.65b0 — they are pinned to the SDK version and only move together). Major bumps the
+  Dependabot groups exclude (`lucide-react` 1.x, `framer-motion` 13.x) and `@clerk/nextjs`
+  were deliberately left out.
 
 ---
 
