@@ -8,7 +8,22 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
-## [Unreleased]
+## [3.1.1] — 2026-09-03
+
+PATCH: dependency maintenance and test coverage only. No API changes.
+
+### Added
+- Tests for the two dependency surfaces that the suite never touched: the sklearn contract
+  used by K-Means cluster selection, and a live Qdrant neighbour search. Both upgrades
+  (`scikit-learn` 1.9, `qdrant-client` 1.19) had passed 517 green tests without exercising
+  either, and had to be checked by hand.
+
+### Known issues
+- The Magic Box era-relaxation safety net has stopped firing: it triggers on
+  `results < 8` and the 1950s cyberpunk case now returns exactly 8, all of them padding at
+  flat 73-77 scores. Deterministic, unrelated to this release's dependency work, and tracked
+  in `BACKLOG.md` — a threshold compared against a *count* switches itself off as the
+  catalogue grows.
 
 ### Security
 - `pnpm audit` is now at **zero** advisories, down from one moderate: the postcss bump closed
@@ -113,5 +128,6 @@ pre-release audit. MAJOR because public API endpoints were removed alongside the
 Tags `v2.0.0` through `v2.3.1` predate this file. Use `git log` and `git tag` for their history;
 `BACKLOG.md` carries the decision record and bug history in full.
 
+[3.1.1]: https://github.com/braisbrg/VectorBox/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/braisbrg/VectorBox/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/braisbrg/VectorBox/compare/v2.3.1...v3.0.0

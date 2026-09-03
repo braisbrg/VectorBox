@@ -16,7 +16,7 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 # `main.py` mientras el frontend iba por la 3.0.0 — dos deployables distintos,
 # pero el número debe ser el mismo. Se sube A MANO aquí y en
 # `frontend/package.json`, que son las dos únicas fuentes.
-APP_VERSION = "3.1.0"
+APP_VERSION = "3.1.1"
 
 # Clerk auth (per-instance JWKS URL, e.g. https://<instance>.clerk.accounts.dev/.well-known/jwks.json)
 CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
