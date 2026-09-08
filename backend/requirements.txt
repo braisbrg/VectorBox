@@ -42,7 +42,7 @@ opentelemetry-exporter-otlp-proto-grpc==1.44.0
 
 # Build & Test Tools
 wheel>=0.46.2          # GHSA-8rrh-rw8j-w5fx
-playwright>=1.59.0     # For E2E tests inside container
+playwright>=1.62.0     # For E2E tests inside container
 
 # ── Suelos de seguridad para dependencias TRANSITIVAS ──────────────────────
 # Ninguna de éstas la usamos directamente: las arrastran fastapi, aiohttp,
