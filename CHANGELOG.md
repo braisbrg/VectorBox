@@ -8,7 +8,9 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
-## [Unreleased]
+## [3.1.3] — 2026-11-03
+
+PATCH: security and tooling. No API changes.
 
 ### Security
 - **Two months idle left 52 open Dependabot alerts (7 critical, 21 high) and 84 pip-audit findings
@@ -209,6 +211,7 @@ Tags `v2.0.0` through `v2.3.1` predate this file. Use `git log` and `git tag` fo
 `CUADERNO.md` (the lab notebook) carries the decision record and bug history in full, and
 `BACKLOG.md` lists what is still open.
 
+[3.1.3]: https://github.com/braisbrg/VectorBox/compare/v3.1.2...v3.1.3
 [3.1.2]: https://github.com/braisbrg/VectorBox/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/braisbrg/VectorBox/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/braisbrg/VectorBox/compare/v3.0.0...v3.1.0
