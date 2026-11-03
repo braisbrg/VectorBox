@@ -12,9 +12,9 @@ VectorBox ingests your film history — via Letterboxd export, RSS feed, or an o
 
 It's built for people who care about *what* they watch next, not just that something is on.
 
-> **Note:** v3.1.0 is in preparation on `feature/operational-debt` — source-side filtering, the
-> Leaving Soon row, the watchlist filter and the mood axes. The last tagged release is v3.0.0
-> (the brutalist "ACID" UI), merged to `master`. CI/CD has a dedicated sprint planned; the Playwright e2e harness predates the Clerk migration and will be rewritten there.
+> **Note:** the last tagged release is v3.1.2, on `master`. CI runs the type check, the production
+> build, the hermetic pytest suite and both dependency audits. The Playwright e2e harness
+> predates the Clerk migration and stays out of CI until it is rewritten.
 
 ## How It Works — The Trident Engine
 

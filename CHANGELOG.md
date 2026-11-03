@@ -8,6 +8,60 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
+## [3.1.3] — 2026-11-03
+
+PATCH: security and tooling. No API changes.
+
+### Security
+- **Two months idle left 52 open Dependabot alerts (7 critical, 21 high) and 84 pip-audit findings
+  in 13 packages.** Nothing in the code changed; the advisories landed while the project sat still.
+  - Frontend: `next` 16.3.4 → 16.4.3 (three remote-code-execution advisories, two of them
+    unauthenticated, fixed in 16.4.1), `axios` → 1.21.0, and the transitive `fast-uri`,
+    `follow-redirects`, `sharp`, `source-map-js`, `brace-expansion`, `js-yaml`, `zod` and
+    `minimatch`. `next` stops at 16.4.3 on purpose: 16.4.4 was one day old and pnpm's
+    minimum-release-age policy rejects it.
+  - Backend: `PyJWT` 2.13.0 → 2.15.1, OpenTelemetry 1.44.0 → 1.45.2 (instrumentations 0.65b0 →
+    0.66b2), and new or raised floors for `pillow` (13.x, 39 advisories), `aiohttp`, `urllib3`,
+    `filelock` (4.x), `anyio`, `certifi`, `dnspython`, `fsspec`, `msgpack` and `multidict`.
+    The lock was recompiled from the existing pins: beyond these, only `yarl` (pulled by aiohttp)
+    moved and one OpenTelemetry package (`opentelemetry-exporter-otlp-common`) came in.
+  - Login was never exposed to the PyJWT algorithm-confusion advisories: it pins
+    `algorithms=["RS256"]` and takes the key from Clerk's JWKS. It is upgraded anyway.
+  - One new `transformers` advisory (PYSEC-2026-4174) has no published fix. It joins the list
+    accepted by ID in `security_audit.py`, next to the others that wait for the encoder upgrade.
+  - Measured after the change: `pnpm audit` finds nothing; `security_audit.py` finds nothing, with
+    11 advisories accepted by ID (2 more for torch). The hermetic suite passes (523), and so do
+    `test_trident_math.py` and `test_es_whitelist.py`. `verify_feed_parallelism.py` fails as it
+    always has (9/10).
+
+### Changed
+- **CI and the local checks, measured and trimmed.**
+  - The pre-commit hook made every commit pay **148 s** for the Python audit, and it needed the
+    backend running. `security_audit.py` now passes `--disable-pip`: the lock already pins
+    everything with hashes, so pip has nothing to re-resolve. It finds the same 11 accepted
+    findings in **11 s**.
+  - The hook is gone, and with it husky, lint-staged and ESLint. Next 16 removed `next lint`, and
+    the config was in the legacy format, so none of it ran. The audits run in CI.
+  - CI backend job:
+    - Installs `requirements.lock` with hashes, which is what the image installs. Before, it
+      installed `requirements.txt`, which failed and fell back to a subset.
+    - Runs the hermetic pytest suite, which had never run in CI, and then the audit.
+    - No longer starts the Postgres, Redis and Qdrant services, which no step used.
+  - The three scripts CI ran are removed. Two of them tested copies of the functions, defined
+    inside the script itself, and `verify_feed_parallelism.py` could not pass. New tests exercise
+    the real `reciprocal_rank_fusion`, `calculate_quality_weight` and `filter_es_providers`. Each
+    test fails when its function is broken (checked by mutating each one).
+  - CI frontend job: pnpm is pinned to 12, and `pnpm audit --audit-level=high` runs after the
+    build, so an npm timeout no longer hides the build result.
+  - The Playwright job is removed until the e2e harness is rewritten for Clerk. It never ran.
+  - Dependabot opens one grouped PR per ecosystem a month, instead of about 12 a week. Security
+    updates still open on their own.
+  - Measured locally on 2026-11-03: `tsc` 13 s, build 19 s, audit 11 s. pytest gave 529 passed in
+    32 s with no environment variables other than a dummy `DATABASE_URL`; without it, collection
+    fails. CI itself is unverified until this is pushed.
+
+---
+
 ## [3.1.2] — 2026-09-03
 
 PATCH: security only. No API changes.
@@ -154,8 +208,10 @@ pre-release audit. MAJOR because public API endpoints were removed alongside the
 ## Earlier releases
 
 Tags `v2.0.0` through `v2.3.1` predate this file. Use `git log` and `git tag` for their history;
-`BACKLOG.md` carries the decision record and bug history in full.
+`CUADERNO.md` (the lab notebook) carries the decision record and bug history in full, and
+`BACKLOG.md` lists what is still open.
 
+[3.1.3]: https://github.com/braisbrg/VectorBox/compare/v3.1.2...v3.1.3
 [3.1.2]: https://github.com/braisbrg/VectorBox/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/braisbrg/VectorBox/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/braisbrg/VectorBox/compare/v3.0.0...v3.1.0

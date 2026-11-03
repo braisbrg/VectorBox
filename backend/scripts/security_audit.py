@@ -23,6 +23,7 @@ IGNORED = [
     "PYSEC-2026-2289",       # transformers -> 5.3.0
     "PYSEC-2026-2290",       # transformers -> 5.5.0
     "PYSEC-2025-217",        # transformers, sin arreglo publicado
+    "PYSEC-2026-4174",       # transformers, sin arreglo publicado (visto el 2026-11-03)
     "PYSEC-2026-139",        # torch, sin arreglo publicado
     "PYSEC-2025-194",        # torch -> 2.13.0
 ]
@@ -116,6 +117,10 @@ def main():
             # Hashed lockfile: use --require-hashes for cryptographic integrity verification
             # This is the correct mode and eliminates the "consider using hashes" warning
             audit_cmd += ["--require-hashes", "--extra-index-url", "https://download.pytorch.org/whl/cpu"]
+            # El lock ya fija TODO con hashes, así que no hace falta que pip lo vuelva a
+            # resolver instalándolo (torch incluido) en un venv temporal. Medido el
+            # 2026-11-03: 148 s -> 11 s, con los mismos 11 avisos.
+            audit_cmd += ["--disable-pip"]
         else:
             # Unfixed freeze fallback: no hashes present, use --no-deps
             audit_cmd += ["--no-deps"]

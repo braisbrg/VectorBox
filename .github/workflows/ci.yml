@@ -10,9 +10,8 @@ on:
     branches: [master, develop]
 
 # El GITHUB_TOKEN llega con permisos de escritura por defecto salvo que se acoten,
-# y estos tres jobs no escriben NADA: checkout, setup-node/python, cache y
-# upload-artifact (que va por su propio servicio, no por el token). Declararlo a
-# nivel de workflow cubre los tres — CodeQL abría un aviso por job (#1, #2, #3).
+# y estos jobs no escriben NADA: checkout, setup-node/python y cache. Declararlo a
+# nivel de workflow cubre todos — CodeQL abría un aviso por job (#1, #2, #3).
 permissions:
   contents: read
 
@@ -20,11 +19,8 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  # ─────────────────────────────────────────
-  # JOB 1: Frontend Quality (cada push, ~2min)
-  # ─────────────────────────────────────────
-  frontend-quality:
-    name: Frontend Quality
+  frontend:
+    name: Frontend
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -39,10 +35,12 @@ jobs:
         with:
           node-version: '24'
 
+      # Fijado: con `latest`, la CI cambiaba de pnpm sin que nadie lo decidiera, y la 12
+      # trae políticas nuevas (antigüedad mínima de versiones) que cambian el install.
       - name: Setup pnpm
         uses: pnpm/action-setup@v4.1.0
         with:
-          version: latest
+          version: 12
 
       - name: Get pnpm store directory
         id: pnpm-cache
@@ -61,9 +59,6 @@ jobs:
       - name: TypeScript check
         run: pnpm exec tsc --noEmit
 
-      - name: Security audit
-        run: pnpm audit
-
       - name: Build
         run: pnpm build
         env:
@@ -71,42 +66,22 @@ jobs:
           BACKEND_URL: http://localhost:8000
           NEXT_TELEMETRY_DISABLED: 1
 
-  # ─────────────────────────────────────────
-  # JOB 2: Backend Scripts (cada push master/PR)
-  # ─────────────────────────────────────────
-  backend-scripts:
-    name: Backend Verification Scripts
+      # Después del build: el audit sale a npm, y un timeout suyo (251 s el 2026-09-04)
+      # no debe esconder si el build pasa. `high`, el mismo umbral que `security-check`.
+      - name: Security audit
+        run: pnpm audit --audit-level=high
+
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:15-alpine
-        env:
-          POSTGRES_DB: vectorbox
-          POSTGRES_USER: vectorbox_user
-          POSTGRES_PASSWORD: ci_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      qdrant:
-        image: qdrant/qdrant:latest
-        ports:
-          - 6333:6333
+    defaults:
+      run:
+        working-directory: backend
+    # config.py crea el engine al importarse, y una URL vacía no se puede parsear. La suite
+    # es hermética y nunca conecta: basta con una URL válida. Medido el 2026-11-03: sin ella,
+    # 28 errores de recogida; con ella, 529 passed.
+    env:
+      DATABASE_URL: postgresql+asyncpg://ci:ci@localhost:5432/ci
 
     steps:
       - name: Checkout
@@ -116,226 +91,23 @@ jobs:
         uses: actions/setup-python@v5.5.0
         with:
           python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
 
-      - name: Cache pip dependencies
-        uses: actions/cache@v4.2.3
-        with:
-          path: ~/.cache/pip
-          key: pip-${{ hashFiles('backend/requirements.txt') }}
-          restore-keys: pip-
-
-      - name: Install backend dependencies (sin torch)
-        working-directory: backend
+      # Lo mismo que instala la imagen: el lock con hashes, no requirements.txt. Antes la
+      # CI instalaba requirements.txt, fallaba y caía a un subconjunto, así que lo que
+      # probaba y auditaba no era lo que corre en producción.
+      - name: Install from the hashed lock
         run: |
-          pip install --upgrade pip
-          pip install pip-audit
-          pip install -r requirements.txt --ignore-requires-python \
-            || pip install fastapi uvicorn sqlalchemy asyncpg \
-               redis qdrant-client pydantic python-multipart \
-               slowapi httpx aiohttp
+          pip install --require-hashes \
+            --extra-index-url https://download.pytorch.org/whl/cpu \
+            -r requirements.lock
 
-      - name: Run security audit
-        working-directory: backend
+      # La suite hermética (pytest.ini deja fuera `integration`): no necesita ni base de
+      # datos ni red. Sustituye a los tres scripts que corría antes, que probaban copias
+      # de las funciones o tareas de mentira.
+      - name: Test suite
+        run: python -m pytest -q
+
+      - name: Security audit
         run: python scripts/security_audit.py
-
-      - name: Run Trident math verification
-        working-directory: backend
-        run: python scripts/test_trident_math.py
-
-      - name: Run feed parallelism verification
-        working-directory: backend
-        run: python scripts/verify_feed_parallelism.py
-
-      - name: Run ES whitelist test
-        working-directory: backend
-        run: python scripts/test_es_whitelist.py
-
-      # Requires live DB — run manually via docker compose
-      # - python scripts/test_idor_hidden_gems.py
-      # - python scripts/verify_nlp_fallback.py
-
-  # ─────────────────────────────────────────
-  # JOB 3: Playwright E2E (solo PRs a master)
-  # ─────────────────────────────────────────
-  playwright:
-    name: Playwright E2E
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    needs: [frontend-quality, backend-scripts]
-
-    steps:
-      - name: Free up disk space
-        run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-          docker system prune -af
-
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Create .env for CI
-        run: |
-          # ── Credentials ──────────────────────────────────────────────
-          # POSTGRES_PASSWORD must match what docker-compose passes to
-          # the postgres container (default: change_me_in_prod).
-          # We set it explicitly here so there is never any ambiguity.
-          POSTGRES_PASSWORD="change_me_in_prod"
-          DB_URL="postgresql+asyncpg://vectorbox_user:${POSTGRES_PASSWORD}@postgres:5432/vectorbox"
-
-          cat > .env <<EOF
-          ENVIRONMENT=development
-          TESTING_MODE=False
-          POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-          DATABASE_URL=${DB_URL}
-          REDIS_URL=redis://redis:6379
-          QDRANT_URL=http://qdrant:6333
-          SECRET_KEY=${{ secrets.SECRET_KEY }}
-          TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}
-          TMDB_READ_TOKEN=${{ secrets.TMDB_READ_TOKEN }}
-          OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}
-          GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}
-          EOF
-
-          # Export to runner env so subsequent steps can read them too
-          echo "DATABASE_URL=${DB_URL}"                          >> $GITHUB_ENV
-          echo "SECRET_KEY=${{ secrets.SECRET_KEY }}"            >> $GITHUB_ENV
-          echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}"        >> $GITHUB_ENV
-          echo "TMDB_READ_TOKEN=${{ secrets.TMDB_READ_TOKEN }}"  >> $GITHUB_ENV
-          echo "OMDB_API_KEY=${{ secrets.OMDB_API_KEY }}"        >> $GITHUB_ENV
-          echo "GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}"        >> $GITHUB_ENV
-
-      - name: Create auth directory
-        run: mkdir -p frontend/e2e/.auth
-
-      - name: Start services
-        run: docker compose --env-file .env up -d --build
-
-      - name: Wait for postgres
-        run: |
-          echo "Waiting for postgres to be ready..."
-          for i in {1..30}; do
-            if docker compose exec -T postgres pg_isready -U vectorbox_user -d vectorbox; then
-              echo "Postgres is READY!"
-              exit 0
-            fi
-            echo "Waiting... ($i/30)"
-            sleep 3
-          done
-          echo "ERROR: Postgres never became ready — aborting."
-          docker compose logs postgres
-          exit 1
-
-      - name: Wait for backend to be healthy
-        run: |
-          echo "Waiting for backend API..."
-          for i in {1..30}; do
-            if curl -sf http://localhost:8000/health > /dev/null; then
-              echo "Backend is healthy!"
-              exit 0
-            fi
-            echo "Waiting... ($i/30)"
-            sleep 5
-          done
-          echo "ERROR: Backend never became healthy — dumping logs."
-          docker compose logs backend
-          exit 1
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4.1.0
-        with:
-          version: latest
-
-      - name: Install frontend dependencies
-        working-directory: frontend
-        run: pnpm install --frozen-lockfile
-
-      - name: Install Playwright browsers
-        working-directory: frontend
-        run: pnpm exec playwright install --with-deps chromium webkit
-
-      - name: Run Alembic migrations
-        run: |
-          docker compose exec -T backend alembic upgrade head
-          docker compose exec -T backend alembic current
-
-      - name: Verify DB tables exist
-        # Guard: if migrations silently did nothing, catch it here
-        # before the seed script fails with a cryptic UndefinedTableError.
-        run: |
-          docker compose exec -T backend python - <<'EOF'
-          import asyncio, sys, os
-          from sqlalchemy.ext.asyncio import create_async_engine
-          from sqlalchemy import text
-
-          async def check():
-              url = os.environ["DATABASE_URL"]
-              engine = create_async_engine(url)
-              async with engine.connect() as conn:
-                  result = await conn.execute(
-                      text("SELECT tablename FROM pg_tables WHERE schemaname='public'")
-                  )
-                  tables = [r[0] for r in result.fetchall()]
-              await engine.dispose()
-              print(f"Tables found: {tables}")
-              if "users" not in tables:
-                  print("ERROR: 'users' table missing — migrations did not apply!")
-                  sys.exit(1)
-              print("OK: required tables are present.")
-
-          asyncio.run(check())
-          EOF
-
-      - name: Seed QA user
-        run: docker compose exec -T backend python scripts/seed_qa_user.py
-
-      - name: Flush Redis
-        # Clear any partial prefetches/SSR cache that might have leaked before seed
-        run: docker compose exec -T redis redis-cli flushall
-
-      - name: Smoke test — backend health
-        # The previous warmup polled /api/recommendations/feed authenticated as
-        # qa_vecbox via /api/auth/login. That endpoint was removed when auth
-        # moved to Clerk; the warmup has been silently 404-ing ever since. The
-        # feed-richness smoke check is now an E2E concern (Playwright job).
-        # Keep a cheap liveness probe so this job still exits on a broken
-        # backend boot.
-        run: |
-          set -e
-          curl -sf http://localhost:8000/health > /dev/null
-          echo "Backend /health OK."
-
-      - name: Run Playwright suite
-        working-directory: frontend
-        run: pnpm exec playwright test --reporter=list --timeout=60000
-        env:
-          CI: true
-
-      - name: Upload Playwright report on failure
-        if: failure()
-        uses: actions/upload-artifact@v4.6.1
-        with:
-          name: playwright-report
-          path: frontend/playwright-report/
-          retention-days: 7
-
-      - name: Stop services
-        if: always()
-        run: docker compose down -v
-
-# Required GitHub Secrets (Settings → Secrets → Actions):
-# - SECRET_KEY
-# - TMDB_API_KEY
-# - TMDB_READ_TOKEN
-# - OMDB_API_KEY
-# - GROQ_API_KEY
-#
-# Add via: GitHub repo → Settings → Secrets and variables
-#           → Actions → New repository secret
