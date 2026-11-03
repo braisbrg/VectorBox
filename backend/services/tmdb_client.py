@@ -68,10 +68,12 @@ def pick_search_result(
     «Here We Are» *We Are Here*.
 
     Gana el resultado cuyo título (o título original) coincide con el buscado, y
-    entre ésos el de año más cercano. Con `strict`, si ninguno coincide o el más
-    cercano se va más de un año, no hay resultado: una película que falta se ve
-    en el import, una equivocada envenena el perfil sin que nadie lo note. Sin
-    `strict` (la Magic Box, el seed) se mantiene el primero como último recurso.
+    entre ésos el de año más cercano. Con `strict`, si ninguno coincide, si el más
+    cercano se va más de un año o si quedan homónimos empatados (dos «Piggy» de
+    2018), no hay resultado: una película que falta se ve en el import y el import
+    puede preguntar a Letterboxd; una equivocada envenena el perfil sin que nadie
+    lo note. Sin `strict` (la Magic Box, el seed) se mantiene el primero como
+    último recurso.
     """
     if not results:
         return None
@@ -79,11 +81,13 @@ def pick_search_result(
     exact = [r for r in results
              if want and want in (_norm_title(r.get("title")), _norm_title(r.get("original_title")))]
     if exact:
-        if year is None:
-            return exact[0]
-        # min se queda con el primero de los empatados: a igual distancia, manda el orden de TMDB.
-        best = min(exact, key=lambda r: abs(_year_of(r) - year) if _year_of(r) else 99)
-        if _year_of(best) is None or abs(_year_of(best) - year) <= 1:
+        def dist(r):
+            return 0 if year is None else (abs(_year_of(r) - year) if _year_of(r) else 99)
+        # min se queda con el primero de los empatados: fuera de `strict`, manda el orden de TMDB.
+        best = min(exact, key=dist)
+        if strict and sum(dist(r) == dist(best) for r in exact) > 1:
+            return None
+        if year is None or _year_of(best) is None or dist(best) <= 1:
             return best
     return None if strict else results[0]
 

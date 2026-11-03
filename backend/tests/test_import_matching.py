@@ -20,8 +20,10 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from routers.upload import resolve_tmdb_id
 from scripts.reconcile_letterboxd_movies import audit
 from services.csv_parser import CSVParser
+from services.scraper_service import ScraperService, _tmdb_id_from_film_html
 from services.tmdb_client import TMDBClient, pick_search_result
 
 
@@ -104,3 +106,70 @@ def test_reconcile_encuentra_la_fila_que_lleva_la_uri_de_otra():
     assert [(x.tmdb_id, n) for x, n in sure] == [(447399, 36657)]
     assert sorted(len(g) for g in shared) == [2, 2]
     assert [x.tmdb_id for _, x, _ in slugs] == [1502523]
+
+
+# --- Lo que sólo Letterboxd sabe (2026-11-03, CUADERNO E118) ---------------------------
+# Las 889 películas de biblioteca con enlace boxd.it, resueltas contra Letterboxd: 20 estaban mal.
+# Homónimos que el título no separa (dos «Lullaby» de 2022: la buena era *Cinco lobitos*) y series
+# emparejadas con lo que se llamara parecido («Chernobyl» → *Chernobyl: Zone of Exclusion*).
+
+LULLABY_US = r(702621, "Lullaby", 2022)
+LULLABY_ES = r(835504, "Lullaby", 2022, original="Cinco lobitos")
+
+
+def _tmdb_with(results_by_title):
+    client = TMDBClient()
+    store = {}
+    client._get_redis = AsyncMock(return_value=SimpleNamespace(
+        get=AsyncMock(side_effect=lambda k: store.get(k)),
+        setex=AsyncMock(side_effect=lambda k, ttl, v: store.__setitem__(k, v))))
+    client._make_request = AsyncMock(side_effect=lambda path, params: {
+        "results": results_by_title.get(params["query"], [])})
+    return client
+
+
+def test_homonimos_empatados_no_se_eligen_en_estricto():
+    assert pick_search_result([LULLABY_US, LULLABY_ES], "Lullaby", 2022, strict=True) is None
+    assert pick_search_result([LULLABY_US, LULLABY_ES], "Lullaby", 2022)["id"] == 702621
+
+
+def test_lo_dudoso_lo_decide_letterboxd_y_lo_claro_no_le_pregunta():
+    tmdb = _tmdb_with({"Lullaby": [LULLABY_US, LULLABY_ES], "X-Men": [MUTANT_WATCH, X_MEN],
+                       "Chernobyl": [r(793445, "Chernobyl: Zone of Exclusion", 2019)]})
+    lb = AsyncMock(side_effect=lambda uri: {"https://boxd.it/LULL": 835504}.get(uri))
+
+    assert asyncio.run(resolve_tmdb_id("Lullaby", 2022, "https://boxd.it/LULL", tmdb, lb)) == 835504
+    # Una serie: Letterboxd no da película, y no se empareja con nada.
+    assert asyncio.run(resolve_tmdb_id("Chernobyl", 2019, "https://boxd.it/mkbG", tmdb, lb)) is None
+    assert lb.await_count == 2
+
+    # Claro por la URI o por el título: ni una petición a Letterboxd.
+    assert asyncio.run(resolve_tmdb_id("Whatever", 2000, "https://letterboxd.com/tmdb/36657", tmdb, lb)) == 36657
+    assert asyncio.run(resolve_tmdb_id("X-Men", 2000, "https://boxd.it/XMEN", tmdb, lb)) == 36657
+    assert lb.await_count == 2
+
+
+def test_la_pagina_de_una_serie_no_trae_pelicula():
+    assert _tmdb_id_from_film_html('<html><body data-tmdb-id=""></body></html>') is None
+    assert _tmdb_id_from_film_html('<html><body data-tmdb-id="848685"></body></html>') == 848685
+    assert _tmdb_id_from_film_html(
+        '<html><body><a href="https://www.themoviedb.org/movie/835504/">TMDB</a></body></html>') == 835504
+
+
+def test_resolve_film_url_cachea_tambien_el_no(monkeypatch):
+    """Un enlace corto se pide una vez; la respuesta, sea película o serie, queda en la caché."""
+    import services.scraper_service as ss
+    monkeypatch.setattr(ss, "_jittered_sleep", AsyncMock())
+    store = {}
+    s = ScraperService()
+    s._get_redis = AsyncMock(return_value=SimpleNamespace(
+        get=AsyncMock(side_effect=lambda k: store.get(k)),
+        set=AsyncMock(side_effect=lambda k, v, ex=None: store.__setitem__(k, v))))
+    pages = {"https://boxd.it/mkbG": '<body data-tmdb-id=""></body>',
+             "https://boxd.it/LULL": '<body data-tmdb-id="835504"></body>'}
+    s._fetch_with_curl_cffi = AsyncMock(side_effect=lambda url: pages[url])
+
+    for _ in range(2):
+        assert asyncio.run(s.resolve_film_url("https://boxd.it/mkbG")) is None
+        assert asyncio.run(s.resolve_film_url("https://boxd.it/LULL")) == 835504
+    assert s._fetch_with_curl_cffi.await_count == 2

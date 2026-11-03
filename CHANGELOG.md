@@ -10,6 +10,28 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ## [Unreleased]
 
+### Added
+- **`scripts/check_integrity.py` and maintenance phase 12.** Offline check of what the 2026-11-03
+  audit found broken without a single error:
+  - every Qdrant payload against `qdrant_payload(row)`;
+  - every library film's vector, plus a sample of the rest, against the text production embeds
+    today;
+  - every Letterboxd URI against its row.
+
+  It exits 1 while anything is off; `--repair` regenerates payloads and dense vectors from their
+  source. The phase runs it after phases 3 and 4 (4 wrote descriptions without re-embedding) and
+  before the re-cluster.
+
+### Changed
+- **The ZIP import asks Letterboxd when TMDB cannot tell which film a row is.** Two cases trigger
+  it: no title matches, or several films share the title and year. The import then resolves the
+  row's own Letterboxd link to its TMDB id: one request at a time, paced, cached 30 days, with no
+  user data in it. Over the 889 library links checked on 2026-11-03, 20 were wrong, almost all
+  Spanish or Galician films matched to a more popular English namesake (*As bestas* had become
+  *Fantastic Beasts: The Secrets of Dumbledore*), plus series matched to whatever shared their
+  name. A series page carries no TMDB id, so it now stays out of the library instead of coming in
+  as a different film.
+
 ### Fixed
 - **A film in your library could be a different film with a similar title.** Measured on
   2026-11-03: 18 rows of the catalogue carried another film's Letterboxd URI, and 7 ratings from 2
