@@ -9,6 +9,8 @@ import orjson
 import asyncio
 import os
 import random
+import re
+import unicodedata
 from typing import Optional, Dict, List
 from datetime import timedelta
 import logging
@@ -41,6 +43,53 @@ def pick_fallback_overview(
         if code and code in usable_overviews:
             return code, usable_overviews[code]
     return None, None
+
+
+def _norm_title(title: Optional[str]) -> str:
+    """Título comparable: sin acentos, sin mayúsculas, sin puntuación, `&` = `and`."""
+    t = unicodedata.normalize("NFKD", title or "").encode("ascii", "ignore").decode().lower()
+    return " ".join(re.sub(r"[^a-z0-9]+", " ", t.replace("&", " and ")).split())
+
+
+def _year_of(result: Dict) -> Optional[int]:
+    rd = (result.get("release_date") or "")[:4]
+    return int(rd) if rd.isdigit() else None
+
+
+def pick_search_result(
+    results: List[Dict], title: str, year: Optional[int] = None, *, strict: bool = False
+) -> Optional[Dict]:
+    """Elige entre los resultados de `/search/movie` el que ES la película buscada.
+
+    Antes se devolvía `results[0]`, el más popular para TMDB, se pareciera o no.
+    Medido el 2026-11-03: 18 filas del catálogo llevaban la URI de Letterboxd de
+    OTRA película, y 7 valoraciones de 2 usuarios apuntaban a la película
+    equivocada — «X-Men» (2000) era *X-Men: The Mutant Watch*, «X2» un webcast,
+    «Here We Are» *We Are Here*.
+
+    Gana el resultado cuyo título (o título original) coincide con el buscado, y
+    entre ésos el de año más cercano. Con `strict`, si ninguno coincide, si el más
+    cercano se va más de un año o si quedan homónimos empatados (dos «Piggy» de
+    2018), no hay resultado: una película que falta se ve en el import y el import
+    puede preguntar a Letterboxd; una equivocada envenena el perfil sin que nadie
+    lo note. Sin `strict` (la Magic Box, el seed) se mantiene el primero como
+    último recurso.
+    """
+    if not results:
+        return None
+    want = _norm_title(title)
+    exact = [r for r in results
+             if want and want in (_norm_title(r.get("title")), _norm_title(r.get("original_title")))]
+    if exact:
+        def dist(r):
+            return 0 if year is None else (abs(_year_of(r) - year) if _year_of(r) else 99)
+        # min se queda con el primero de los empatados: fuera de `strict`, manda el orden de TMDB.
+        best = min(exact, key=dist)
+        if strict and sum(dist(r) == dist(best) for r in exact) > 1:
+            return None
+        if year is None or _year_of(best) is None or dist(best) <= 1:
+            return best
+    return None if strict else results[0]
 
 
 class TMDBClient:
@@ -207,36 +256,42 @@ class TMDBClient:
                 self.cb_state = "OPEN"
                 logger.critical("CIRCUIT OPEN: TMDB API is unresponsive. Falling back to cached data.")
     
-    async def search_movie(self, title: str, year: Optional[int] = None) -> Optional[Dict]:
+    async def search_movie(
+        self, title: str, year: Optional[int] = None, *, strict: bool = False
+    ) -> Optional[Dict]:
         """
-        Search for a movie by title and optional year
+        Search for a movie by title and optional year; `pick_search_result` decides.
+        `strict=True` for the import paths (ZIP, RSS, reconcile): no title match, no film.
         Security: Input sanitization via URL encoding
         """
         # Security: Sanitize title (httpx handles URL encoding)
         title = title.strip()[:500]  # Limit length
-        
-        cache_key = f"tmdb:search:{title}:{year or 'any'}"
+
+        # Se cachea la lista entera y se elige después: la clave vieja
+        # (`tmdb:search:`) guardaba sólo `results[0]`, y caduca sola en 7 días.
+        cache_key = f"tmdb:search:v2:{title}:{year or 'any'}"
         r = await self._get_redis()
-        
-        # Check cache first (7 days TTL)
+
         cached = await r.get(cache_key)
         if cached:
             logger.debug(f"Cache hit for movie search: {title}")
-            return orjson.loads(cached)
-        
-        # Make API request
-        params = {"query": title, "include_adult": "false"}
-        if year:
-            params["year"] = year
-        
-        data = await self._make_request("/search/movie", params)
-        
-        if data and data.get("results"):
-            result = data["results"][0]  # Best match
-            await r.setex(cache_key, timedelta(days=7), orjson.dumps(result))
-            return result
-        
-        return None
+            results = orjson.loads(cached)
+        else:
+            params = {"query": title, "include_adult": "false"}
+            if year:
+                params["year"] = year
+            data = await self._make_request("/search/movie", params)
+            results = (data or {}).get("results") or []
+            if results:
+                await r.setex(cache_key, timedelta(days=7), orjson.dumps(results))
+
+        picked = pick_search_result(results, title, year, strict=strict)
+        if results and picked is None:
+            logger.warning(
+                f"No TMDB result titled '{title}' ({year}); first was "
+                f"'{results[0].get('title')}' ({_year_of(results[0])}) — left unmatched"
+            )
+        return picked
     
     async def get_person(self, name: str, lang: str = "en") -> Optional[Dict]:
         """Foto y biografía de una persona por nombre, o None.

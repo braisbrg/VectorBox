@@ -277,7 +277,7 @@ class RSSService:
                     if not tmdb_id:
                         # If we don't have an ID from RSS, we must search (fallback)
                         logger.info(f"No TMDB ID in RSS for {item['title']}. Searching TMDB...")
-                        search_result = await self.tmdb.search_movie(item['title'], item['year'])
+                        search_result = await self.tmdb.search_movie(item['title'], item['year'], strict=True)
                         
                         if not search_result:
                             logger.warning(f"Could not find movie on TMDB: {item['title']}")

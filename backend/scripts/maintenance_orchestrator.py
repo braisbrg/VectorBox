@@ -35,6 +35,11 @@ Phases (run in the order given to --phases; the default puts 10 FIRST):
                              and a run that still comes back empty leaves the
                              previous cache in place. Replaces the legacy
                              popular_scraper.py cron script.
+   12. integrity           — payload, vectores y URIs de Letterboxd contra su
+                             fuente (scripts/check_integrity.py), sin red.
+                             Repara payload y vectores; las URIs las informa.
+                             Va tras 3 y 4 y antes de 5: la 4 escribía
+                             descripciones sin re-embeber (E115).
    11. streaming_changes   — altas y bajas de catálogo de las plataformas
                              (MovieOfTheNight, 1000 peticiones AL MES). 4 al día.
     9. neighbor_table      — precomputes every film's nearest neighbours for
@@ -1145,6 +1150,20 @@ async def phase_streaming_changes(dry_run: bool) -> dict:
     return stats
 
 
+async def phase_integrity(dry_run: bool) -> dict:
+    """Payload, vectores y URIs contra su fuente — scripts/check_integrity.py.
+
+    Va tras las fases 3 y 4 porque son las que reescriben descripciones (la 4 sin
+    re-embeber) y antes del re-cluster, para que agrupe sobre vectores sanos.
+    Repara payload y vectores salvo en ensayo; las URIs sólo las informa.
+    """
+    from scripts.check_integrity import run as integrity_run
+    summary = await integrity_run(sample=500, vectors=True, repair=not dry_run)
+    if not summary["ok"]:
+        logger.warning(f"[Phase 12] integrity problems remain: {summary}")
+    return summary
+
+
 # Países cuyos cambios de catálogo se siguen, y páginas por tipo. Cada página es UNA
 # petición de las 1000 mensuales: 2 países × 2 tipos × 2 páginas = 8/día ≈ 240/mes.
 STREAMING_COUNTRIES = ["es"]
@@ -1162,6 +1181,7 @@ PHASE_FNS = {
     9: ("neighbor_table", phase_neighbor_table),
     11: ("streaming_changes", phase_streaming_changes),
     10: ("seed_new", phase_seed_new),
+    12: ("integrity", phase_integrity),
 }
 
 
@@ -1201,7 +1221,7 @@ def main():
     parser.add_argument(
         "--phases",
         type=str,
-        default="10,1,2,3,4,5,6,7,8,9,11",
+        default="10,1,2,3,4,12,5,6,7,8,9,11",
         help="Comma-separated phase numbers to run (default: all)",
     )
     parser.add_argument(
