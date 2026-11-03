@@ -140,6 +140,7 @@ verify_*.py
 .agents/
 .ai_context/
 .gemini/
+.antigravity/
 skills-lock.json
 
 # Internal Documentation (kept local, not public)
