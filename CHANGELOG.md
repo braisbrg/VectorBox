@@ -32,6 +32,32 @@ not just what changed. Where a number appears, it was taken from the running sys
     `test_trident_math.py` and `test_es_whitelist.py`. `verify_feed_parallelism.py` fails as it
     always has (9/10).
 
+### Changed
+- **CI and the local checks, measured and trimmed.**
+  - The pre-commit hook made every commit pay **148 s** for the Python audit, and it needed the
+    backend running. `security_audit.py` now passes `--disable-pip`: the lock already pins
+    everything with hashes, so pip has nothing to re-resolve. It finds the same 11 accepted
+    findings in **11 s**.
+  - The hook is gone, and with it husky, lint-staged and ESLint. Next 16 removed `next lint`, and
+    the config was in the legacy format, so none of it ran. The audits run in CI.
+  - CI backend job:
+    - Installs `requirements.lock` with hashes, which is what the image installs. Before, it
+      installed `requirements.txt`, which failed and fell back to a subset.
+    - Runs the hermetic pytest suite, which had never run in CI, and then the audit.
+    - No longer starts the Postgres, Redis and Qdrant services, which no step used.
+  - The three scripts CI ran are removed. Two of them tested copies of the functions, defined
+    inside the script itself, and `verify_feed_parallelism.py` could not pass. New tests exercise
+    the real `reciprocal_rank_fusion`, `calculate_quality_weight` and `filter_es_providers`. Each
+    test fails when its function is broken (checked by mutating each one).
+  - CI frontend job: pnpm is pinned to 12, and `pnpm audit --audit-level=high` runs after the
+    build, so an npm timeout no longer hides the build result.
+  - The Playwright job is removed until the e2e harness is rewritten for Clerk. It never ran.
+  - Dependabot opens one grouped PR per ecosystem a month, instead of about 12 a week. Security
+    updates still open on their own.
+  - Measured locally on 2026-11-03: `tsc` 13 s, build 19 s, audit 11 s. pytest gave 529 passed in
+    32 s with no environment variables other than a dummy `DATABASE_URL`; without it, collection
+    fails. CI itself is unverified until this is pushed.
+
 ---
 
 ## [3.1.2] — 2026-09-03
