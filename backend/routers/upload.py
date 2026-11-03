@@ -541,27 +541,13 @@ async def enrich_movies_background(
                             from qdrant_client.models import PointStruct
                             points = []
                             for idx, m in enumerate(movies_to_vectorize):
+                                # Canonical payload: the hand-written dict that was
+                                # here wrote the old `rating` key and dropped the
+                                # country, language and adult filters (E118).
                                 points.append(PointStruct(
                                     id=m.tmdb_id,
                                     vector=vectors[idx].tolist(),
-                                    payload={
-                                        "title": m.title,
-                                        "year": m.year,
-                                        "genres": m.genres,
-                                        "rating": m.vote_average,
-                                        "vote_count": m.vote_count,
-                                        "runtime": m.runtime,
-                                        "poster_path": m.poster_path,
-                                        "vectorbox_score": m.vectorbox_score,
-                                        "imdb_rating": m.imdb_rating,
-                                        "metacritic_rating": m.metacritic_rating,
-
-                                        "title_es": m.title_es,
-                                        "overview_es": m.overview_es,
-                                        "keywords": m.keywords,
-                                        # legacy-recipe batch vectorize: reflect row flag
-                                        "has_enriched_embedding": bool(m.has_enriched_embedding)
-                                    }
+                                    payload=qdrant_payload(m),
                                 ))
 
                             # Upsert Batch

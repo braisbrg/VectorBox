@@ -24,6 +24,12 @@ not just what changed. Where a number appears, it was taken from the running sys
   searched each film by its own title, so a wrong row found itself; what it did flag were
   homonyms, and `--fix` moved ratings onto the more popular one. It now checks each film against
   its URI, without network.
+- **A newly added film was invisible to the country, language, certification and adult filters
+  until someone resynced the vector store.** The film factory and the ZIP import's batch wrote the
+  Qdrant payload by hand: with the old `rating` key instead of `vote_average`, and without those
+  fields. 1,584 points carried `rating` (measured 2026-11-03). Both now use the canonical builder.
+  The guard test only watched one way of writing a point, so a new test builds a film through the
+  factory and compares its point with the canonical payload.
 
 ---
 
