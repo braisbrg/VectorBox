@@ -60,7 +60,20 @@ class CSVParser:
             return f"https://letterboxd.com/film/{slug}/"
 
         return None
-    
+
+    _TMDB_URI_RE = re.compile(r"letterboxd\.com/tmdb/(\d+)/?$")
+
+    @staticmethod
+    def tmdb_id_from_letterboxd_uri(uri: Optional[str]) -> Optional[int]:
+        """El ID de TMDB que trae una URI `letterboxd.com/tmdb/N`, o None.
+
+        Esa URI ya dice qué película es. Tirarla («no slug») mandaba el import a
+        buscar por título y quedarse con el primer resultado: así acabó «X-Men»
+        (tmdb 36657) en *X-Men: The Mutant Watch* con la URI correcta pegada.
+        """
+        match = CSVParser._TMDB_URI_RE.search((uri or "").strip())
+        return int(match.group(1)) if match else None
+
     @staticmethod
     async def validate_file(file: UploadFile) -> bytes:
         """

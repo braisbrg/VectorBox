@@ -8,6 +8,25 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **A film in your library could be a different film with a similar title.** Measured on
+  2026-11-03: 18 rows of the catalogue carried another film's Letterboxd URI, and 7 ratings from 2
+  users pointed at the wrong film. «X-Men» (2000) was the TV special *X-Men: The Mutant Watch*,
+  «X2» a webcast, «Here We Are» *We Are Here*. Two causes:
+  - TMDB search returned its first, most popular result whatever its title was. The import paths
+    (ZIP, RSS, reconcile) now need a title match, the closest year wins among homonyms, and with
+    no match the film is left unmatched and logged, instead of matched to something else.
+  - A `letterboxd.com/tmdb/N` URI already names the film, but the ZIP import discarded it and
+    searched by title. It now uses N.
+- **`reconcile_letterboxd_movies.py` could not find this, and its `--fix` made it worse.** It
+  searched each film by its own title, so a wrong row found itself; what it did flag were
+  homonyms, and `--fix` moved ratings onto the more popular one. It now checks each film against
+  its URI, without network.
+
+---
+
 ## [3.1.3] — 2026-11-03
 
 PATCH: security and tooling. No API changes.

@@ -24,6 +24,7 @@ from services.clustering_service import ClusteringService
 from services.provider_service import ProviderService
 
 from services.data_processor import DataProcessor
+from services.csv_parser import CSVParser
 from services.task_store import get_task_store
 from utils.embedding_reference import build_embedding_reference_text
 from models.database import User, Movie, UserRating, ZipUpload
@@ -274,7 +275,8 @@ async def process_single_movie(
 
     Matching priority:
       1. Local DB lookup by letterboxd_uri (most reliable, no HTTP)
-      2. TMDB search by title+year with strict year validation (±1 tolerance)
+      2. The TMDB id inside a `letterboxd.com/tmdb/N` URI (exact, no search)
+      3. TMDB search by title+year: the title must match (strict), ±1 year tolerance
     """
     from config import AsyncSessionLocal
     from services.movie_service import MovieService
@@ -308,38 +310,42 @@ async def process_single_movie(
                         await session.commit()
                         return existing_movie.id, updated
 
-                # --- Step 2: TMDB search with strict year validation ---
-                tmdb_result = await tmdb_client.search_movie(title, year)
+                # --- Step 2: the TMDB id the URI already carries ---
+                tmdb_id = CSVParser.tmdb_id_from_letterboxd_uri(letterboxd_uri)
 
-                if not tmdb_result:
-                    logger.debug(f"No TMDB result for '{title}' ({year}) — may be a TV show or regional title")
-                    return None, False
+                # --- Step 3: TMDB search, the title has to match ---
+                if tmdb_id is None:
+                    tmdb_result = await tmdb_client.search_movie(title, year, strict=True)
 
-                # FIX 1: Reject TV show results — movies have release_date, TV shows have first_air_date.
-                # search_movie calls /search/movie so this is defensive; guards against future /search/multi use.
-                if tmdb_result.get("first_air_date") and not tmdb_result.get("release_date"):
-                    logger.debug(f"Skipping TV show result for '{title}' ({year})")
-                    return None, False
+                    if not tmdb_result:
+                        logger.debug(f"No TMDB result for '{title}' ({year}) — may be a TV show or regional title")
+                        return None, False
 
-                # Strict year validation: reject if difference > 1
-                if year:
-                    result_date = tmdb_result.get("release_date", "")
-                    result_year = int(result_date[:4]) if result_date and len(result_date) >= 4 else None
-                    if result_year:
-                        year_diff = abs(result_year - year)
-                        if year_diff > 1:
-                            logger.warning(
-                                f"Rejected TMDB match for '{title}' ({year}): "
-                                f"got {tmdb_result.get('title')} ({result_year})"
-                            )
-                            return None, False
-                        elif year_diff == 1:
-                            logger.warning(
-                                f"Accepted TMDB match for '{title}' with ±1 year tolerance: "
-                                f"expected {year}, got {result_year}"
-                            )
+                    # FIX 1: Reject TV show results — movies have release_date, TV shows have first_air_date.
+                    # search_movie calls /search/movie so this is defensive; guards against future /search/multi use.
+                    if tmdb_result.get("first_air_date") and not tmdb_result.get("release_date"):
+                        logger.debug(f"Skipping TV show result for '{title}' ({year})")
+                        return None, False
 
-                tmdb_id = tmdb_result["id"]
+                    # Strict year validation: reject if difference > 1
+                    if year:
+                        result_date = tmdb_result.get("release_date", "")
+                        result_year = int(result_date[:4]) if result_date and len(result_date) >= 4 else None
+                        if result_year:
+                            year_diff = abs(result_year - year)
+                            if year_diff > 1:
+                                logger.warning(
+                                    f"Rejected TMDB match for '{title}' ({year}): "
+                                    f"got {tmdb_result.get('title')} ({result_year})"
+                                )
+                                return None, False
+                            elif year_diff == 1:
+                                logger.warning(
+                                    f"Accepted TMDB match for '{title}' with ±1 year tolerance: "
+                                    f"expected {year}, got {result_year}"
+                                )
+
+                    tmdb_id = tmdb_result["id"]
 
                 # Check if movie already exists in DB by tmdb_id
                 result = await session.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
