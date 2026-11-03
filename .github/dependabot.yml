@@ -4,55 +4,28 @@ updates:
     directory: "/backend"
     target-branch: "develop"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "docker"
     directory: "/frontend"
     target-branch: "develop"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "pip"
     directory: "/backend"
     target-branch: "develop"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
+    # Una sola PR al mes con todo lo menor: con tres grupos semanales salían ~12 PRs que
+    # nadie revisaba, todas con la CI en rojo. Las de seguridad no esperan a esto: las abre
+    # Dependabot aparte, en cuanto sale el aviso.
     groups:
-      infrastructure-critical:
+      backend:
         patterns:
-          - "fastapi"
-          - "sqlalchemy"
-          - "redis"
-          - "psycopg"
-          - "psycopg2-binary"
-          - "alembic"
-          - "bcrypt"
-          - "cryptography"
-          - "pyjwt"
-          - "sentence-transformers"
-          - "scikit-learn"
-          - "qdrant-client"
-          - "opentelemetry-*"
-        update-types:
-          - "minor"
-          - "patch"
-      security-deps:
-        patterns:
-          - "bcrypt"
-          - "cryptography"
-          - "pyjwt"
-          - "pip-audit"
-        update-types:
-          - "minor"
-          - "patch"
-      dev-tools:
-        patterns:
-          - "pytest"
-          - "pytest-asyncio"
-          - "pip-audit"
-          - "tqdm"
+          - "*"
         update-types:
           - "minor"
           - "patch"
@@ -80,39 +53,11 @@ updates:
     directory: "/frontend"
     target-branch: "develop"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     groups:
-      frontend-ui:
+      frontend:
         patterns:
-          - "lucide-react"
-          - "tailwindcss"
-          - "tailwind-merge"
-          - "@tailwindcss/postcss"
-          - "postcss"
-          - "framer-motion"
+          - "*"
         update-types:
           - "minor"
           - "patch"
-      frontend-core:
-        patterns:
-          - "next"
-          - "react"
-          - "react-dom"
-          - "axios"
-          - "@tanstack/react-query"
-          - "typescript"
-          - "@types/*"
-        update-types:
-          - "minor"
-          - "patch"
-      frontend-devtools:
-        patterns:
-          - "eslint"
-          - "lint-staged"
-          - "prettier"
-        update-types:
-          - "minor"
-          - "patch"
-    ignore:
-      - dependency-name: "eslint"
-        versions: [">=10"]
