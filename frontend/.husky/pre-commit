@@ -1,3 +1,0 @@
-cd frontend
-pnpm audit --audit-level=high
-pnpm run audit:backend

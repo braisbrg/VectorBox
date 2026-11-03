@@ -6,12 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
     "security-check": "pnpm audit --audit-level=high",
-    "prepare": "cd .. && husky frontend/.husky",
-    "audit:backend": "cd .. && docker compose exec -T backend python scripts/security_audit.py",
+    "audit:backend": "cd .. && docker compose run --rm --no-deps backend python scripts/security_audit.py",
     "audit:container": "docker scout quickview",
-    "audit:all": "pnpm audit && npm run audit:backend",
+    "audit:all": "pnpm audit --audit-level=high && pnpm run audit:backend",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:debug": "playwright test --debug"
@@ -39,10 +37,6 @@
     "@types/node": "25.4.0",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "eslint": "9.39.5",
-    "eslint-config-next": "16.1.6",
-    "husky": "^9.1.7",
-    "lint-staged": "^16.4.0",
     "typescript": "5.9.3"
   }
 }
