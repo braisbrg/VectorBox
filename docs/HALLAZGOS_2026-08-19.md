@@ -1,7 +1,7 @@
 # Hallazgos del 2026-08-19 — el espacio vectorial y el motor de recomendación
 
 Resumen consolidado de una sesión larga, escrito para que sobreviva al contexto. El detalle
-con todas las tablas está en `BACKLOG.md`; esto es lo que hay que recordar y lo que hay que
+con todas las tablas está en `CUADERNO.md`; esto es lo que hay que recordar y lo que hay que
 hacer.
 
 ---
