@@ -23,6 +23,7 @@ IGNORED = [
     "PYSEC-2026-2289",       # transformers -> 5.3.0
     "PYSEC-2026-2290",       # transformers -> 5.5.0
     "PYSEC-2025-217",        # transformers, sin arreglo publicado
+    "PYSEC-2026-4174",       # transformers, sin arreglo publicado (visto el 2026-11-03)
     "PYSEC-2026-139",        # torch, sin arreglo publicado
     "PYSEC-2025-194",        # torch -> 2.13.0
 ]
