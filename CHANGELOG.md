@@ -8,6 +8,30 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **Dependencies, from the Dependabot PRs of 2026-11-03, tested beyond what CI could see.**
+  - **Frontend:**
+    - TypeScript 7.0, `@types/node` 26, framer-motion 14;
+    - the group with Clerk 7.9, React 19.3, React Query 5.105, Lucide 1.65 and Radix.
+
+    Gates green, plus a pass in the browser at 375 px: landing, onboarding, feed, inline
+    inspector, filter sheet (it opens, and closes in 0.7–1.1 s by its handle or its backdrop),
+    «why this film», and the watchlist scope. No console errors.
+  - **Backend:**
+    - FastAPI 0.162, SQLAlchemy 2.1, Pydantic 2.14, openai 2.54, instructor 1.17, asyncpg 0.32;
+    - raised floors for `python-dotenv`, `requests`, `mako` and `playwright`.
+
+    `requirements.lock` is recompiled with hashes. Those PRs changed only `requirements.txt`, and
+    since CI and the image install the lock, their green had tested none of it. Installed for
+    real: 547 hermetic tests, the integration suite (34 passed, 7 skipped) and `pip-audit`
+    clean. `diskcache`, which carried an advisory with no fix, is gone from the tree.
+  - **Not upgraded:** `qdrant-client`, which moves with the Qdrant server it talks to.
+- **Dependabot proposes `sentence-transformers` patches again.** Its ignore rule said `>=4` while
+  the project is on 5, which excluded every update. It now ignores only the next major (`>=6`):
+  changing the encoder means re-embedding the catalogue.
+
 ## [3.2.0] — 2026-11-08
 
 MINOR: the import matches each film by what it is, and a new integrity check runs as maintenance
