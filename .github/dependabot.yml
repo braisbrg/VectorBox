@@ -36,8 +36,10 @@ updates:
         versions: [">=1"]
       - dependency-name: "pandas"
         versions: [">=3"]
+      # Las MAYORES no: cambiar el encoder obliga a re-embeber el catálogo y re-clusterizar.
+      # Era ">=4" con el proyecto ya en la 5, y eso dejaba fuera hasta los parches.
       - dependency-name: "sentence-transformers"
-        versions: [">=4"]
+        versions: [">=6"]
       - dependency-name: "redis"
         versions: [">=5"]
       - dependency-name: "bcrypt"
