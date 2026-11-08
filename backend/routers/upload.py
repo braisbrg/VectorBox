@@ -24,6 +24,8 @@ from services.clustering_service import ClusteringService
 from services.provider_service import ProviderService
 
 from services.data_processor import DataProcessor
+from services.csv_parser import CSVParser
+from services.scraper_service import ScraperService
 from services.task_store import get_task_store
 from utils.embedding_reference import build_embedding_reference_text
 from models.database import User, Movie, UserRating, ZipUpload
@@ -262,6 +264,52 @@ async def _enrich_user_movies_background(user_id: int) -> None:
             logger.error(f"[Enrichment] Pipeline failed for user {user_id}: {e}")
 
 
+# One Letterboxd lookup at a time across the whole import: process_single_movie
+# runs under asyncio.gather, and a burst of parallel requests is what gets an IP
+# blocked by Cloudflare. ScraperService paces each network fetch itself.
+_LETTERBOXD_LOCK = asyncio.Lock()
+_letterboxd: "ScraperService | None" = None
+
+
+async def _letterboxd_tmdb_id(uri: str):
+    global _letterboxd
+    async with _LETTERBOXD_LOCK:
+        if _letterboxd is None:
+            _letterboxd = ScraperService()
+        return await _letterboxd.resolve_film_url(uri)
+
+
+async def resolve_tmdb_id(title, year, letterboxd_uri, tmdb_client, letterboxd_lookup=_letterboxd_tmdb_id):
+    """Which TMDB film a CSV row is, or None. Order, cheapest first:
+
+    1. The TMDB id inside a `letterboxd.com/tmdb/N` URI: exact, no request.
+    2. TMDB search, strict: one result whose title matches, within a year.
+    3. Only when 2 is in doubt (no title matches, or homonyms tie): ask
+       Letterboxd what the row's own link is. Measured 2026-11-03 over the 889
+       library links: 20 were wrong, almost all Spanish or Galician films
+       matched to a more popular English namesake (As bestas → Fantastic
+       Beasts) and series matched to whatever shared their name. A series page
+       carries no TMDB id, so it comes back None and stays out, which is right.
+    """
+    tmdb_id = CSVParser.tmdb_id_from_letterboxd_uri(letterboxd_uri)
+    if tmdb_id is not None:
+        return tmdb_id
+
+    tmdb_result = await tmdb_client.search_movie(title, year, strict=True)
+    if tmdb_result and not (tmdb_result.get("first_air_date") and not tmdb_result.get("release_date")):
+        result_date = tmdb_result.get("release_date") or ""
+        result_year = int(result_date[:4]) if result_date[:4].isdigit() else None
+        if not (year and result_year and abs(result_year - year) > 1):
+            return tmdb_result["id"]
+
+    if letterboxd_uri and letterboxd_lookup is not None:
+        tmdb_id = await letterboxd_lookup(letterboxd_uri)
+        logger.info(f"Letterboxd says '{title}' ({year}) {letterboxd_uri} is tmdb_id={tmdb_id}")
+        return tmdb_id
+    logger.debug(f"No TMDB match for '{title}' ({year}) — may be a TV show or regional title")
+    return None
+
+
 async def process_single_movie(
     movie_data: dict,
     tmdb_client: "TMDBClient",
@@ -274,7 +322,8 @@ async def process_single_movie(
 
     Matching priority:
       1. Local DB lookup by letterboxd_uri (most reliable, no HTTP)
-      2. TMDB search by title+year with strict year validation (±1 tolerance)
+      2. resolve_tmdb_id: the URI's own TMDB id, a strict TMDB search, and
+         Letterboxd only when that search is in doubt
     """
     from config import AsyncSessionLocal
     from services.movie_service import MovieService
@@ -308,38 +357,10 @@ async def process_single_movie(
                         await session.commit()
                         return existing_movie.id, updated
 
-                # --- Step 2: TMDB search with strict year validation ---
-                tmdb_result = await tmdb_client.search_movie(title, year)
-
-                if not tmdb_result:
-                    logger.debug(f"No TMDB result for '{title}' ({year}) — may be a TV show or regional title")
+                # --- Step 2: which TMDB film it is ---
+                tmdb_id = await resolve_tmdb_id(title, year, letterboxd_uri, tmdb_client)
+                if tmdb_id is None:
                     return None, False
-
-                # FIX 1: Reject TV show results — movies have release_date, TV shows have first_air_date.
-                # search_movie calls /search/movie so this is defensive; guards against future /search/multi use.
-                if tmdb_result.get("first_air_date") and not tmdb_result.get("release_date"):
-                    logger.debug(f"Skipping TV show result for '{title}' ({year})")
-                    return None, False
-
-                # Strict year validation: reject if difference > 1
-                if year:
-                    result_date = tmdb_result.get("release_date", "")
-                    result_year = int(result_date[:4]) if result_date and len(result_date) >= 4 else None
-                    if result_year:
-                        year_diff = abs(result_year - year)
-                        if year_diff > 1:
-                            logger.warning(
-                                f"Rejected TMDB match for '{title}' ({year}): "
-                                f"got {tmdb_result.get('title')} ({result_year})"
-                            )
-                            return None, False
-                        elif year_diff == 1:
-                            logger.warning(
-                                f"Accepted TMDB match for '{title}' with ±1 year tolerance: "
-                                f"expected {year}, got {result_year}"
-                            )
-
-                tmdb_id = tmdb_result["id"]
 
                 # Check if movie already exists in DB by tmdb_id
                 result = await session.execute(select(Movie).where(Movie.tmdb_id == tmdb_id))
@@ -535,27 +556,13 @@ async def enrich_movies_background(
                             from qdrant_client.models import PointStruct
                             points = []
                             for idx, m in enumerate(movies_to_vectorize):
+                                # Canonical payload: the hand-written dict that was
+                                # here wrote the old `rating` key and dropped the
+                                # country, language and adult filters (E118).
                                 points.append(PointStruct(
                                     id=m.tmdb_id,
                                     vector=vectors[idx].tolist(),
-                                    payload={
-                                        "title": m.title,
-                                        "year": m.year,
-                                        "genres": m.genres,
-                                        "rating": m.vote_average,
-                                        "vote_count": m.vote_count,
-                                        "runtime": m.runtime,
-                                        "poster_path": m.poster_path,
-                                        "vectorbox_score": m.vectorbox_score,
-                                        "imdb_rating": m.imdb_rating,
-                                        "metacritic_rating": m.metacritic_rating,
-
-                                        "title_es": m.title_es,
-                                        "overview_es": m.overview_es,
-                                        "keywords": m.keywords,
-                                        # legacy-recipe batch vectorize: reflect row flag
-                                        "has_enriched_embedding": bool(m.has_enriched_embedding)
-                                    }
+                                    payload=qdrant_payload(m),
                                 ))
 
                             # Upsert Batch

@@ -46,6 +46,30 @@ def warmup() -> None:
     """
     get_model()
 
+def embedding_text(movie: dict, include_title: bool = False) -> str:
+    """The text a film is embedded from. One recipe for both encoders and for
+    scripts/check_integrity.py, which compares stored vectors against it.
+
+    `text_override` (the LLM's cinematic_description) wins; otherwise overview,
+    genres and the first 15 keywords. Without the title by default: its tokens
+    pull off-theme neighbours (Howl's → The Howling).
+    """
+    if movie.get("text_override"):
+        return movie["text_override"]
+    parts: List[str] = []
+    if include_title and movie.get("title"):
+        parts.append(movie["title"])
+    if movie.get("overview"):
+        parts.append(movie["overview"])
+    genres = movie.get("genres")
+    if isinstance(genres, list) and genres:
+        parts.append(f"Genres: {', '.join(genres)}")
+    keywords = movie.get("keywords")
+    if isinstance(keywords, list) and keywords:
+        parts.append(f"Themes: {', '.join(keywords[:15])}")
+    return ". ".join(parts)
+
+
 class EmbeddingService:
     """Generate embeddings for movie metadata"""
     
@@ -66,35 +90,8 @@ class EmbeddingService:
         Title-aware callers (e.g. the /movies title search endpoint) must opt in.
         """
         model = get_model()
-        
-        if text_override:
-            combined_text = text_override
-        else:
-            # Build rich text representation (New Format)
-            # Format: f"{title}. {overview}. Genres: {genres}. Themes: {keywords_string}"
-            
-            parts: List[str] = []
-            
-            if include_title and movie_data.get("title"):
-                 parts.append(movie_data["title"])
-                 
-            if movie_data.get("overview"):
-                parts.append(movie_data["overview"])
-                
-            if movie_data.get("genres"):
-                genres = movie_data["genres"]
-                if isinstance(genres, list) and genres:
-                    parts.append(f"Genres: {', '.join(genres)}")
-                    
-            if movie_data.get("keywords"):
-                keywords = movie_data["keywords"]
-                if isinstance(keywords, list) and keywords:
-                    # Limit to top 15 keywords to prevent noise
-                    kw_str = ", ".join(keywords[:15])
-                    parts.append(f"Themes: {kw_str}")
-            
-            combined_text = ". ".join(parts)
-        
+        combined_text = embedding_text({**movie_data, "text_override": text_override}, include_title)
+
         if not combined_text:
             raise ValueError("No text available for embedding generation")
         
@@ -110,38 +107,12 @@ class EmbeddingService:
         title-token leakage that pollutes neighbour search.
         """
         model = get_model()
-        texts = []
+        # Misma regla que generate_embedding: la cinematic_description manda, si
+        # no el lote reescribe con la receta de reserva lo que el enriquecido ya
+        # había hecho bien.
+        texts = [embedding_text(movie, include_title) or movie.get("title", "Unknown")
+                 for movie in movies_data]
 
-        for movie in movies_data:
-            # Misma regla que generate_embedding: la cinematic_description manda,
-            # si no el lote reescribe con la receta de reserva lo que el
-            # enriquecido ya había hecho bien.
-            if movie.get("text_override"):
-                texts.append(movie["text_override"])
-                continue
-
-            parts = []
-
-            if include_title and movie.get("title"):
-                parts.append(movie["title"])
-
-            if movie.get("overview"):
-                parts.append(movie["overview"])
-            
-            if movie.get("genres"):
-                genres = movie["genres"]
-                if isinstance(genres, list) and genres:
-                    parts.append(f"Genres: {', '.join(genres)}")
-            
-            if movie.get("keywords"):
-                keywords = movie["keywords"]
-                if isinstance(keywords, list) and keywords:
-                    kw_str = ", ".join(keywords[:15])
-                    parts.append(f"Themes: {kw_str}")
-            
-            combined_text = ". ".join(parts)
-            texts.append(combined_text if combined_text else movie.get("title", "Unknown"))
-        
         # Batch encoding (much faster)
         embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=True)
         

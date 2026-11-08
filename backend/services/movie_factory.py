@@ -5,6 +5,7 @@ from typing import Optional, Tuple, Dict, Any, List
 from datetime import datetime
 
 from models.database import Movie
+from models.external_schemas import qdrant_payload
 from services.tmdb_client import TMDBClient
 from services.omdb_client import OMDbClient, parse_oscar_wins, split_omdb_csv
 from services.embedding_service import EmbeddingService
@@ -279,31 +280,11 @@ class MovieFactory:
                 )
             )
 
-            # 6. Construct PointStruct (Qdrant)
-            point = PointStruct(
-                id=tmdb_id,
-                vector=vector.tolist(),
-                payload={
-                    "tmdb_id": tmdb_id,
-                    "title": movie.title,
-                    "year": movie.year,
-                    "genres": movie.genres,
-                    "rating": movie.vote_average,
-                    "vote_count": movie.vote_count,
-                    "runtime": movie.runtime,
-                    "poster_path": movie.poster_path,
-                    "vectorbox_score": movie.vectorbox_score,
-                    "imdb_rating": movie.imdb_rating,
-                    "metacritic_rating": movie.metacritic_rating,
-                    "title_es": movie.title_es,
-                    "overview_es": movie.overview_es,
-                    "keywords": movie.keywords,
-                    "directors": movie.directors,
-                    "cast": movie.cast,
-                    # True only when the LLM produced the description above
-                    "has_enriched_embedding": bool(movie.has_enriched_embedding)
-                }
-            )
+            # 6. Construct PointStruct (Qdrant). The canonical builder, not a dict
+            # by hand: the hand-written one carried the old `rating` key and left
+            # out countries, languages, certification, Oscars and the adult flag,
+            # so every new film was invisible to those filters (E118).
+            point = PointStruct(id=tmdb_id, vector=vector.tolist(), payload=qdrant_payload(movie))
 
             # 7. Providers (Optional return or handled by caller)
             # The original movie_service logic handled providers separately after creation.

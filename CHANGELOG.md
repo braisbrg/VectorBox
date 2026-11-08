@@ -8,6 +8,63 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
+## [3.2.0] — 2026-11-08
+
+MINOR: the import matches each film by what it is, and a new integrity check runs as maintenance
+phase 12. No API changes.
+
+The data these fixes protect was repaired by hand on 2026-11-03, before this release:
+- 1,451 vectors re-encoded from their description;
+- every Qdrant payload rewritten from Postgres;
+- 20 library ratings moved to the film they were, and 20 removed (series, and one empty row,
+  matched as films);
+- clusters, mood axes and the neighbour table rebuilt.
+
+### Added
+- **`scripts/check_integrity.py` and maintenance phase 12.** Offline check of what the 2026-11-03
+  audit found broken without a single error:
+  - every Qdrant payload against `qdrant_payload(row)`;
+  - every library film's vector, plus a sample of the rest, against the text production embeds
+    today;
+  - every Letterboxd URI against its row.
+
+  It exits 1 while anything is off; `--repair` regenerates payloads and dense vectors from their
+  source. The phase runs it after phases 3 and 4 (4 wrote descriptions without re-embedding) and
+  before the re-cluster.
+
+### Changed
+- **The ZIP import asks Letterboxd when TMDB cannot tell which film a row is.** Two cases trigger
+  it: no title matches, or several films share the title and year. The import then resolves the
+  row's own Letterboxd link to its TMDB id: one request at a time, paced, cached 30 days, with no
+  user data in it. Over the 889 library links checked on 2026-11-03, 20 were wrong, almost all
+  Spanish or Galician films matched to a more popular English namesake (*As bestas* had become
+  *Fantastic Beasts: The Secrets of Dumbledore*), plus series matched to whatever shared their
+  name. A series page carries no TMDB id, so it now stays out of the library instead of coming in
+  as a different film.
+
+### Fixed
+- **A film in your library could be a different film with a similar title.** Measured on
+  2026-11-03: 18 rows of the catalogue carried another film's Letterboxd URI, and 7 ratings from 2
+  users pointed at the wrong film. «X-Men» (2000) was the TV special *X-Men: The Mutant Watch*,
+  «X2» a webcast, «Here We Are» *We Are Here*. Two causes:
+  - TMDB search returned its first, most popular result whatever its title was. The import paths
+    (ZIP, RSS, reconcile) now need a title match, the closest year wins among homonyms, and with
+    no match the film is left unmatched and logged, instead of matched to something else.
+  - A `letterboxd.com/tmdb/N` URI already names the film, but the ZIP import discarded it and
+    searched by title. It now uses N.
+- **`reconcile_letterboxd_movies.py` could not find this, and its `--fix` made it worse.** It
+  searched each film by its own title, so a wrong row found itself; what it did flag were
+  homonyms, and `--fix` moved ratings onto the more popular one. It now checks each film against
+  its URI, without network.
+- **A newly added film was invisible to the country, language, certification and adult filters
+  until someone resynced the vector store.** The film factory and the ZIP import's batch wrote the
+  Qdrant payload by hand: with the old `rating` key instead of `vote_average`, and without those
+  fields. 1,584 points carried `rating` (measured 2026-11-03). Both now use the canonical builder.
+  The guard test only watched one way of writing a point, so a new test builds a film through the
+  factory and compares its point with the canonical payload.
+
+---
+
 ## [3.1.3] — 2026-11-03
 
 PATCH: security and tooling. No API changes.

@@ -69,6 +69,27 @@ LETTERBOXD_POPULAR_AVAILABLE = True
 LETTERBOXD_POPULAR_URL = "https://letterboxd.com/csi/films/films-browser-list/popular/this/week/?esiAllowFilters=true"
 
 
+def _tmdb_id_from_film_html(html: str) -> Optional[int]:
+    """The TMDB id a Letterboxd film page carries, or None.
+
+    `data-tmdb-id` on <body>, else the themoviedb.org/movie link. A series page
+    has the attribute EMPTY (measured 2026-11-03 on 9 of 889 library links:
+    Chernobyl, Normal People, Adolescence…): that is a real "not a film", not a
+    parse error, and it must come back as None.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    body = soup.find("body")
+    raw = (body.get("data-tmdb-id") or "").strip() if body is not None else ""
+    if raw.isdigit():
+        return int(raw)
+    link = soup.find("a", href=lambda href: href and "themoviedb.org/movie/" in href)
+    if link:
+        part = link["href"].split("themoviedb.org/movie/")[1].split("/")[0].split("?")[0]
+        if part.isdigit():
+            return int(part)
+    return None
+
+
 async def _jittered_sleep(base: float = LETTERBOXD_MIN_DELAY_S) -> None:
     """Sleep base * U(0.8, 1.4). Adds entropy so request cadence is not
     a robotic ping every exactly N seconds — anti-bot systems pattern-match
@@ -353,30 +374,7 @@ class ScraperService:
             # Don't cache — could be transient. Let the next pass try again.
             return None
 
-        soup = BeautifulSoup(html, "html.parser")
-        tmdb_id: Optional[int] = None
-
-        # Letterboxd usually puts the TMDB ID on the body: data-tmdb-id="..."
-        body = soup.find("body")
-        if body and body.has_attr("data-tmdb-id"):
-            try:
-                tmdb_id = int(body["data-tmdb-id"])
-            except ValueError:
-                pass
-
-        # Fallback: link to themoviedb.org
-        if tmdb_id is None:
-            tmdb_link = soup.find("a", href=lambda href: href and "themoviedb.org/movie/" in href)
-            if tmdb_link:
-                try:
-                    href = tmdb_link["href"]
-                    parts = href.split("themoviedb.org/movie/")
-                    if len(parts) > 1:
-                        id_part = parts[1].split("/")[0].split("?")[0]
-                        tmdb_id = int(id_part)
-                except (ValueError, IndexError, KeyError):
-                    pass
-
+        tmdb_id = _tmdb_id_from_film_html(html)
         if tmdb_id is None:
             # We got the page but couldn't find a TMDB ID — that IS a genuine
             # negative we should cache so we stop retrying.
@@ -386,6 +384,36 @@ class ScraperService:
 
         logger.info(f"Resolved {film_slug} -> tmdb_id={tmdb_id} (caching 30d)")
         await set_cached_tmdb_id(film_slug, tmdb_id, r)
+        return tmdb_id
+
+    async def resolve_film_url(self, url: str) -> Optional[int]:
+        """TMDB id of any Letterboxd film URL: a `/film/<slug>/` link or a
+        `boxd.it` short link, which is what the ZIP export carries for most films.
+
+        Same cache as `get_tmdb_id`: a slug URL delegates to it, a short link is
+        cached under its own URL. A page without an id (a series) is cached as
+        MISS, so the import does not ask again for 7 days. Paced after every
+        network fetch; cache hits cost nothing.
+        """
+        if not url:
+            return None
+        slug = re.search(r"letterboxd\.com/(?:[^/]+/)?film/([^/]+)/?", url)
+        if slug:
+            return await self.get_tmdb_id(slug.group(1))
+        if "boxd.it/" not in url:
+            return None
+        r = await self._get_redis()
+        cached = await get_cached_tmdb_id(url, r)
+        if isinstance(cached, int):
+            return cached
+        if cached == "MISS":
+            return None
+        html = await self._fetch_with_curl_cffi(url)
+        if not html:
+            return None  # transient: not cached, the next import can try again
+        tmdb_id = _tmdb_id_from_film_html(html)
+        await set_cached_tmdb_id(url, tmdb_id, r)
+        await _jittered_sleep()
         return tmdb_id
 
     async def set_resolved_tmdb_id(self, film_slug: str, tmdb_id: Optional[int]) -> None:
