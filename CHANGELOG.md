@@ -8,7 +8,17 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
-## [Unreleased]
+## [3.2.0] — 2026-11-08
+
+MINOR: the import matches each film by what it is, and a new integrity check runs as maintenance
+phase 12. No API changes.
+
+The data these fixes protect was repaired by hand on 2026-11-03, before this release:
+- 1,451 vectors re-encoded from their description;
+- every Qdrant payload rewritten from Postgres;
+- 20 library ratings moved to the film they were, and 20 removed (series, and one empty row,
+  matched as films);
+- clusters, mood axes and the neighbour table rebuilt.
 
 ### Added
 - **`scripts/check_integrity.py` and maintenance phase 12.** Offline check of what the 2026-11-03
