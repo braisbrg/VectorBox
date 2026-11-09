@@ -8,6 +8,33 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
+## [3.2.1] — 2026-11-09
+
+PATCH: dependencies only. No API changes. The backend lock changed, so the image has to be rebuilt
+(`docker compose build backend`).
+
+### Changed
+- **Dependencies, from the Dependabot PRs of 2026-11-03, tested beyond what CI could see.**
+  - **Frontend:**
+    - TypeScript 7.0, `@types/node` 26, framer-motion 14;
+    - the group with Clerk 7.9, React 19.3, React Query 5.105, Lucide 1.65 and Radix.
+
+    Gates green, plus a pass in the browser at 375 px: landing, onboarding, feed, inline
+    inspector, filter sheet (it opens, and closes in 0.7–1.1 s by its handle or its backdrop),
+    «why this film», and the watchlist scope. No console errors.
+  - **Backend:**
+    - FastAPI 0.162, SQLAlchemy 2.1, Pydantic 2.14, openai 2.54, instructor 1.17, asyncpg 0.32;
+    - raised floors for `python-dotenv`, `requests`, `mako` and `playwright`.
+
+    `requirements.lock` is recompiled with hashes. Those PRs changed only `requirements.txt`, and
+    since CI and the image install the lock, their green had tested none of it. Installed for
+    real: 547 hermetic tests, the integration suite (34 passed, 7 skipped) and `pip-audit`
+    clean. `diskcache`, which carried an advisory with no fix, is gone from the tree.
+  - **Not upgraded:** `qdrant-client`, which moves with the Qdrant server it talks to.
+- **Dependabot proposes `sentence-transformers` patches again.** Its ignore rule said `>=4` while
+  the project is on 5, which excluded every update. It now ignores only the next major (`>=6`):
+  changing the encoder means re-embedding the catalogue.
+
 ## [3.2.0] — 2026-11-08
 
 MINOR: the import matches each film by what it is, and a new integrity check runs as maintenance
@@ -268,6 +295,8 @@ Tags `v2.0.0` through `v2.3.1` predate this file. Use `git log` and `git tag` fo
 `CUADERNO.md` (the lab notebook) carries the decision record and bug history in full, and
 `BACKLOG.md` lists what is still open.
 
+[3.2.1]: https://github.com/braisbrg/VectorBox/compare/v3.2.0...v3.2.1
+[3.2.0]: https://github.com/braisbrg/VectorBox/compare/v3.1.3...v3.2.0
 [3.1.3]: https://github.com/braisbrg/VectorBox/compare/v3.1.2...v3.1.3
 [3.1.2]: https://github.com/braisbrg/VectorBox/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/braisbrg/VectorBox/compare/v3.1.0...v3.1.1
