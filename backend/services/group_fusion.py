@@ -112,7 +112,9 @@ def fuse(
     out: List[int] = []
     used: Dict[str, int] = {}
     for mid in sorted(scored, key=lambda m: -scored[m]):
-        if quality.get(mid, 0.0) < MIN_VBS or runtime.get(mid, 0.0) < MIN_RUNTIME:
+        # runtime 0 means "unknown", not "short" (CLAUDE.md, gate block): only a known
+        # runtime under the floor makes a short.
+        if quality.get(mid, 0.0) < MIN_VBS or 0 < runtime.get(mid, 0.0) < MIN_RUNTIME:
             continue
         names = directors_of.get(mid) or ["?"]
         if any(used.get(d, 0) >= MAX_PER_DIRECTOR for d in names):

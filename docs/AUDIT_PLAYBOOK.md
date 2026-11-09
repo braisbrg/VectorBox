@@ -438,7 +438,7 @@ Reintroducir un "arreglo" aquí es un retroceso. Comprobado contra código vivo:
 3. `git status --porcelain -uall` → sin `??` salvo `.bak` (B9).
 4. Re-medir un número de los que sostienen una decisión (B3) — elegir uno distinto cada vez.
 5. Por cada filtro nuevo desde la última auditoría: tasa de supervivencia por fila (B2).
-6. `docker compose restart backend` / `up -d --build frontend` **antes** de creerse cualquier
+6. `docker compose restart backend` / `up -d --build --no-deps frontend` **antes** de creerse cualquier
    medida: un type-check que pasa no es un render que pasa.
 
 > Al escribir una guardia nueva, **medir su tasa de falsos positivos antes de dejarla**. La de

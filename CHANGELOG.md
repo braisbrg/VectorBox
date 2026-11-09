@@ -8,6 +8,29 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **The shorts setting now reaches every row.** «Picked For You», «From Your Favorite Directors»
+  and the cult actor row never received it and filtered by quality score alone, which also
+  skipped excluded and adult titles. Measured on the real feed with shorts off, one profile's
+  directors row served *Doodlebug* (3 min) and *Vincent* (6 min); after the fix, none.
+- **«More like this» applies the catalogue gate.** It filtered by score, votes and poster, so a
+  non-film (a wrestling event, an untitled unreleased sequel) could follow its neighbours in.
+  Shorts stay allowed there: the question starts from a film the user picked.
+- **Group recommendations** keep films whose runtime is unknown (40 with a usable score were
+  dropped as if they were shorts) and leave out excluded and adult titles.
+- **«Available on your services»** looks at the best 200 of a long watchlist, not an arbitrary
+  200 chosen by the database.
+- **A film no service carries anywhere is remembered as such.** It used to read as a failed
+  request, so every view asked TMDB about it again.
+- **The post-upload enrichment can no longer be dropped half-way**: its background task was held
+  by nothing and could be garbage-collected while waiting.
+
+### Changed
+- The development `docker-compose.yml` binds the frontend to `127.0.0.1`, like the backend. On
+  `0.0.0.0` it proxied the whole API to the local network.
+
 ## [3.2.1] — 2026-11-09
 
 PATCH: dependencies only. No API changes. The backend lock changed, so the image has to be rebuilt

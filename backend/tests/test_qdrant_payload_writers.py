@@ -63,9 +63,9 @@ def test_the_schema_and_the_builder_agree():
     gets declared in one place and never written in the other."""
     built = set(qdrant_payload(_fake_movie()))
     declared = set(QdrantPayload.model_fields)
-    # `rating` is the schema's name for vote_average; the builder writes the
-    # payload key Qdrant actually stores.
-    assert declared - built - {"rating"} == set(), f"declared but never written: {declared - built - {'rating'}}"
+    # No exceptions: the schema used to declare `rating` for vote_average and this
+    # test tolerated it, which left the stale name one model_dump() away from a writer.
+    assert declared - built == set(), f"declared but never written: {declared - built}"
 
 
 def test_enriched_override_reaches_the_payload():

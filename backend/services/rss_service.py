@@ -849,6 +849,10 @@ class RSSService:
         meta = (await self.db.execute(
             select(Movie.tmdb_id, Movie.vectorbox_score, Movie.runtime, Movie.directors, Movie.year)
             .where(Movie.tmdb_id.in_(list(pool)))
+            # The neighbour table holds every point, the 55 excluded films too (1,208
+            # appearances as a neighbour, 2026-11-09). Left out here, they score 0 and
+            # fuse() drops them under MIN_VBS.
+            .where(Movie.is_excluded.is_(False), Movie.is_adult.is_(False))
         )).all()
         quality = {r[0]: (r[1] or 0.0) for r in meta}
         runtime = {r[0]: (r[2] or 0.0) for r in meta}

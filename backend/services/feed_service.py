@@ -291,10 +291,10 @@ class FeedService:
     ) -> Optional[FeedSection]:
         return await self.engine.get_popular_on_letterboxd_section(user_id, db, tmdb, country, provider_service, include_shorts=include_shorts)
         
-    async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None, redis_client = None, filters: Dict = None, pool_limit: int = None) -> Optional[FeedSection]:
+    async def get_hybrid_picks_section(self, user_id: int, db: AsyncSession, country: str, seen_ids: Set[int], provider_service: ProviderService = None, qdrant: QdrantService = None, background_tasks = None, redis_client = None, filters: Dict = None, pool_limit: int = None, include_shorts: bool = False) -> Optional[FeedSection]:
         tmdb = provider_service.tmdb if provider_service else None
         recommender = RecommendationService(db, tmdb=tmdb, qdrant=qdrant, redis_client=redis_client)
-        return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service, background_tasks=background_tasks, filters=filters, pool_limit=pool_limit)
+        return await recommender.get_hybrid_picks_section(user_id, country, seen_ids, provider_service, background_tasks=background_tasks, filters=filters, pool_limit=pool_limit, include_shorts=include_shorts)
 
     async def get_main_feed(
         self,
@@ -559,7 +559,7 @@ class FeedService:
             try:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
-                    return await self.get_hybrid_picks_section(user_id, session, country_code, watched_tmdb_ids.copy(), local_provider, qdrant=qdrant, background_tasks=background_tasks, redis_client=r, filters=search_filters, pool_limit=deep_pool)
+                    return await self.get_hybrid_picks_section(user_id, session, country_code, watched_tmdb_ids.copy(), local_provider, qdrant=qdrant, background_tasks=background_tasks, redis_client=r, filters=search_filters, pool_limit=deep_pool, include_shorts=include_shorts)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Hybrid]: {e}")
                 return None
@@ -572,7 +572,7 @@ class FeedService:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
                     recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
-                    return await recommender.get_auteur_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=db_filters)
+                    return await recommender.get_auteur_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=db_filters, include_shorts=include_shorts)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Auteur]: {e}")
                 return None
@@ -585,7 +585,7 @@ class FeedService:
                 async with AsyncSessionLocal() as session:
                     local_provider = ProviderService(session, tmdb)
                     recommender = RecommendationService(session, tmdb=tmdb, qdrant=qdrant, redis_client=r)
-                    return await recommender.get_cult_actor_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=db_filters)
+                    return await recommender.get_cult_actor_section(user_id, country_code, watched_tmdb_ids.copy(), provider_service=local_provider, filters=db_filters, include_shorts=include_shorts)
             except Exception as e:
                 logger.error(f"Feed Task Failed [Cult Actor]: {e}")
                 return None

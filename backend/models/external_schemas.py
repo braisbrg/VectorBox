@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import List, Optional, Any
 
 # --- OMDb Schemas ---
@@ -21,8 +21,7 @@ class OMDbResponse(BaseModel):
     Country: Optional[str] = None     # comma-separated countries
     Language: Optional[str] = None    # comma-separated languages
 
-    class Config:
-        extra = "ignore"
+    model_config = ConfigDict(extra="ignore")
 
 class VectorBoxBreakdown(BaseModel):
     imdb: Optional[float] = None
@@ -42,7 +41,9 @@ class QdrantPayload(BaseModel):
     genres: List[str] = Field(default_factory=list)
     overview: Optional[str] = None
     poster_path: Optional[str] = None
-    rating: Optional[float] = None  # This maps to vote_average
+    # The key Qdrant stores. It was declared as `rating`, the name the payload lost on
+    # 2026-08-18 when 931 points carrying it turned invisible to every filter.
+    vote_average: Optional[float] = None
     vote_count: Optional[int] = None
     runtime: Optional[int] = None
     original_language: Optional[str] = None
@@ -76,8 +77,7 @@ class QdrantPayload(BaseModel):
     oscar_wins: Optional[int] = 0
     is_adult: Optional[bool] = False
 
-    class Config:
-        extra = "ignore"
+    model_config = ConfigDict(extra="ignore")
 
 
 def qdrant_payload(movie, *, enriched: Optional[bool] = None, **overrides) -> dict:

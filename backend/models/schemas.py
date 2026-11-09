@@ -1,7 +1,7 @@
 """
 Pydantic schemas for request/response validation with security constraints
 """
-from pydantic import BaseModel, Field, validator, constr, conint, confloat
+from pydantic import BaseModel, ConfigDict, constr, conint, confloat
 from typing import Optional, List, Dict
 from datetime import datetime
 from enum import Enum
@@ -65,49 +65,6 @@ class ClusterInfo(BaseModel):
     sample_movies: List[MovieMetadata]
 
 
-class RecommendationRequest(BaseModel):
-    """Request for movie recommendations with filters"""
-    # L-1: user_id removed — always derived from JWT token server-side
-    cluster_id: Optional[int] = None  # Mood selection
-    year_min: Optional[conint(ge=1800, le=2100)] = None
-    year_max: Optional[conint(ge=1800, le=2100)] = None
-    genres: Optional[List[constr(max_length=50)]] = []
-    runtime_min: Optional[conint(ge=1, le=1000)] = None
-    runtime_max: Optional[conint(ge=1, le=1000)] = None
-    streaming_providers: Optional[List[int]] = []  # TMDB provider IDs
-    country_code: constr(min_length=2, max_length=2) = "ES"  # ISO country code for streaming
-    limit: conint(ge=1, le=100) = 20  # Security: Limit results
-    
-    # New Advanced Filters
-    min_vote_count: Optional[int] = None
-    min_rating: Optional[confloat(ge=0, le=100)] = None
-    original_language: Optional[constr(min_length=2, max_length=10)] = None
-    include_keywords: Optional[List[str]] = []
-    watchlist_only: Optional[bool] = False
-    page: conint(ge=1) = 1 # Pagination
-    
-    @validator('country_code')
-    def validate_country_code(cls, v):
-        """Ensure country code is uppercase"""
-        return v.upper() if v else "ES"
-    
-    @validator('year_max')
-    def validate_year_range(cls, v, values):
-        """Ensure year_max >= year_min"""
-        if v and 'year_min' in values and values['year_min']:
-            if v < values['year_min']:
-                raise ValueError('year_max must be >= year_min')
-        return v
-    
-    @validator('runtime_max')
-    def validate_runtime_range(cls, v, values):
-        """Ensure runtime_max >= runtime_min"""
-        if v and 'runtime_min' in values and values['runtime_min']:
-            if v < values['runtime_min']:
-                raise ValueError('runtime_max must be >= runtime_min')
-        return v
-
-
 class FilteredSearchRequest(BaseModel):
     """Rail EXECUTE_QUERY: filter-first, taste-ranked. Hard constraints define the
     pool (whole catalogue), the user's taste centroid ranks within it."""
@@ -146,8 +103,7 @@ class UserResponse(BaseModel):
     letterboxd_username: Optional[str] = None
     include_shorts: bool = False
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserPreferencesRequest(BaseModel):
@@ -170,23 +126,6 @@ class TaskStatusResponse(BaseModel):
     status: str  # "pending", "processing", "completed", "failed"
     progress: int = 0  # 0-100
     step: Optional[str] = None  # Current step description
-
-
-class GroupRecommendationRequest(BaseModel):
-    """Request for group recommendations"""
-    user_ids: List[int] = Field(..., min_items=2, max_items=10)
-    year_min: Optional[conint(ge=1800, le=2100)] = None
-    year_max: Optional[conint(ge=1800, le=2100)] = None
-    genres: Optional[List[constr(max_length=50)]] = []
-    runtime_min: Optional[conint(ge=1, le=1000)] = None
-    runtime_max: Optional[conint(ge=1, le=1000)] = None
-    country_code: constr(min_length=2, max_length=2) = "ES"
-    limit: conint(ge=1, le=100) = 20
-    
-    @validator('country_code')
-    def validate_country_code(cls, v):
-        """Ensure country code is uppercase"""
-        return v.upper() if v else "ES"
 
 
 class FeedItem(BaseModel):

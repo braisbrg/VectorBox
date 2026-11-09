@@ -173,6 +173,7 @@ class RecommendationService:
         background_tasks = None,
         filters: Dict = None,
         pool_limit: int = None,
+        include_shorts: bool = False,
     ) -> FeedSection:
         """
         Main entry point for "The Trident" row.
@@ -241,8 +242,9 @@ class RecommendationService:
             signal_b_ids=signal_b_ids,
             signal_c_ids=signal_c_ids,
             pool_limit=pool_limit,
+            include_shorts=include_shorts,
         )
-        
+
         # Update seen_ids
         for item in final_items:
             seen_ids.add(item.id)
@@ -668,7 +670,9 @@ class RecommendationService:
             Movie.has_enriched_embedding.is_(True),
             Movie.vectorbox_score > 70,
             Movie.directors.overlap(top_directors)
-        ).limit(100)
+        # Ordered before the LIMIT (playbook B12): without it Postgres picks which 100,
+        # and the watched ones are dropped AFTER. Today the pools are 10-47 films.
+        ).order_by(Movie.vectorbox_score.desc().nullslast()).limit(100)
         
         candidates = (await self.db.execute(stmt)).scalars().all()
         
@@ -910,6 +914,7 @@ class RecommendationService:
         signal_b_ids: Dict[int, float] = None,
         signal_c_ids: Dict[int, float] = None,
         pool_limit: int = None,
+        include_shorts: bool = False,
     ) -> List[FeedItem]:
         def build_contributors(movie_id, score_a, score_b, score_c):
             score_a, score_b, score_c = score_a or {}, score_b or {}, score_c or {}
@@ -933,9 +938,12 @@ class RecommendationService:
         if not rrf_scores:
             return []
 
-        # 1. Batch-fetch Movie objects from DB (single query)
+        # 1. Batch-fetch Movie objects from DB (single query). Every signal converges
+        # here, so the gate goes here: the signals filter by VBS alone, and a signal
+        # served from signal_cache never saw the user's shorts setting (2026-11-09).
+        from services.recommendation_engine import movie_quality_gate
         movie_ids = list(rrf_scores.keys())
-        stmt = select(Movie).where(Movie.id.in_(movie_ids))
+        stmt = select(Movie).where(Movie.id.in_(movie_ids), *movie_quality_gate(include_shorts))
         result = await self.db.execute(stmt)
         movies = result.scalars().all()
 
@@ -1072,13 +1080,18 @@ class RecommendationService:
         return feed_items
 
     @safe_execution(fallback_return=FeedSection(id="auteur", title="From Your Favorite Directors", items=[]))
-    async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None, filters: Dict = None) -> FeedSection:
+    async def get_auteur_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None, filters: Dict = None, include_shorts: bool = False) -> FeedSection:
         """
         Signal Auteur row — top 3 directors by score × up to 3 unwatched films each (max 9).
         """
         from services.recommendation_engine import (
             FILTERED_PERSON_FALLBACK_DEPTH, PERSON_FALLBACK_DEPTH, apply_rail_filters,
+            movie_quality_gate,
         )  # local: recommendation_engine imports this module
+        # The gate, on top of this row's stricter floors: without it the row skipped
+        # is_excluded, is_adult and the shorts setting (u212 got Doodlebug, 3 min, and
+        # Vincent, 6 min, with shorts off — 2026-11-09).
+        gate = movie_quality_gate(include_shorts)
 
         director_scores = await self._compute_director_scores(user_id)
         top_directors = [
@@ -1106,6 +1119,7 @@ class RecommendationService:
         for director_name in top_directors:
             stmt = apply_rail_filters(
                 select(Movie)
+                .where(*gate)
                 .where(Movie.directors.any(director_name))
                 .where(Movie.id.notin_(excluded_internal_ids))
                 .where(Movie.id.notin_(seen_local))
@@ -1151,6 +1165,7 @@ class RecommendationService:
 
                 stmt = apply_rail_filters(
                     select(Movie)
+                    .where(*gate)
                     .where(Movie.id.notin_(excluded_internal_ids))
                     .where(Movie.tmdb_id.notin_(seen_ids))
                     .where(Movie.id.notin_(seen_local))
@@ -1233,14 +1248,16 @@ class RecommendationService:
         return FeedSection(id="auteur", title=title, items=items)
 
     @safe_execution(fallback_return=FeedSection(id="cult_actor", title="Cast Picks", items=[]))
-    async def get_cult_actor_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None, filters: Dict = None) -> FeedSection:
+    async def get_cult_actor_section(self, user_id: int, country: str, seen_ids: Set[int], provider_service: ProviderService = None, filters: Dict = None, include_shorts: bool = False) -> FeedSection:
         """
         Imp 2: Cast-based auteur signal — "Because you follow {actor_name}"
         """
         from services.recommendation_engine import _director_weight
         from services.recommendation_engine import (
             FILTERED_PERSON_FALLBACK_DEPTH, PERSON_FALLBACK_DEPTH, apply_rail_filters,
+            movie_quality_gate,
         )  # local: recommendation_engine imports this module
+        gate = movie_quality_gate(include_shorts)  # same gap as get_auteur_section
 
         # 1. Get rated/liked movies with cast data
         stmt = select(UserRating, Movie).join(Movie, UserRating.movie_id == Movie.id)\
@@ -1339,6 +1356,7 @@ class RecommendationService:
             actor_priority = {name: idx for idx, name in enumerate(actor_names)}
             stmt = apply_rail_filters(
                 select(Movie)
+                .where(*gate)
                 .where(Movie.cast.overlap(actor_names))
                 .where(Movie.id.notin_(excluded_internal_ids))
                 .where(Movie.vectorbox_score >= 60)
@@ -1366,6 +1384,7 @@ class RecommendationService:
                 ext_priority = {name: idx for idx, name in enumerate(extended_actors)}
                 stmt = apply_rail_filters(
                     select(Movie)
+                    .where(*gate)
                     .where(Movie.cast.overlap(extended_actors))
                     .where(Movie.id.notin_(excluded_internal_ids))
                     .where(Movie.vectorbox_score >= 60)

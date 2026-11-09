@@ -193,7 +193,8 @@ hot-reload at all.
 
 ```bash
 docker compose restart backend            # after ANY backend change
-docker compose up -d --build frontend     # after ANY frontend change
+docker compose up -d --build --no-deps frontend   # after ANY frontend change
+# --no-deps matters: without it the backend image is rebuilt too, model download included
 ```
 
 A change that type-checks is not a change that ran. If feed logic changed, also
