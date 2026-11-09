@@ -476,14 +476,16 @@ class TMDBClient:
             return orjson.loads(cached)
         
         data = await self._make_request(f"/movie/{tmdb_id}/watch/providers")
-        
-        if data and data.get("results"):
-            # Extract country-specific providers
-            country_data = data["results"].get(country, {})
-            await r.setex(cache_key, timedelta(hours=24), orjson.dumps(country_data))
-            return country_data
-        
-        return None
+
+        # None only when TMDB did not answer. A film it has no providers for, in any
+        # country, comes back as `"results": {}`: that is an answer ("nowhere"), and it
+        # used to return None too, so callers never cached it and asked again on every
+        # request (playbook E2: empty is not the same as no reply).
+        if data is None or "results" not in data:
+            return None
+        country_data = data["results"].get(country, {})
+        await r.setex(cache_key, timedelta(hours=24), orjson.dumps(country_data))
+        return country_data
     
     async def get_movie_keywords(self, tmdb_id: int) -> List[str]:
         """Get movie keywords for enhanced embeddings"""
