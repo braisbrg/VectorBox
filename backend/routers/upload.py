@@ -40,6 +40,18 @@ router = APIRouter()
 # X-Forwarded-For) instead of a local Limiter(get_remote_address), which
 # bucketed every user behind the tunnel under the proxy's egress IP.
 
+# The event loop keeps only WEAK references to tasks, so a fire-and-forget task that
+# nobody holds can be garbage-collected while it waits on I/O, and the post-upload
+# enrichment silently never finishes. This set holds each one until it is done.
+_BACKGROUND_TASKS: set = set()
+
+
+def spawn_background(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
+
 async def _enrich_user_movies_background(user_id: int) -> None:
     """
     Post-upload enrichment: enrich movies imported by this user that lack LLM-enriched embeddings.
@@ -650,7 +662,7 @@ async def enrich_movies_background(
         except Exception as e:
             logger.warning(f"[onboarding] post-ZIP flag refresh failed for user_id={user_id}: {e}")
 
-        asyncio.create_task(_enrich_user_movies_background(user_id))
+        spawn_background(_enrich_user_movies_background(user_id))
         logger.info(f"[Upload] Scheduled post-upload enrichment for user {user_id}")
 
     except Exception as e:
