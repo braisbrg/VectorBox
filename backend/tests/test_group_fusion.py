@@ -44,6 +44,16 @@ def test_floors_drop_junk_and_shorts():
     assert out == [10]
 
 
+def test_an_unknown_runtime_is_not_a_short():
+    """runtime 0 is the catalogue's "we don't know" (CLAUDE.md, gate block), and the
+    floor read it as "under 40 minutes": 40 films with VBS >= 40 never reached a group
+    list for that reason alone (measured 2026-11-09)."""
+    lists = member_lists(neighbours={1: [10, 11]}, loved=[1])
+    q, rt, d = _world([10, 11])
+    rt[11] = 0
+    assert fuse([lists], q, rt, d) == [10, 11]
+
+
 def test_one_director_cannot_flood_the_list():
     ids = list(range(50, 60))
     lists = member_lists(neighbours={1: ids}, loved=[1])
