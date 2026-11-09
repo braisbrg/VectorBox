@@ -1376,6 +1376,9 @@ class RecommendationEngine:
                 UserRating.is_watchlist.is_(True),
                 UserRating.is_watched.is_(False)
             )
+            # This row ranks by quality, so the cap keeps the BEST 200 (playbook B12).
+            # Unordered, Postgres chose which 200 of u212's 606 pending films to look at.
+            .order_by(Movie.vectorbox_score.desc().nullslast())
             .limit(200)
         )
         watchlist_movies = watchlist_result.scalars().all()
