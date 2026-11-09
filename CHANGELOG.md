@@ -8,7 +8,10 @@ not just what changed. Where a number appears, it was taken from the running sys
 
 ---
 
-## [Unreleased]
+## [3.2.1] — 2026-11-09
+
+PATCH: dependencies only. No API changes. The backend lock changed, so the image has to be rebuilt
+(`docker compose build backend`).
 
 ### Changed
 - **Dependencies, from the Dependabot PRs of 2026-11-03, tested beyond what CI could see.**
@@ -292,6 +295,8 @@ Tags `v2.0.0` through `v2.3.1` predate this file. Use `git log` and `git tag` fo
 `CUADERNO.md` (the lab notebook) carries the decision record and bug history in full, and
 `BACKLOG.md` lists what is still open.
 
+[3.2.1]: https://github.com/braisbrg/VectorBox/compare/v3.2.0...v3.2.1
+[3.2.0]: https://github.com/braisbrg/VectorBox/compare/v3.1.3...v3.2.0
 [3.1.3]: https://github.com/braisbrg/VectorBox/compare/v3.1.2...v3.1.3
 [3.1.2]: https://github.com/braisbrg/VectorBox/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/braisbrg/VectorBox/compare/v3.1.0...v3.1.1
