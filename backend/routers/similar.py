@@ -16,7 +16,14 @@ from models.database import Movie
 from services.qdrant_service import QdrantService
 from services.tmdb_client import TMDBClient
 from services.embedding_service import EmbeddingService
+from services.recommendation_engine import movie_quality_gate
 from dependencies import get_tmdb_client, get_qdrant_service, get_optional_current_user, get_embedding_service
+
+# The catalogue gate (excluded, adult, no year, under 10 votes), on top of this router's
+# stricter floors. Shorts stay in: "more like this" starts from a film the user chose,
+# and more like a short is a fair answer. The neighbours of an excluded film are mostly
+# other excluded films (59 in the top-20 of 20 of them, 2026-11-09).
+_SIMILAR_GATE = movie_quality_gate(include_shorts=True)
 
 from models.schemas import TokenResponse
 
@@ -235,6 +242,7 @@ async def get_similar_movies(
             stmt = (
                 select(Movie)
                 .where(Movie.tmdb_id.in_(similar_tmdb_ids))
+                .where(*_SIMILAR_GATE)
                 .where(Movie.vectorbox_score >= 55)
                 .where(Movie.vote_count >= MIN_VOTE_COUNT)
                 .where(Movie.poster_path.isnot(None))
@@ -460,6 +468,7 @@ async def get_similar_multi(
     movies_q = await db.execute(
         select(Movie)
         .where(Movie.tmdb_id.in_(ordered_ids))
+        .where(*_SIMILAR_GATE)
         .where(Movie.vectorbox_score >= 55)
         .where(Movie.vote_count >= MIN_VOTE_COUNT)
         .where(Movie.poster_path.isnot(None))
