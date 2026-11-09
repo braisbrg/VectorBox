@@ -24,9 +24,10 @@ services:
 
   # Qdrant Vector Database
   qdrant:
-    # Pinned to match qdrant-client==1.18.0 (PERF-F): `:latest` was non-deterministic
-    # and resolved to 1.16.3 in cache, firing a client/server incompatibility warning
-    # on every call. Pin both server + client to the same version.
+    # Pinned (PERF-F): `:latest` was non-deterministic and resolved to 1.16.3 in cache,
+    # firing a client/server incompatibility warning on every call. The lock carries
+    # qdrant-client 1.19.0, one minor ahead, which the client accepts; move server and
+    # client together, and snapshot qdrant_data first, since a server upgrade migrates it.
     image: qdrant/qdrant:v1.18.0
     container_name: vectorbox-qdrant
     # Security: Ports removed for production (internal access only)
@@ -145,8 +146,10 @@ services:
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
         NEXT_PUBLIC_API_URL: http://localhost:8000
     container_name: vectorbox-frontend
+    # Loopback only, like the backend (SEC-A): the frontend proxies /api to the
+    # backend, so binding 0.0.0.0 here handed the whole API to the local network.
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
       - BACKEND_URL=http://backend:8000
