@@ -112,6 +112,30 @@ def _film():
 
 
 @pytest.mark.asyncio
+async def test_enriching_with_omdb_down_erases_no_rating():
+    """enrich_movie assigned rating, Metascore and score straight from the live call:
+    with OMDb down that wrote None over all three."""
+
+    class _Details:
+        async def get_movie_details(self, _tmdb_id):
+            return {"imdb_id": "tt0000001", "vote_count": 4000, "vote_average": 7.9}
+
+    class _Session:
+        async def commit(self):
+            pass
+
+    omdb = _OMDbDown()
+    film = _film()
+    full = omdb.score_row(film).score
+    service = MovieService.__new__(MovieService)
+    service.db, service.tmdb, service._omdb = _Session(), _Details(), omdb
+
+    # skip_qdrant: the vector is not the subject. force: the film already has its data.
+    await service.enrich_movie(film, skip_qdrant=True, force=True)
+    assert (film.imdb_rating, film.metacritic_rating, film.vectorbox_score) == (8.1, 84, full)
+
+
+@pytest.mark.asyncio
 async def test_a_refresh_with_omdb_down_keeps_the_full_score_and_the_runtime():
     omdb = _OMDbDown()
     film = _film()
