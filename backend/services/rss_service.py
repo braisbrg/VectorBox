@@ -46,6 +46,44 @@ def rss_watch_count_should_bump(rewatch: bool, incoming_date, existing_date) -> 
     return incoming_date > existing_date
 
 
+def rss_rating_upsert(user_id: int, movie_id: int, item: Dict, rewatch_flag: bool):
+    """The statement that writes one RSS diary entry onto the user's row.
+
+    A value the entry brings wins; a value it lacks erases nothing. `rating` and
+    `review` were plain `excluded`, so a rewatch logged without stars wiped the stored
+    rating, and `watched_date` took any incoming date, so the OLDER of two entries for
+    one film could land last and win. Module-level so a test can run it on Postgres.
+    """
+    incoming = insert(UserRating).excluded
+    return insert(UserRating).values(
+        user_id=user_id,
+        movie_id=movie_id,
+        rating=item.get('rating'),
+        is_watched=True,  # Always True for RSS items
+        is_liked=item.get('is_liked', False),
+        watched_date=item.get('watched_date'),
+        review=item.get('review'),
+        watch_count=1,  # initial value for new rows
+    ).on_conflict_do_update(
+        index_elements=["user_id", "movie_id"],
+        set_={
+            "rating": func.coalesce(incoming.rating, UserRating.rating),
+            "is_watched": True,
+            # RSS carries <letterboxd:liked> per item and is authoritative for likes.
+            "is_liked": incoming.is_liked,
+            # GREATEST skips NULLs in Postgres: no date keeps the stored one, and of
+            # two real dates the later viewing stays.
+            "watched_date": func.greatest(incoming.watched_date, UserRating.watched_date),
+            "review": func.coalesce(incoming.review, UserRating.review),
+            "watch_count": (
+                func.coalesce(UserRating.watch_count, 1) + 1
+                if rewatch_flag
+                else func.coalesce(UserRating.watch_count, 1)
+            ),
+        },
+    )
+
+
 class RSSService:
     def __init__(
         self,
@@ -335,41 +373,7 @@ class RSSService:
                     bool(item.get('rewatch')), incoming_date, existing_date
                 )
 
-                stmt = insert(UserRating).values(
-                    user_id=user_id,
-                    movie_id=movie.id,
-                    rating=item.get('rating'),
-                    is_watched=True, # Always True for RSS items
-                    is_liked=item.get('is_liked', False),
-                    watched_date=item.get('watched_date'),
-                    review=item.get('review'),
-                    watch_count=1,  # initial value for new rows
-                ).on_conflict_do_update(
-                    index_elements=["user_id", "movie_id"],
-                    set_={
-                        "rating": getattr(insert(UserRating).excluded, "rating"),
-                        "is_watched": True, # Ensure it's marked as watched
-                        # is_liked: RSS now extracts <letterboxd:liked> per item, so we
-                        # update it to reflect Letterboxd's current state. RSS is
-                        # authoritative for likes once the parser captures the field.
-                        "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
-                        # COALESCE y no `excluded` a secas: el parser deja
-                        # `watched_date: None` cuando la entrada del RSS no trae
-                        # <letterboxd:watchedDate>, y sobrescribir con eso borraba
-                        # una fecha de diario buena que ya estaba guardada. Una
-                        # fecha nueva sí manda; la ausencia de fecha, no.
-                        "watched_date": func.coalesce(
-                            getattr(insert(UserRating).excluded, "watched_date"),
-                            UserRating.watched_date,
-                        ),
-                        "review": getattr(insert(UserRating).excluded, "review"),
-                        "watch_count": (
-                            func.coalesce(UserRating.watch_count, 1) + 1
-                            if rewatch_flag
-                            else func.coalesce(UserRating.watch_count, 1)
-                        ),
-                    }
-                )
+                stmt = rss_rating_upsert(user_id, movie.id, item, rewatch_flag)
 
                 try:
                     result = await self.db.execute(stmt)

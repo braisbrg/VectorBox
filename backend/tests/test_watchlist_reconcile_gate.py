@@ -167,6 +167,8 @@ async def _run(pages, baseline, caplog):
          patch.object(rss, "ScraperService", return_value=_fake_scraper(pages)), \
          patch.object(rss, "MovieService", return_value=movie_service), \
          patch.object(rss, "RSSService", return_value=rss_service), \
+         patch.object(rss, "untouched_rows", AsyncMock(
+             return_value=[(900, "Off The List Now", None, 1999, None)])), \
          patch.object(rss, "_invalidate_feed_cache", AsyncMock()):
         await rss._run_sync_background(1, "someone", MagicMock())
 

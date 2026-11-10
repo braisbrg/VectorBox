@@ -127,8 +127,12 @@ def test_upload_has_no_upfront_rating_delete():
     assert "imported_movie_ids" in src
     # the only delete left is the post-import prune, guarded by the ratio check
     assert src.index("resolved_ratio") < delete_at
-    assert "notin_(imported_movie_ids)" in src
-    assert "watch_count != 0" in src, "web-watches must survive a ZIP import"
+    # The query moved to services/import_reconcile.py on 2026-11-10, where it is also
+    # run on Postgres (test_rating_upserts_integration.py).
+    from services.import_reconcile import untouched_rows
+    assert "untouched_rows(db, user_id, imported_movie_ids)" in src
+    assert "watch_count, 1) != 0" in inspect.getsource(untouched_rows), (
+        "web-watches must survive a ZIP import")
 
 
 # --- #11 group handles ------------------------------------------------------

@@ -82,7 +82,13 @@ class MovieService:
             return movie
 
         # 2. Ingest if missing
-        return await self.ingest_movie(tmdb_id, letterboxd_uri)
+        movie = await self.ingest_movie(tmdb_id, letterboxd_uri)
+        if movie is None:
+            # Two ingests of the same new film race on the unique tmdb_id: the loser's
+            # commit fails and it used to return None, so that user's rating for the film
+            # was dropped without a trace. The film exists now; hand back the winner's row.
+            movie = (await self.db.execute(stmt)).scalar_one_or_none()
+        return movie
 
     async def ingest_movie(self, tmdb_id: int, letterboxd_uri: Optional[str] = None, skip_qdrant: bool = False) -> Optional[Movie]:
         """
@@ -210,16 +216,26 @@ class MovieService:
                 imdb_id = ((details or {}).get("imdb_id") or "").strip() or None
                 if imdb_id:
                     omdb_data = await self.omdb.fetch_movie_data(imdb_id)
-                    vb_score_obj = self.omdb.calculate_vectorbox_score(
-                        omdb_data,
-                        details.get("vote_average"),
-                        tmdb_vote_count=details.get("vote_count"),
-                    )
-
                     movie.imdb_id = imdb_id
-                    movie.vectorbox_score = vb_score_obj.score
-                    movie.imdb_rating = vb_score_obj.breakdown.imdb
-                    movie.metacritic_rating = vb_score_obj.breakdown.meta
+                    # Store what the sources answered; a missing answer erases nothing.
+                    # This used to assign rating, Metascore and score straight from the
+                    # live call, so a failed OMDb request wrote None over all three.
+                    if details.get("vote_count") is not None:
+                        movie.vote_count = details["vote_count"]
+                    if details.get("vote_average") is not None:
+                        movie.vote_average = details["vote_average"]
+                    if omdb_data:
+                        live = self.omdb.calculate_vectorbox_score(omdb_data, None).breakdown
+                        if live.imdb is not None:
+                            movie.imdb_rating = live.imdb
+                        if live.meta is not None:
+                            movie.metacritic_rating = live.meta
+                        votes = (omdb_data.imdbVotes or "").replace(",", "").strip()
+                        if votes.isdigit():
+                            movie.imdb_vote_count = int(votes)
+                    score = self.omdb.score_row(movie).score
+                    if score is not None:
+                        movie.vectorbox_score = score
                     changed = True
 
             # 2. Check/Fetch Keywords (FIX: Si no tiene, guarda un array vacío para no volver a buscar)
