@@ -310,3 +310,23 @@ class OMDbClient:
         final_score = weighted_avg * coverage
 
         return VectorBoxScore(score=round(final_score, 1), breakdown=breakdown)
+
+    def score_row(self, movie) -> VectorBoxScore:
+        """VBS from the values STORED on the row. Every writer goes through here.
+
+        The refresh paths used to score the LIVE OMDb answer instead, so a failed or
+        negative-cached OMDb call dropped the IMDb and Metacritic terms and wrote a
+        TMDB-only score (x0.85) over a good one, until the next recalc put it back.
+        """
+        stored = OMDbResponse(
+            Response="True",
+            imdbRating=str(movie.imdb_rating) if movie.imdb_rating is not None else None,
+            Metascore=str(movie.metacritic_rating) if movie.metacritic_rating is not None else None,
+            imdbVotes=str(movie.imdb_vote_count) if movie.imdb_vote_count else None,
+        )
+        return self.calculate_vectorbox_score(
+            stored,
+            movie.vote_average,
+            tmdb_vote_count=movie.vote_count,
+            imdb_vote_count=movie.imdb_vote_count,
+        )

@@ -27,7 +27,6 @@ from qdrant_client import models as qmodels
 from sqlalchemy import select
 from config import AsyncSessionLocal
 from models.database import Movie
-from models.external_schemas import OMDbResponse
 from services.omdb_client import OMDbClient
 from services.qdrant_service import QdrantService
 
@@ -81,15 +80,6 @@ async def sync_payloads() -> None:
         await qdrant.aclose()
 
 
-def _synthetic_omdb(movie: Movie) -> OMDbResponse:
-    return OMDbResponse(
-        Response="True",
-        imdbRating=str(movie.imdb_rating) if movie.imdb_rating is not None else None,
-        Metascore=str(movie.metacritic_rating) if movie.metacritic_rating is not None else None,
-        imdbVotes=str(movie.imdb_vote_count) if movie.imdb_vote_count else None,
-    )
-
-
 async def recalc():
     omdb = OMDbClient.__new__(OMDbClient)  # bypass __init__ (no API calls)
 
@@ -106,12 +96,7 @@ async def recalc():
 
         for i, m in enumerate(movies, 1):
             previous = m.vectorbox_score
-            vb = omdb.calculate_vectorbox_score(
-                _synthetic_omdb(m),
-                m.vote_average,
-                tmdb_vote_count=m.vote_count,
-                imdb_vote_count=m.imdb_vote_count,
-            )
+            vb = omdb.score_row(m)
 
             if vb.score is None:
                 # No usable data — clear out any stale VBS so it stops

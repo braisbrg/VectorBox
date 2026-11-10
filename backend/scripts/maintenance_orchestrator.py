@@ -40,6 +40,11 @@ Phases (run in the order given to --phases; the default puts 10 FIRST):
                              Repara payload y vectores; las URIs las informa.
                              Va tras 3 y 4 y antes de 5: la 4 escribía
                              descripciones sin re-embeber (E115).
+   13. mood_axes           — proyecta cada vector sobre los ejes de mood y estampa
+                             `mood_*` en Postgres y en el payload de Qdrant
+                             (scripts/compute_mood_axes.py), sin red. Va tras las
+                             que cambian vectores (3, 4, 12, 7): sin ella, cada
+                             película nueva nacía invisible a los cinco cuadrantes.
    11. streaming_changes   — altas y bajas de catálogo de las plataformas
                              (MovieOfTheNight, 1000 peticiones AL MES). 4 al día.
     9. neighbor_table      — precomputes every film's nearest neighbours for
@@ -77,7 +82,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from config import AsyncSessionLocal
 from models.database import Movie, ApiBudget
-from models.external_schemas import OMDbResponse
 from services.tmdb_client import TMDBClient
 from services.omdb_client import OMDbClient
 from services.qdrant_service import QdrantService
@@ -700,14 +704,6 @@ async def phase_recalc_vbs(dry_run: bool) -> dict:
     """
     stats = {"total": 0, "updated": 0, "cleared": 0, "unchanged": 0, "payload_synced": 0}
 
-    def _synthetic_omdb(m: Movie) -> OMDbResponse:
-        return OMDbResponse(
-            Response="True",
-            imdbRating=str(m.imdb_rating) if m.imdb_rating is not None else None,
-            Metascore=str(m.metacritic_rating) if m.metacritic_rating is not None else None,
-            imdbVotes=str(m.imdb_vote_count) if m.imdb_vote_count else None,
-        )
-
     omdb = OMDbClient.__new__(OMDbClient)  # bypass __init__ — no API calls
     pg_scores: dict[int, Optional[float]] = {}
 
@@ -723,12 +719,7 @@ async def phase_recalc_vbs(dry_run: bool) -> dict:
         for i, m in enumerate(movies, 1):
             prog.step(i)
             previous = m.vectorbox_score
-            vb = omdb.calculate_vectorbox_score(
-                _synthetic_omdb(m),
-                m.vote_average,
-                tmdb_vote_count=m.vote_count,
-                imdb_vote_count=m.imdb_vote_count,
-            )
+            vb = omdb.score_row(m)
 
             if vb.score is None:
                 if previous is not None:
@@ -1164,6 +1155,17 @@ async def phase_integrity(dry_run: bool) -> dict:
     return summary
 
 
+async def phase_mood_axes(dry_run: bool) -> dict:
+    """Mood de todo el catálogo — scripts/compute_mood_axes.py, sin red.
+
+    Los ejes se derivan de las anclas y se proyectan todos los vectores en cada pasada,
+    así que una película nueva o re-embebida queda con su mood al día.
+    """
+    from scripts.compute_mood_axes import main as compute_mood_axes
+    await compute_mood_axes(dry_run)
+    return {"ran": True, "dry_run": dry_run}
+
+
 # Países cuyos cambios de catálogo se siguen, y páginas por tipo. Cada página es UNA
 # petición de las 1000 mensuales: 2 países × 2 tipos × 2 páginas = 8/día ≈ 240/mes.
 STREAMING_COUNTRIES = ["es"]
@@ -1182,6 +1184,7 @@ PHASE_FNS = {
     11: ("streaming_changes", phase_streaming_changes),
     10: ("seed_new", phase_seed_new),
     12: ("integrity", phase_integrity),
+    13: ("mood_axes", phase_mood_axes),
 }
 
 
@@ -1221,7 +1224,7 @@ def main():
     parser.add_argument(
         "--phases",
         type=str,
-        default="10,1,2,3,4,12,5,6,7,8,9,11",
+        default="10,1,2,3,4,12,5,6,7,13,8,9,11",
         help="Comma-separated phase numbers to run (default: all)",
     )
     parser.add_argument(
