@@ -3,10 +3,10 @@
 Found 2026-11-10. The statements wrote `excluded.<column>` (or the request's default)
 as it came, whatever the source:
 
-  - RSS is one diary entry, not the film's state: an entry with no stars (a rewatch
-    logged without re-rating) wiped the stored rating and review, and of two entries
-    for one film the OLDER could be processed last and leave its date. A value it
-    lacks now erases nothing.
+  - RSS is the latest activity, so an entry decides rating, review and like when it is
+    the most recent viewing we know of. The feed lists newest first, so the OLDER of two
+    entries for one film was processed last and won; and an entry with no stars (a
+    rewatch logged without re-rating) wiped the stored rating and review.
   - ZIP is the complete snapshot of Letterboxd, so it DOES clear what it leaves empty.
     That is the design, pinned here so nobody "fixes" it: un-rating a film on
     Letterboxd has to reach us.
@@ -54,14 +54,21 @@ async def test_each_source_overwrites_by_its_own_rule():
 
             newer, older = datetime(2026, 5, 2), datetime(2024, 1, 1)
 
-            # RSS: a rated, dated, reviewed entry...
-            await s.execute(rss_rating_upsert(
-                user.id, movie_id, {"rating": 4.5, "watched_date": newer, "review": "great"}, False))
-            # ...then an older entry with no stars and no review, arriving later.
-            await s.execute(rss_rating_upsert(
-                user.id, movie_id, {"rating": None, "watched_date": older, "review": None}, False))
+            # RSS lists newest first: a rated, dated, reviewed, liked entry...
+            await s.execute(rss_rating_upsert(user.id, movie_id, {
+                "rating": 4.5, "watched_date": newer, "review": "great", "is_liked": True}, False))
+            # ...then an OLDER entry of the same film with other values, processed after it.
+            await s.execute(rss_rating_upsert(user.id, movie_id, {
+                "rating": 1.0, "watched_date": older, "review": "meh", "is_liked": False}, False))
             r = await row()
-            assert (r.rating, r.watched_date, r.review) == (4.5, newer, "great")
+            assert (r.rating, r.watched_date, r.review, r.is_liked) == (4.5, newer, "great", True)
+
+            # The latest entry without stars or review erases neither.
+            await s.execute(rss_rating_upsert(
+                user.id, movie_id, {"rating": None, "watched_date": newer, "review": None,
+                                    "is_liked": True}, False))
+            r = await row()
+            assert (r.rating, r.review) == (4.5, "great")
 
             # A real new value still wins, and a flagged rewatch still counts.
             latest = datetime(2026, 6, 1)

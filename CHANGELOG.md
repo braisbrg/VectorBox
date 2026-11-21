@@ -17,10 +17,12 @@ not just what changed. Where a number appears, it was taken from the running sys
   blocked Letterboxd page, a title tie): one failed lookup removed a rating or a watchlist
   entry the user never touched. Those are now kept, and the import says how many films it could
   not match.
-- **A diary entry no longer erases what it does not mention.** One logged without stars wiped
-  the film's rating and review, and an older entry could replace the date of the latest
-  viewing. A full ZIP export still replaces everything, empty fields included: it is the
-  complete state of Letterboxd, so un-rating a film there reaches VectorBox.
+- **The latest diary entry decides, not the last one read.** The Letterboxd feed lists newest
+  first, so when a film had two entries (a rewatch with a new rating), the older one was
+  processed last and its rating, review and like won. An entry now counts only when it is
+  the most recent viewing known, and one logged without stars no longer wipes the rating. A
+  full ZIP export still replaces everything, empty fields included: it is the complete state
+  of Letterboxd, so un-rating a film there reaches VectorBox.
 - **The watchlist button no longer removes the like**, and re-rating a film in the app no longer
   replaces its diary date with today's.
 - **Films added to the watchlist from the app stay there.** They were stored like Letterboxd
