@@ -58,7 +58,7 @@ aiohttp>=3.14.4          # 24 avisos; +8 el 2026-11-03
 anyio>=4.14.2
 certifi>=2026.10.18
 click>=8.3.3
-dnspython>=2.9.0
+dnspython>=2.9.2         # CVE-2026-128089 (2026-11-21)
 filelock>=4.2.1          # 9 avisos; es mayor, y cachecontrol, huggingface_hub, torch y transformers la aceptan al resolver
 fsspec>=2026.6.0
 h2>=4.4.1
@@ -70,7 +70,7 @@ pygments>=2.20.0
 python-dotenv>=1.2.4
 python-multipart>=0.0.26 # 5 avisos
 requests>=2.34.2
-soupsieve>=2.8.4
+soupsieve>=4.0.0         # 4 avisos (2026-11-21); es mayor, beautifulsoup4 pide >=1.6.1
 urllib3>=2.8.0
 pip>=26.2                # PYSEC-2026-3721
 # starlette la fija fastapi, que sólo pide `>=0.46.0` — sin tope superior, así

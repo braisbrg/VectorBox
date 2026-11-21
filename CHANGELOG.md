@@ -55,6 +55,12 @@ not just what changed. Where a number appears, it was taken from the running sys
 - The development `docker-compose.yml` binds the frontend to `127.0.0.1`, like the backend. On
   `0.0.0.0` it proxied the whole API to the local network.
 
+### Security
+- `dnspython` 2.9.2 and `soupsieve` 4.1.3 (a major version; `beautifulsoup4` accepts it), for five
+  advisories published after 3.2.1. `requirements.lock` is recompiled moving only those two, and
+  the image has to be rebuilt (`docker compose build backend`). Installed: 559 hermetic tests and
+  `pip-audit` clean.
+
 ## [3.2.1] — 2026-11-09
 
 PATCH: dependencies only. No API changes. The backend lock changed, so the image has to be rebuilt
