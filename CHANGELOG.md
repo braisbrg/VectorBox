@@ -28,6 +28,9 @@ not just what changed. Where a number appears, it was taken from the running sys
 - **Films added to the watchlist from the app stay there.** They were stored like Letterboxd
   rows, so the next import or full sync removed them as "no longer on Letterboxd".
 - **Two imports of the same new film at once** no longer drop one user's rating for it.
+- **Signing in keeps what you did as a guest.** A film both the guest session and the account
+  had kept only the account's version, so a rating or a "not interested" given as a guest was
+  lost if the account had the film on its watchlist. The two are now merged.
 - **A metadata refresh on a day OMDb fails** no longer writes a degraded quality score; the
   score is computed from the stored values in every path.
 - **The shorts setting now reaches every row.** «Picked For You», «From Your Favorite Directors»
