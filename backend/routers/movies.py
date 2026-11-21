@@ -21,9 +21,41 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 class RateMovieRequest(BaseModel):
+    # None means "leave it as it is". The flags defaulted to False, and the watchlist
+    # button sends only `is_watchlist`, so every press also erased the film's like.
     rating: Optional[confloat(ge=0, le=5)] = None
-    is_watchlist: bool = False
-    is_liked: bool = False
+    is_watchlist: Optional[bool] = None
+    is_liked: Optional[bool] = None
+
+
+def web_rating_upsert(user_id: int, movie_id: int, payload: RateMovieRequest):
+    """The statement behind POST /movies/{id}/rate: only what the caller sent changes."""
+    return insert(UserRating).values(
+        user_id=user_id,
+        movie_id=movie_id,
+        rating=payload.rating,
+        is_watchlist=bool(payload.is_watchlist),
+        is_liked=bool(payload.is_liked),
+        is_watched=payload.rating is not None,
+        # No date: rating today is not watching today, and NULL is the honest answer.
+        watched_date=None,
+        # 0 marks a row made in the app. With the default 1 it passed for a Letterboxd
+        # row, so the next ZIP import deleted it as "absent from the export" and the
+        # next full watchlist scrape took it off the list.
+        watch_count=0,
+        created_at=datetime.now(timezone.utc),
+    ).on_conflict_do_update(
+        index_elements=['user_id', 'movie_id'],
+        set_={
+            'rating': payload.rating if payload.rating is not None else UserRating.rating,
+            'is_watchlist': (payload.is_watchlist if payload.is_watchlist is not None
+                             else UserRating.is_watchlist),
+            'is_liked': payload.is_liked if payload.is_liked is not None else UserRating.is_liked,
+            'is_watched': True if payload.rating is not None else UserRating.is_watched,
+            # watched_date is not here on purpose: this branch stamped now() on every
+            # re-rating, over a real diary date, after the insert branch stopped doing it.
+        },
+    )
 
 async def _user_state(db: AsyncSession, movie_id: int, user_id) -> Optional[dict]:
     """Qué ha decidido ya este usuario sobre esta película.
@@ -208,34 +240,7 @@ async def rate_movie(
         
         # 2. Upsert UserRating
         # Note: Index elements must match the unique constraint (idx_user_movie)
-        stmt = insert(UserRating).values(
-            user_id=current_user.user_id,
-            movie_id=movie.id,
-            rating=payload.rating,
-            is_watchlist=payload.is_watchlist,
-            is_liked=payload.is_liked,
-            is_watched=True if payload.rating is not None else False,
-            # NO se sella la fecha de hoy: puntuar hoy no es haber visto hoy, y
-            # esta era la tercera fuente de fechas falsas en `watched_date` (las
-            # otras dos vivían en data_processor). Sin diario no sabemos cuándo la
-            # viste, y NULL es la respuesta honesta. `created_at` sigue guardando
-            # cuándo se creó la fila, que es lo que esta fecha realmente decía.
-            watched_date=None,
-            created_at=datetime.now(timezone.utc)
-        ).on_conflict_do_update(
-            index_elements=['user_id', 'movie_id'],
-            set_={
-                # Preserve an existing rating when the caller only toggles
-                # watchlist/like (rating=None) — e.g. dossier "+ watchlist".
-                'rating': payload.rating if payload.rating is not None else UserRating.rating,
-                'is_watchlist': payload.is_watchlist,
-                'is_liked': payload.is_liked,
-                'is_watched': True if payload.rating is not None else UserRating.is_watched,
-                'watched_date': datetime.now(timezone.utc) if payload.rating is not None else UserRating.watched_date,
-            }
-        )
-        
-        await db.execute(stmt)
+        await db.execute(web_rating_upsert(current_user.user_id, movie.id, payload))
         await db.commit()
 
         # F-37: keep onboarding_completed in sync. The carousel endpoint sets

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.database import User, Movie, UserRating
 from models.schemas import TokenResponse
+from services.import_reconcile import stale_movie_ids, untouched_rows
 from services.movie_service import MovieService
 from services.rss_service import RSSService
 from services.scraper_service import ScraperService
@@ -308,6 +309,7 @@ async def _run_sync_background(
                 # frontera. Se corrige solo; si algún día molesta, la salida es
                 # sumar N a lo no visitado en vez de esperar al scrape completo.
                 lb_rank = 0
+                unresolved: list = []  # films the list shows that found no match this time
 
                 for page in range(1, MAX_WATCHLIST_PAGES + 1):
                     page_films, has_more, page_total = await scraper._scrape_listing_page(
@@ -361,15 +363,19 @@ async def _run_sync_background(
                             # Cache result (positive 30d / MISS 7d) so the next sync skips the search.
                             await scraper.set_resolved_tmdb_id(film_slug, tmdb_id)
 
+                        film_uri = f"https://letterboxd.com/film/{film_slug}/"
+                        named = {"title": film_title or film_slug.replace("-", " "),
+                                 "year": film_year, "letterboxd_uri": film_uri}
                         if not tmdb_id:
+                            unresolved.append(named)
                             continue
                         page_tmdb_ids.append(tmdb_id)
 
                         movie = await movie_service.get_or_create_movie(
-                            tmdb_id=tmdb_id,
-                            letterboxd_uri=f"https://letterboxd.com/film/{film_slug}/"
+                            tmdb_id=tmdb_id, letterboxd_uri=film_uri
                         )
                         if not movie:
+                            unresolved.append(named)
                             continue
                         resolved_movie_ids.add(movie.id)
 
@@ -422,14 +428,20 @@ async def _run_sync_background(
                     )
                 elif resolved_movie_ids:
                     from sqlalchemy import update as sql_update
-                    upd_result = await db.execute(
-                        sql_update(UserRating)
-                        .where(UserRating.user_id == user_id)
-                        .where(UserRating.is_watchlist.is_(True))
-                        .where(UserRating.movie_id.notin_(resolved_movie_ids))
-                        .values(is_watchlist=False)
-                    )
-                    watchlist_removed = upd_result.rowcount or 0
+                    # Only what Letterboxd stopped listing. It used to demote everything
+                    # this scrape had not resolved: also a film whose page was blocked
+                    # this time, and every film added to the watchlist from the app.
+                    untouched = await untouched_rows(
+                        db, user_id, resolved_movie_ids, watchlist_only=True)
+                    stale = stale_movie_ids(untouched, unresolved)
+                    if stale:
+                        await db.execute(
+                            sql_update(UserRating)
+                            .where(UserRating.user_id == user_id)
+                            .where(UserRating.movie_id.in_(stale))
+                            .values(is_watchlist=False)
+                        )
+                    watchlist_removed = len(stale)
                     if watchlist_removed:
                         logger.info(
                             f"[watchlist-reconcile] user_id={user_id} demoted {watchlist_removed} "

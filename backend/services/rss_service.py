@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy import delete, cast, select, Date, func, or_
+from sqlalchemy import case, delete, cast, select, Date, func, or_
 import numpy as np
 
 from models.database import User, Movie, UserRating
@@ -44,6 +44,50 @@ def rss_watch_count_should_bump(rewatch: bool, incoming_date, existing_date) -> 
     if incoming_date is None:
         return False
     return incoming_date > existing_date
+
+
+def rss_rating_upsert(user_id: int, movie_id: int, item: Dict, rewatch_flag: bool):
+    """The statement that writes one RSS diary entry onto the user's row.
+
+    The feed is the user's latest activity, so an entry decides the film's rating, review
+    and like, but only when it is the LATEST viewing we know of: the feed lists newest
+    first, so a rewatch with a new rating used to be overwritten by the older entry
+    processed right after it, and a stale entry re-read on every sync could undo a
+    newer ZIP. And what an entry lacks erases nothing: on Letterboxd a rewatch logged
+    without stars leaves the film's rating as it was. Module-level so a test can run it.
+    """
+    incoming = insert(UserRating).excluded
+    # SET expressions read the row as it was before this statement.
+    is_latest = or_(UserRating.watched_date.is_(None),
+                    incoming.watched_date >= UserRating.watched_date)
+    return insert(UserRating).values(
+        user_id=user_id,
+        movie_id=movie_id,
+        rating=item.get('rating'),
+        is_watched=True,  # Always True for RSS items
+        is_liked=item.get('is_liked', False),
+        watched_date=item.get('watched_date'),
+        review=item.get('review'),
+        watch_count=1,  # initial value for new rows
+    ).on_conflict_do_update(
+        index_elements=["user_id", "movie_id"],
+        set_={
+            "rating": case((is_latest, func.coalesce(incoming.rating, UserRating.rating)),
+                           else_=UserRating.rating),
+            "is_watched": True,
+            "is_liked": case((is_latest, incoming.is_liked), else_=UserRating.is_liked),
+            # GREATEST skips NULLs in Postgres: no date keeps the stored one, and of
+            # two real dates the later viewing stays.
+            "watched_date": func.greatest(incoming.watched_date, UserRating.watched_date),
+            "review": case((is_latest, func.coalesce(incoming.review, UserRating.review)),
+                           else_=UserRating.review),
+            "watch_count": (
+                func.coalesce(UserRating.watch_count, 1) + 1
+                if rewatch_flag
+                else func.coalesce(UserRating.watch_count, 1)
+            ),
+        },
+    )
 
 
 class RSSService:
@@ -335,41 +379,7 @@ class RSSService:
                     bool(item.get('rewatch')), incoming_date, existing_date
                 )
 
-                stmt = insert(UserRating).values(
-                    user_id=user_id,
-                    movie_id=movie.id,
-                    rating=item.get('rating'),
-                    is_watched=True, # Always True for RSS items
-                    is_liked=item.get('is_liked', False),
-                    watched_date=item.get('watched_date'),
-                    review=item.get('review'),
-                    watch_count=1,  # initial value for new rows
-                ).on_conflict_do_update(
-                    index_elements=["user_id", "movie_id"],
-                    set_={
-                        "rating": getattr(insert(UserRating).excluded, "rating"),
-                        "is_watched": True, # Ensure it's marked as watched
-                        # is_liked: RSS now extracts <letterboxd:liked> per item, so we
-                        # update it to reflect Letterboxd's current state. RSS is
-                        # authoritative for likes once the parser captures the field.
-                        "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
-                        # COALESCE y no `excluded` a secas: el parser deja
-                        # `watched_date: None` cuando la entrada del RSS no trae
-                        # <letterboxd:watchedDate>, y sobrescribir con eso borraba
-                        # una fecha de diario buena que ya estaba guardada. Una
-                        # fecha nueva sí manda; la ausencia de fecha, no.
-                        "watched_date": func.coalesce(
-                            getattr(insert(UserRating).excluded, "watched_date"),
-                            UserRating.watched_date,
-                        ),
-                        "review": getattr(insert(UserRating).excluded, "review"),
-                        "watch_count": (
-                            func.coalesce(UserRating.watch_count, 1) + 1
-                            if rewatch_flag
-                            else func.coalesce(UserRating.watch_count, 1)
-                        ),
-                    }
-                )
+                stmt = rss_rating_upsert(user_id, movie.id, item, rewatch_flag)
 
                 try:
                     result = await self.db.execute(stmt)

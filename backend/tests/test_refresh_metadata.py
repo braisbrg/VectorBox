@@ -46,9 +46,7 @@ class _StubOMDb:
     async def fetch_movie_data(self, imdb_id):
         return self._response
 
-    def calculate_vectorbox_score(
-        self, omdb_data, tmdb_vote_average, tmdb_vote_count=None, imdb_vote_count=None
-    ):
+    def score_row(self, movie):
         return SimpleNamespace(score=self._vb_score)
 
 

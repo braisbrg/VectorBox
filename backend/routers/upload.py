@@ -27,6 +27,7 @@ from services.data_processor import DataProcessor
 from services.csv_parser import CSVParser
 from services.scraper_service import ScraperService
 from services.task_store import get_task_store
+from services.import_reconcile import stale_movie_ids, untouched_rows
 from utils.embedding_reference import build_embedding_reference_text
 from models.database import User, Movie, UserRating, ZipUpload
 from models.external_schemas import qdrant_payload
@@ -44,6 +45,42 @@ router = APIRouter()
 # nobody holds can be garbage-collected while it waits on I/O, and the post-upload
 # enrichment silently never finishes. This set holds each one until it is done.
 _BACKGROUND_TASKS: set = set()
+
+
+def zip_rating_upsert(user_id: int, movie_id: int, movie_data: dict):
+    """The statement that writes one film of a Letterboxd export onto the user's row.
+
+    The export is the complete snapshot of Letterboxd, so EVERYTHING it says replaces what
+    is stored, and what it leaves empty is cleared: a film with no rating there has none
+    here. That is the design (decided 2026-11-10), not an oversight: un-rating a film on
+    Letterboxd has to reach us. The RSS upsert is the opposite, because one diary entry
+    without stars says nothing about the film's rating. Module-level so a test can run it.
+    """
+    incoming = insert(UserRating).excluded
+    return insert(UserRating).values(
+        user_id=user_id,
+        movie_id=movie_id,
+        rating=movie_data.get("rating"),
+        is_watchlist=movie_data.get("is_watchlist", False),
+        is_liked=movie_data.get("is_liked", False),
+        is_watched=movie_data.get("is_watched", False),
+        watched_date=movie_data.get("watched_date"),
+        review=movie_data.get("review"),
+        watch_count=movie_data.get("watch_count", 1),
+        watchlist_rank=movie_data.get("watchlist_rank"),
+    ).on_conflict_do_update(
+        index_elements=["user_id", "movie_id"],
+        set_={
+            "rating": incoming.rating,
+            "is_watchlist": incoming.is_watchlist,
+            "is_liked": incoming.is_liked,
+            "is_watched": incoming.is_watched,
+            "watched_date": incoming.watched_date,
+            "review": incoming.review,
+            "watch_count": incoming.watch_count,
+            "watchlist_rank": incoming.watchlist_rank,
+        },
+    )
 
 
 def spawn_background(coro) -> asyncio.Task:
@@ -459,6 +496,7 @@ async def enrich_movies_background(
                 # Stale rows are pruned AFTER a successful import instead — see
                 # the prune block below the chunk loop.
                 imported_movie_ids: set[int] = set()
+                unresolved: list = []  # export entries that found no film this time
 
                 # Process in Chunks
                 for i in range(0, total_movies, CHUNK_SIZE):
@@ -490,36 +528,16 @@ async def enrich_movies_background(
 
                     for movie_data, (movie_id, needs_vector) in zip(chunk, results):
                         if not movie_id:
+                            unresolved.append(movie_data)
                             continue
 
+                        # Resolved means "the export names this film": marked before the
+                        # write, so a failed upsert leaves the old row instead of having the
+                        # prune below delete it.
+                        imported_movie_ids.add(movie_id)
                         try:
                             # 3. UPSERT Rating Safely
-                            stmt = insert(UserRating).values(
-                                user_id=user_id,
-                                movie_id=movie_id,
-                                rating=movie_data.get("rating"),
-                                is_watchlist=movie_data.get("is_watchlist", False),
-                                is_liked=movie_data.get("is_liked", False),
-                                is_watched=movie_data.get("is_watched", False),
-                                watched_date=movie_data.get("watched_date"),
-                                review=movie_data.get("review"),
-                                watch_count=movie_data.get("watch_count", 1),
-                                watchlist_rank=movie_data.get("watchlist_rank"),
-                            ).on_conflict_do_update(
-                                index_elements=["user_id", "movie_id"],
-                                set_={
-                                    "rating": getattr(insert(UserRating).excluded, "rating"),
-                                    "is_watchlist": getattr(insert(UserRating).excluded, "is_watchlist"),
-                                    "is_liked": getattr(insert(UserRating).excluded, "is_liked"),
-                                    "is_watched": getattr(insert(UserRating).excluded, "is_watched"),
-                                    "watched_date": getattr(insert(UserRating).excluded, "watched_date"),
-                                    "review": getattr(insert(UserRating).excluded, "review"),
-                                    "watch_count": getattr(insert(UserRating).excluded, "watch_count"),
-                                    "watchlist_rank": getattr(insert(UserRating).excluded, "watchlist_rank"),
-                                }
-                            )
-                            await db.execute(stmt)
-                            imported_movie_ids.add(movie_id)
+                            await db.execute(zip_rating_upsert(user_id, movie_id, movie_data))
 
                             if needs_vector:
                                 movies_to_vectorize_ids.append(movie_id)
@@ -607,18 +625,28 @@ async def enrich_movies_background(
                     )
                 else:
                     from sqlalchemy import delete as sa_delete
-                    prune = await db.execute(
-                        sa_delete(UserRating)
-                        .where(UserRating.user_id == user_id)
-                        .where(UserRating.movie_id.notin_(imported_movie_ids))
-                        .where(UserRating.watch_count != 0)
-                    )
-                    await db.commit()
-                    if prune.rowcount:
-                        logger.info(
-                            f"[Upload] Pruned {prune.rowcount} rows absent from this export "
-                            f"(user_id={user_id})"
+                    untouched = await untouched_rows(db, user_id, imported_movie_ids)
+                    stale = stale_movie_ids(untouched, unresolved)
+                    if stale:
+                        await db.execute(
+                            sa_delete(UserRating)
+                            .where(UserRating.user_id == user_id)
+                            .where(UserRating.movie_id.in_(stale))
                         )
+                    await db.commit()
+                    if untouched:
+                        logger.info(
+                            f"[Upload] Pruned {len(stale)} rows absent from this export, kept "
+                            f"{len(untouched) - len(stale)} the export names but could not be "
+                            f"matched this time (user_id={user_id})"
+                        )
+
+                if unresolved:
+                    logger.warning(
+                        f"[Upload] {len(unresolved)} of {total_movies} export entries found no "
+                        f"film (user_id={user_id}): "
+                        f"{[(u.get('title'), u.get('year')) for u in unresolved[:40]]}"
+                    )
 
                 # After all movies processed, create clusters
                 if task_id:
@@ -651,7 +679,11 @@ async def enrich_movies_background(
                 await groq_client.close()
 
         if task_id:
-            await task_store.complete_task(task_id, "Upload complete!")
+            done = "Upload complete!"
+            if unresolved:
+                done = (f"Upload complete — {len(unresolved)} of {total_movies} films "
+                        f"could not be matched")
+            await task_store.complete_task(task_id, done)
 
         # F-37: flip onboarding_completed once the user crosses the rating
         # threshold via ZIP. Previously this was only updated by the carousel

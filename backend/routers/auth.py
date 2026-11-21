@@ -8,8 +8,9 @@ import logging
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, update, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from config import AsyncSessionLocal, REDIS_URL, get_db, IS_PRODUCTION
 from models.database import User, UserRating
@@ -28,6 +29,44 @@ from services.qdrant_service import QdrantService
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def move_guest_rows(db: AsyncSession, guest_id: int, account_id: int) -> int:
+    """Hand the guest's rows to the account. Returns how many rows changed hands.
+
+    A film both have is MERGED: what the account already says stays, and the guest fills
+    what it lacks (a rating, a watched, liked, watchlist or rejected mark). It used to drop
+    the guest's row whole, so a guest who rated or rejected a film the account had only on
+    its watchlist lost that on signing in (2026-11-10). Bulk SQL on purpose: the ORM
+    cascade from User.ratings would otherwise delete the reassigned rows (see the caller).
+    """
+    guest = aliased(UserRating)
+    same_film = (guest.user_id == guest_id) & (guest.movie_id == UserRating.movie_id)
+    await db.execute(
+        update(UserRating)
+        .where(UserRating.user_id == account_id, same_film)
+        .values(
+            rating=func.coalesce(UserRating.rating, guest.rating),
+            is_watched=UserRating.is_watched | guest.is_watched,
+            is_liked=UserRating.is_liked | guest.is_liked,
+            is_watchlist=UserRating.is_watchlist | guest.is_watchlist,
+            is_rejected=UserRating.is_rejected | guest.is_rejected,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    account_films = select(UserRating.movie_id).where(UserRating.user_id == account_id)
+    await db.execute(
+        delete(UserRating)
+        .where(UserRating.user_id == guest_id, UserRating.movie_id.in_(account_films))
+        .execution_options(synchronize_session=False)
+    )
+    moved = await db.execute(
+        update(UserRating)
+        .where(UserRating.user_id == guest_id)
+        .values(user_id=account_id)
+        .execution_options(synchronize_session=False)
+    )
+    return moved.rowcount or 0
 
 
 @router.get("/me", response_model=TokenResponse)
@@ -92,30 +131,9 @@ async def claim_anonymous(
     # Result: log said "Migrated N" (count was correct) but the new user ended
     # up with 0 ratings. Bulk SQL bypasses the ORM identity map → cascade has
     # nothing to cascade to.
-    existing_movie_ids_result = await db.execute(
-        select(UserRating.movie_id).where(UserRating.user_id == registered_user_id)
-    )
-    existing_movie_ids = set(existing_movie_ids_result.scalars().all())
-
-    # Step 1: drop the anon's duplicates (registered user wins) — pure SQL DELETE.
-    if existing_movie_ids:
-        await db.execute(
-            delete(UserRating).where(
-                UserRating.user_id == anon_user.id,
-                UserRating.movie_id.in_(existing_movie_ids),
-            )
-        )
-
-    # Step 2: bulk-reassign the rest with a single UPDATE statement.
-    # `synchronize_session=False` is safe — we delete anon_user immediately
-    # after and don't read its ratings collection again.
-    reassign_result = await db.execute(
-        update(UserRating)
-        .where(UserRating.user_id == anon_user.id)
-        .values(user_id=registered_user_id)
-        .execution_options(synchronize_session=False)
-    )
-    migrated_count = reassign_result.rowcount or 0
+    # `synchronize_session=False` is safe — we delete anon_user immediately after and
+    # don't read its ratings collection again.
+    migrated_count = await move_guest_rows(db, anon_user.id, registered_user_id)
 
     # Copy tag_preferences from anon → registered if registered has none yet.
     # Guests now save tags server-side directly to the anon row via the same

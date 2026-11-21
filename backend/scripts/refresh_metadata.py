@@ -162,7 +162,9 @@ async def refresh_movie(movie: Movie, tmdb: TMDBClient, omdb: OMDbClient) -> boo
         genres = tmdb_data.get("genres")
         if genres:
             movie.genres = [g["name"] for g in genres]
-        movie.runtime = tmdb_data.get("runtime", movie.runtime)
+        # 0 and null are TMDB's "unknown": they never replace a runtime we already have.
+        if tmdb_data.get("runtime"):
+            movie.runtime = tmdb_data["runtime"]
         if tmdb_data.get("overview"):
             movie.overview = tmdb_data["overview"]
         if tmdb_data.get("original_language"):
@@ -228,12 +230,9 @@ async def refresh_movie(movie: Movie, tmdb: TMDBClient, omdb: OMDbClient) -> boo
                     movie.omdb_languages = languages
             effective_votes = max(movie.vote_count or 0, movie.imdb_vote_count or 0)
             if effective_votes >= 10:
-                vb = omdb.calculate_vectorbox_score(
-                    omdb_data,
-                    movie.vote_average,
-                    tmdb_vote_count=movie.vote_count,
-                    imdb_vote_count=movie.imdb_vote_count,
-                )
+                # From the row, not from `omdb_data`: when OMDb did not answer this time
+                # the row still holds the IMDb and Metacritic values it gave before.
+                vb = omdb.score_row(movie)
                 if vb.score is not None:
                     movie.vectorbox_score = vb.score
 

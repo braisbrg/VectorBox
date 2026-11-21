@@ -11,6 +11,28 @@ not just what changed. Where a number appears, it was taken from the running sys
 ## [Unreleased]
 
 ### Fixed
+- **An import no longer removes what it could not match.** A finished ZIP import deleted every
+  row it had not touched, and a full watchlist sync took off the list every film it had not
+  resolved. Both included films the source still named but that found no match that time (a
+  blocked Letterboxd page, a title tie): one failed lookup removed a rating or a watchlist
+  entry the user never touched. Those are now kept, and the import says how many films it could
+  not match.
+- **The latest diary entry decides, not the last one read.** The Letterboxd feed lists newest
+  first, so when a film had two entries (a rewatch with a new rating), the older one was
+  processed last and its rating, review and like won. An entry now counts only when it is
+  the most recent viewing known, and one logged without stars no longer wipes the rating. A
+  full ZIP export still replaces everything, empty fields included: it is the complete state
+  of Letterboxd, so un-rating a film there reaches VectorBox.
+- **The watchlist button no longer removes the like**, and re-rating a film in the app no longer
+  replaces its diary date with today's.
+- **Films added to the watchlist from the app stay there.** They were stored like Letterboxd
+  rows, so the next import or full sync removed them as "no longer on Letterboxd".
+- **Two imports of the same new film at once** no longer drop one user's rating for it.
+- **Signing in keeps what you did as a guest.** A film both the guest session and the account
+  had kept only the account's version, so a rating or a "not interested" given as a guest was
+  lost if the account had the film on its watchlist. The two are now merged.
+- **A metadata refresh on a day OMDb fails** no longer writes a degraded quality score; the
+  score is computed from the stored values in every path.
 - **The shorts setting now reaches every row.** «Picked For You», «From Your Favorite Directors»
   and the cult actor row never received it and filtered by quality score alone, which also
   skipped excluded and adult titles. Measured on the real feed with shorts off, one profile's
@@ -28,6 +50,8 @@ not just what changed. Where a number appears, it was taken from the running sys
   by nothing and could be garbage-collected while waiting.
 
 ### Changed
+- **Maintenance computes mood for the whole catalogue** (new phase 13). No phase did, so every
+  film added since the last manual run was invisible to the five mood filters.
 - The development `docker-compose.yml` binds the frontend to `127.0.0.1`, like the backend. On
   `0.0.0.0` it proxied the whole API to the local network.
 
